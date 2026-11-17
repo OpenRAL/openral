@@ -279,12 +279,9 @@ def resolve_estimated_depth_camera(
     mount = by_name.get(spec.shares_mount_with or camera, spec)
     if mount.parent_frame is not None and mount.static_transform_xyz_rpy is not None:
         frame = str(mount.frame_id)
-        optical = frame.endswith("_optical_frame")
+        optical = optical_frame_id(frame)
         return EstimatedDepthMount(
-            frame if optical else f"{frame}_optical_frame",
-            None if optical else frame,
-            mount.name,
-            problems,
+            optical, None if optical == frame else frame, mount.name, problems
         )
     if hal_mode == "sim" and str(spec.frame_id).endswith("_optical_frame"):
         return EstimatedDepthMount(str(spec.frame_id), None, camera, problems)
@@ -293,3 +290,53 @@ def resolve_estimated_depth_camera(
         "static_transform_xyz_rpy (or shares_mount_with) for it"
     )
     return EstimatedDepthMount("", None, mount.name, problems)
+
+
+def optical_frame_id(frame_id: str) -> str:
+    """The REP-103 optical frame (z forward, y down) of a camera mount frame.
+
+    An ``*_optical_frame`` is already one; a body-convention mount frame (x forward,
+    z up, e.g. ``zed_camera_link``) gets its child ``<frame_id>_optical_frame``, which
+    the launch or sim bridge hangs under it, as a real camera driver does.
+
+    Example:
+        >>> optical_frame_id("zed_camera_link")
+        'zed_camera_link_optical_frame'
+        >>> optical_frame_id("left_wrist_camera_optical_frame")
+        'left_wrist_camera_optical_frame'
+    """
+    frame = str(frame_id)
+    return frame if frame.endswith("_optical_frame") else f"{frame}_optical_frame"
+
+
+def image_frame_id(spec: SensorSpec, sensors: Sequence[SensorSpec]) -> str:
+    """The tf2 frame a camera's pixels are in, for consumers that place them (the object lift).
+
+    Pixels are optical-convention (z forward, y down), so the frame is always an optical
+    one wherever a mount is known — the same rule as :func:`resolve_estimated_depth_camera`:
+
+    * a camera that ``shares_mount_with`` another sensor of ``sensors`` is that device's
+      other stream, rendered from that sensor's mount: the mount's
+      :func:`optical_frame_id` (OpenAMRobot / OpenArm ``top`` on ``head_zed``:
+      ``zed_camera_link_optical_frame``; its own ``frame_id: world`` places nothing on a
+      mobile base);
+    * a camera with its own mount (``parent_frame`` + ``static_transform_xyz_rpy``) on a
+      body-convention ``frame_id`` (x forward: MakerMods ``top_camera``) is in that
+      frame's ``<frame>_optical_frame`` child, which the sim bridge hangs under it;
+    * any other camera keeps its own ``frame_id``.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> amr = RobotDescription.from_yaml("robots/openamrobot_v2/robot.yaml").sensors
+        >>> [image_frame_id(s, amr) for s in amr if s.name in ("top", "wrist_left")]
+        ['zed_camera_link_optical_frame', 'left_wrist_camera_optical_frame']
+        >>> metal = RobotDescription.from_yaml("robots/makermods_metal/robot.yaml").sensors
+        >>> image_frame_id(next(s for s in metal if s.name == "top"), metal)
+        'top_camera_optical_frame'
+    """
+    mount = next((s for s in sensors if s.name == spec.shares_mount_with), None)
+    if mount is not None:
+        return optical_frame_id(mount.frame_id)
+    if spec.parent_frame is not None and spec.static_transform_xyz_rpy is not None:
+        return optical_frame_id(spec.frame_id)
+    return str(spec.frame_id)

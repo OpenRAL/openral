@@ -406,6 +406,12 @@ class _IsaacSimSidecar(SidecarSimRollout):
     # ``backend_options.keep_alive``: ``close`` leaves the sidecar running for the
     # next run of the same scene to adopt (``launch_id`` identity) instead of ending it.
     keep_alive: bool = False
+    # RGB camera -> the K the sidecar renders it with (``_rendered_rgb_intrinsics``).
+    rendered_intrinsics: dict[str, IntrinsicsPinhole] = field(default_factory=dict)
+
+    def camera_intrinsics(self) -> dict[str, IntrinsicsPinhole]:
+        """Each RGB camera's rendered pinhole K at its render raster (the bridge's CameraInfo)."""
+        return self.rendered_intrinsics
 
     def close(self) -> None:
         """End the sidecar, or with ``keep_alive`` leave it running for the next run.
@@ -956,6 +962,33 @@ class IsaacStageObject(BaseModel):
     prim: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*(/[A-Za-z_][A-Za-z0-9_]*)*$")
 
 
+class IsaacLinkAttachment(BaseModel):
+    """A prim of the environment USD carried rigidly by a robot link, e.g. a tote on a mobile base.
+
+    ``prim`` is its path below the environment's default prim, as for ``IsaacStageObject``.
+    The scene makes it a kinematic rigid body and keeps it at the pose it has, relative to
+    URDF ``link``, when the robot stands at its spawn with its joints at the import pose:
+    author it in the stage where it should ride. It follows every base move and joint
+    motion of ``link`` (a lift), and what rests on it rides along by friction.
+
+    ``carries`` names scene objects (``objects``) the attachment holds rigidly while the
+    robot drives: each one inside the prim's bounds at reset, or when a base twist is
+    commanded, is made kinematic at its offset in the prim; the first command to the arms
+    (a starting-pose ramp, a policy) releases them, dynamic again and at rest. Cartons
+    in a tote then ride the drive instead of sliding with every acceleration.
+
+    Example:
+        >>> IsaacLinkAttachment(prim="Tote", link="lift_carriage_link").link
+        'lift_carriage_link'
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    prim: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*(/[A-Za-z_][A-Za-z0-9_]*)*$")
+    link: str = Field(min_length=1)
+    carries: list[str] = Field(default_factory=list)
+
+
 class IsaacDomeLight(BaseModel):
     """A dome light for an environment USD that ships no lights (``dome_light``).
 
@@ -1367,6 +1400,10 @@ class IsaacPlacementSuccess(BaseModel):
         ]
 
 
+# A gravity feed-forward past 2x the model's gravity torque is a typo, not a calibration.
+_MAX_GRAVITY_FF_SCALE = 2.0
+
+
 class IsaacSimOptions(BaseModel):
     """``scene.backend_options`` for the ``isaac_sim`` scene (validated at load).
 
@@ -1388,6 +1425,8 @@ class IsaacSimOptions(BaseModel):
     objects: list[IsaacSceneObject] = Field(default_factory=list)
     # Rigid bodies the environment USD already holds (IsaacStageObject), graded in place.
     stage_objects: list[IsaacStageObject] = Field(default_factory=list)
+    # Environment prims carried by a robot link (IsaacLinkAttachment), e.g. a tote on the base.
+    link_attachments: list[IsaacLinkAttachment] = Field(default_factory=list)
     # The environment USD from a pinned archive instead of scene.assets_uri.
     environment_archive: IsaacEnvironmentArchive | None = None
     # Environment-USD load fixes for stages authored for older Isaac releases (both opt-in,
@@ -1460,14 +1499,22 @@ class IsaacSimOptions(BaseModel):
     depth_cameras: bool = True
     # Joint drive gains: URDF joint-name regex -> (stiffness Nm/rad, damping Nm*s/rad), in
     # pattern order, later matches winning. Unmatched joints keep the sidecar's stiff
-    # defaults (1000 / 100). Set them to the real motors' PD gains and the arm sags under
-    # gravity like the real one: a position-only MIT/PD loop holds (gravity torque / kp)
-    # below its command, which a policy trained on that robot has learnt to expect.
+    # defaults (1000 / 100). Set them to the real motors' PD gains: a position-only MIT/PD
+    # loop rests (gravity torque / kp) below its command, as a real arm without gravity
+    # feed-forward does. A controller that adds one is matched with `gravity_compensation`.
     joint_drive_gains: dict[str, tuple[float, float]] = Field(default_factory=dict)
     # Drive force caps: URDF joint-name regex (fullmatch) -> max effort (N*m angular, N
     # linear), overriding the URDF limit. For a task whose training sim gripped softer
     # than the motor can (LeIsaac: the SO-101 jaw at object mass / 0.15).
     joint_effort_limits: dict[str, float] = Field(default_factory=dict)
+    # Gravity feed-forward: URDF joint-name regex (fullmatch) -> scale k, in pattern order,
+    # later matches winning (as `joint_drive_gains`); a pattern matching no joint fails the
+    # boot. Each physics step adds k x the joint's gravity torque at the current pose (PhysX
+    # generalized gravity forces), clipped to its drive's effort cap, to its drive, as a real
+    # MIT/PD controller's gravity feed-forward does: with it the arm holds its command
+    # instead of resting gravity torque / stiffness below it. Pair it with that controller's
+    # kp/kd in `joint_drive_gains`. Unmatched joints: none.
+    gravity_compensation: dict[str, float] = Field(default_factory=dict)
     # Manifest gripper joint -> calibration curve [(manifest value, URDF finger value), ...],
     # piecewise linear, applied to commands (manifest -> finger) and joint states (finger ->
     # manifest). For a jaw whose reading is not its URDF finger angle: OpenArm's real jaw
@@ -1545,6 +1592,22 @@ class IsaacSimOptions(BaseModel):
                 raise ValueError(f"joint_effort_limits[{pattern!r}] must be > 0")
         return value
 
+    @field_validator("gravity_compensation")
+    @classmethod
+    def _gravity_compensation_valid(cls, value: dict[str, float]) -> dict[str, float]:
+        for pattern, k in value.items():
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(
+                    f"gravity_compensation[{pattern!r}] is not a regex: {exc}"
+                ) from exc
+            if not 0.0 <= k <= _MAX_GRAVITY_FF_SCALE:
+                raise ValueError(
+                    f"gravity_compensation[{pattern!r}] must be in [0, {_MAX_GRAVITY_FF_SCALE:g}]"
+                )
+        return value
+
     @field_validator("gripper_joint_curve")
     @classmethod
     def _gripper_curve_valid(
@@ -1575,6 +1638,40 @@ class IsaacSimOptions(BaseModel):
             raise ValueError(
                 f"objects: duplicate names {dupes} / reserved names {reserved} "
                 "(the scene registers 'robot' and 'obstacle_<i>' itself)."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _attachments_are_distinct(self) -> IsaacSimOptions:
+        """Each link attachment is its own prim: not twice, not nested, not also graded.
+
+        A stage object is reset to its authored pose by ``world.reset()``, which would fight
+        the kinematic attachment; a prim inside another attachment would move twice.
+        """
+        prims = [a.prim for a in self.link_attachments]
+        dupes = sorted({p for p in prims if prims.count(p) > 1})
+        nested = sorted({p for p in prims for q in prims if p != q and p.startswith(f"{q}/")})
+        graded = sorted(
+            {
+                o.prim
+                for o in self.stage_objects
+                for p in prims
+                if o.prim == p or o.prim.startswith(f"{p}/") or p.startswith(f"{o.prim}/")
+            }
+        )
+        if dupes or nested or graded:
+            raise ValueError(
+                f"link_attachments: repeated prims {dupes}, prims inside another attachment "
+                f"{nested}, prims overlapping a stage object {graded}."
+            )
+        movable = {o.name for o in self.objects if o.dynamic}
+        carried = [n for a in self.link_attachments for n in a.carries]
+        unknown = sorted(set(carried) - movable)
+        twice = sorted({n for n in carried if carried.count(n) > 1})
+        if unknown or twice:
+            raise ValueError(
+                f"link_attachments carries: {unknown} are not dynamic scene objects, "
+                f"{twice} are carried twice."
             )
         return self
 
@@ -2638,6 +2735,7 @@ def _write_robot_spec(  # noqa: PLR0915  # reason: one linear spec build, field 
     gripper_followers_track: str = "target",
     environment_spec: dict[str, Any] | None = None,
     control_freq_hz: float | None = None,
+    gravity_compensation: dict[str, float] | None = None,
 ) -> tuple[str, RobotDescription]:
     """Build the robot spec for ``env_cfg.robot_id`` and write it to a temp JSON.
 
@@ -2710,6 +2808,7 @@ def _write_robot_spec(  # noqa: PLR0915  # reason: one linear spec build, field 
     )
     spec["robot_material_colors"] = {k: list(v) for k, v in (robot_material_colors or {}).items()}
     spec["joint_drive_gains"] = {k: list(v) for k, v in (joint_drive_gains or {}).items()}
+    spec["gravity_compensation"] = dict(gravity_compensation or {})
     # The scene's curves replace the manifest's (`_gripper_spec`) for this twin, as
     # `sim_scene_description` does for the kernel, the self-filter and /tf (issue #533).
     _curve_gripper_specs(spec, gripper_joint_curve or {})
@@ -2719,6 +2818,12 @@ def _write_robot_spec(  # noqa: PLR0915  # reason: one linear spec build, field 
     # What the sidecar can mount on: a URDF link, or the base_frame (placed by its
     # manifest offset when it is none).
     urdf_links = set(re.findall(r'<link\s+name="([^"]+)"', Path(spec["urdf_path"]).read_text()))
+    # A link attachment rides a real URDF link: refused here, before a minutes-long Kit boot.
+    unknown = sorted({a["link"] for a in spec.get("link_attachments") or []} - urdf_links)
+    if unknown:
+        raise ROSConfigError(
+            f"link_attachments name links {unknown} that {desc.name!r}'s URDF does not have"
+        )
     urdf_links.add(desc.base_frame)
     camera_mounts = {
         **{
@@ -2789,13 +2894,15 @@ def _environment_spec(opts: IsaacSimOptions) -> dict[str, Any]:
 
     Example:
         >>> sorted(_environment_spec(IsaacSimOptions()))  # doctest: +NORMALIZE_WHITESPACE
-        ['collision_approximation', 'dome_light', 'joint_effort_limits', 'link_box_colliders',
-         'physx_scene', 'rtx_settings', 'stage_objects', 'strip_xform_colliders']
+        ['collision_approximation', 'dome_light', 'joint_effort_limits', 'link_attachments',
+         'link_box_colliders', 'physx_scene', 'rtx_settings', 'stage_objects',
+         'strip_xform_colliders']
     """
     return opts.model_dump(
         mode="json",
         include={
             "stage_objects",
+            "link_attachments",
             "strip_xform_colliders",
             "dome_light",
             "joint_effort_limits",
@@ -2980,6 +3087,7 @@ def _placement(
             "depth_cameras",
             "joint_drive_gains",
             "joint_effort_limits",
+            "gravity_compensation",
             "physx_scene",
             "collision_approximation",
             "link_box_colliders",
@@ -2988,6 +3096,7 @@ def _placement(
             "gripper_followers_track",
             "placement_success",
             "stage_objects",
+            "link_attachments",
             "strip_xform_colliders",
             "dome_light",
         },
@@ -3110,8 +3219,10 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         gripper_followers_track=opts.gripper_followers_track,
         environment_spec=_environment_spec(opts),
         control_freq_hz=opts.control_freq_hz,
+        gravity_compensation=opts.gravity_compensation,
     )
-    robot_spec_hash = hashlib.sha256(Path(robot_spec_path).read_bytes()).hexdigest()
+    robot_spec_bytes = Path(robot_spec_path).read_bytes()
+    robot_spec_hash = hashlib.sha256(robot_spec_bytes).hexdigest()
     if environment_usd is not None:
         launch_argv += ["--environment-usd", environment_usd]
     if env_cfg.base_pose is not None:
@@ -3153,6 +3264,9 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         },
     )
     try:
+        # Parsed before connecting, inside the finally: a malformed spec raises with no
+        # sidecar started, and the finally still unlinks the temp spec.
+        rendered_intrinsics = _rendered_rgb_intrinsics(json.loads(robot_spec_bytes))
         client.connect()
         if client.call("ping").get("robot_spec_hash") != robot_spec_hash:
             client.close()
@@ -3172,7 +3286,38 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         _client=client,
         layout=IsaacActionLayout.from_description(desc),
         keep_alive=opts.keep_alive,
+        rendered_intrinsics=rendered_intrinsics,
     )
+
+
+def _rendered_rgb_intrinsics(spec: dict[str, Any]) -> dict[str, IntrinsicsPinhole]:
+    """Each RGB camera's K as the sidecar renders it, from the robot spec it boots with.
+
+    ``isaac_manifest_scene._configure_rgb_projection`` applies the spec sensor's
+    intrinsics (manifest, unit overlay, ``camera_intrinsics`` override and
+    ``camera_render_height`` scaling already folded in) scaled per axis to the render
+    raster. A camera whose mount sets ``hfov_deg`` renders an ideal pinhole from that field
+    of view instead, so it is left out (no K is claimed for it).
+
+    Example:
+        >>> k = {"width": 448, "height": 224, "fx": 312.4, "fy": 310.7, "cx": 195.2, "cy": 112.4}
+        >>> spec = {
+        ...     "sensors": [
+        ...         {"name": "top", "modality": "rgb", "intrinsics": k},
+        ...         {"name": "side", "modality": "rgb", "intrinsics": k},
+        ...         {"name": "head_zed", "modality": "depth", "intrinsics": k},
+        ...     ],
+        ...     "camera_mounts": {"side": {"hfov_deg": 70.0}},
+        ... }
+        >>> {n: (v.height, v.fx) for n, v in _rendered_rgb_intrinsics(spec).items()}
+        {'top': (224, 312.4)}
+    """
+    hfov = {n for n, m in (spec.get("camera_mounts") or {}).items() if (m or {}).get("hfov_deg")}
+    return {
+        s["name"]: IntrinsicsPinhole(**s["intrinsics"])
+        for s in spec.get("sensors", [])
+        if s.get("modality") == "rgb" and s.get("intrinsics") and s["name"] not in hfov
+    }
 
 
 #: Sidecar source files whose content is part of ``_launch_id`` (beside the script).

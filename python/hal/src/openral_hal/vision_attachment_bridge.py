@@ -140,6 +140,7 @@ from openral_core import (
     CameraTopicKind,
     ControlMode,
     JointSpec,
+    JointType,
     MimicJoint,
     VisionAttachmentRuntime,
     camera_topic,
@@ -177,6 +178,7 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
     from openral_core import (
         Action,
         AttachedCollisionObject,
+        FixedAttachment,
         GraspDeclaration,
         IntrinsicsPinhole,
         JointState,
@@ -187,12 +189,16 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
     from openral_core.schemas import TightCollisionGeometry
 
 __all__ = [
+    "BASE_STILL_M",
+    "BASE_STILL_RAD",
     "DEFAULT_SEGMENT_SERVICE",
     "MAX_RELEASE_CLEAR_M",
     "ReleaseWindow",
     "SegmentOutcome",
     "VisionAttachmentBridge",
     "VisionAttachmentConfig",
+    "base_displaced",
+    "base_prismatic",
     "bounding_half_extents",
     "box_gap_lower_bound_m",
     "build_segment_request",
@@ -271,7 +277,16 @@ class _GripperLeg:
         support_anchor: ``(frame, payload origin, rise tolerance, slide tolerance)`` at the
             ATTACH whose region payload carries the measured-support witness, ``frame`` the
             support plane's (z up), until that witness is retired
-            (``VisionAttachmentBridge._retire_lifted_supports``); ``None`` otherwise.
+            (``VisionAttachmentBridge._retire_lifted_supports``, or on a mobile base
+            ``_check_base_motion``); ``None`` otherwise.
+        support_base: A mobile base's ``base_joints`` positions when ``support_anchor`` was
+            set (the support frame may ride the base); ``None`` otherwise.
+        let_go_base: A mobile base's ``base_joints`` positions at the jaw's let-go — the
+            first sample of a DETACH debounce — the reference of the release window that
+            DETACH opens; ``None`` outside a DETACH debounce, or when they were unknown at
+            let-go (``let_go_noted`` tells the two apart).
+        let_go_noted: Whether this DETACH debounce's let-go sample was taken: an unknown
+            reference stays unknown until the debounce ends, never replaced by a later one.
         regrasp_hold: The region payload this leg held when a REGRASP began segmenting,
             kept if that segmentation is rejected (``_finish``); ``None`` otherwise.
         close_region: ``(_box_key(target_id, region), t_link_from_region)`` at the first
@@ -302,6 +317,9 @@ class _GripperLeg:
     misses: int = 0
     miss_target: str = ""
     support_anchor: tuple[str, tuple[float, float, float], float, float] | None = None
+    support_base: tuple[float, ...] | None = None
+    let_go_base: tuple[float, ...] | None = None
+    let_go_noted: bool = False
     regrasp_hold: AttachedCollisionObject | None = None
     close_region: tuple[tuple[Any, ...], Any] | None = None
     close_jaw_q: float | None = None
@@ -749,6 +767,55 @@ def primitive_poses(
     ]
 
 
+#: How far a mobile base's planar dofs (``base_joints``) may move (m / rad) from a
+#: reference before what was measured or frozen in ``base_frame`` is wrong
+#: (``base_displaced``). Calibration points: above sim joint jitter at standstill;
+#: 0.01 rad is 1 cm at a 1 m reach.
+BASE_STILL_M = 0.01
+BASE_STILL_RAD = 0.01
+
+
+def base_displaced(
+    reference: Sequence[float] | None,
+    now: Sequence[float] | None,
+    prismatic: Sequence[bool],
+) -> bool:
+    """Whether a mobile base's planar dofs left ``reference`` (``BASE_STILL_M`` / ``_RAD``).
+
+    The prismatic dofs' planar distance and each revolute dof's wrapped angle are tested
+    separately. Unknown (``None``) on either side counts as moved: fail-closed.
+
+    Args:
+        reference: The ``base_joints`` positions to compare against, in manifest order.
+        now: The same dofs now.
+        prismatic: Per dof, whether it is prismatic (else revolute / continuous).
+
+    Returns:
+        ``True`` past either bound, or when either side is unknown.
+
+    Example:
+        >>> base_displaced((0.0, 0.0, 3.14), (0.005, 0.0, -3.14), (True, True, False))
+        False
+        >>> base_displaced((0.0, 0.0, 0.0), (0.02, 0.0, 0.0), (True, True, False))
+        True
+    """
+    if reference is None or now is None:
+        return True
+    deltas = [b - a for a, b in zip(reference, now, strict=True)]
+    planar = math.hypot(*(d for d, p in zip(deltas, prismatic, strict=True) if p))
+    turn = max(
+        (abs(math.remainder(d, math.tau)) for d, p in zip(deltas, prismatic, strict=True) if not p),
+        default=0.0,
+    )
+    return planar > BASE_STILL_M or turn > BASE_STILL_RAD
+
+
+def base_prismatic(description: RobotDescription) -> tuple[bool, ...]:
+    """Per ``base_joints`` entry, whether it is prismatic (``base_displaced``'s mask)."""
+    kinds = {j.name: j.joint_type for j in description.joints}
+    return tuple(kinds[name] is JointType.PRISMATIC for name in description.base_joints or ())
+
+
 @dataclass(frozen=True)
 class ReleaseWindow:
     """One gripper's released payload, frozen in the base frame until the jaws are clear.
@@ -759,8 +826,8 @@ class ReleaseWindow:
     the first retreat chunk stops on it. Instead the payload stays a published,
     fully checked attached record (``freeze_released_attachment``) — which also
     keeps the octomap bridge clearing its cells — until the hand and jaws it
-    exempts are proven ``release_clear_m`` away, ``release_timeout_s`` passes, or
-    the gripper grasps again.
+    exempts are proven ``release_clear_m`` away, ``release_timeout_s`` passes, the
+    gripper grasps again, or a mobile base leaves its let-go pose (``base_moved``).
 
     Attributes:
         record: The frozen record, attached to the base link.
@@ -778,6 +845,12 @@ class ReleaseWindow:
             clearance is unknown, never clear.
         urdf_curves: Each curved jaw joint's ``JointSpec.urdf_curve`` by name: a jaw
             position goes through it before posing (issue #533).
+        base_dofs: A mobile base's ``base_joints`` positions at the jaw's let-go sample
+            (the first of the DETACH debounce), ``None`` on a fixed base. The record is
+            frozen in ``base_frame``, which rides the base while the released object
+            stays in the world: the bridge checks ``base_moved`` on every joint-state
+            sample and ends the window on the first one past this pose.
+        base_prismatic: ``base_prismatic(description)``: which of those dofs are prismatic.
     """
 
     record: AttachedCollisionObject
@@ -788,6 +861,8 @@ class ReleaseWindow:
         tuple[tuple[tuple[Any, NDArray[np.float64]], ...] | None, tuple[_FramedBox, ...]], ...
     ]
     urdf_curves: Mapping[str, tuple[tuple[float, float], ...]] = field(default_factory=dict)
+    base_dofs: tuple[float, ...] | None = None
+    base_prismatic: tuple[bool, ...] = ()
 
     @classmethod
     def open(
@@ -798,15 +873,23 @@ class ReleaseWindow:
         base_link: str,
         t_base_from_link: NDArray[np.float64],
         now_s: float,
+        stamp_ns: int,
+        base_dofs: tuple[float, ...] | None = None,
     ) -> ReleaseWindow:
         """Freeze ``held`` and collect the geometry the separation test needs.
 
         Args:
             description: The robot manifest (collision geometry, jaw joints).
             held: The attachment held until DETACH.
-            base_link: The collision model's root link.
+            base_link: ``base_frame``: the collision model's root link, or a mobile
+                base's link above only the planar ``base_joints`` (``_release_base_link``).
             t_base_from_link: The hand's pose in ``base_link`` at DETACH.
             now_s: Monotonic seconds at DETACH.
+            stamp_ns: Source-clock stamp of the DETACH sample: the frozen record's
+                ``stamp_ns`` (never earlier than ``held``'s), so a payload carried across
+                a drive is not judged to predate the drive.
+            base_dofs: A mobile base's ``base_joints`` positions at let-go; ``None`` on a
+                fixed base.
 
         Returns:
             The open window.
@@ -821,14 +904,36 @@ class ReleaseWindow:
         )
         return cls(
             record=freeze_released_attachment(
-                held, base_link=base_link, t_base_from_link=t_base_from_link
+                held,
+                base_link=base_link,
+                t_base_from_link=t_base_from_link,
+                stamp_ns=max(stamp_ns, held.stamp_ns),
             ),
             opened_s=now_s,
             hand_link=held.attach_link,
             hand_boxes=_link_boxes(description, held.attach_link),
             jaws=jaws,
             urdf_curves={j.name: j.urdf_curve for j in description.joints if j.urdf_curve},
+            base_dofs=base_dofs,
+            base_prismatic=base_prismatic(description) if base_dofs is not None else (),
         )
+
+    def base_moved(self, base_dofs: Sequence[float] | None) -> bool:
+        """Whether a mobile base has left its let-go pose, so the frozen record is wrong.
+
+        Always ``False`` on a fixed base. On a mobile one unknown dofs count as moved:
+        dropping the record is the fail-closed side (the object is again voxels the
+        kernel avoids, and the voxel bridge stops clearing its box).
+
+        Args:
+            base_dofs: The ``base_joints`` positions now, or ``None`` when unknown.
+
+        Returns:
+            ``base_displaced`` from the let-go pose.
+        """
+        if self.base_dofs is None:
+            return False
+        return base_displaced(self.base_dofs, base_dofs, self.base_prismatic)
 
     def clearance_m(
         self,
@@ -888,6 +993,9 @@ class ReleaseWindow:
     ) -> str:
         """Why the window ends now — ``"timeout"`` or ``"separation"`` — or ``""`` to keep it.
 
+        The bridge's other close reasons — ``"attach"`` (a new grasp) and ``"base_moved"``
+        (``base_moved``, judged per joint-state sample) — are decided outside this.
+
         Args:
             now_s: Monotonic seconds now.
             clearance_m: ``clearance_m(...)`` now; ``None`` when unknown.
@@ -913,18 +1021,68 @@ def _tree_links(description: RobotDescription) -> tuple[set[str], set[str]]:
     return parents, children
 
 
-def _release_base_link(description: RobotDescription) -> str:
-    """The manifest's ``base_frame``, proven to be the root of the kinematic tree.
+def _release_base_link(description: RobotDescription, *, hal_mode: str) -> str:
+    """The manifest's ``base_frame``, proven to be a link the kernel's collision FK never moves.
 
-    The kernel's collision model is rooted there at the identity frame, so a
-    record attached to it stays put in every predicted configuration.
+    That is the root of the kinematic tree, or a link reached from the root only
+    through fixed edges (``fixed`` joints, ``fixed_attachments``: the kernel's
+    ``link_static_`` accepts those too) and — on a mobile manipulator — the manifest's
+    planar ``base_joints``: the same dofs the deploy launch passes as the kernel's
+    ``collision_base_dofs``, which it zeroes before the base-relative FK. Either way
+    a record attached to ``base_frame`` stays put in every predicted configuration.
+    On a mobile base that holds only while the base stands still, so the bridge
+    drops the frozen record on the first joint-state sample whose base dofs left
+    the let-go pose (``ReleaseWindow.base_moved``). That relaxation is sim-only
+    until the safety WG signs it off for hardware: ``hal_mode`` other than
+    ``"sim"`` refuses it.
+
+    Args:
+        description: The robot manifest.
+        hal_mode: The HAL node's ``hal_mode`` (``"sim"`` or ``"real"``).
+
+    Raises:
+        ROSConfigError: ``base_frame`` is not a parent link of the tree, a joint
+            other than a fixed or planar base joint (a lift, an arm joint) lies
+            between it and the root, the walk to the root revisits a link (a cyclic
+            manifest), or it passes a planar base joint outside ``hal_mode`` ``"sim"``.
     """
     base = description.base_frame
-    parents, children = _tree_links(description)
-    if base in children or base not in parents:
+    parents, _children = _tree_links(description)
+    if base not in parents:
         raise ROSConfigError(
-            f"vision attachment: base_frame {base!r} of {description.name!r} is not the root "
-            "of its kinematic tree, so a released payload cannot be frozen on it."
+            f"vision attachment: base_frame {base!r} of {description.name!r} is no joint's "
+            "parent link (a leaf or an unknown link), so a released payload cannot be "
+            "frozen on it."
+        )
+    planar = set(description.base_joints or ())
+    edges: dict[str, JointSpec | FixedAttachment] = {
+        e.child_link: e for e in description.fixed_attachments
+    }
+    edges.update({j.child_link: j for j in description.joints})
+    link, seen, mobile = base, {base}, False
+    while link in edges:
+        edge = edges[link]
+        if isinstance(edge, JointSpec) and edge.name in planar:
+            mobile = True
+        elif isinstance(edge, JointSpec) and edge.joint_type is not JointType.FIXED:
+            raise ROSConfigError(
+                f"vision attachment: base_frame {base!r} of {description.name!r} hangs below "
+                f"{edge.name!r} (parent {edge.parent_link!r}), which is neither fixed nor one "
+                f"of its planar base_joints {sorted(planar)}: the kernel's collision FK moves "
+                "it, so a released payload cannot be frozen on it."
+            )
+        link = edge.parent_link
+        if link in seen:
+            raise ROSConfigError(
+                f"vision attachment: the kinematic tree of {description.name!r} has a cycle "
+                f"through {link!r} above base_frame {base!r}."
+            )
+        seen.add(link)
+    if mobile and hal_mode != "sim":
+        raise ROSConfigError(
+            f"vision attachment: base_frame {base!r} of {description.name!r} rides its planar "
+            f"base_joints; freezing a released payload on it is sim-only (hal_mode={hal_mode!r})"
+            " until the safety WG signs it off for hardware."
         )
     return base
 
@@ -1370,13 +1528,16 @@ class VisionAttachmentBridge:
             in the manifest. ``None`` derives it from the manifest's control rate
             (``PositionStallConfig.for_rate``; the 30 Hz-tuned defaults when it declares
             none) — the HAL node passes one derived from the rate it actually feeds.
+        hal_mode: The HAL node's ``hal_mode``. A mobile manipulator's release window
+            (frozen on a ``base_frame`` that rides ``base_joints``) is sim-only
+            (``_release_base_link``); default ``"real"`` refuses it.
 
     Raises:
         ROSConfigError: If the manifest cannot support the producer or the
             trigger (no gripper joints, a gripper joint with no
             ``closure_calibration``, no camera intrinsics),
-            or ``tcp_frame`` / ``jaw_tip_frames`` is set on a robot with more
-            than one gripper joint.
+            ``tcp_frame`` / ``jaw_tip_frames`` is set on a robot with more
+            than one gripper joint, or a mobile base runs outside ``hal_mode`` ``"sim"``.
 
     Example:
         >>> from openral_core import RobotDescription
@@ -1397,6 +1558,7 @@ class VisionAttachmentBridge:
         config: VisionAttachmentConfig | None = None,
         gate_config: VisionGateConfig | None = None,
         trigger_config: PositionStallConfig | None = None,
+        hal_mode: str = "real",
     ) -> None:
         """Resolve manifest-derived wiring; create no ROS entities yet."""
         self._node = node
@@ -1429,7 +1591,14 @@ class VisionAttachmentBridge:
                 "headroom): it would keep a released record and a region payload's support "
                 "witness far past where the kernel needs them."
             )
-        self._base_link = _release_base_link(description)
+        self._base_link = _release_base_link(description, hal_mode=hal_mode)
+        # A mobile base's planar dofs, read from the joint states (``_base_dofs``).
+        self._base_joints = tuple(description.base_joints or ())
+        self._base_prismatic = base_prismatic(description)
+        # The base dofs at the grasp leg's last base-motion trip (or first sample): every
+        # region measured since was measured within ``BASE_STILL_*`` of it (``_check_base_motion``).
+        self._motion_ref: tuple[float, ...] | None = None
+        self._motion_ref_set = False
         links = set().union(*_tree_links(description))
         unknown = sorted(set(self._config.tf_frames) - links)
         if unknown:
@@ -1773,11 +1942,15 @@ class VisionAttachmentBridge:
             state: The tick's joint state, straight from the HAL.
         """
         self._positions.update(zip(state.name, (float(q) for q in state.position), strict=False))
+        # First: what base motion made wrong is dropped before this sample's grasp transitions
+        # can consume it (an ATTACH would hand a displaced region over).
+        self._check_base_motion()
         complete = True
         for leg in self._legs:
             missing_before = leg.trigger.missing_position_ticks
             held_at = leg.trigger.hold_position  # a DETACH clears it; the event reports it
             event = leg.trigger.update(state)
+            self._note_let_go(leg, event)
             if self._node is not None:
                 self._log_close(leg, event)
                 self._note_close_region(leg)
@@ -1807,7 +1980,7 @@ class VisionAttachmentBridge:
                 )
             if event is GraspEvent.DETACH:
                 held = leg.attachment
-                self._open_release(leg)
+                self._open_release(leg, stamp_ns=int(state.stamp_ns))
                 leg.attachment = None
                 leg.regrasp_hold = None
                 # The grasp leg hears of it first, so the envelope of the DETACH snapshot
@@ -2686,6 +2859,7 @@ class VisionAttachmentBridge:
             )
             anchor = (float(origin[0]), float(origin[1]), float(origin[2]))
             leg.support_anchor = (closed.frame_id, anchor, rise, slide)
+            leg.support_base = self._base_dofs()
             self._node.get_logger().info(
                 f"vision attachment {leg.joint_name}: {held.object_id!r} carries the measured "
                 f"support witness ({held.support_contact.evidence_ref}); retired once the "
@@ -2740,18 +2914,25 @@ class VisionAttachmentBridge:
                 if rise <= rise_tol and slide <= slide_tol:
                     continue
                 why = f"payload rose {rise * 1e3:+.1f} mm and slid {slide * 1e3:.1f} mm"
-            leg.support_anchor = None
-            leg.attachment = held.model_copy(update={"support_contact": None})
-            retired = True
-            self._node.get_logger().info(
-                f"vision attachment {leg.joint_name}: support witness for {held.object_id!r} "
-                f"retired — {why} (tolerances: rise {rise_tol * 1e3:.1f} mm, slide "
-                f"{slide_tol * 1e3:.1f} mm)"
+            self._retire_support(
+                leg,
+                held,
+                f"{why} (tolerances: rise {rise_tol * 1e3:.1f} mm, slide {slide_tol * 1e3:.1f} mm)",
             )
+            retired = True
         if retired and self._heartbeat_open:
             # At the current revision: no detach edge, no fresh attach-time baseline in the
             # kernel or the octomap bridge. A closed heartbeat carries it when it reopens.
             self._publish_snapshot()
+
+    def _retire_support(self, leg: _GripperLeg, held: AttachedCollisionObject, why: str) -> None:
+        """Drop ``held``'s support witness for good (the caller publishes)."""
+        leg.support_anchor = leg.support_base = None
+        leg.attachment = held.model_copy(update={"support_contact": None})
+        self._node.get_logger().info(
+            f"vision attachment {leg.joint_name}: support witness for {held.object_id!r} "
+            f"retired — {why}"
+        )
 
     def _gather_context(
         self, leg: _GripperLeg, depth_entry: _DepthEntry | None
@@ -3060,7 +3241,7 @@ class VisionAttachmentBridge:
 
     # ── release window ───────────────────────────────────────────────────────
 
-    def _open_release(self, leg: _GripperLeg) -> None:
+    def _open_release(self, leg: _GripperLeg, *, stamp_ns: int) -> None:
         """Freeze the payload a DETACH released, or say why it is dropped at once."""
         held = leg.attachment
         if held is None:
@@ -3080,12 +3261,26 @@ class VisionAttachmentBridge:
                 "dropping its attachment"
             )
             return
+        base_dofs, leg.let_go_base, leg.let_go_noted = leg.let_go_base, None, False
+        if self._base_joints and (
+            base_dofs is None or base_displaced(base_dofs, self._base_dofs(), self._base_prismatic)
+        ):
+            # A mobile base whose dofs were unknown at let-go, or that has moved since,
+            # would leave the frozen record wrong from the start: drop it now.
+            self._node.get_logger().warning(
+                f"release window not opened for {leg.joint_name}: base dofs "
+                f"{list(self._base_joints)} unknown at let-go or moved since; dropping its "
+                "attachment"
+            )
+            return
         window = ReleaseWindow.open(
             self._description,
             held,
             base_link=self._base_link,
             t_base_from_link=t_base_from_link,
             now_s=time.monotonic(),
+            stamp_ns=stamp_ns,
+            base_dofs=base_dofs,
         )
         leg.release = window
         self._node.get_logger().info(
@@ -3107,9 +3302,78 @@ class VisionAttachmentBridge:
             # A re-ATTACH is a new grasp of the same hand, not the hand emptying.
             self._grasp_target.on_hand_settled(leg.jaw_link)
 
+    def _note_let_go(self, leg: _GripperLeg, event: GraspEvent | None) -> None:
+        """Pin a mobile base's dofs at the jaw's let-go: the first sample of a DETACH debounce.
+
+        The release window that DETACH opens takes them as its reference, so base motion
+        during the debounce is seen; cleared once the debounce breaks. No-op on a fixed base.
+        """
+        if not self._base_joints:
+            return
+        if event is not GraspEvent.DETACH and leg.trigger.pending_event is not GraspEvent.DETACH:
+            leg.let_go_base, leg.let_go_noted = None, False
+        elif not leg.let_go_noted:
+            leg.let_go_base, leg.let_go_noted = self._base_dofs(), True
+
+    def _base_dofs(self) -> tuple[float, ...] | None:
+        """A mobile base's ``base_joints`` positions from the joint-state cache.
+
+        ``None`` on a fixed base, or while any of them is missing or non-finite.
+        """
+        values = tuple(self._positions.get(name, math.nan) for name in self._base_joints)
+        if not values or not all(math.isfinite(v) for v in values):
+            return None
+        return values
+
+    def _check_base_motion(self) -> None:
+        """Drop what a moving mobile base made wrong, on the first sample that shows it.
+
+        Called per joint-state sample (``observe_joint_state``), so no publish path can
+        resend a stale record after the base moved. Three things are measured or frozen
+        in a frame that rides the base (``base_frame``, the voxel grid's frame): a release
+        window's record (closed, ``base_moved`` from the let-go pose), a region payload's
+        support witness (retired: the support stayed behind), and the grasp leg's held,
+        not handed-over target region (retracted: ``GraspTargetLeg.on_base_moved``).
+        Unknown dofs count as moved. No-op on a fixed base.
+        """
+        if not self._base_joints:
+            return
+        dofs = self._base_dofs()
+        closed = retired = False
+        for leg in self._legs:
+            if leg.release is not None and leg.release.base_moved(dofs):
+                self._close_release(leg, "base_moved")
+                closed = True
+            held = leg.attachment
+            if (
+                leg.support_anchor is not None
+                and held is not None
+                and held.support_contact is not None
+                and base_displaced(leg.support_base, dofs, self._base_prismatic)
+            ):
+                self._retire_support(leg, held, "the base moved")
+                retired = True
+        target = self._grasp_target
+        if target is not None:
+            # A reference that predates every measurement since the last trip, never one
+            # taken after a region arrived (the base may have moved in between); a trip also
+            # voids the measurements still in flight (`GraspTargetTracker.on_base_moved`).
+            if not self._motion_ref_set:
+                self._motion_ref, self._motion_ref_set = dofs, True
+            elif base_displaced(self._motion_ref, dofs, self._base_prismatic):
+                self._motion_ref = dofs
+                target.on_base_moved()
+        if closed:
+            self._publish_attachment()
+        elif retired and self._heartbeat_open:
+            self._publish_snapshot()
+
     @_locked
     def _poll_releases(self) -> None:
-        """Close every window whose jaws are clear or whose time is up; publish if any did."""
+        """Close every window whose jaws are clear or whose time is up; publish if any did.
+
+        Base motion is judged per joint-state sample instead (``_check_base_motion``).
+        """
         now_s = time.monotonic()
         closed = False
         for leg in self._legs:

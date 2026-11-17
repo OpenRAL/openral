@@ -418,6 +418,15 @@ class PositionStallTrigger:
         return self._hold
 
     @property
+    def pending_event(self) -> GraspEvent | None:
+        """The transition the current debounce streak argues for, not yet confirmed.
+
+        ``DETACH`` from the jaw's first let-go sample until ``update`` confirms (or the
+        streak breaks): the bridge pins a mobile base's pose at let-go on it.
+        """
+        return self._streak_kind
+
+    @property
     def closing(self) -> bool:
         """Whether the last command is within the close band of closed — the band ATTACH reads.
 

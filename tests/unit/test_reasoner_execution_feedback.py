@@ -95,6 +95,19 @@ def test_reflect_on_failure_picks_the_hint_from_the_typed_kind_and_evidence() ->
     assert "collision" in stop and "change the approach" in stop
     # A kernel latch is sticky: nothing runs until an operator resets it.
     assert "until an operator resets it" in stop
+    # No voxel coordinates in the evidence: no hint about how to read them.
+    assert "map position" not in stop
+    located = reflect_on_failure(
+        "aborted",
+        "safety_estop:...",
+        failure_kind="FAILURE_SAFETY_ESTOP",
+        evidence_json=CollisionEvidence.model_validate_json(collision)
+        .model_copy(update={"world_cell_center_m": (0.61, 0.07, 0.73)})
+        .model_dump_json(),
+    )
+    # The kernel's voxel coordinates are robot-frame (named in the brackets), never map.
+    assert "cell_center_m[<frame>]" in located and "not a map position" in located
+    assert "robot base" not in located
     operator = reflect_on_failure(
         "aborted", "safety_estop:...", failure_kind="FAILURE_SAFETY_ESTOP"
     )
@@ -536,3 +549,39 @@ def test_rskill_failure_kind_falls_back_to_prose_for_old_results() -> None:
     empty = result_cls()
     empty.success = False
     assert _rskill_failure_kind(empty) == result_cls.FAILURE_NONE
+
+
+def test_a_goal_refused_for_naming_no_grasp_object_is_replanned_not_handed_off() -> None:
+    """The runner's object-tracking refusal (``ROSReasonerInvalidPlan``) is a plan to fix.
+
+    It maps to ``FAILURE_PLANNING_ERROR``: the skill stays in the palette (not a permanent
+    config failure), it is not the object-not-found handoff, and the hint tells the LLM to
+    fix what the reason names and re-send.
+    """
+    import pytest
+
+    pytest.importorskip("rclpy")
+    msgs = pytest.importorskip("openral_msgs.action")
+    runner = pytest.importorskip("openral_rskill_ros.rskill_runner_node")
+    from openral_core.exceptions import ROSReasonerInvalidPlan
+    from openral_reasoner_ros.reasoner_node import (
+        _failure_kind_name,
+        _palette_after_rskill_failure,
+        _rskill_failure_kind,
+    )
+
+    result_cls = msgs.ExecuteRskill.Result
+    exc = ROSReasonerInvalidPlan("object tracking is on ... Re-send with grasp_target set")
+    result = result_cls()
+    result.success = False
+    result.failure_kind = runner._failure_kind_for_exception(exc)
+    result.failure_reason = f"{type(exc).__name__}: {exc!s}"
+    kind = _rskill_failure_kind(result)
+    assert kind == result_cls.FAILURE_PLANNING_ERROR
+    assert kind != result_cls.FAILURE_OBJECT_NOT_FOUND
+    palette = _two_skill_palette()
+    assert _palette_after_rskill_failure(palette, "broken", kind) == palette
+    hint = reflect_on_failure(
+        "aborted", result.failure_reason, timed_out=False, failure_kind=_failure_kind_name(kind)
+    )
+    assert "fix what the reason names and re-send" in hint

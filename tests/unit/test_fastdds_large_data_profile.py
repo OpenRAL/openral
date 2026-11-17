@@ -72,3 +72,19 @@ def test_profile_enlarges_only_the_shm_segment_and_keeps_udp() -> None:
     (shm,) = (kinds[t] for t in used if kinds[t].findtext("f:type", namespaces=_NS) == "SHM")
     # Room for a cloud, its depth and colour frames, and one more in flight.
     assert int(shm.findtext("f:segment_size", namespaces=_NS) or 0) >= 4 * _SIM_CLOUD_BYTES
+
+
+def test_profile_lets_every_process_of_a_deploy_graph_discover_the_others() -> None:
+    """Localhost discovery reaches only the first ``maxInitialPeersRange`` participants.
+
+    At the RMW's 32, two of a ~50-process deploy graph's late participants never met:
+    Nav2's bt_navigator did not find planner_server and every goal was rejected.
+    """
+    root = ET.parse(FASTDDS_LARGE_DATA_PROFILE).getroot()
+    (udp,) = (
+        d
+        for d in root.iterfind("f:transport_descriptors/f:transport_descriptor", _NS)
+        if d.findtext("f:type", namespaces=_NS) == "UDPv4"
+    )
+    # Twice the largest deploy sim graph seen (48 launch processes + sidecar + helpers).
+    assert int(udp.findtext("f:maxInitialPeersRange", namespaces=_NS) or 0) >= 100

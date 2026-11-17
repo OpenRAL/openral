@@ -91,6 +91,7 @@ _TIME_BASE_LOGGER = "openral.sim.time_base"
 _EVENT_TIME_BASE = "sim.time_base"
 
 if TYPE_CHECKING:
+    from openral_core import IntrinsicsPinhole
     from openral_sim.rollout import SimRollout
 
 
@@ -2270,6 +2271,15 @@ class SimAttachedHAL:
         """
         return self._mujoco_handles()
 
+    def camera_intrinsics(self) -> dict[str, IntrinsicsPinhole]:
+        """The env's rendered RGB camera intrinsics (name -> ``IntrinsicsPinhole``), or ``{}``.
+
+        For a backend that renders each camera from a known K but exposes no MuJoCo
+        handles (Isaac): ``SimSensorBridge`` publishes its ``CameraInfo`` from it.
+        """
+        getter = getattr(self._env, "camera_intrinsics", None)
+        return dict(getter()) if getter is not None else {}
+
     @property
     def last_applied_action(self) -> Action | None:
         """The command the simulator was last stepped with (``None`` = none, or unreadable).
@@ -2509,7 +2519,8 @@ class SimAttachedHAL:
         A non-MuJoCo backend that ray-casts a 2-D lidar (the Isaac scene)
         surfaces the per-beam ranges (the lidar's own frame, ``angle_min=-π`` →
         ``angle_max=+π``, the bridge's convention) under the ``"scan"`` obs slot.
-        ``SimSensorBridge._compute_scan_ranges`` reads it for ``/scan``. ``None``
+        The lifecycle node captures it with each observation (``ProprioFrame.scan``)
+        and ``SimSensorBridge.publish_scan_from_frame`` publishes it on ``/scan``. ``None``
         when the backend renders no lidar (MuJoCo backends ray-cast instead).
         """
         if self._last_obs is None:

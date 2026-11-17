@@ -138,6 +138,12 @@ class Scheduler:
         self._in_flight = None
         return req
 
+    def abandon(self) -> None:
+        """Free the slot unanswered (the station changed): a late answer is then unexpected."""
+        if self._in_flight is not None:
+            log.info("object_tracker.request_abandoned", request_id=self._in_flight.request_id)
+        self._in_flight = None
+
     def next(self, candidates: Sequence[TrackerRequest], *, wall_s: float) -> TrackerRequest | None:
         """Issue the best candidate if the slot is free and the rate allows, else ``None``."""
         if self._in_flight is not None:

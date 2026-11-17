@@ -25,16 +25,26 @@ from typing import Any
 import numpy as np
 import pytest
 from numpy.typing import NDArray
-from openral_core import AttachedCollisionObject, FixedAttachment, JointSpec, RobotDescription
+from openral_core import (
+    AttachedCollisionObject,
+    FixedAttachment,
+    JointSpec,
+    JointState,
+    JointType,
+    RobotDescription,
+)
 from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import homogeneous_from_quat_xyz
 from openral_core.kinematics import transform_from_xyz_rpy as _xyz_rpy_matrix
 from openral_hal._vision_attachment_evidence import VisionAttachmentEvidenceProducer
 from openral_hal.vision_attachment_bridge import (
+    BASE_STILL_M,
+    BASE_STILL_RAD,
     ReleaseWindow,
     VisionAttachmentBridge,
     VisionAttachmentConfig,
     _release_base_link,
+    base_prismatic,
     box_gap_lower_bound_m,
     freeze_released_attachment,
 )
@@ -94,7 +104,9 @@ def test_the_frozen_record_sits_on_the_collision_root_and_exempts_what_the_held_
 ) -> None:
     held = _held(description)
     t_hand = _hand_at_zero(description)
-    frozen = freeze_released_attachment(held, base_link=_BASE, t_base_from_link=t_hand)
+    frozen = freeze_released_attachment(
+        held, base_link=_BASE, t_base_from_link=t_hand, stamp_ns=held.stamp_ns + 7
+    )
 
     assert frozen.attach_link == _BASE == frozen.pose_in_link.frame_id
     assert frozen.touch_links == [_HAND, _FINGER, _FOLLOWER]
@@ -105,19 +117,21 @@ def test_the_frozen_record_sits_on_the_collision_root_and_exempts_what_the_held_
     got = homogeneous_from_quat_xyz(frozen.pose_in_link.xyz, frozen.pose_in_link.quat_xyzw)
     np.testing.assert_allclose(got, expected, atol=1e-12)
     assert frozen.primitives == held.primitives
-    assert (frozen.object_id, frozen.evidence_kind, frozen.confidence, frozen.stamp_ns) == (
+    assert (frozen.object_id, frozen.evidence_kind, frozen.confidence) == (
         held.object_id,
         held.evidence_kind,
         held.confidence,
-        held.stamp_ns,
     )
+    # The release instant, not the attach one: a payload carried across a drive is
+    # released after the drive, and the kernel closes a window stamped before it.
+    assert frozen.stamp_ns == held.stamp_ns + 7
     assert frozen.evidence_ref == f"{held.evidence_ref}|frozen_release"
 
 
 def test_the_base_frame_is_proven_to_be_the_root(description: RobotDescription) -> None:
-    assert _release_base_link(description) == _BASE
-    with pytest.raises(ROSConfigError, match="not the root"):
-        _release_base_link(description.model_copy(update={"base_frame": _HAND}))
+    assert _release_base_link(description, hal_mode="real") == _BASE
+    with pytest.raises(ROSConfigError, match="neither fixed nor one of its planar"):
+        _release_base_link(description.model_copy(update={"base_frame": _HAND}), hal_mode="sim")
 
 
 @pytest.mark.parametrize("field", ["release_clear_m", "release_timeout_s"])
@@ -166,7 +180,12 @@ def test_the_window_closes_on_separation_only_once_hand_and_jaws_are_clear(
 ) -> None:
     t_hand = _hand_at_zero(description)
     window = ReleaseWindow.open(
-        description, _held(description), base_link=_BASE, t_base_from_link=t_hand, now_s=10.0
+        description,
+        _held(description),
+        base_link=_BASE,
+        t_base_from_link=t_hand,
+        now_s=10.0,
+        stamp_ns=_held(description).stamp_ns,
     )
     jaws = {"left_gripper": 0.0}
 
@@ -200,7 +219,12 @@ def test_an_unknown_jaw_angle_is_never_clear_and_the_timeout_still_bounds_it(
 ) -> None:
     t_hand = _hand_at_zero(description)
     window = ReleaseWindow.open(
-        description, _held(description), base_link=_BASE, t_base_from_link=t_hand, now_s=10.0
+        description,
+        _held(description),
+        base_link=_BASE,
+        t_base_from_link=t_hand,
+        now_s=10.0,
+        stamp_ns=_held(description).stamp_ns,
     )
     far = _lifted(t_hand, 1.0)
     assert window.clearance_m(far, {}) is None
@@ -253,10 +277,17 @@ def test_the_droid_release_window_exempts_and_places_every_grasp_contact_link() 
     held = _droid_held(droid)
     assert tuple(held.touch_links) == droid.grasp_contact_links()
     assert {"left_bar", "right_bar"} <= set(held.touch_links)
-    frozen = freeze_released_attachment(held, base_link="panda_link0", t_base_from_link=np.eye(4))
+    frozen = freeze_released_attachment(
+        held, base_link="panda_link0", t_base_from_link=np.eye(4), stamp_ns=held.stamp_ns
+    )
     assert set(frozen.touch_links) == {_ROBOTIQ, *held.touch_links}
     window = ReleaseWindow.open(
-        droid, held, base_link="panda_link0", t_base_from_link=np.eye(4), now_s=0.0
+        droid,
+        held,
+        base_link="panda_link0",
+        t_base_from_link=np.eye(4),
+        now_s=0.0,
+        stamp_ns=held.stamp_ns,
     )
     chains = dict(zip(held.touch_links, (chain for chain, _ in window.jaws), strict=True))
     assert all(chain is not None for chain in chains.values())
@@ -279,3 +310,213 @@ def test_the_openarm_and_so101_touch_links_are_unchanged() -> None:
     so101 = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
     # This branch models the SO-101 jaw as a mimic link (`jaw`), already a touch link.
     assert VisionAttachmentEvidenceProducer(so101).touch_links == ("moving_jaw", "jaw")
+
+
+# ── OpenAMRobot 2.0: a mobile manipulator standing still is a fixed-base station ───────
+
+_AMR = Path("robots/openamrobot_v2/robot.yaml")
+
+
+@pytest.fixture(scope="module")
+def amr() -> RobotDescription:
+    return RobotDescription.from_yaml(str(_AMR))
+
+
+def test_a_base_frame_below_only_the_planar_base_joints_is_accepted_in_sim_only(
+    amr: RobotDescription,
+) -> None:
+    """``world -> base_x -> base_y -> base_yaw -> base_footprint``: the kernel zeroes exactly
+    those dofs (``collision_base_dofs``) before its FK, so ``base_footprint`` never moves in
+    its prediction. Freezing on it while the real base can drive is not signed off for
+    hardware: any ``hal_mode`` but ``sim`` refuses it, at the bridge's construction too."""
+    assert amr.base_joints == ["base_x", "base_y", "base_yaw"]
+    assert _release_base_link(amr, hal_mode="sim") == "base_footprint"
+    with pytest.raises(ROSConfigError, match="sim-only"):
+        _release_base_link(amr, hal_mode="real")
+    with pytest.raises(ROSConfigError, match="sim-only"):
+        VisionAttachmentBridge(None, amr, hal_mode="real")
+
+
+def test_a_base_frame_below_a_lift_or_an_arm_joint_is_still_refused(
+    amr: RobotDescription,
+) -> None:
+    with pytest.raises(ROSConfigError, match="'lift_joint'"):
+        _release_base_link(
+            amr.model_copy(update={"base_frame": "lift_carriage_link"}), hal_mode="sim"
+        )
+    hand = next(j for j in amr.joints if j.name == "left_gripper").parent_link
+    with pytest.raises(ROSConfigError, match="neither fixed nor one of its planar base_joints"):
+        _release_base_link(amr.model_copy(update={"base_frame": hand}), hal_mode="sim")
+    # A link no joint hangs off (here: not a link of the manifest at all).
+    with pytest.raises(ROSConfigError, match="no joint's parent link"):
+        _release_base_link(
+            amr.model_copy(update={"base_frame": "nonexistent_link"}), hal_mode="sim"
+        )
+
+
+def test_a_fixed_joint_between_the_base_frame_and_the_root_is_accepted(
+    description: RobotDescription,
+) -> None:
+    """REP-105: ``base_link`` under a fixed ``base_footprint_joint``. The kernel's
+    ``link_static_`` accepts fixed edges, so the walk does too, on a fixed base in any mode."""
+    joint = JointSpec(
+        name="base_footprint_joint",
+        joint_type=JointType.FIXED,
+        parent_link="base_footprint",
+        child_link=_BASE,
+    )
+    fixed = description.model_copy(update={"joints": [joint, *description.joints]})
+    assert _release_base_link(fixed, hal_mode="real") == _BASE
+
+
+def test_a_cyclic_tree_above_the_base_frame_is_refused_not_walked_forever(
+    description: RobotDescription,
+) -> None:
+    loop = [
+        FixedAttachment(name="up", parent_link="loop_a", child_link=_BASE),
+        FixedAttachment(name="down", parent_link=_BASE, child_link="loop_a"),
+    ]
+    cyclic = description.model_copy(
+        update={"fixed_attachments": [*description.fixed_attachments, *loop]}
+    )
+    with pytest.raises(ROSConfigError, match="cycle"):
+        _release_base_link(cyclic, hal_mode="real")
+
+
+def test_a_fixed_base_window_never_reads_base_motion(description: RobotDescription) -> None:
+    window = ReleaseWindow.open(
+        description,
+        _held(description),
+        base_link=_BASE,
+        t_base_from_link=_hand_at_zero(description),
+        now_s=0.0,
+        stamp_ns=0,
+    )
+    assert window.base_dofs is None
+    assert not window.base_moved(None)
+    assert not window.base_moved((5.0, 0.0, 1.0))
+
+
+def _amr_held(amr: RobotDescription) -> AttachedCollisionObject:
+    joint = next(j for j in amr.joints if j.name == "left_gripper")
+    producer = VisionAttachmentEvidenceProducer(amr, gripper_joint=joint.name)
+    held, _ = producer.on_grasp(
+        masks=[],
+        depth_m=np.zeros((0, 0)),
+        intrinsics=None,  # type: ignore[arg-type]  # reason: no masks, so the fit never reads intrinsics
+        t_link_from_cam=np.eye(4),
+        tcp_in_link=joint.origin_xyz,
+        object_id="grasped_payload:left_gripper",
+        stamp_ns=1_000,
+    )
+    assert held is not None
+    return held
+
+
+def test_a_mobile_window_ends_when_the_base_dofs_leave_the_let_go_pose(
+    amr: RobotDescription,
+) -> None:
+    let_go = (3.0, -1.0, 3.14)
+    window = ReleaseWindow.open(
+        amr,
+        _amr_held(amr),
+        base_link="base_footprint",
+        t_base_from_link=np.eye(4),
+        now_s=0.0,
+        stamp_ns=0,
+        base_dofs=let_go,
+    )
+    assert window.record.attach_link == "base_footprint"
+    assert window.record.stamp_ns == _amr_held(amr).stamp_ns, "never stamped before its attach"
+    assert window.base_prismatic == (True, True, False) == base_prismatic(amr)
+    assert not window.base_moved(let_go)
+    jitter = BASE_STILL_M / 2
+    assert not window.base_moved((3.0 + jitter, -1.0 + jitter, 3.14))
+    assert not window.base_moved((3.0, -1.0, 3.14 - 2 * np.pi)), "yaw wraps"
+    assert window.base_moved((3.0 + 2 * BASE_STILL_M, -1.0, 3.14))
+    assert window.base_moved((3.0, -1.0, 3.14 + 2 * BASE_STILL_RAD))
+    assert window.base_moved(None), "unknown base dofs are never still"
+
+
+_AMR_GRIPPERS = ("left_gripper", "right_gripper")
+
+
+def _amr_state(amr: RobotDescription, base: tuple[float, ...] | None, stamp_ns: int) -> JointState:
+    """One HAL read of the AMR: every gripper open, the base at ``base`` (absent if None)."""
+    names = list(_AMR_GRIPPERS)
+    positions = [0.0, 0.0]
+    if base is not None:
+        names += list(amr.base_joints or ())
+        positions += list(base)
+    return JointState(name=names, position=positions, stamp_ns=stamp_ns)
+
+
+def test_the_bridge_drops_the_frozen_record_on_the_first_moving_joint_state(
+    amr: RobotDescription, ros_init: None
+) -> None:
+    """The window's reference is the base dofs at let-go, read from the joint states; the
+    first sample past it closes the window and publishes a snapshot without the record, as
+    does a sample whose base dofs went missing (unknown is never still). Unknown dofs at
+    let-go open no window at all."""
+    rclpy = pytest.importorskip("rclpy")
+    tf2_ros = pytest.importorskip("tf2_ros")
+    attachment_state = pytest.importorskip("openral_msgs.msg").AttachmentState
+    from geometry_msgs.msg import TransformStamped
+
+    held = _amr_held(amr)
+    node = rclpy.create_node("test_amr_release_window")
+    try:
+        bridge = VisionAttachmentBridge(node, amr, hal_mode="sim")
+        leg = next(leg for leg in bridge._legs if leg.joint_name == "left_gripper")
+        bridge._tf_buffer = tf2_ros.Buffer()
+        t = TransformStamped()
+        t.header.frame_id, t.child_frame_id = "base_footprint", held.attach_link
+        t.transform.translation.x = 0.4
+        t.transform.rotation.w = 1.0
+        bridge._tf_buffer.set_transform_static(t, "test")
+        bridge._attachment_pub = node.create_publisher(attachment_state, "/test/attachment", 10)
+        got: list[Any] = []  # reason: Any — openral_msgs AttachmentState, imported lazily
+        node.create_subscription(attachment_state, "/test/attachment", got.append, 10)
+
+        leg.attachment = held
+        bridge._open_release(leg, stamp_ns=held.stamp_ns)
+        assert leg.release is None, "no base dofs at let-go: the payload is dropped"
+
+        bridge.observe_joint_state(_amr_state(amr, (2.0, 0.0, 0.0), 1_000))
+        leg.attachment, leg.let_go_base = held, (2.0, 0.0, 0.0)
+        bridge._open_release(leg, stamp_ns=held.stamp_ns)
+        leg.attachment = None  # as the DETACH path does: only the frozen record publishes
+        assert leg.release is not None and leg.release.base_dofs == (2.0, 0.0, 0.0)
+        bridge.observe_joint_state(_amr_state(amr, (2.004, 0.0, 0.002), 2_000))
+        assert leg.release is not None, "jitter under BASE_STILL_*: the window holds"
+
+        revision = bridge._revision
+        bridge.observe_joint_state(_amr_state(amr, (2.05, 0.0, 0.0), 3_000))
+        assert leg.release is None, "the base drove: the frozen record is dropped at once"
+        assert bridge._revision == revision + 1
+        rclpy.spin_once(node, timeout_sec=1.0)
+        assert got and got[-1].revision == bridge._revision
+        assert held.object_id not in [o.object_id for o in got[-1].objects]
+
+        # Base dofs missing mid-window: unknown, never still.
+        leg.attachment, leg.let_go_base = held, (2.05, 0.0, 0.0)
+        bridge._open_release(leg, stamp_ns=held.stamp_ns)
+        leg.attachment = None
+        assert leg.release is not None
+        bridge.observe_joint_state(_amr_state(amr, None, 4_000))
+        assert leg.release is not None, "the cache keeps the last dofs: still"
+        bridge._positions.pop("base_yaw")
+        bridge.observe_joint_state(_amr_state(amr, None, 5_000))
+        assert leg.release is None, "base dofs gone: the frozen record is dropped"
+
+        # Unknown at let-go stays unknown for the whole DETACH debounce: a later finite
+        # sample never stands in for it (that window would open on a guessed reference).
+        from openral_hal._grasp_trigger import GraspEvent
+
+        bridge._note_let_go(leg, GraspEvent.DETACH)
+        assert leg.let_go_noted and leg.let_go_base is None
+        bridge._positions["base_yaw"] = 0.0
+        bridge._note_let_go(leg, GraspEvent.DETACH)
+        assert leg.let_go_base is None, "the debounce's let-go reference was unknown"
+    finally:
+        node.destroy_node()

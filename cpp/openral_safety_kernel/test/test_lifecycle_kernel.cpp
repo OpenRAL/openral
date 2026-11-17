@@ -32,6 +32,7 @@
 
 #include <gtest/gtest.h>
 #include <rcutils/logging.h>
+#include <rosgraph_msgs/msg/clock.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
@@ -4710,7 +4711,7 @@ openral_msgs::msg::ActionChunk grasp_chunk(double q) {
 class GraspRig {
 public:
   explicit GraspRig(const std::string& name, std::vector<rclcpp::Parameter> params = grasp_params())
-      : helper_(std::make_shared<rclcpp::Node>(name + "_helper")) {
+      : helper_(make_helper(name, params)) {
     rclcpp::NodeOptions opts;
     opts.parameter_overrides(std::move(params));
     node = std::make_shared<osk::SafetyKernelLifecycleNode>(name, opts);
@@ -4913,6 +4914,18 @@ public:
   std::function<openral_msgs::msg::WorldStateStamped(std::int64_t)> state_fn;
 
 private:
+  // The helper stamps the grid and the joint states on the kernel's clock: a `use_sim_time` rig
+  // runs both on /clock.
+  static std::shared_ptr<rclcpp::Node> make_helper(const std::string& name,
+                                                   const std::vector<rclcpp::Parameter>& params) {
+    rclcpp::NodeOptions opts;
+    for (const auto& p : params) {
+      if (p.get_name() == "use_sim_time") {
+        opts.parameter_overrides({p});
+      }
+    }
+    return std::make_shared<rclcpp::Node>(name + "_helper", opts);
+  }
   std::shared_ptr<rclcpp::Node> helper_;
   rclcpp::Publisher<openral_msgs::msg::ActionChunk>::SharedPtr cand_pub_;
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr js_pub_;
@@ -6607,7 +6620,7 @@ TEST_F(LifecycleKernelTest, AFastHandInsideTheWorkspaceStillTrips) {
   // Measured at 0.3 rad, commanded to the cell at 0: 0.018 m in one period.
   EXPECT_FALSE(rig.offer_chunk(&b, 0.3, grasp_chunk(0.0)));
   EXPECT_TRUE(rig.node->fault_latched());
-  EXPECT_EQ(logs.count("workspace_contact_active=1"), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("workspace_gate_active=1"), 1U) << logs.joined();
   // The stop's evidence says the declaration was live, so a reader can tell "inside a live
   // workspace, too fast" from "no workspace" (with a provider the in-tree flag reads false).
   rig.spin_for(200);
@@ -6731,7 +6744,7 @@ TEST_F(LifecycleKernelTest, ACommandedStepAboveTheSpeedBoundTrips) {
   // From the accepted 0.5 straight to 0: 0.03 m in one period, 0.06 m/s.
   EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0)));
   EXPECT_TRUE(rig.node->fault_latched());
-  EXPECT_EQ(logs.count("workspace_contact_active=1 hand_speed_mps=0.06"), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("workspace_gate_active=1 hand_speed_mps=0.06"), 1U) << logs.joined();
   EXPECT_EQ(logs.count("hand_lead_m=0.03"), 1U) << logs.joined();
 }
 
@@ -8389,8 +8402,9 @@ openral_msgs::msg::WorldStateStamped producer_state(bool released, const std::st
 }
 
 struct DeclaredReleaseRig : ReleaseRig {
-  explicit DeclaredReleaseRig(const std::string& name)
-      : ReleaseRig(name, declared_release_params()) {
+  explicit DeclaredReleaseRig(const std::string& name,
+                              std::vector<rclcpp::Parameter> params = declared_release_params())
+      : ReleaseRig(name, std::move(params)) {
     rig.state_fn = [](std::int64_t stream_ns) {
       auto msg = producer_state(false, "", "");
       msg.attachment_stamp_ns = stream_ns;
@@ -9351,6 +9365,97 @@ TEST_F(LifecycleKernelTest, TheQuotedWorkspaceVerdictIsTheInTreeRuleThroughTheKe
   });
 }
 
+TEST_F(LifecycleKernelTest, AProviderStopLineNamesTheProvidersFailingConjunct) {
+  // Output only (ADR-0121 API v5): with the rule handed to a provider the in-tree region is
+  // empty, so the stop line read `workspace_contact_active=0 ... workspace_denied=0` on every
+  // provider stop (AMR aisle 2026-11-16). It reports the provider's gate and the conjunct that
+  // failed on it, exactly as the in-tree rule reports its own, and no verdict changes. The stop
+  // line's key is `workspace_gate_active=`, so it never reads as the FailureTrigger's
+  // in-tree-only `workspace_contact_active` (asserted false below under a provider).
+  struct Seen {
+    WsOutcome outcome;
+    std::string logs;
+    std::string evidence;
+  };
+  const auto run = [](const std::string& name, const std::vector<rclcpp::Parameter>& params,
+                      bool js_still, bool provider, const WsScenario& scenario) {
+    LogCapture logs;
+    osk_test::serve_test_providers();
+    GraspRig rig(name, params);
+    if (js_still) {
+      rig.js_velocity = {0.0};
+    }
+    rig.start();
+    EXPECT_EQ(rig.node->exemption_provider_loaded(), provider)
+        << rig.node->exemption_provider_status();
+    Seen seen;
+    seen.outcome.passed = scenario(rig);
+    seen.outcome.latched = rig.node->fault_latched();
+    rig.spin_for(200);
+    seen.logs = logs.joined();
+    seen.evidence = rig.collision_evidence;
+    return seen;
+  };
+  struct Case {
+    std::string name;
+    std::vector<rclcpp::Parameter> params;
+    bool js_still;
+    WsScenario scenario;
+    int denied;
+    const char* reason;
+  };
+  const std::vector<Case> cases = {
+      {"kernel_ws_gate_speed", workspace_params(), false,
+       [](GraspRig& rig) {
+         GraspBeat b = workspace_beat(rig.now_ns());
+         rig.warm(&b, 0.3, 300);
+         return std::vector<bool>{rig.offer_chunk(&b, 0.3, grasp_chunk(0.0))};
+       },
+       2, "hand_speed_over_limit_or_unknown"},
+      {"kernel_ws_gate_lead", lag_params(0.005), true,
+       [](GraspRig& rig) {
+         GraspBeat b = workspace_beat(rig.now_ns());
+         rig.warm(&b, kLagMeasuredQ, 300);
+         return std::vector<bool>{rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0))};
+       },
+       3, "hand_lead_over_limit_or_unknown"},
+      {"kernel_ws_gate_outside", workspace_params(), false,
+       [](GraspRig& rig) {
+         GraspBeat b = workspace_beat(rig.now_ns());
+         b.workspace_x = 0.5;
+         rig.warm(&b, 0.0, 300);
+         return std::vector<bool>{rig.offer(&b, 0.0)};
+       },
+       4, "cell_center_outside_workspace"},
+  };
+  for (const Case& c : cases) {
+    const Seen in_tree = run(c.name + "_in_tree", c.params, c.js_still, false, c.scenario);
+    const Seen by_provider =
+        run(c.name + "_provider", quoted(c.params), c.js_still, true, c.scenario);
+    EXPECT_EQ(by_provider.outcome.passed, in_tree.outcome.passed) << c.name << ": same verdict";
+    EXPECT_EQ(by_provider.outcome.latched, in_tree.outcome.latched) << c.name;
+    ASSERT_TRUE(in_tree.outcome.latched) << c.name << ": a stop\n" << in_tree.logs;
+    const std::string denied = "workspace_denied=" + std::to_string(c.denied) + " workspace_gate=";
+    for (const auto& [seen, gate] :
+         {std::pair{&in_tree, "in_tree"}, std::pair{&by_provider, "provider"}}) {
+      EXPECT_EQ(seen->logs.find("workspace_gate_active=0"), std::string::npos)
+          << c.name << " " << gate << "\n"
+          << seen->logs;
+      EXPECT_NE(seen->logs.find("workspace_gate_active=1"), std::string::npos)
+          << c.name << " " << gate;
+      EXPECT_NE(seen->logs.find(denied + gate), std::string::npos) << c.name << " " << gate << "\n"
+                                                                   << seen->logs;
+    }
+    const std::string reason = std::string(R"("workspace_denial_reason":")") + c.reason + '"';
+    EXPECT_NE(by_provider.evidence.find(reason), std::string::npos) << c.name << "\n"
+                                                                    << by_provider.evidence;
+    // The FailureTrigger's `workspace_contact_active` stays the in-tree rule (schema-documented);
+    // `workspace_declaration_live` already names the provider-owned workspace.
+    EXPECT_NE(by_provider.evidence.find(R"("workspace_contact_active":false)"), std::string::npos)
+        << c.name;
+  }
+}
+
 TEST_F(LifecycleKernelTest, AProviderThatDidNotEnableTheRuleGetsNoVerdict) {
   // The Recorder keeps the default (rule off): the kernel quotes no #349 verdict, whatever the
   // hand.
@@ -9654,4 +9759,566 @@ TEST_F(LifecycleKernelTest, MisShapedOrUnsoundCurveParamsFailConfigure) {
                                              std::vector<std::int64_t>{-1, 4294967296, 0}))),
             CR::FAILURE)
       << "an offset past int range must not narrow to a valid one";
+}
+
+// ── Station mode: allowances retire when the mobile base moves ──────────────
+//
+// A mobile manipulator standing still is a fixed-base station. Every contact
+// allowance (grasp region, place region, #349 workspace, the tracked grasp key)
+// is declared in the base frame the voxel grid lives in, so it is valid only
+// while the base holds the pose it had when the allowance was declared. These
+// rigs mount the 1-dof finger rigs above on a prismatic base dof (`base_x`,
+// dof 1, `collision_base_dofs={1}`); FK zeroes it, so the geometry is exactly
+// the fixed-base rig's and only the measured base displacement differs.
+
+namespace {
+
+std::vector<rclcpp::Parameter> on_mobile_base(std::vector<rclcpp::Parameter> p) {
+  const auto set = [&](const char* name, const rclcpp::ParameterValue& v) {
+    p = with_param(p, name, v);
+  };
+  set("n_dof", rclcpp::ParameterValue(std::int64_t{2}));
+  set("joint_position_min", rclcpp::ParameterValue(std::vector<double>{-3.14, -10.0}));
+  set("joint_position_max", rclcpp::ParameterValue(std::vector<double>{3.14, 10.0}));
+  set("joint_velocity_max", rclcpp::ParameterValue(std::vector<double>{3.15, 10.0}));
+  set("joint_torque_max", rclcpp::ParameterValue(std::vector<double>{5.0, 100.0}));
+  set("collision_n_links", rclcpp::ParameterValue(std::int64_t{2}));
+  set("collision_parent", rclcpp::ParameterValue(std::vector<std::int64_t>{-1, 0}));
+  // base_x prismatic along x (dof 1), the finger link revolute about z (dof 0).
+  set("collision_joint_kind", rclcpp::ParameterValue(std::vector<std::int64_t>{2, 1}));
+  set("collision_dof_index", rclcpp::ParameterValue(std::vector<std::int64_t>{1, 0}));
+  set("collision_origin_xyzrpy", rclcpp::ParameterValue(std::vector<double>(12, 0.0)));
+  set("collision_axis", rclcpp::ParameterValue(std::vector<double>{1, 0, 0, 0, 0, 1}));
+  set("collision_capsule_link", rclcpp::ParameterValue(std::vector<std::int64_t>{1}));
+  set("collision_link_names",
+      rclcpp::ParameterValue(std::vector<std::string>{"base_x_link", "link0"}));
+  set("collision_joint_names", rclcpp::ParameterValue(std::vector<std::string>{"j0", "base_x"}));
+  set("collision_base_dofs", rclcpp::ParameterValue(std::vector<std::int64_t>{1}));
+  return p;
+}
+
+// `chunk` (a 1-dof finger row) with the base dof held at `base`.
+openral_msgs::msg::ActionChunk with_base(openral_msgs::msg::ActionChunk chunk, double base) {
+  chunk.n_dof = 2;
+  chunk.flat = {chunk.flat.at(0), base};
+  return chunk;
+}
+
+void mount(GraspRig& rig, double base) {
+  rig.js_names = {"j0", "base_x"};
+  rig.js_tail = {base};
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, AStillMobileBaseKeepsTheGraspExemptionThroughOdometryNoise) {
+  LogCapture logs;
+  GraspRig rig("kernel_station_still", on_mobile_base(grasp_params()));
+  mount(rig, 0.0);
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  // Standstill jitter of +/-5 mm on the base: under the 20 mm default.
+  for (int i = 0; i < 40; ++i) {
+    rig.js_tail = {(i % 2 == 0) ? 0.005 : -0.005};
+    rig.beat(&b, 0.0);
+  }
+  ASSERT_TRUE(rig.offer_chunk(&b, 0.0, with_base(grasp_chunk(0.0), -0.005)))
+      << "a still base is a station: the declared finger is exempt as on a fixed base; "
+      << logs.joined();
+  EXPECT_EQ(logs.count("base_moving"), 0U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, ADrivingBaseRetiresTheGraspExemptionAndAStopDoesNotRestoreIt) {
+  LogCapture logs;
+  GraspRig rig("kernel_station_grasp", on_mobile_base(grasp_params()));
+  mount(rig, 0.0);
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer_chunk(&b, 0.0, with_base(grasp_chunk(0.0), 0.0))) << logs.joined();
+  // The base drives 50 mm and stops there; the producer keeps heartbeating the
+  // SAME declaration (its stamp predates the drive).
+  rig.js_tail = {0.05};
+  rig.warm(&b, kGraspClearQ, 300);
+  EXPECT_EQ(logs.count("safety.station_left reason=base_moving"), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("reason=base_moving target=cell:cube"), 1U) << logs.joined();
+  EXPECT_FALSE(rig.offer_chunk(&b, 0.0, with_base(grasp_chunk(0.0), 0.05)));
+  EXPECT_TRUE(rig.node->fault_latched())
+      << "the same contact is a violation again once the base has moved";
+}
+
+TEST_F(LifecycleKernelTest, AFreshDeclarationAfterTheBaseStopsArmsAgain) {
+  LogCapture logs;
+  GraspRig rig("kernel_station_fresh", on_mobile_base(grasp_params()));
+  mount(rig, 0.0);
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, kGraspClearQ, 200);
+  rig.js_tail = {0.05};
+  rig.warm(&b, kGraspClearQ, 200);
+  ASSERT_EQ(logs.count("safety.station_left reason=base_moving"), 1U) << logs.joined();
+  // At the new station: a new declaration (stamped after the drive) arms.
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 300);
+  EXPECT_TRUE(rig.offer_chunk(&b, 0.0, with_base(grasp_chunk(0.0), 0.05))) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, ATurningBaseRetiresTheGraspExemption) {
+  // The same rig with the base dof revolute (base_yaw): 0.05 rad > 0.02 rad.
+  LogCapture logs;
+  auto params = on_mobile_base(grasp_params());
+  params = with_param(params, "collision_joint_kind",
+                      rclcpp::ParameterValue(std::vector<std::int64_t>{1, 1}));
+  params = with_param(params, "collision_axis",
+                      rclcpp::ParameterValue(std::vector<double>{0, 0, 1, 0, 0, 1}));
+  GraspRig rig("kernel_station_turn", params);
+  mount(rig, 0.0);
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer_chunk(&b, 0.0, with_base(grasp_chunk(0.0), 0.0))) << logs.joined();
+  rig.js_tail = {0.05};
+  rig.warm(&b, kGraspClearQ, 300);
+  EXPECT_EQ(logs.count("safety.station_left reason=base_moving"), 1U) << logs.joined();
+  EXPECT_FALSE(rig.offer_chunk(&b, 0.0, with_base(grasp_chunk(0.0), 0.05)));
+  EXPECT_TRUE(rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, ADrivingBaseRetiresTheConfirmedWorkspace) {
+  LogCapture logs;
+  GraspRig rig("kernel_station_ws", on_mobile_base(workspace_params()));
+  mount(rig, 0.0);
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer_chunk(&b, 0.0, with_base(grasp_chunk(0.0), 0.0))) << logs.joined();
+  ASSERT_EQ(logs.count("safety.workspace_region_armed target=cell:cube"), 1U) << logs.joined();
+  rig.js_tail = {0.05};
+  rig.warm(&b, kGraspClearQ, 300);
+  EXPECT_EQ(logs.count("safety.workspace_region_dropped reason=base_moving"), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("safety.workspace_region_armed target=cell:cube"), 1U)
+      << "the stale declaration's workspace never re-arms at the new pose";
+  EXPECT_FALSE(rig.offer_chunk(&b, 0.0, with_base(grasp_chunk(0.0), 0.05)));
+  EXPECT_TRUE(rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, ADrivingBaseRetiresThePlaceRegion) {
+  LogCapture logs;
+  GraspRig rig("kernel_station_place", on_mobile_base(place_declaration_params()));
+  mount(rig, 0.0);
+  rig.voxels = declared_target_voxels();
+  const std::int64_t measured_ns = rig.now_ns();
+  rig.state_fn = [measured_ns](std::int64_t stream_ns) {
+    return declared_carry_state(stream_ns, measured_ns, /*timeout_s=*/60.0);
+  };
+  rig.start();
+  rig.warm(nullptr, 0.0, 100);
+  ASSERT_TRUE(rig.offer_chunk(nullptr, 0.0, with_base(declared_carry_chunk(), 0.0), 300))
+      << logs.joined();
+  rig.js_tail = {0.05};
+  rig.warm(nullptr, 0.0, 300);
+  EXPECT_EQ(logs.count("safety.place_region_dropped reason=base_moving"), 1U) << logs.joined();
+  EXPECT_FALSE(rig.offer_chunk(nullptr, 0.0, with_base(declared_carry_chunk(), 0.05)));
+  EXPECT_TRUE(rig.node->fault_latched())
+      << "a place region declared at the previous station allows nothing here";
+}
+
+TEST_F(LifecycleKernelTest, AFixedBaseArmNeverLeavesItsStation) {
+  // No collision_base_dofs: the arm swinging through its whole range is not a
+  // base motion; the exemption stands exactly as before station mode.
+  LogCapture logs;
+  GraspRig rig("kernel_station_fixed");
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  for (double q = -1.5; q <= 1.5; q += 0.25) {
+    rig.beat(&b, q);
+  }
+  rig.warm(&b, 0.0, 200);
+  EXPECT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  EXPECT_EQ(logs.count("station"), 0U) << logs.joined();
+  EXPECT_EQ(logs.count("base_moving"), 0U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, StationMotionThresholdsAreBoundedAtConfigure) {
+  // Tunable, never off: a threshold that is not finite, not positive, or past
+  // the cap would let a moved base keep its allowances.
+  int n = 0;
+  for (const char* name : {"station_motion_translation_m", "station_motion_rotation_rad"}) {
+    for (const double v : {0.0, -0.01, std::numeric_limits<double>::quiet_NaN(),
+                           std::numeric_limits<double>::infinity(), 0.051}) {
+      GraspRig rig(std::string("kernel_") + name + "_" + std::to_string(n++),
+                   with_param(on_mobile_base(grasp_params()), name, rclcpp::ParameterValue(v)));
+      EXPECT_FALSE(rig.configure()) << name << "=" << v;
+    }
+    GraspRig cap(std::string("kernel_") + name + "_cap",
+                 with_param(on_mobile_base(grasp_params()), name, rclcpp::ParameterValue(0.05)));
+    EXPECT_TRUE(cap.configure()) << name << " at the cap";
+  }
+}
+
+TEST_F(LifecycleKernelTest, ADrivingBaseClosesAnOpenReleaseWindowOnTheSameTick) {
+  // The released record is frozen in the BASE frame: once the base drives, the box rides with
+  // the robot while the object stays put. The window closes on the tick the motion is seen (the
+  // HAL's own close follows on its 0.2 s heartbeat), so the touching finger is no longer exempt.
+  // `j2` (the root-level prismatic `other`) is the mobile-base dof here.
+  LogCapture logs;
+  DeclaredReleaseRig r("kernel_station_release",
+                       with_param(declared_release_params(), "collision_base_dofs",
+                                  rclcpp::ParameterValue(std::vector<std::int64_t>{2})));
+  r.jaw(0.30, 300);
+  r.let_go();  // 200 ms into the 0.4 s window
+  ASSERT_EQ(logs.count("safety.released_payload object=grasped_payload:hand by=hand"), 1U)
+      << logs.joined();
+  r.rig.js_tail = {0.988, 0.05};  // the base drives 50 mm
+  r.rig.warm(nullptr, 0.0, 60);
+  EXPECT_EQ(logs.count("safety.released_payload_closed object=grasped_payload:hand "
+                       "reason=base_moving"),
+            1U)
+      << logs.joined();
+  EXPECT_EQ(logs.count("reason=timeout"), 0U) << "closed by the drive, not the timeout";
+  EXPECT_FALSE(r.passes(0.0, 0.05)) << logs.joined();
+  EXPECT_EQ(logs.count("b=finger step="), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AStillBaseLeavesTheReleaseWindowToItsOwnClose) {
+  // Control for the test above: the same rig, base still, the finger touching inside the window
+  // is exempt exactly as on a fixed base.
+  LogCapture logs;
+  DeclaredReleaseRig r("kernel_station_release_still",
+                       with_param(declared_release_params(), "collision_base_dofs",
+                                  rclcpp::ParameterValue(std::vector<std::int64_t>{2})));
+  r.jaw(0.30, 300);
+  r.let_go();
+  EXPECT_TRUE(r.passes(0.0)) << logs.joined();
+  EXPECT_EQ(logs.count("base_moving"), 0U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, ABaseYawCrossingPiIsNoMotion) {
+  // The revolute base dof's delta wraps: 3.13 rad -> -3.14 rad is 0.013 rad of turn (< 0.02),
+  // not 6.27 rad. Unwrapped, a base parked near +-pi left its station on odometry noise.
+  LogCapture logs;
+  auto params = on_mobile_base(grasp_params());
+  params = with_param(params, "collision_joint_kind",
+                      rclcpp::ParameterValue(std::vector<std::int64_t>{1, 1}));
+  params = with_param(params, "collision_axis",
+                      rclcpp::ParameterValue(std::vector<double>{0, 0, 1, 0, 0, 1}));
+  GraspRig rig("kernel_station_yaw_wrap", params);
+  mount(rig, 3.13);
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer_chunk(&b, 0.0, with_base(grasp_chunk(0.0), 3.13))) << logs.joined();
+  rig.js_tail = {-3.14};
+  rig.warm(&b, 0.0, 200);
+  EXPECT_TRUE(rig.offer_chunk(&b, 0.0, with_base(grasp_chunk(0.0), -3.14))) << logs.joined();
+  EXPECT_EQ(logs.count("base_moving"), 0U) << logs.joined();
+  // A real turn across +-pi still trips: 3.13 -> -3.10 is 0.053 rad.
+  rig.js_tail = {-3.10};
+  rig.warm(&b, kGraspClearQ, 200);
+  EXPECT_EQ(logs.count("safety.station_left reason=base_moving"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, TheFirstAllowanceReAnchorsTheStationWhereTheBaseStopped) {
+  // The base drives 15 mm with nothing live (under the 20 mm step: the anchor stays at 0) and
+  // stops; the grasp then arms. The anchor moves to the 15 mm pose, so settling 10 mm further (25
+  // mm from the old anchor) keeps the exemption, while 25 mm from the declared pose still trips.
+  LogCapture logs;
+  GraspRig rig("kernel_station_reanchor", on_mobile_base(grasp_params()));
+  mount(rig, 0.0);
+  rig.start();
+  rig.warm(nullptr, kGraspClearQ, 100);
+  rig.js_tail = {0.015};
+  rig.warm(nullptr, kGraspClearQ, 100);
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer_chunk(&b, 0.0, with_base(grasp_chunk(0.0), 0.015))) << logs.joined();
+  rig.js_tail = {0.025};
+  rig.warm(&b, 0.0, 200);
+  EXPECT_TRUE(rig.offer_chunk(&b, 0.0, with_base(grasp_chunk(0.0), 0.025)))
+      << "10 mm from the declared pose is the same station; " << logs.joined();
+  EXPECT_EQ(logs.count("base_moving"), 0U) << logs.joined();
+  rig.js_tail = {0.04};
+  rig.warm(&b, kGraspClearQ, 200);
+  EXPECT_EQ(logs.count("safety.station_left reason=base_moving"), 1U) << logs.joined();
+  EXPECT_FALSE(rig.offer_chunk(&b, 0.0, with_base(grasp_chunk(0.0), 0.04)));
+  EXPECT_TRUE(rig.node->fault_latched());
+}
+
+namespace {
+
+// `on_mobile_base` with a planar base: base_x (dof 1) then base_y (dof 2), both prismatic.
+std::vector<rclcpp::Parameter> on_planar_base(std::vector<rclcpp::Parameter> p) {
+  p = on_mobile_base(std::move(p));
+  const auto set = [&](const char* name, const rclcpp::ParameterValue& v) {
+    p = with_param(p, name, v);
+  };
+  set("n_dof", rclcpp::ParameterValue(std::int64_t{3}));
+  set("joint_position_min", rclcpp::ParameterValue(std::vector<double>{-3.14, -10.0, -10.0}));
+  set("joint_position_max", rclcpp::ParameterValue(std::vector<double>{3.14, 10.0, 10.0}));
+  set("joint_velocity_max", rclcpp::ParameterValue(std::vector<double>{3.15, 10.0, 10.0}));
+  set("joint_torque_max", rclcpp::ParameterValue(std::vector<double>{5.0, 100.0, 100.0}));
+  set("collision_n_links", rclcpp::ParameterValue(std::int64_t{3}));
+  set("collision_parent", rclcpp::ParameterValue(std::vector<std::int64_t>{-1, 0, 1}));
+  set("collision_joint_kind", rclcpp::ParameterValue(std::vector<std::int64_t>{2, 2, 1}));
+  set("collision_dof_index", rclcpp::ParameterValue(std::vector<std::int64_t>{1, 2, 0}));
+  set("collision_origin_xyzrpy", rclcpp::ParameterValue(std::vector<double>(18, 0.0)));
+  set("collision_axis", rclcpp::ParameterValue(std::vector<double>{1, 0, 0, 0, 1, 0, 0, 0, 1}));
+  set("collision_capsule_link", rclcpp::ParameterValue(std::vector<std::int64_t>{2}));
+  set("collision_link_names",
+      rclcpp::ParameterValue(std::vector<std::string>{"base_x_link", "base_y_link", "link0"}));
+  set("collision_joint_names",
+      rclcpp::ParameterValue(std::vector<std::string>{"j0", "base_x", "base_y"}));
+  set("collision_base_dofs", rclcpp::ParameterValue(std::vector<std::int64_t>{1, 2}));
+  return p;
+}
+
+openral_msgs::msg::ActionChunk with_planar_base(openral_msgs::msg::ActionChunk chunk, double x,
+                                                double y) {
+  chunk.n_dof = 3;
+  chunk.flat = {chunk.flat.at(0), x, y};
+  return chunk;
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, ADiagonalDriftLeavesTheStationOnItsPlanarDistance) {
+  // 15 mm in x and 15 mm in y: each dof under the 20 mm threshold, the base 21.2 mm away.
+  LogCapture logs;
+  GraspRig rig("kernel_station_planar", on_planar_base(grasp_params()));
+  rig.js_names = {"j0", "base_x", "base_y"};
+  rig.js_tail = {0.0, 0.0};
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer_chunk(&b, 0.0, with_planar_base(grasp_chunk(0.0), 0.0, 0.0)))
+      << logs.joined();
+  rig.js_tail = {0.012, 0.012};  // 17 mm: still the station
+  rig.warm(&b, 0.0, 150);
+  EXPECT_EQ(logs.count("base_moving"), 0U) << logs.joined();
+  rig.js_tail = {0.015, 0.015};
+  rig.warm(&b, kGraspClearQ, 200);
+  EXPECT_EQ(logs.count("safety.station_left reason=base_moving dof=1"), 1U) << logs.joined();
+  EXPECT_FALSE(rig.offer_chunk(&b, 0.0, with_planar_base(grasp_chunk(0.0), 0.015, 0.015)));
+  EXPECT_TRUE(rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, AReleaseStampedBeforeTheDriveOpensClosed) {
+  // The base drives (nothing live), then a release record arrives stamped before the drive: its
+  // payload was frozen at the previous station, so no window opens and the touching finger stops.
+  // A record stamped after the drive opens its window as usual.
+  for (const bool stale : {true, false}) {
+    LogCapture logs;
+    DeclaredReleaseRig r(stale ? "kernel_station_release_stale" : "kernel_station_release_fresh",
+                         with_param(declared_release_params(), "collision_base_dofs",
+                                    rclcpp::ParameterValue(std::vector<std::int64_t>{2})));
+    r.jaw(0.30, 300);
+    r.rig.js_tail = {0.30, 0.05};  // the base drives 50 mm, nothing live
+    r.rig.warm(nullptr, 0.0, 100);
+    const std::int64_t stamp_ns = stale ? 7 : r.rig.now_ns();
+    r.rig.state_fn = [stamp_ns](std::int64_t stream_ns) {
+      auto msg = producer_state(true, "base", "hand", stamp_ns);
+      msg.attachment_stamp_ns = stream_ns;
+      return msg;
+    };
+    r.rig.js_tail = {0.988, 0.05};
+    r.rig.warm(nullptr, 0.0, 200);
+    if (stale) {
+      EXPECT_EQ(logs.count("safety.released_payload_closed object=grasped_payload:hand "
+                           "reason=predates_base_motion"),
+                1U)
+          << logs.joined();
+      EXPECT_EQ(logs.count("safety.released_payload object="), 0U) << logs.joined();
+      EXPECT_FALSE(r.passes(0.0, 0.05)) << logs.joined();
+    } else {
+      EXPECT_EQ(logs.count("safety.released_payload object=grasped_payload:hand by=hand"), 1U)
+          << logs.joined();
+      EXPECT_TRUE(r.passes(0.0, 0.05)) << logs.joined();
+    }
+  }
+}
+
+TEST_F(LifecycleKernelTest, ADrivingBaseDropsTheProvidersCoverHold) {
+  // A provider may hold a tracked cover only on a pass of the kernel's own check within the age
+  // bound. A pass measured at the previous station is not one: after the drive the hidden target's
+  // cover is not held. Control: the same base, still, holds it.
+  osk_test::serve_test_providers();
+  const auto& log = *osk_test_recorder();
+  for (const bool drive : {false, true}) {
+    *osk_test_recorder() = openral_safety_kernel_test::RecorderLog{};
+    auto params = with_param(on_mobile_base(workspace_params(false)), "grasp_region_max_age_s",
+                             rclcpp::ParameterValue(0.6));
+    params = with_param(params, "exemption_provider",
+                        rclcpp::ParameterValue(osk_test::test_provider("Holder")));
+    params = with_param(params, "exemption_provider_links",
+                        rclcpp::ParameterValue(std::vector<std::string>{"link0"}));
+    GraspRig rig(drive ? "kernel_station_cover_drive" : "kernel_station_cover_still", params);
+    rig.voxels = k2_voxels();
+    mount(rig, 0.0);
+    rig.start();
+    ASSERT_TRUE(rig.node->exemption_provider_loaded()) << rig.node->exemption_provider_status();
+    GraspBeat b = workspace_beat(rig.now_ns());
+    k7_neighbour(b);
+    b.tracked_role = "target";
+    b.tracked_visible = 2;
+    rig.warm(&b, kGraspClearQ, 300);
+    ASSERT_TRUE(rig.offer_chunk(&b, kGraspClearQ, with_base(grasp_chunk(kGraspClearQ), 0.0)));
+    ASSERT_TRUE(log.cover_ok0) << "the kernel's own check passes";
+    b.tracked_visible = 5;  // the hand hides it
+    const double base = drive ? 0.05 : 0.0;
+    rig.js_tail = {base};
+    rig.warm(&b, kGraspClearQ, 150);
+    ASSERT_TRUE(rig.offer_chunk(&b, kGraspClearQ, with_base(grasp_chunk(kGraspClearQ), base)));
+    EXPECT_EQ(log.cover_ok0, !drive)
+        << (drive ? "a pass from the old station holds nothing" : "held within the age bound");
+  }
+}
+
+TEST_F(LifecycleKernelTest, AClockResetLeavesTheStationAndLetsTheNewTimelineDeclare) {
+  // A sim reset runs the clock backwards. The last base motion (stamped on the old timeline) must
+  // not refuse every declaration of the new one: the kernel leaves the station on the reset and
+  // restamps, so a declaration made after it arms.
+  LogCapture logs;
+  auto clock_node = std::make_shared<rclcpp::Node>("kernel_station_clock_src");
+  auto clock_pub =
+      clock_node->create_publisher<rosgraph_msgs::msg::Clock>("/clock", rclcpp::ClockQoS());
+  GraspRig rig(
+      "kernel_station_clock_reset",
+      with_param(on_mobile_base(grasp_params()), "use_sim_time", rclcpp::ParameterValue(true)));
+  const auto set_clock = [&](std::int64_t ns) {
+    rosgraph_msgs::msg::Clock c;
+    c.clock = rclcpp::Time(ns, RCL_ROS_TIME);
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (rig.now_ns() != ns && std::chrono::steady_clock::now() < end) {
+      clock_pub->publish(c);
+      rig.spin_for(10);
+    }
+    ASSERT_EQ(rig.now_ns(), ns);
+  };
+  constexpr std::int64_t kS = 1'000'000'000;
+  set_clock(100 * kS);
+  mount(rig, 0.0);
+  rig.start();
+  rig.warm(nullptr, kGraspClearQ, 100);
+  rig.js_tail = {0.05};  // a drive at t = 100 s
+  rig.warm(nullptr, kGraspClearQ, 100);
+  set_clock(1 * kS);  // the reset
+  rig.warm(nullptr, kGraspClearQ, 100);
+  set_clock(2 * kS);
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 300);
+  EXPECT_TRUE(rig.offer_chunk(&b, 0.0, with_base(grasp_chunk(0.0), 0.05)))
+      << "a declaration on the new timeline arms; " << logs.joined();
+  EXPECT_EQ(logs.count("reason=base_moved"), 0U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AClockResetWithAnUnmeasuredBaseStillRetiresTheAllowances) {
+  // A reset sample whose base position is not finite cannot re-anchor the station. The reset
+  // still teleported the base: a declaration stamped before it (on the new timeline's clock)
+  // must not survive to the next heartbeat. Control: the same declaration armed before the reset.
+  LogCapture logs;
+  auto clock_node = std::make_shared<rclcpp::Node>("kernel_station_clock_nan_src");
+  auto clock_pub =
+      clock_node->create_publisher<rosgraph_msgs::msg::Clock>("/clock", rclcpp::ClockQoS());
+  GraspRig rig(
+      "kernel_station_clock_reset_nan",
+      with_param(on_mobile_base(grasp_params()), "use_sim_time", rclcpp::ParameterValue(true)));
+  const auto set_clock = [&](std::int64_t ns) {
+    rosgraph_msgs::msg::Clock c;
+    c.clock = rclcpp::Time(ns, RCL_ROS_TIME);
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (rig.now_ns() != ns && std::chrono::steady_clock::now() < end) {
+      clock_pub->publish(c);
+      rig.spin_for(10);
+    }
+    ASSERT_EQ(rig.now_ns(), ns);
+  };
+  constexpr std::int64_t kMs = 1'000'000;
+  set_clock(100'000 * kMs);
+  mount(rig, 0.0);
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = 99'800 * kMs;
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer_chunk(&b, 0.0, with_base(grasp_chunk(0.0), 0.0))) << logs.joined();
+  set_clock(99'900 * kMs);  // the reset, sampled with the base unmeasured
+  rig.js_tail = {std::numeric_limits<double>::quiet_NaN()};
+  rig.beat(&b, 0.0);
+  EXPECT_EQ(logs.count("safety.station_left reason=clock_reset"), 1U) << logs.joined();
+  rig.js_tail = {0.0};
+  rig.warm(&b, 0.0, 200);
+  EXPECT_FALSE(rig.offer_chunk(&b, 0.0, with_base(grasp_chunk(0.0), 0.0)))
+      << "a declaration from before the reset allows nothing; " << logs.joined();
+}
+
+// ── Station perception off: the base drives, the held payload stays known ───
+//
+// With a mobile base's station perception off the object tracker still publishes the
+// attachment set, carrying only the hands' held payloads and no declaration. These pin what
+// that stream means to the kernel: a BODY_TWIST candidate (a base policy; Nav2's /cmd_vel
+// bypasses the kernel through the HAL's MobileBaseBridge) passes, the carried payload is
+// still checked (its contact with the cell is refused: nothing exempts it), and a STALE
+// stream refuses even the base twist — why the tracker must keep publishing while driving.
+
+namespace {
+
+openral_msgs::msg::ActionChunk base_twist_chunk(double vx) {
+  openral_msgs::msg::ActionChunk c;
+  c.control_mode = 7;  // BODY_TWIST
+  c.horizon = 1;
+  c.n_dof = 6;
+  c.flat = {vx, 0.0, 0.0, 0.0, 0.0, 0.0};
+  c.rskill_id = "navigate";
+  return c;
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, TheStationOffStreamLetsTheBaseDriveAndKeepsTheHeldPayloadChecked) {
+  LogCapture logs;
+  GraspRig rig("kernel_station_off_stream", on_mobile_base(place_declaration_params()));
+  mount(rig, 0.0);
+  rig.voxels = declared_target_voxels();
+  rig.state_fn = [](std::int64_t stream_ns) {
+    auto msg = declared_carry_state(stream_ns, stream_ns, /*timeout_s=*/60.0);
+    msg.place_declaration_valid = false;  // station off: held payloads only, no declaration
+    msg.grasp_declaration_valid = false;
+    return msg;
+  };
+  rig.start();
+  rig.warm(nullptr, kGraspClearQ, 200);
+  EXPECT_TRUE(rig.send_once(nullptr, kGraspClearQ, base_twist_chunk(0.1))) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  // The arm brings the carried payload onto the cell: no allowance, a violation.
+  EXPECT_FALSE(rig.offer_chunk(nullptr, 0.0, with_base(declared_carry_chunk(), 0.0)));
+  EXPECT_TRUE(rig.node->fault_latched()) << "the held payload is still checked: " << logs.joined();
+  EXPECT_GE(logs.count("a=attached:sim:obj_main"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AStaleAttachmentStreamRefusesEvenABaseTwist) {
+  LogCapture logs;
+  GraspRig rig("kernel_station_stale_stream", on_mobile_base(place_declaration_params()));
+  mount(rig, 0.0);
+  rig.voxels = declared_target_voxels();
+  rig.state_fn = [](std::int64_t stream_ns) {
+    auto msg = declared_carry_state(stream_ns, stream_ns, /*timeout_s=*/60.0);
+    msg.place_declaration_valid = false;
+    return msg;
+  };
+  rig.start();
+  rig.warm(nullptr, kGraspClearQ, 200);
+  ASSERT_TRUE(rig.send_once(nullptr, kGraspClearQ, base_twist_chunk(0.1))) << logs.joined();
+  rig.state_fn = nullptr;  // the attachment producer goes quiet (a deactivated tracker)
+  rig.warm(nullptr, kGraspClearQ, 400);  // past attached_collision_deadline_ms (200)
+  EXPECT_FALSE(rig.send_once(nullptr, kGraspClearQ, base_twist_chunk(0.1)));
+  EXPECT_FALSE(rig.node->fault_latched()) << "a drop, not a latch";
+  EXPECT_GE(logs.count("reason=attached_unavailable"), 1U) << logs.joined();
 }

@@ -254,6 +254,14 @@ SKILL_FAILURE_STATE: Final[str] = "openral.event.skill_failure.state"
 # "D" (operator / perception), or "heartbeat" (deadlock-insurance
 # periodic fallback).
 REASONER_TIER: Final[str] = "reasoner.tier"
+REASONER_RATIONALE: Final[str] = "reasoner.rationale"
+"""The selected tool call's ``rationale`` (the model's one-line why), capped at
+``REASONER_RATIONALE_MAX`` chars. Lets the dashboard trace say why a ``wait`` waits."""
+REASONER_RATIONALE_MAX: Final[int] = 500
+REASONER_INFLIGHT_SKILL: Final[str] = "reasoner.inflight_skill"
+"""rskill_id of the ``execute_rskill`` goal in flight when the tick ran; absent when idle."""
+REASONER_INFLIGHT_STATE: Final[str] = "reasoner.inflight_state"
+"""Phase of that goal: ``"dispatching"`` (accepted / loading weights) or ``"running"``."""
 
 SPAN_SIM_RUN: Final[str] = "sim.run"
 SPAN_SIM_STEP: Final[str] = "sim.step"
@@ -465,11 +473,15 @@ __all__ = [
     "ORG_ID",
     "REASONER_ERROR_KIND",
     "REASONER_FORCE",
+    "REASONER_INFLIGHT_SKILL",
+    "REASONER_INFLIGHT_STATE",
     "REASONER_LLM_S",
     "REASONER_MISSION_JSON",
     "REASONER_MODEL",
     "REASONER_OFFERED_SKILLS",
     "REASONER_PROMPT_TOKENS",
+    "REASONER_RATIONALE",
+    "REASONER_RATIONALE_MAX",
     "REASONER_RSKILL_ID",
     "REASONER_SUPPRESSED_REASON",
     "REASONER_TICK_IDX",

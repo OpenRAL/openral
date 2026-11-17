@@ -791,3 +791,40 @@ def test_collision_summary_retains_workspace_and_payload_denial_details() -> Non
     assert '"link_a": "openarm_left_link7"' in summary
     assert '"link_b_or_object": "voxel_189"' in summary
     assert '"sweep_min_distance_m": -0.00761643' in summary
+
+
+def test_collision_summary_labels_voxel_coordinates_with_the_robot_base_frame() -> None:
+    """The kernel's voxel grid is the manifest's ``base_frame``; the prompt names it.
+
+    The schema keeps its ``world_`` wire names; only the rendered keys change, and they
+    carry the robot's actual ``base_frame`` in the prompt's ``[<frame>]`` convention, so
+    a reasoner cannot read a cell 0.61 m ahead of an OpenArm as map position
+    (0.61, 0.07, 0.73), nor as a ``base_footprint`` point the robot does not have.
+    """
+    robot = RobotDescription.from_yaml(str(Path(__file__).parents[2] / "robots/openarm/robot.yaml"))
+    payload = json.loads(_KERNEL_REACTIVE_EVIDENCE.read_text(encoding="utf-8"))
+    payload.update(
+        world_grid_origin_m=[-0.825, -0.825, -0.825],
+        world_cell_center_m=[0.6096, 0.0721, 0.7275],
+    )
+    r = ContextRenderer()
+    r.set_robot_model("openarm", base_frame=robot.base_frame)
+    r.append_failure(
+        FailureEventRecord(
+            source="safety",
+            kind=KIND_COLLISION,
+            severity=2,
+            evidence_json=json.dumps(payload),
+            rskill_id="",
+            trace_id="",
+            stamp_ns=1,
+        )
+    )
+    line = next(x for x in r.render(world_state=None).splitlines() if "voxel_189" in x)
+    fields, _ = json.JSONDecoder().raw_decode(line.split("evidence=", 1)[1])
+    assert fields["cell_center_m[openarm_base]"] == [0.6096, 0.0721, 0.7275]
+    assert fields["grid_origin_m[openarm_base]"] == [-0.825, -0.825, -0.825]
+    assert not any(k.startswith("world_") or "base_footprint" in k for k in fields)
+    # No manifest loaded: still not a world/map key, and no invented frame name.
+    bare = _summarise_evidence_json(json.dumps(payload))
+    assert "cell_center_m[robot base frame]" in bare

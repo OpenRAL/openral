@@ -747,7 +747,9 @@ struct CollisionHit {
   /// 0 not applicable / exempt, 1 the link is not a hand link, 2 the hand is over its
   /// speed bound (or its speed is unknown), 3 over its lead bound (or unknown), 4 the
   /// cell centre lies outside the workspace box. (5, issue #418 K7's "not explained", is
-  /// no longer produced: K7 lives in OpenRAL Pro's exemption provider, ADR-0121.)
+  /// no longer produced: K7 lives in OpenRAL Pro's exemption provider, ADR-0121.) Read on the
+  /// in-tree region when it is live, else on the provider's verdict region
+  /// (`ProviderGate::workspace`), so a provider stop names its failing conjunct too.
   int workspace_denied{0};
   /// Exemption-provider disclosure (ADR-0121), never a decision: how many pairs within the margin
   /// the loaded provider tolerated, and the deepest one (its robot link, and its cell index or, for

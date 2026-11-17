@@ -885,7 +885,10 @@ def test_two_approach_armed_picks_in_one_goal_on_the_real_kernel(
 
         # ── Release: the payload frozen on the base, the right hand still holding ───────
         frozen = freeze_released_attachment(
-            held_payload, base_link=_FRAME, t_base_from_link=t_base_from_left
+            held_payload,
+            base_link=_FRAME,
+            t_base_from_link=t_base_from_left,
+            stamp_ns=held_payload.stamp_ns,
         )
         # The bridge's DETACH publishes the frozen record first, the envelope unchanged...
         cell.world(_TARGET | _PLANE, held, attached=[right_held, frozen])

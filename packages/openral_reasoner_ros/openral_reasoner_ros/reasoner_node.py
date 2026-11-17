@@ -32,6 +32,7 @@ Never publishes ``openral_msgs/ActionChunk`` (reasoner+supervisor design §4:
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import datetime
 import json
 import os
@@ -49,6 +50,7 @@ if TYPE_CHECKING:
     from openral_world_state import SpatialMemory
 
 import rclpy
+import structlog
 from openral_core import (
     EMIT_PROMPT_TOPICS,
     POLICY_KINDS,
@@ -63,6 +65,7 @@ from openral_core import (
     LocateInViewTool,
     MemorySearchTool,
     MemoryWriteTool,
+    NavGoal,
     ObjectQueryEvidence,
     ObjectsMetadata,
     QuerySceneTool,
@@ -81,6 +84,7 @@ from openral_core import (
     control_modes_for_representation,
     detect_gpu_vram_gb,
     is_collective_target,
+    repeated_nav_goal_names,
 )
 from openral_core.depth_extrinsic import MAX_PLANAR_ERR_M
 from openral_core.exceptions import ROSConfigError, ROSGPUMemoryError, ROSReasonerInvalidPlan
@@ -161,14 +165,18 @@ from openral_reasoner.persistence import (
     load_ladder_state,
     save_ladder_state,
 )
-from openral_reasoner.spatial_query import SpatialMemoryQuerier, run_spatial_query_detailed
+from openral_reasoner.spatial_query import (
+    SpatialMemoryQuerier,
+    nav_goal_places,
+    run_spatial_query_detailed,
+)
 from openral_reasoner.tool_use import (
     ToolUseClient,
     build_tool_use_client_from_env,
     resolve_max_skill_tools,
     resolve_reasoner_system_prompt,
 )
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from rclpy.executors import ExternalShutdownException
 from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
 from rclpy.qos import (
@@ -178,6 +186,8 @@ from rclpy.qos import (
     QoSReliabilityPolicy,
 )
 from rclpy.time import Time
+
+log = structlog.get_logger(__name__)
 
 # Imports below are pinned because the ROS-generated IDL is a runtime
 # dep — the openral_msgs Python module only exists after a colcon
@@ -738,6 +748,73 @@ def _camera_label(camera: str) -> str:
 # ``scene_objects`` context and decomposed into one grounded subtask per object.
 
 
+@dataclasses.dataclass(frozen=True)
+class SpatialMemoryBuild:
+    """What ``build_spatial_memory`` set up: the memory (or none), and how to use it."""
+
+    memory: SpatialMemory | None
+    writable: bool
+    places_only: bool
+    origin: str
+    warnings: tuple[str, ...] = ()
+
+
+def build_spatial_memory(
+    path: str, ingest: bool, goals_json: str, *, now_ns: int = 0
+) -> SpatialMemoryBuild:
+    """The reasoner's spatial memory from its three sources (ADR-0133 for the goals).
+
+    ``path`` loads a persisted scene graph; a load failure is a warning and the memory starts
+    empty (never a fabricated map, CLAUDE.md §1.2) so declared goals are still seeded.
+    ``ingest`` starts an empty memory that detections are folded into. ``goals_json`` (a JSON
+    list of ``NavGoal``) seeds one declared ``PLACE`` node per goal; a malformed list or a
+    repeated name raises before anything is loaded, since the CLI validated it as
+    ``DeployScene.nav_goals`` and a bad value here is a wiring fault. Writable (detections
+    ingested) only with a loaded path or ingest; ``places_only`` when the goals are the only
+    source.
+
+    Raises:
+        ROSConfigError: ``goals_json`` is not a list of ``NavGoal``, or two goals share a
+            name or alias.
+    """
+    goals: list[NavGoal] = []
+    if goals_json:
+        try:
+            goals = TypeAdapter(list[NavGoal]).validate_json(goals_json)
+        except ValidationError as exc:
+            raise ROSConfigError(f"nav_goals_json is not a list of NavGoal: {exc}") from exc
+        if repeated := repeated_nav_goal_names(goals):
+            raise ROSConfigError(f"nav_goals_json repeats names/aliases {repeated}")
+    if not path and not ingest and not goals:
+        return SpatialMemoryBuild(None, False, False, "no spatial memory")
+    # Layer-2 import deferred: the node module stays importable without world_state.
+    from openral_world_state import SpatialMemory
+
+    warnings: list[str] = []
+    memory: SpatialMemory | None = None
+    if path:
+        try:
+            memory = SpatialMemory.load(path)
+        except (OSError, ValueError) as exc:
+            warnings.append(f"spatial_memory_path={path!r} failed to load: {exc}")
+            if not ingest and not goals:
+                return SpatialMemoryBuild(None, False, False, "", tuple(warnings))
+    loaded = memory is not None
+    if memory is None:
+        memory = SpatialMemory()
+        origin = "started empty spatial memory" + (" for live ingest" if ingest else "")
+    else:
+        origin = f"loaded spatial memory from {path!r}"
+    for place in nav_goal_places(goals, now_ns):
+        memory.upsert_node(place)
+    if goals:
+        origin += f", {len(goals)} declared navigation goals"
+    writable = loaded or ingest
+    return SpatialMemoryBuild(
+        memory, writable, not writable and bool(goals), origin, tuple(warnings)
+    )
+
+
 class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untyped
     """ROS 2 lifecycle wrapper around ``ReasonerCore`` (reasoner + supervisor graph F4).
 
@@ -795,6 +872,12 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         self._robot_capabilities = robot_capabilities
         self._commercial_deployment = commercial_deployment
         self._spatial_memory = spatial_memory
+        # The constructor-injected backend; `on_cleanup` restores it (and drops one the
+        # node built itself, so a re-configure rebuilds it from its parameters).
+        self._injected_spatial_memory = spatial_memory
+        # The owned memory holds only declared places (nav goals): `recall_object` is
+        # withheld on every palette rebuild, not just the first.
+        self._spatial_places_only = False
         # Persistent spatial memory, live dynamic memory — when the reasoner *owns* the backend
         # (preloaded from disk, or auto-created for `spatial_memory_ingest`),
         # this concrete handle lets `_on_tick` fold each WorldState.detected_objects
@@ -917,6 +1000,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # perception → spatial-memory object-lift producer so ``recall_object`` recalls
         # what the robot has actually seen. Default false (preloaded-map only).
         self.declare_parameter("spatial_memory_ingest", False)
+        # The cell's named navigation goals (ADR-0133): JSON list of openral_core.NavGoal,
+        # seeded as spatial-memory places. "" = none.
+        self.declare_parameter("nav_goals_json", "")
         # Occupancy-grid-refined approach phase — occupancy-grid refinement of recall approach
         # poses. The reasoner subscribes the latched slam_toolbox map on this
         # topic and validates/snaps every ``recall_object`` approach viewpoint
@@ -947,6 +1033,11 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # Not "off": grounded declarations also carry ObjectQuery s for the Layer-2 tracker,
         # and a label several live detections carry grounds (count "all") instead of refusing.
         self.declare_parameter("object_tracking", "off")
+        # The deployment's declared grasping hand: the deploy scene's grasp declaration
+        # `contact_links` (`deploy_e2e` derives it from `grasp_declaration_json`). A grasp_target
+        # naming no contact_links takes this hand, so the LLM never guesses which hand a learned
+        # policy grasps with; unset on a multi-hand robot, such a call is refused as before.
+        self.declare_parameter("grasp_contact_links", [""])
         self._robot_description: RobotDescription | None = None
         # (dispatch generation, grasp declaration, place declaration) grounded for the goal
         # about to be sent; read once by ``_send_execute_rskill_goal``.
@@ -1279,6 +1370,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # opened -- not per tool call, where it would burn the LLM's replanning ladder.
         # Its ROSConfigError reaches ``log_lifecycle_errors``: logged, configure FAILURE.
         self._load_grounding_context()
+        # The spatial memory too: a malformed nav_goals_json raises ROSConfigError here,
+        # before any subscription or client exists, so a retried configure duplicates none.
+        self._maybe_load_spatial_memory()
 
         try:
             client = self._injected_client or build_tool_use_client_from_env()
@@ -1483,10 +1577,6 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             "/openral/execute_rskill",
         )
 
-        # Active object search — load a persisted scene graph into the query backend
-        # before the palette seed, so the rebuilt palette offers the query
-        # tools when a map is preloaded.
-        self._maybe_load_spatial_memory()
         self._maybe_load_memory()
         self._maybe_restore_ladder_state()
 
@@ -1559,7 +1649,20 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         except (OSError, ValueError, ROSConfigError) as exc:
             self.get_logger().warning(f"grasp/place target grounding unavailable: {exc!s}")
             return
-        self._renderer.set_robot_model(render_robot_self_model(self._robot_description))
+        self._renderer.set_robot_model(
+            render_robot_self_model(self._robot_description),
+            base_frame=self._robot_description.base_frame,
+        )
+        declared = self._declared_grasp_hand()
+        hands = gripper_hands(self._robot_description)
+        if declared and not any(
+            set(declared) == ({h} if isinstance(h, str) else set(h)) for h in hands
+        ):
+            raise ROSConfigError(
+                f"grasp_contact_links {list(declared)} are not all the gripper links of one "
+                f"hand of robot {self._robot_description.name!r} (hands: {list(hands)}); the "
+                "deploy scene's grasp declaration names another robot's hand."
+            )
         voxel_m = self.get_parameter("grasp_target_voxel_m").get_parameter_value().double_value
         if voxel_m <= 0.0 and gripper_hands(self._robot_description):
             raise ROSConfigError(
@@ -1618,9 +1721,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             self._spatial_memory.to_scene_graph() if self._spatial_memory is not None else None
         )
         base_frame = self._robot_description.base_frame
-        tracking = (
-            self.get_parameter("object_tracking").get_parameter_value().string_value or "off"
-        ) != "off"
+        tracking = self._object_tracking_on()
         if call.grasp_target is not None:
             grasp = ground_grasp_target(
                 call.grasp_target,
@@ -1631,6 +1732,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 patience_s=patience_s,
                 pad_m=pad_m,
                 object_tracking=tracking,
+                declared_hand=self._declared_grasp_hand(),
             )
             if tracking:
                 hand = hand_joint(self._robot_description, grasp.contact_links)
@@ -1717,6 +1819,17 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         self._core = None
         self._occupancy_grid = None
         self._renderer = ContextRenderer()
+        # Drop the spatial memory this node built; a re-configure rebuilds it from the
+        # parameters instead of mistaking it for an injected backend.
+        self._spatial_memory = self._injected_spatial_memory
+        self._spatial_memory_writer = None
+        self._spatial_places_only = False
+        self._palette = self._palette.model_copy(
+            update={
+                "spatial_memory_available": self._spatial_memory is not None,
+                "places_only": False,
+            }
+        )
         # VLM-adjudicated completion §5 — clear the VLM client handle and frame cache on cleanup.
         self._tool_use_client = None
         self._latest_completion_frame = None
@@ -2405,6 +2518,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             node_ids=self._palette.node_ids,
             commercial_deployment=self._commercial_deployment,
             spatial_memory_available=self._spatial_memory is not None,
+            places_only=self._spatial_places_only,
             detector_available=self._detector_available,
             scene_query_available=self._scene_query_available,
             task_progress_available=self._task_progress_available,
@@ -2412,7 +2526,25 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             # MEMORY.md enabled (the pre-fix bug: this flag was omitted, so
             # every registry refresh removed memory_write / memory_search).
             memory_available=self._memory_store is not None,
+            object_tracking=self._object_tracking_on(),
+            grasp_hand_required=self._grasp_hand_required(),
         )
+
+    def _declared_grasp_hand(self) -> tuple[str, ...]:
+        """The deployment's declared grasping hand (``grasp_contact_links``), ``()`` unset."""
+        raw = self.get_parameter("grasp_contact_links").get_parameter_value().string_array_value
+        return tuple(link for link in raw if link)
+
+    def _grasp_hand_required(self) -> bool:
+        """A grasp_target must name its hand: several hands and none declared."""
+        if self._robot_description is None:
+            return False
+        return len(gripper_hands(self._robot_description)) > 1 and not self._declared_grasp_hand()
+
+    def _object_tracking_on(self) -> bool:
+        """The deploy runs the object tracker (``object_tracking`` is not ``off``)."""
+        mode = self.get_parameter("object_tracking").get_parameter_value().string_value
+        return (mode or "off") != "off"
 
     def _persist_ladder_state(self) -> None:
         """Snapshot the mission ledger + ladder bounds to ``ladder_state_path``.
@@ -2550,47 +2682,50 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         return entries
 
     def _maybe_load_spatial_memory(self) -> None:
-        """Wire the persistent-spatial-memory backend at ``on_configure``.
+        """Wire the spatial-memory backend at ``on_configure`` (``build_spatial_memory``).
 
-        Used by active object search. No-op when a ``spatial_memory``
-        backend was injected at construction.
-        Otherwise: if ``spatial_memory_path`` is set, load that persisted scene
-        graph; else if ``spatial_memory_ingest`` is set, start an empty memory
-        that ``_on_tick`` accumulates from live ``WorldState.detected_objects``.
-        A path load failure degrades gracefully to no backend (logged at WARNING)
-        — never a fabricated map (CLAUDE.md §1.2). When the reasoner owns the
-        backend (either case) it keeps a concrete ``_spatial_memory_writer`` so
-        the tick can fold detections in; an injected read-only querier is left
-        un-owned and unmutated.
+        No-op when a ``spatial_memory`` backend was injected at construction (declared
+        ``nav_goals_json`` is then not seeded, and that is logged). When the reasoner owns
+        the backend it keeps a ``_spatial_memory_writer`` only if a path or live ingest
+        asked for one, so the tick folds detections in exactly then.
         """
-        if self._spatial_memory is not None:
-            return
         path = self.get_parameter("spatial_memory_path").get_parameter_value().string_value
         ingest = self.get_parameter("spatial_memory_ingest").get_parameter_value().bool_value
-        if not path and not ingest:
-            return
-        from openral_world_state import SpatialMemory
-
-        if path:
-            try:
-                memory = SpatialMemory.load(path)
-            except (OSError, ValueError) as exc:
-                self.get_logger().warning(
-                    f"spatial_memory_path={path!r} failed to load; query tools disabled: {exc}",
+        goals_json = self.get_parameter("nav_goals_json").get_parameter_value().string_value
+        if self._injected_spatial_memory is not None:
+            if goals_json:
+                log.warning(
+                    "reasoner.spatial_memory.nav_goals_not_seeded",
+                    reason="nav_goals_json is set but a spatial_memory backend was injected: "
+                    "the declared navigation goals are NOT seeded into it",
                 )
-                return
-            origin = f"loaded spatial memory from {path!r}"
-        else:
-            memory = SpatialMemory()
-            origin = "started empty spatial memory for live ingest"
-        self._spatial_memory = memory
-        self._spatial_memory_writer = memory
-        if not self._palette.spatial_memory_available:
-            self._palette = self._palette.model_copy(update={"spatial_memory_available": True})
-        node_count = len(memory.to_scene_graph().nodes)
+            return
+        # A backend kept from a configure that failed later is this node's own: rebuild it
+        # from the current parameters (a station pose may have changed since).
+        self._spatial_memory = None
+        self._spatial_memory_writer = None
+        self._spatial_places_only = False
+        self._palette = self._palette.model_copy(
+            update={"spatial_memory_available": False, "places_only": False}
+        )
+        built = build_spatial_memory(
+            path, ingest, goals_json, now_ns=self.get_clock().now().nanoseconds
+        )
+        for warning in built.warnings:
+            log.warning("reasoner.spatial_memory.build_warning", detail=warning)
+        if built.memory is None:
+            return
+        self._spatial_memory = built.memory
+        self._spatial_memory_writer = built.memory if built.writable else None
+        self._spatial_places_only = built.places_only
+        self._palette = self._palette.model_copy(
+            update={"spatial_memory_available": True, "places_only": built.places_only}
+        )
+        node_count = len(built.memory.to_scene_graph().nodes)
+        tools = "resolve_place" if built.places_only else "recall_object / resolve_place"
         self.get_logger().info(
-            f"on_configure: {origin} ({node_count} nodes; ingest={ingest}); "
-            "recall_object / resolve_place tools enabled",
+            f"on_configure: {built.origin} ({node_count} nodes; ingest={ingest}); "
+            f"{tools} tools enabled",
         )
         # Publish the (possibly empty) map once now so the dashboard shows it
         # before the first heartbeat tick (which re-emits on the 0.2 Hz cadence).
@@ -2803,7 +2938,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # Reasoner playbooks, Decision 2.1 — render the static robot self-model once and
         # surface it as the reasoner's `## ROBOT` context section so the LLM can
         # judge reach/view feasibility before dispatching a skill.
-        self._renderer.set_robot_model(render_robot_self_model(description))
+        self._renderer.set_robot_model(
+            render_robot_self_model(description), base_frame=description.base_frame
+        )
 
         manifests: list[RSkillManifest] = []
         manifest_paths: list[pathlib.Path] = []
@@ -3089,6 +3226,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             # and a rebuild without the flag would silently drop recall_object /
             # resolve_place.
             spatial_memory_available=self._spatial_memory is not None,
+            places_only=self._spatial_places_only,
             detector_available=self._detector_available,
             scene_query_available=self._scene_query_available,
             task_progress_available=self._task_progress_available,
@@ -3097,6 +3235,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             # dropped memory_write / memory_search in every deploy that set
             # both `memory_md_path` and `rskill_search_paths`.
             memory_available=self._memory_store is not None,
+            object_tracking=self._object_tracking_on(),
+            grasp_hand_required=self._grasp_hand_required(),
         )
         # ``importable`` descends from ``capability_matched_ids``
         # (``capability_palette.execute_rskill_ids``), which by design never contains a
@@ -3644,6 +3784,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         search_term = _search_term(call)
         if (
             not outcome.found
+            and not outcome.ambiguous  # a question for the LLM, not an absence
             and self._detector_available
             and search_term not in self._locate_escalated
         ):

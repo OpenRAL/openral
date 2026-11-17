@@ -19,7 +19,7 @@ from typing import Any
 
 import numpy as np
 import pytest
-from openral_core import RobotDescription, ROSConfigError, RSkillManifest
+from openral_core import GripperClosureCalibration, RobotDescription, ROSConfigError, RSkillManifest
 from openral_rskill._policy_io import PolicyIOCodec, slot_state_joint_names
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -269,3 +269,13 @@ def test_the_ramp_never_commands_the_held_base_and_lift(
         if joint.name in held:
             lo, hi = joint.position_limits or (-np.inf, np.inf)
             assert lo <= value <= hi, joint.name
+
+
+def test_the_grippers_carry_openarms_closure_calibration() -> None:
+    # Same OpenArm v2 gripper mechanism: the grasp trigger's robot-type constants match.
+    def calib(robot: str) -> dict[str, GripperClosureCalibration | None]:
+        desc = RobotDescription.from_yaml(str(_REPO / f"robots/{robot}/robot.yaml"))
+        return {j.name: j.closure_calibration for j in desc.joints if j.role == "gripper"}
+
+    assert calib("openamrobot_v2") == calib("openarm")
+    assert all(c is not None for c in calib("openamrobot_v2").values())

@@ -68,6 +68,24 @@ inline constexpr double kDefaultWorldVoxelDataAgeBudgetMs = 1500.0;
 /// (0, cap] once resolved while the matching allowance is enabled.
 inline constexpr double kMaxRegionMeasurementAgeS = 2.0 * kMaxWorldVoxelDeadlineMs / 1000.0;
 
+/// Station mode: how far a mobile base may sit from the pose its allowances were
+/// declared at before they describe the wrong place. Every allowance lives in the
+/// base frame, so a base displacement of d shifts it by d (translation) or by
+/// r * dyaw at reach r (rotation). 20 mm / 0.02 rad (~1.1 deg, 20 mm at 1 m
+/// reach) is the order of the 25 mm voxel and the grasp region's own tolerance,
+/// and an order of magnitude above standstill noise of wheel odometry (encoders
+/// do not tick at rest) or sim contact jitter (sub-mm). Displacement from an
+/// anchor, not per-tick velocity, so noise never accumulates into a trip while
+/// a drive trips once it is the threshold from the anchor (planar distance for
+/// x/y, wrapped delta for yaw). The anchor is the pose the first live allowance
+/// armed at, else the last trip's. Tunable per robot, never off: the caps keep
+/// the rule armed (configure refuses anything not in (0, cap]). The shipped
+/// launch files pass no `station_motion_*` parameter: deployments run these.
+inline constexpr double kDefaultStationTranslationM = 0.02;
+inline constexpr double kDefaultStationRotationRad = 0.02;
+inline constexpr double kMaxStationTranslationM = 0.05;
+inline constexpr double kMaxStationRotationRad = 0.05;
+
 class SafetyKernelLifecycleNode : public rclcpp_lifecycle::LifecycleNode {
 public:
   /// Test seam (#349 review F): when set, called with `true` as the workspace brake
@@ -304,6 +322,33 @@ private:
   // else `safety.grasp_declaration_retired` (an armed identity failing its last check).
   // Allocation-free: it runs on the candidate path (`handover_exit`).
   void retire_grasp_declaration(const char* reason);
+  // Station mode. A mobile manipulator standing still is a fixed-base station:
+  // every allowance (grasp region, place region, #349 workspace, the tracked
+  // grasp key, K5 release windows) is declared in the base frame and holds only
+  // while the base keeps the pose it had. Fed from /joint_states: once the
+  // measured base pose leaves the station anchor by more than its threshold
+  // (`station_motion_translation_m` on the planar distance of the prismatic
+  // dofs together, `station_motion_rotation_rad` on each revolute dof's delta
+  // wrapped to [-pi, pi]), the base has moved: every live allowance is retired
+  // with reason `base_moving`, the anchor moves to the new pose, and
+  // `base_moved_ns_` is stamped. A clock that runs backwards (a sim reset) does
+  // the same with reason `clock_reset`. No-op without base dofs.
+  void update_station(std::int64_t now_ns);
+  /// Retire every allowance, close every release window and drop the cover passes
+  /// (`reason` names why in each log); stamps `base_moved_ns_ = now_ns`.
+  void leave_station(std::int64_t now_ns, const char* reason, int dof, double delta, double limit);
+  /// Any allowance live that the station anchor guards (see `update_station`).
+  bool station_allowance_live() const noexcept;
+  /// Anchor the station at the measured base pose; false (unchanged) until every
+  /// base dof has been measured.
+  bool anchor_station() noexcept;
+  /// Re-anchor at the measured base pose when an allowance goes live after none was.
+  void note_station_allowances();
+  /// A declaration or region measurement stamped at or before the last base
+  /// motion describes a previous station: it allows nothing.
+  bool predates_base_motion(std::int64_t stamp_ns) const noexcept {
+    return base_moved_ns_ != 0 && stamp_ns <= base_moved_ns_;
+  }
   /// True while a region is live, or the current declaration armed one before.
   bool grasp_identity_armed() const noexcept;
   // Is a payload attached at `attach_link` on the declaring gripper's chain —
@@ -338,6 +383,10 @@ private:
   /// "provider" (a provider replacing the region, with a tracked declaration live), "region"
   /// (the ADR-0115 region) or "none".
   const char* grasp_exemption_source() const noexcept;
+  /// The #349 workspace gate the current candidate runs under, for the stop line and span:
+  /// "in_tree" (the kernel's own rule), "provider" (the provider's verdict region,
+  /// `ProviderGate::workspace`, ADR-0121 API v5) or "none". Disclosure only.
+  const char* workspace_gate() const noexcept;
   // Hand speed bound (m/s) of the configuration FK'd into `collision_scratch_`,
   // relative to `prev` (the hand links' poses at the previous row; updated to
   // this row's): max over the workspace links of `link_displacement_bound` /
@@ -929,8 +978,19 @@ private:
   sensor_msgs::msg::JointState external_torque_msg_;
   std::vector<int> collision_fk_dofs_;    ///< dof indices FK actually consumes
   std::vector<int> collision_base_dofs_;  ///< mobile-base dofs zeroed for base-relative FK
-  std::vector<double> q_check_;           ///< velocity-integration accumulator (no alloc)
-  std::vector<double> q_fk_;              ///< per-config FK input (base zeroed; no alloc)
+  /// Station mode (see `update_station`): per base dof, 1 when revolute (yaw).
+  std::vector<std::uint8_t> base_dof_angular_;
+  std::vector<double> station_anchor_;  ///< base dof positions of the current station
+  bool station_anchor_set_{false};
+  double station_translation_m_{kDefaultStationTranslationM};
+  double station_rotation_rad_{kDefaultStationRotationRad};
+  /// Kernel time of the last detected base motion; 0 = never moved since configure.
+  std::int64_t base_moved_ns_{0};
+  bool station_allowance_live_{false};  ///< an allowance was live at the last note
+  std::int64_t station_last_ns_{0};     ///< kernel time of the last station update
+
+  std::vector<double> q_check_;  ///< velocity-integration accumulator (no alloc)
+  std::vector<double> q_fk_;     ///< per-config FK input (base zeroed; no alloc)
   // ADR-0102 slot rows (a JOINT_POSITION chunk whose joint_names leave an FK
   // dof uncommanded): those joints are checked at their measured pose, and
   // again at the target an accepted slot of the SAME tick committed for them.

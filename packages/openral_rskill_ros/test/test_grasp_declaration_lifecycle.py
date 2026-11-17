@@ -635,3 +635,573 @@ def test_tracking_on_without_a_grounding_wait_refuses_to_configure() -> None:
         runtime.world_state_node.destroy_node()
     finally:
         rclpy.shutdown()
+
+
+# ── Per-goal object queries: grounding is for manipulation goals only ──
+
+_REPO = Path(__file__).resolve().parents[3]
+_NAV2 = "OpenRAL/rskill-nav2-mobile_base-navigate_to_pose"
+_PI05 = "OpenRAL/rskill-pi05-makermods_metal-pick_place-bf16"
+#: The Isaac shelf aisle deploy's standing queries (`deploy sim` from the graded task).
+_SHELF_AISLE_QUERIES = (
+    '[{"label": "stock object", "count": "one", "role": "target"},'
+    ' {"label": "carton", "count": "all", "role": "context"}]'
+)
+
+
+def _in_tree_resolver() -> Any:
+    """The production two-phase resolver over the in-tree ``rskills/`` (no Hub)."""
+    from openral_rskill_ros.rskill_runner_node import ManifestSkillResolver
+
+    return ManifestSkillResolver(search_paths=[_REPO / "rskills"], hub_fallback=False)
+
+
+def _named(rskill_id: str, fill: Any = None) -> Any:
+    def _fill(goal: Any) -> None:
+        goal.rskill_id = rskill_id
+        if fill is not None:
+            fill(goal)
+
+    return _fill
+
+
+def _place_topic(executor: Any) -> list[Any]:
+    import rclpy
+    from openral_msgs.msg import PlaceDeclaration as PlaceDeclarationMsg
+    from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+
+    node = rclpy.create_node("openral_place_declaration_listener")
+    executor.add_node(node)
+    seen: list[Any] = []
+    node.create_subscription(
+        PlaceDeclarationMsg,
+        "/openral/place_declaration",
+        seen.append,
+        QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            depth=10,
+        ),
+    )
+    return seen
+
+
+def test_a_base_only_goal_under_tracking_arms_nothing_and_waits_for_nothing() -> None:
+    """Nav2 with the shelf aisle deploy's standing queries and grounding_required: no grasp or
+    place declaration, no query, no grounding wait (Isaac run, 2026-11-16: refused twice,
+    ``queries ['stock object', 'carton'] not grounded``). The goal then meets the manifest
+    gate (Nav2 cannot run on the SO-100), which is past the grounding stage."""
+    import time
+
+    from openral_msgs.action import ExecuteRskill
+
+    params = {
+        "object_tracking": "tracking",
+        "object_queries_json": _SHELF_AISLE_QUERIES,
+        "grounding_wait_s": 5.0,
+        "grounding_required": True,
+        "place_approach_enabled": True,
+    }
+    with _harness(
+        _scene_json(contact_links=("gripper_finger",)),
+        skill_resolver=_in_tree_resolver(),
+        params=params,
+    ) as (executor, runtime, seen):
+        places = _place_topic(executor)
+        t0 = time.monotonic()
+        response = _run_goal(executor, runtime.skill_runner_node, fill_goal=_named(_NAV2))
+        waited = time.monotonic() - t0
+        _spin_for(executor, 0.3)
+    result = response.result
+    assert result.failure_kind == ExecuteRskill.Result.FAILURE_CAPABILITY_MISMATCH, (
+        result.failure_reason
+    )
+    assert waited < 3.0, f"a base-only goal waited {waited:.1f} s for grounding"
+    assert not [m for m in seen if m.active], "a base-only goal armed a grasp declaration"
+    assert not [m for m in places if m.active], "a base-only goal armed a place declaration"
+
+
+def test_a_manipulation_goal_naming_no_object_under_tracking_is_refused_before_motion() -> None:
+    """The scene's declaration has a search box but no query, the deploy has no standing
+    query and the goal no grasp_target: refused (FAILURE_PLANNING_ERROR) before the
+    declaration is published or anything moves (Isaac run, 2026-11-16: the box went
+    untracked and its stand-in clipped the shelf)."""
+    from openral_msgs.action import ExecuteRskill
+
+    params = {
+        "object_tracking": "tracking",
+        "grounding_wait_s": 0.2,
+        "place_approach_enabled": True,
+    }
+    with _harness(
+        _scene_json(contact_links=("gripper_finger",)),
+        skill_resolver=_in_tree_resolver(),
+        params=params,
+    ) as (executor, runtime, seen):
+        places = _place_topic(executor)
+        response = _run_goal(executor, runtime.skill_runner_node, fill_goal=_named(_PI05))
+        _spin_for(executor, 0.3)
+        chunks = runtime.skill_runner_node._chunks_published
+    result = response.result
+    assert not result.success
+    assert result.failure_kind == ExecuteRskill.Result.FAILURE_PLANNING_ERROR, result.failure_reason
+    assert result.failure_reason.startswith("ROSReasonerInvalidPlan: object tracking is on")
+    assert "grasp_target" in result.failure_reason and _PI05 in result.failure_reason
+    assert not [m for m in seen if m.active], "the refused goal published its declaration"
+    assert not [m for m in places if m.active], "the refused goal published a place zone"
+    assert chunks == 0
+
+
+@pytest.mark.parametrize("scene", ["", "malformed"])
+def test_a_grasping_goal_with_no_declaration_in_force_is_refused_too(scene: str) -> None:
+    """Tracking on and nothing to grasp declared at all (no scene declaration, or one that
+    does not validate, no approach, no grasp_target): refused, never run untracked."""
+    from openral_msgs.action import ExecuteRskill
+
+    raw = '{"target_id": "cell:pick_box", "timeout_s": 70.0, "stamp_ns": 0}' if scene else ""
+    params = {"object_tracking": "tracking", "grounding_wait_s": 0.2}
+    with _harness(raw, skill_resolver=_in_tree_resolver(), params=params) as (
+        executor,
+        runtime,
+        seen,
+    ):
+        response = _run_goal(executor, runtime.skill_runner_node, fill_goal=_named(_PI05))
+        _spin_for(executor, 0.3)
+    assert response.result.failure_kind == ExecuteRskill.Result.FAILURE_PLANNING_ERROR, (
+        response.result.failure_reason
+    )
+    assert not [m for m in seen if m.active]
+
+
+def test_a_skill_that_grasps_nothing_is_not_asked_for_a_grasp_target() -> None:
+    """A MoveIt look-at actuates the arm and grasps nothing: under tracking it is not refused
+    for naming no object (it then meets the SO-100's manifest gate)."""
+    from openral_msgs.action import ExecuteRskill
+
+    params = {"object_tracking": "tracking", "grounding_wait_s": 0.2}
+    with _harness(
+        _scene_json(contact_links=("gripper_finger",)),
+        skill_resolver=_in_tree_resolver(),
+        params=params,
+    ) as (executor, runtime, _seen):
+        response = _run_goal(
+            executor,
+            runtime.skill_runner_node,
+            fill_goal=_named("OpenRAL/rskill-moveit-multi-look_at"),
+        )
+    result = response.result
+    assert result.failure_kind != ExecuteRskill.Result.FAILURE_PLANNING_ERROR, result.failure_reason
+    assert "must name the object" not in result.failure_reason
+
+
+def test_a_manipulation_goal_with_its_own_query_reaches_the_grounding_wait() -> None:
+    """The reasoner named ``orange`` with no live detection: the query rides the goal
+    (count one, no search box) and the goal grounds against the tracker's track."""
+    from openral_core import GraspTargetRef, ObjectQuery
+    from openral_msgs.action import ExecuteRskill
+    from openral_reasoner.grounding import ground_grasp_target
+
+    grounded = ground_grasp_target(
+        GraspTargetRef(label="orange", contact_links=[_FINGERS[0]]),
+        live_objects=[],
+        scene_graph=None,
+        base_frame="openarm_base",
+        default_contact_links=_FINGERS,
+        patience_s=0.4,
+        pad_m=0.035,
+        object_tracking=True,
+    )
+    assert grounded.search_box is None
+    assert grounded.target_queries == (ObjectQuery(label="orange", count="one", role="target"),)
+
+    def _fill(goal: Any) -> None:
+        from openral_msgs.msg import ObjectQuery as ObjectQueryMsg
+
+        goal.grasp_declaration_valid = True
+        grounded.fill_idl(goal.grasp_declaration, query_factory=ObjectQueryMsg)
+
+    params = {"object_tracking": "tracking", "grounding_wait_s": 2.0, "grounding_required": True}
+    with _harness("", skill_resolver=_in_tree_resolver(), params=params) as (
+        executor,
+        runtime,
+        seen,
+    ):
+        keys = _tracker_stand_in(executor, status="confirmed")
+        response = _run_goal(executor, runtime.skill_runner_node, fill_goal=_named(_PI05, _fill))
+    assert keys, "no declaration was armed"
+    active = [m for m in seen if m.active]
+    assert [ObjectQuery.from_idl(q) for q in active[0].target_queries] == [
+        ObjectQuery(label="orange", count="one", role="target")
+    ]
+    # Grounded, then the manifest gate (pi0.5 metal cannot run on the SO-100).
+    assert response.result.failure_kind == ExecuteRskill.Result.FAILURE_CAPABILITY_MISMATCH, (
+        response.result.failure_reason
+    )
+
+
+def test_the_standing_query_preload_path_is_unchanged_for_a_manipulation_skill() -> None:
+    """A fixed-base deploy's standing queries still ride the scene declaration of a
+    manipulation goal (real pi0.5 manifest) and still gate it on grounding."""
+    from openral_core import ObjectQuery
+    from openral_msgs.action import ExecuteRskill
+
+    params = {**_TRACKING_ON, "grounding_wait_s": 0.5, "grounding_required": True}
+    with _harness(
+        _scene_json(contact_links=("gripper_finger",)),
+        skill_resolver=_in_tree_resolver(),
+        params=params,
+    ) as (executor, runtime, seen):
+        response = _run_goal(
+            executor, runtime.skill_runner_node, deadline_s=3.0, fill_goal=_named(_PI05)
+        )
+        _spin_for(executor, 0.3)
+    active = [m for m in seen if m.active]
+    assert len(active) == 1
+    assert [ObjectQuery.from_idl(q).label for q in active[0].target_queries] == ["orange"]
+    assert response.result.failure_kind == ExecuteRskill.Result.FAILURE_PERCEPTION_STALE, (
+        response.result.failure_reason
+    )
+
+
+# ── The goal's declaration completed from the scene's (AMR aisle sim, 2026-11-16) ──
+
+_SMOLVLA = "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"  # max_execution_s 60
+_LINGBOT = "OpenRAL/rskill-lingbot_va_a1-galaxea_a1-fruit_placement-bf16"  # 420
+_LEFT, _RIGHT = ("openarm_left_ee_link1",), ("openarm_right_ee_link1",)
+
+
+def _aisle_box(xyz: tuple[float, float, float], half: float, evidence: str) -> Any:
+    from openral_core import PlaceRegion, Pose6D
+
+    pose = Pose6D(xyz=xyz, quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="base_footprint")
+    return PlaceRegion(
+        frame_id="base_footprint",
+        pose=pose,
+        half_extents=(half, half, half),
+        evidence_ref=evidence,
+    )
+
+
+def _aisle_scene(links: tuple[str, ...] = _LEFT) -> str:
+    """The aisle scene's declaration: the tote the robot carries, in base_footprint."""
+    from openral_core import GraspDeclaration
+
+    return GraspDeclaration(
+        target_id="cell:stock_object",
+        contact_links=links,
+        timeout_s=70.0,
+        stamp_ns=0,
+        search_box=_aisle_box(
+            (0.504, 0.085, 0.457), 0.08, "reasoner_seed:detection 'stock_object'"
+        ),
+        workspace_box=_aisle_box((0.504, 0.085, 0.45), 0.2, "sim:tote"),
+    ).model_dump_json()
+
+
+def _reasoner_box_goal(links: tuple[str, ...] = (), declared_hand: tuple[str, ...] = _LEFT) -> Any:
+    """What the reasoner sends: grasp_target 'box', no live detection, patience_s=0; by
+    default naming no hand, so it takes the deployment's declared one (the scene's)."""
+    from openral_core import GraspTargetRef
+    from openral_reasoner.grounding import ground_grasp_target
+
+    grounded = ground_grasp_target(
+        GraspTargetRef(label="box", contact_links=list(links)),
+        live_objects=[],
+        scene_graph=None,
+        base_frame="base_footprint",
+        default_contact_links=(_LEFT, _RIGHT),
+        patience_s=0.0,
+        pad_m=0.035,
+        object_tracking=True,
+        declared_hand=declared_hand,
+    )
+    assert grounded.timeout_s == 10.0 and grounded.search_box is None
+
+    def _fill(goal: Any) -> None:
+        from openral_msgs.msg import ObjectQuery as ObjectQueryMsg
+
+        goal.grasp_declaration_valid = True
+        grounded.fill_idl(goal.grasp_declaration, query_factory=ObjectQueryMsg)
+
+    return _fill
+
+
+@pytest.mark.parametrize("mode", ["off", "tracking", "on"])
+def test_the_goal_query_rides_the_scene_boxes_hand_and_lifetime(capfd: Any, mode: str) -> None:
+    """A label-only grasp_target: the reasoner took the scene's hand (`grasp_contact_links`),
+    so the merge takes the scene's boxes too (`hand=same`), in every tracking mode (the
+    merge reads no mode; Pro `on` included)."""
+    from openral_core import GraspDeclaration, ObjectQuery, PlaceRegion
+
+    params = {} if mode == "off" else {"object_tracking": mode, "grounding_wait_s": 0.2}
+    scene = GraspDeclaration.model_validate_json(_aisle_scene())
+    with _harness(_aisle_scene(), skill_resolver=_in_tree_resolver(), params=params) as (
+        executor,
+        runtime,
+        seen,
+    ):
+        _run_goal(
+            executor, runtime.skill_runner_node, fill_goal=_named(_PI05, _reasoner_box_goal())
+        )
+        _spin_for(executor, 0.3)
+    active = [m for m in seen if m.active]
+    assert len(active) == 1
+    armed = active[0]
+    assert armed.target_id == "obj:box", "the goal's key: queries, tracks and kernel share it"
+    assert tuple(armed.contact_links) == _LEFT
+    assert armed.timeout_s == pytest.approx(70.0)
+    assert armed.search_box_valid and armed.workspace_box_valid
+    assert PlaceRegion.from_idl(armed.search_box) == scene.search_box
+    assert PlaceRegion.from_idl(armed.workspace_box) == scene.workspace_box
+    assert [ObjectQuery.from_idl(q) for q in armed.target_queries] == [
+        ObjectQuery(label="box", count="one", role="target", seed=scene.search_box)
+    ], "the scene's non-sim search box seeds the goal's TARGET query"
+    err = capfd.readouterr().err
+    assert "rskill_runner.grasp_declaration_merged" in err and "hand=same" in err
+
+
+def test_a_goal_naming_the_other_hand_takes_no_scene_box(capfd: Any) -> None:
+    """The LLM named the right hand, the scene grasps with the left: the goal keeps its own
+    links and takes nothing from the scene, not even its lifetime (warning); a failure the
+    hand can explain says so, for the retry."""
+    from openral_msgs.action import ExecuteRskill
+
+    with _harness(_aisle_scene(_LEFT), skill_resolver=_in_tree_resolver()) as (
+        executor,
+        runtime,
+        seen,
+    ):
+        wrong = _run_goal(
+            executor,
+            runtime.skill_runner_node,
+            fill_goal=_named(_PI05, _reasoner_box_goal(_RIGHT)),
+        )
+        _spin_for(executor, 0.3)
+        armed = next(m for m in seen if m.active)
+        # The wrong-hand goal's note on a failure the hand explains (a contact stop).
+        stopped = ExecuteRskill.Result()
+        stopped.failure_kind = ExecuteRskill.Result.FAILURE_SAFETY_ESTOP
+        stopped.failure_reason = "safety_estop:collision"
+        noted = runtime.skill_runner_node._note_grasp_hand(stopped).failure_reason
+        right = _run_goal(
+            executor, runtime.skill_runner_node, fill_goal=_named(_PI05, _reasoner_box_goal())
+        )
+    assert tuple(armed.contact_links) == _RIGHT
+    assert not armed.search_box_valid and not armed.workspace_box_valid
+    assert all(not q.seed_valid for q in armed.target_queries)
+    assert armed.timeout_s == pytest.approx(10.4), "the goal's 0.4 s budget + margin"
+    err = capfd.readouterr().err
+    assert "rskill_runner.grasp_declaration_merged" in err and "hand=different" in err
+    assert noted.endswith(
+        "(note: the goal's grasp_target named the hand ['openarm_right_ee_link1'], but this "
+        "deployment grasps with ['openarm_left_ee_link1']; leave grasp_target.contact_links "
+        "unset to use the deployment's hand)"
+    ), noted
+    # Both fail at the SO-100's manifest gate, which says nothing about the hand: no note.
+    assert wrong.result.failure_kind == ExecuteRskill.Result.FAILURE_CAPABILITY_MISMATCH
+    assert "named the hand" not in wrong.result.failure_reason
+    assert "named the hand" not in right.result.failure_reason
+
+
+@pytest.mark.parametrize(
+    ("rskill_id", "deadline_s", "timeout_s"),
+    [
+        (_PI05, 0.4, 10.4),  # the goal's own deadline + the margin
+        (_SMOLVLA, 0.0, 70.0),  # max_execution_s 60 + 10
+        (_LINGBOT, 0.0, 120.0),  # 420 + 10, capped at GraspDeclaration.MAX_TIMEOUT_S
+    ],
+)
+def test_without_a_scene_declaration_only_the_lifetime_floor_changes(
+    rskill_id: str, deadline_s: float, timeout_s: float
+) -> None:
+    from openral_core import ObjectQuery
+
+    with _harness("", skill_resolver=_in_tree_resolver()) as (executor, runtime, seen):
+        _run_goal(
+            executor,
+            runtime.skill_runner_node,
+            deadline_s=deadline_s,
+            fill_goal=_named(rskill_id, _reasoner_box_goal()),
+        )
+        _spin_for(executor, 0.3)
+    armed = next(m for m in seen if m.active)
+    assert armed.target_id == "obj:box"
+    assert tuple(armed.contact_links) == _LEFT
+    assert not armed.search_box_valid and not armed.workspace_box_valid
+    assert [ObjectQuery.from_idl(q) for q in armed.target_queries] == [
+        ObjectQuery(label="box", count="one", role="target")
+    ]
+    assert armed.timeout_s == pytest.approx(timeout_s)
+
+
+def test_the_scene_declaration_alone_is_armed_unchanged() -> None:
+    """No goal declaration (the fixed-base preload path): the scene's, as before."""
+    from openral_core import GraspDeclaration, PlaceRegion
+
+    scene = GraspDeclaration.model_validate_json(_aisle_scene())
+    with _harness(_aisle_scene(), skill_resolver=_in_tree_resolver()) as (executor, runtime, seen):
+        _run_goal(executor, runtime.skill_runner_node, fill_goal=_named(_PI05))
+        _spin_for(executor, 0.3)
+    armed = next(m for m in seen if m.active)
+    assert armed.target_id == "cell:stock_object"
+    assert armed.timeout_s == pytest.approx(70.0)
+    assert PlaceRegion.from_idl(armed.search_box) == scene.search_box
+    assert list(armed.target_queries) == []
+
+
+def test_the_deploys_context_queries_ride_a_goal_that_names_its_own_target() -> None:
+    """The goal names its target ('box'); the deploy's standing CONTEXT query ('carton') still
+    rides the armed declaration, its TARGET query ('stock object') does not (Spark R273)."""
+    from openral_core import ObjectQuery
+
+    params = {
+        "object_tracking": "tracking",
+        "object_queries_json": _SHELF_AISLE_QUERIES,
+        "grounding_wait_s": 0.2,
+    }
+    with _harness(_aisle_scene(), skill_resolver=_in_tree_resolver(), params=params) as (
+        executor,
+        runtime,
+        seen,
+    ):
+        _run_goal(
+            executor, runtime.skill_runner_node, fill_goal=_named(_PI05, _reasoner_box_goal())
+        )
+        _spin_for(executor, 0.3)
+    armed = next(m for m in seen if m.active)
+    got = [(q.label, q.role) for q in map(ObjectQuery.from_idl, armed.target_queries)]
+    assert got == [("box", "target"), ("carton", "context")]
+
+
+def test_a_goal_at_the_query_ceiling_keeps_its_own_and_takes_no_more() -> None:
+    """A goal naming ``MAX_TARGET_QUERIES`` objects leaves no room for the deploy's CONTEXT
+    query: the armed declaration carries the goal's eight, never nine (the tracker's decode
+    would refuse them)."""
+    from openral_core import GraspDeclaration, ObjectQuery
+
+    ceiling = GraspDeclaration.MAX_TARGET_QUERIES
+    goal = GraspDeclaration(
+        target_id="cell:box",
+        contact_links=_LEFT,
+        timeout_s=10.0,
+        stamp_ns=0,
+        target_queries=tuple(
+            ObjectQuery(label=f"box {k}", count="one", role="target") for k in range(ceiling)
+        ),
+    )
+
+    def _fill(msg: Any) -> None:
+        from openral_msgs.msg import ObjectQuery as ObjectQueryMsg
+
+        msg.grasp_declaration_valid = True
+        goal.fill_idl(msg.grasp_declaration, query_factory=ObjectQueryMsg)
+
+    params = {
+        "object_tracking": "tracking",
+        "object_queries_json": _SHELF_AISLE_QUERIES,
+        "grounding_wait_s": 0.2,
+    }
+    with _harness(_aisle_scene(), skill_resolver=_in_tree_resolver(), params=params) as (
+        executor,
+        runtime,
+        seen,
+    ):
+        _run_goal(executor, runtime.skill_runner_node, fill_goal=_named(_PI05, _fill))
+        _spin_for(executor, 0.3)
+    armed = next(m for m in seen if m.active)
+    got = [q.label for q in map(ObjectQuery.from_idl, armed.target_queries)]
+    assert got == [f"box {k}" for k in range(ceiling)]
+
+
+def test_a_grasping_goal_with_only_context_queries_is_refused() -> None:
+    """The deploy's standing queries are CONTEXT only (neighbours) and the goal names no
+    target: nothing names the object the policy grasps, so the goal is refused."""
+    from openral_msgs.action import ExecuteRskill
+
+    params = {
+        "object_tracking": "tracking",
+        "object_queries_json": '[{"label": "carton", "count": "all", "role": "context"}]',
+        "grounding_wait_s": 0.2,
+    }
+    with _harness(
+        _scene_json(contact_links=("gripper_finger",)),
+        skill_resolver=_in_tree_resolver(),
+        params=params,
+    ) as (executor, runtime, seen):
+        response = _run_goal(executor, runtime.skill_runner_node, fill_goal=_named(_PI05))
+        _spin_for(executor, 0.3)
+    result = response.result
+    assert result.failure_kind == ExecuteRskill.Result.FAILURE_PLANNING_ERROR, result.failure_reason
+    assert not [m for m in seen if m.active]
+
+
+def test_the_query_cap_never_drops_the_deploys_target_behind_its_context_queries() -> None:
+    """The deploy lists more CONTEXT queries than the ceiling holds, its TARGET last: the
+    TARGET still rides (first), the CONTEXT queries fill the rest in their own order."""
+    import json
+
+    from openral_core import GraspDeclaration, ObjectQuery
+
+    ceiling = GraspDeclaration.MAX_TARGET_QUERIES
+    deploy = [{"label": f"carton {k}", "count": "all", "role": "context"} for k in range(ceiling)]
+    deploy.append({"label": "orange", "count": "all", "role": "target"})
+    params = {
+        "object_tracking": "tracking",
+        "object_queries_json": json.dumps(deploy),
+        "grounding_wait_s": 0.2,
+    }
+    with _harness(
+        _scene_json(contact_links=("gripper_finger",)),
+        skill_resolver=_in_tree_resolver(),
+        params=params,
+    ) as (executor, runtime, seen):
+        _run_goal(executor, runtime.skill_runner_node, fill_goal=_named(_PI05))
+        _spin_for(executor, 0.3)
+    armed = next(m for m in seen if m.active)
+    got = [q.label for q in map(ObjectQuery.from_idl, armed.target_queries)]
+    assert got == ["orange", *(f"carton {k}" for k in range(ceiling - 1))]
+
+
+def test_a_scene_box_declared_for_another_object_is_not_lent(capfd: Any) -> None:
+    """The scene's declaration names 'orange'; a goal for 'box' with the same hand takes the
+    scene's hand but not its boxes (they bound another object's search and contact)."""
+    from openral_core import GraspDeclaration, ObjectQuery
+
+    scene = GraspDeclaration.model_validate_json(_aisle_scene()).model_copy(
+        update={"target_queries": (ObjectQuery(label="orange", count="one", role="target"),)}
+    )
+    with _harness(scene.model_dump_json(), skill_resolver=_in_tree_resolver()) as (
+        executor,
+        runtime,
+        seen,
+    ):
+        _run_goal(
+            executor, runtime.skill_runner_node, fill_goal=_named(_PI05, _reasoner_box_goal())
+        )
+        _spin_for(executor, 0.3)
+    armed = next(m for m in seen if m.active)
+    assert armed.target_id == "obj:box"
+    assert not armed.search_box_valid and not armed.workspace_box_valid
+    assert "boxes=other_object" in capfd.readouterr().err
+
+
+def test_a_goal_declaration_outlives_the_pre_execution_wait() -> None:
+    """A goal-built declaration's lifetime (budget + margin) counted from arming; a 6 s
+    grounding wait would leave it lapsing mid-run, so it is republished, same key, with the
+    budget counted from execution start."""
+    params = {"object_tracking": "tracking", "grounding_wait_s": 6.0}
+    with _harness("", params=params) as (executor, runtime, seen):
+        _run_goal(
+            executor,
+            runtime.skill_runner_node,
+            fill_goal=_reasoner_box_goal(),
+            result_timeout_s=12.0,
+        )
+        _spin_for(executor, 0.3)
+    active = [m for m in seen if m.active]
+    assert len(active) == 2, "armed, then extended once"
+    first, extended = active
+    assert (extended.target_id, extended.stamp_ns) == (first.target_id, first.stamp_ns)
+    assert first.timeout_s == pytest.approx(10.4)
+    assert extended.timeout_s > first.timeout_s + 5.0
+    assert not seen[-1].active

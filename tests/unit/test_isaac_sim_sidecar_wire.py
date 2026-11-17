@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, MutableMapping
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -645,6 +645,61 @@ class TestImageTime:
                 rclpy.shutdown()
                 hal.env.close()
 
+    def test_the_rgb_camera_info_carries_the_rendered_k_in_the_mount_optical_frame(
+        self,
+    ) -> None:
+        """``top`` (``shares_mount_with: head_zed``) publishes a ``CameraInfo`` in Isaac: the
+        K the sidecar renders it with, scaled to the frame, in ``zed_camera_link_optical_frame``
+        (TF places it), so the detector stamps a liftable frame + K. It used to be advertised
+        but silent (no MuJoCo handles), leaving the lift the manifest's frame ``world``."""
+        rclpy = pytest.importorskip("rclpy")  # default reason matches the declared `ros` gap
+        from openral_core import (
+            CameraTopicKind,
+            IntrinsicsPinhole,
+            camera_topic,
+            scale_intrinsics_to,
+        )
+        from openral_hal.sim_sensor_bridge import SimSensorBridge
+        from rclpy.qos import qos_profile_sensor_data
+        from sensor_msgs.msg import CameraInfo
+
+        render_k = IntrinsicsPinhole(width=400, height=224, fx=312.1, fy=310.7, cx=195.0, cy=112.3)
+        with _FakeSidecar(_free_port(), obs_extra=self._FRAMES, sim_time_ns=_STATE_NS) as s:
+            hal = self._hal(s.port)
+            hal.env.rendered_intrinsics = {"top": render_k}  # type: ignore[attr-defined]
+            rclpy.init()
+            node = rclpy.create_node("test_isaac_rgb_camera_info")
+            bridge = SimSensorBridge(
+                node=node, hal=hal, description=hal.description, viewer_enabled=False
+            )
+            got: list[Any] = []
+            node.create_subscription(
+                CameraInfo,
+                camera_topic("top", CameraTopicKind.CAMERA_INFO),
+                got.append,
+                qos_profile_sensor_data,
+            )
+            try:
+                hal.connect()
+                bridge._setup_cameras()
+                bridge._publish_images()
+                deadline = time.monotonic() + 5.0
+                while not got and time.monotonic() < deadline:
+                    rclpy.spin_once(node, timeout_sec=0.1)
+                assert got, "no CameraInfo for top"
+                info = got[0]
+                want = scale_intrinsics_to(render_k, 48, 64)  # the (64, 48) frame
+                assert info.header.frame_id == "zed_camera_link_optical_frame"
+                assert (info.width, info.height) == (48, 64)
+                assert list(info.k) == pytest.approx(
+                    [want.fx, 0.0, want.cx, 0.0, want.fy, want.cy, 0.0, 0.0, 1.0]
+                )
+            finally:
+                bridge.teardown()
+                node.destroy_node()
+                rclpy.shutdown()
+                hal.env.close()
+
     def test_on_the_sim_clock_each_frame_is_stamped_with_its_sim_time(self) -> None:
         """Issue #418: on ``use_sim_time`` the stamp is the frame time itself.
 
@@ -803,6 +858,98 @@ class TestJointEfforts:
             assert hal.read_state().effort == []
         finally:
             hal.env.close()
+
+
+class TestScanPerObservation:
+    """The Isaac lidar fan rides the observation to ``/scan`` from the publisher thread.
+
+    Real OpenAMRobot 2.0 manifest (a declared ``lidar_2d``), real ``SimAttachedHAL`` and
+    ``SimSensorBridge`` on a real rclpy node; the sidecar is the ZMQ boundary double.
+    The frame is built from the HAL as ``_capture_proprio`` builds it.
+    """
+
+    @staticmethod
+    def _amr() -> RobotDescription:
+        here = Path(__file__).resolve()
+        root = next(p for p in here.parents if (p / "robots").is_dir())
+        return RobotDescription.from_yaml(str(root / "robots" / "openamrobot_v2" / "robot.yaml"))
+
+    def _run(
+        self, scan: npt.NDArray[np.float32] | None, *, frames: int = 1
+    ) -> tuple[list[Any], list[MutableMapping[str, Any]], bool]:
+        """Publish ``frames`` frames carrying ``scan``; the scans received, warnings, timer."""
+        rclpy = pytest.importorskip("rclpy")  # default reason matches the declared `ros` gap
+        from openral_hal.proprio_snapshot import ProprioFrame
+        from openral_hal.sim_sensor_bridge import SimSensorBridge
+        from rclpy.qos import qos_profile_sensor_data
+        from sensor_msgs.msg import LaserScan
+        from structlog.testing import capture_logs
+
+        scene, task = _scene_task()
+        extra = {} if scan is None else {"scan": scan}
+        with _FakeSidecar(
+            _free_port(), obs_extra=extra, sim_time_ns=_STATE_NS, tick_ns=100_000_000
+        ) as s:
+            hal = SimAttachedHAL(_make_rollout(s.port, scene, task), self._amr())
+            rclpy.init()
+            node = rclpy.create_node("test_isaac_scan_per_observation")
+            bridge = SimSensorBridge(
+                node=node, hal=hal, description=hal.description, viewer_enabled=False
+            )
+            got: list[Any] = []
+            node.create_subscription(LaserScan, "/scan", got.append, qos_profile_sensor_data)
+            try:
+                hal.connect()
+                bridge._setup_scan()
+                with capture_logs() as logs:
+                    for _ in range(frames):
+                        raw = hal.read_scan()
+                        frame = ProprioFrame(
+                            state=hal.read_state(),
+                            base_pose=(0.0, 0.0, 0.0),
+                            base_pose_6dof=None,
+                            base_twist=(0.0,) * 6,
+                            sim_time_ns=hal.sim_time_ns(),
+                            scan=None if raw is None else np.array(raw, dtype=np.float32),
+                        )
+                        bridge.publish_scan_from_frame(frame)
+                        bridge.publish_scan_from_frame(frame)  # the same frame: once
+                        hal._step_and_cache(np.zeros(7, dtype=np.float32), source="test")
+                deadline = time.monotonic() + 2.0
+                while len(got) < frames and time.monotonic() < deadline:
+                    rclpy.spin_once(node, timeout_sec=0.1)
+                warnings = [e for e in logs if e["log_level"] == "warning"]
+                return got, warnings, bridge._scan_timer is not None
+            finally:
+                bridge.teardown()
+                node.destroy_node()
+                rclpy.shutdown()
+                hal.env.close()
+
+    def test_each_new_observation_is_published_once_off_the_timer(self) -> None:
+        fan = np.linspace(0.5, 8.0, 360).astype(np.float32)
+        got, warnings, timer = self._run(fan, frames=3)
+        assert not timer  # no executor-thread timer for an observation-fed lidar
+        assert len(got) == 3  # one per step 100 ms of sim time apart; repeats dropped
+        assert len(got[0].ranges) == 360
+        assert got[0].angle_increment == pytest.approx(2 * np.pi / 360)
+        np.testing.assert_allclose(got[0].ranges, fan, rtol=1e-6)
+        assert warnings == []
+
+    def test_a_fan_of_another_beam_count_is_published_as_the_sensor_gave_it(self) -> None:
+        """A 720-beam lidar against the bridge's 360: dropping it silently held the base
+        (collision-monitor source timeout) with no log line."""
+        got, warnings, _ = self._run(np.full(720, 3.0, dtype=np.float32), frames=2)
+        assert len(got) == 2
+        assert len(got[0].ranges) == 720
+        assert got[0].angle_increment == pytest.approx(2 * np.pi / 720)
+        assert [(w["configured_beams"], w["sensor_beams"]) for w in warnings] == [(360, 720)]
+
+    def test_a_missing_scan_publishes_nothing_and_says_so_once(self) -> None:
+        got, warnings, timer = self._run(None, frames=3)
+        assert not timer
+        assert got == []  # no beams made up
+        assert [w["event"] for w in warnings] == ["sim_sensor_bridge.scan_missing"]
 
 
 class TestFramesOnDemand:

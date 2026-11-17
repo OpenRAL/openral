@@ -50,6 +50,12 @@ normalised:
    `-2.100862 1.142449 -2.143093` left and `2.10087 1.142449 2.143093` right, so that
    the optical frame below is that camera). Upstream's poses looked along the hand's
    +x and never saw the fingers (`tests/unit/test_openamrobot_v2_wrist_cameras.py`).
+7. Move upstream's head-camera assembly onto the head ZED's lens (see "Head camera"):
+   `head_camera_mount_joint` xyz `0.258568 0.027277 0.267553`, rpy
+   `-0.028403 0.621812 -0.00224` (the lens pose, 2.5 mm back along the view, then
+   upstream's 30° pitch undone, so `head_camera_pitch_joint` and the bracket keep their
+   upstream origins), and `head_camera_optical_joint` xyz `0.0025 0 0`. Mirror the mount
+   joint in `robot.yaml` and re-run `openral collision lower --acm-only`.
    Write the result with `ET.indent`.
 
 ## Mass
@@ -85,21 +91,40 @@ new carriage masses.
   (3.72 m mapped, 4.31 m driven) and Nav2 overshot, as it did in the Isaac aisle.
 - **Isaac Sim:** run `scenes/deploy/isaac_openamrobot_v2_warehouse.yaml`, which
   places the robot in the shelf aisle of `warehouse_multiple_shelves.usd`. The scene
-  runs with the voxel map on: octomap maps the head ZED's depth, so the shelves reach
-  the safety kernel's voxel check and the robot console's 3D view.
+  runs with the voxel map on: octomap maps the head ZED's depth into the safety
+  kernel's voxel check and the robot console's 3D view. The camera looks 65.6° down
+  from 1.45 m (lift 0.35 m), so its view meets the floor no farther than 2.4 m ahead and
+  2.2 m to the side: from the spawn, 3.8 m from either rack, no shelf is mapped; a shelf
+  enters the map once the robot stands at it (`shelf_1_props`, 0.8 m off Shelf_1).
 
 ## Head camera
 
 The head camera is a ZED Mini (`head_zed` depth + `top` RGB, the key OpenArm rSkills
-read as `observation.images.top`) with OpenArm's intrinsics, on upstream's head mount
-(`head_camera_link`, on its bracket above the lift carriage, pitched 30° down). OpenArm's
-own measured mount cannot carry over. The arm bases sit on the lift carriage as on the
-OpenArm body, so the same mount relative to the arms puts the camera inside upstream's
-Getac tablet: their centres are 1.5 cm apart, and every depth ray hit the tablet. The
-view is therefore not OpenArm's: about 13 cm higher, and pitched 30° down instead of
-65.6°. An OpenArm rSkill sees its workspace from another angle than it was trained on.
-`tests/unit/test_openamrobot_v2_head_zed.py` checks the intrinsics, the TF/sim agreement,
-and that no pixel of the view lands on the robot.
+read as `observation.images.top`) with OpenArm's intrinsics, at the fixed OpenArm shelf
+cell's head-camera pose relative to the arm bases: 65.6° down, at the tote the robot
+carries on its lift carriage and at the shelf. The robot owner confirmed the real head ZED
+looks down at the tote and shelf like the cell's; the pose is a corrected design pose, not
+measured on a robot (`static_transform_calibrated: false`). The arm bases sit on the lift
+carriage at y = ±0.031 m with OpenArm's orientation, so the cell's `openarm_base` (their
+midpoint) mount becomes `openarm_left_base_link` + (0.077587, -0.003761, 0.099276) with
+OpenArm's measured rpy, and the camera rides the lift with the arms. The lens then moves
+2.013 mm forward (x 0.0796), same view direction: at the cell's x it sat 1 mm inside the
+Getac placeholder's collision box, and the octomap self-filter, which casts every depth
+pixel from the lens into the robot's collision boxes, entered that box at depth 0 on
+every pixel, so the whole head_zed image read as robot. It now clears every box by 1 mm.
+Upstream's own ZED assembly (`head_camera_link` body box and `head_camera_bracket_link`,
+on the carriage pitched 30° down, a view that saw only the shelf with the tote below the
+image) is moved rigidly onto this lens (regeneration step 7): the body box sits 2.5 mm
+behind the lens and `head_camera_optical_frame` is the lens. At this design pose the ZED
+body reaches through the Getac placeholder into the arm profile (both are ACM rows with
+`head_camera_link`): on the real robot, check how the camera and tablet actually mount.
+From the lens, `top` (the policy camera) sees only the base's front deck; the wider
+`head_zed` also sees the Getac face and the head light below it (its bottom rows look 5°
+past straight down) and, when they swing below it, the arms. The self-filter masks
+those. `tests/unit/test_openamrobot_v2_head_zed.py` checks the intrinsics, that TF, the
+Isaac mount and the MuJoCo twin place the camera at one pose, that it looks down in
+front of the arms, the lens's clearance from every collision box, and what each camera
+sees of the robot.
 
 ## Costmap clearing
 
@@ -265,6 +290,23 @@ Open before the first real run (agreed with the OpenAMRobot project in openral#4
       physical link6 has is still worth confirming with Enactic: the union covers
       both.
   - Not modelled: the wrist cameras (frames only in the URDF).
+  - The head ZED body and bracket are upstream's placeholders moved to the design
+    lens pose; they overlap the Getac and arm-profile placeholders (three ACM rows,
+    2026-11-16). Owed with the rest: the measured camera mount.
+- **Sim-only allowances; Safety-WG review and hazard-log entries owed.** This robot's
+  sim twins run with allowances the real robot must not inherit, kept out of the
+  manifest so the real HAL never reads them:
+  - The Isaac twin's arms run position gains without gravity feed-forward (the stocking
+    policy was trained on that sag), and the elbows settle 0.064-0.065 rad short of the
+    stocking starting pose. The runner's `starting_pose_tolerance` param admits 0.08 rad
+    for the Isaac deploys only; the manifest keeps the OpenArm cell's 0.05 rad. The
+    0.08 also widens every other revolute joint's arrival check in that sim.
+  - The shelf aisle scene carries the tote on the lift carriage as a rigid Isaac
+    link attachment (no fixture, no slip); the real robot's tote mount is unspecified.
+  - The head ZED pose is a design pose (`static_transform_calibrated: false`), moved
+    2 mm off the Getac placeholder for the self-filter; the real mount is unmeasured.
+  Owed: a Safety-WG review of each and a private hazard-log entry before any of them
+  informs a real deployment.
 - **Upstream placeholders.** Upstream marks these as placeholders: the wrist
   camera poses (replaced here by OpenArm's mount, step 6 above), the 0.400 m wheel track, the lift speed and effort (DOLD
   catalogue, "provisional") and every acceleration limit. Upstream has also not

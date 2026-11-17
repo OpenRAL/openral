@@ -30,15 +30,18 @@ from typing import Literal
 import numpy as np
 from numpy.typing import NDArray
 
-from openral_core.schemas import AttachedCollisionObject, Pose6D
+from openral_core.exceptions import ROSConfigError
+from openral_core.schemas import AttachedCollisionObject, PlaceRegion, Pose6D
 
 __all__ = [
     "ViewAxis",
     "compute_gaze_pose",
     "freeze_released_attachment",
     "homogeneous_from_quat_xyz",
+    "is_gravity_aligned",
     "look_at_quat_wxyz",
     "quat_xyzw_to_yaw",
+    "rebase_box",
     "rotation_to_quat_wxyz",
     "yaw_to_quat_wxyz",
     "yaw_to_quat_xyzw",
@@ -83,8 +86,6 @@ def homogeneous_from_quat_xyz(
         >>> homogeneous_from_quat_xyz((1.0, 2.0, 3.0), (0.0, 0.0, 0.0, 1.0)).tolist()
         [[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 2.0], [0.0, 0.0, 1.0, 3.0], [0.0, 0.0, 0.0, 1.0]]
     """
-    from openral_core.exceptions import ROSConfigError  # noqa: PLC0415 — avoids an import cycle
-
     x, y, z, w = quat_xyzw
     n = x * x + y * y + z * z + w * w
     if n < _QUAT_NORM_EPS:
@@ -289,6 +290,7 @@ def freeze_released_attachment(
     *,
     base_link: str,
     t_base_from_link: NDArray[np.float64],
+    stamp_ns: int,
 ) -> AttachedCollisionObject:
     """Re-express a released payload as a record fixed in the base frame.
 
@@ -296,8 +298,10 @@ def freeze_released_attachment(
     pose_in_link`` for every configuration a candidate predicts, so a record
     left on the hand would ride the retreating hand through the whole chunk while
     the real object stays put. Attached to the collision model's root link (the
-    manifest's ``base_frame``, a link FK never moves) it stays where it was
-    released, and ``released_by_link`` names the hand that let it go: the kernel
+    manifest's ``base_frame``, which arm FK never moves; on a mobile base the base
+    joints carry it, and the root link with it) it stays where it was released while
+    the base stands still — a base move invalidates it, so the release window closes
+    then — and ``released_by_link`` names the hand that let it go: the kernel
     then treats it as a frozen payload (2026-11-02, Spark ``v_off_dr``: read as a
     carried payload, the frozen banana latched a world stop on the bowl 170 ms after
     release). It is never checked against the world, stays an obstacle to every robot
@@ -310,9 +314,14 @@ def freeze_released_attachment(
 
     Args:
         held: The attachment the gripper held until it let go.
-        base_link: The collision model's root link (``RobotDescription.base_frame``).
+        base_link: The collision model's root link (``RobotDescription.base_frame``); fixed
+            relative to the world only while the base is still.
         t_base_from_link: ``(4, 4)`` pose of ``held.attach_link`` in ``base_link``
             when the gripper let go.
+        stamp_ns: The release instant: the frozen record's ``stamp_ns``. The kernel keys
+            the release window on it and opens it closed when it predates the last base
+            motion, so the attach-time stamp would close the window of every payload
+            carried across a drive.
 
     ``support_contact`` is dropped: a held payload's own witness is the grasp-time
     ``map_support_under:*`` one (``region_attachment``), a claim about where the payload
@@ -321,7 +330,7 @@ def freeze_released_attachment(
     Returns:
         The frozen record: same object, geometry, evidence and force attestation, no
         support witness; base-frame pose; ``released_by_link`` the held attach link;
-        ``evidence_ref`` suffixed ``|frozen_release``.
+        ``evidence_ref`` suffixed ``|frozen_release``; ``stamp_ns`` the release instant.
     """
     pose = t_base_from_link @ homogeneous_from_quat_xyz(
         held.pose_in_link.xyz, held.pose_in_link.quat_xyzw
@@ -341,5 +350,79 @@ def freeze_released_attachment(
             "evidence_ref": f"{held.evidence_ref or held.object_id}|frozen_release",
             "support_contact": None,
             "released_by_link": held.attach_link,
+            "stamp_ns": stamp_ns,
         }
     )
+
+
+#: The most a fixed frame's ``frame <- box frame`` rotation may tilt off vertical for a
+#: declared box to be re-expressed yaw-only (``rebase_box``): a mobile base on a level
+#: floor. Beyond it the box's footprint is not a column in the grid frame.
+_REBASE_MAX_TILT_RAD = math.radians(0.5)
+_GRAVITY_TOL = 1e-6
+
+
+def is_gravity_aligned(quat_xyzw: tuple[float, float, float, float]) -> bool:
+    """Whether a box orientation is yaw-only: its z axis is the frame's (``rebase_box``).
+
+    The one predicate the deploy's scene check and ``rebase_box`` share, so a box the deploy
+    accepts is one the consumer can re-express.
+
+    Example:
+        >>> is_gravity_aligned((0.0, 0.0, 0.3826834, 0.9238795))
+        True
+        >>> is_gravity_aligned((0.0998334, 0.0, 0.0, 0.9950042))
+        False
+    """
+    rot = homogeneous_from_quat_xyz((0.0, 0.0, 0.0), quat_xyzw)[:3, :3]
+    return abs(float(rot[2, 2]) - 1.0) <= _GRAVITY_TOL
+
+
+def rebase_box(box: PlaceRegion, t_frame_from_box: NDArray[np.float64], frame: str) -> PlaceRegion:
+    """A gravity-aligned declared ``box`` re-expressed in ``frame``, still gravity-aligned.
+
+    A scene may declare a box in a fixed frame (``odom``, ``map``) so it stays put while a
+    mobile base moves: a ``GraspDeclaration.search_box`` / ``workspace_box`` (the HAL's
+    grasp-target leg) or a ``PlaceZone.region`` (the Layer-2 object tracker). Its consumer
+    re-expresses it in the voxel grid's frame every tick through ``t_frame_from_box``
+    (tf2 ``frame <- box``). The centre is transformed and the box's yaw composed with the
+    transform's; the transform's own tilt (at most ``_REBASE_MAX_TILT_RAD``) is dropped, so
+    the result is yaw-only like the box. Lives here (moved down from
+    ``openral_hal._grasp_target_leg``) so Layer 0 and Layer 2 share one copy.
+
+    Raises:
+        ROSConfigError: The box or the transform is tilted past the bound.
+
+    Example:
+        >>> from openral_core import PlaceRegion, Pose6D
+        >>> box = PlaceRegion(
+        ...     frame_id="odom",
+        ...     half_extents=(0.1, 0.2, 0.3),
+        ...     pose=Pose6D(xyz=(1.0, 0.0, 0.0), quat_xyzw=(0, 0, 0, 1), frame_id="odom"),
+        ... )
+        >>> yaw90 = np.array([[0, -1, 0, 1], [1, 0, 0, 2], [0, 0, 1, 0.5], [0, 0, 0, 1.0]])
+        >>> r = rebase_box(box, yaw90, "base_link")
+        >>> r.frame_id, [round(v, 3) for v in r.pose.xyz], [round(v, 3) for v in r.pose.quat_xyzw]
+        ('base_link', [1.0, 3.0, 0.5], [0.0, 0.0, 0.707, 0.707])
+    """
+    rot = np.asarray(t_frame_from_box, dtype=np.float64)[:3, :3]
+    box_rot = homogeneous_from_quat_xyz((0.0, 0.0, 0.0), box.pose.quat_xyzw)[:3, :3]
+    if not is_gravity_aligned(box.pose.quat_xyzw):
+        raise ROSConfigError(f"declared box in {box.frame_id!r} must be gravity-aligned.")
+    tilt = math.acos(min(1.0, max(-1.0, float(rot[2, 2]))))
+    if tilt > _REBASE_MAX_TILT_RAD:
+        raise ROSConfigError(
+            f"{frame} <- {box.frame_id} is tilted {math.degrees(tilt):.2f} deg; a declared "
+            f"box re-expresses only under {math.degrees(_REBASE_MAX_TILT_RAD):.2f} deg."
+        )
+    xyz = rot @ np.asarray(box.pose.xyz, dtype=np.float64) + np.asarray(t_frame_from_box)[:3, 3]
+    composed = rot @ box_rot
+    yaw = math.atan2(float(composed[1, 0]), float(composed[0, 0]))
+    pose = box.pose.model_copy(
+        update={
+            "xyz": tuple(float(v) for v in xyz),
+            "quat_xyzw": yaw_to_quat_xyzw(yaw),
+            "frame_id": frame,
+        }
+    )
+    return box.model_copy(update={"frame_id": frame, "pose": pose})

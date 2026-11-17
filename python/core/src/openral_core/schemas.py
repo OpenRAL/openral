@@ -16,6 +16,7 @@ import math
 import os
 import re
 import warnings
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from enum import Enum, StrEnum
 from pathlib import Path
@@ -55,6 +56,11 @@ from openral_core.exceptions import ROSConfigError, ROSGPUMemoryError, ROSObject
 from openral_core.time_base import scene_control_rate_hz
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
+
+
+def _repeated(names: Iterable[str]) -> list[str]:
+    """The names that occur more than once, sorted (every "names unique" check here)."""
+    return sorted(n for n, count in Counter(names).items() if count > 1)
 
 
 def _load_yaml_model(
@@ -844,8 +850,7 @@ def sim_scene_description(
                 f"backend_options.sim_sensors {bad}: a simulated sensor must be a depth "
                 "camera with intrinsics and no deploy_binding."
             )
-        names = [s.name for s in added]
-        dupes = sorted({n for n in names if names.count(n) > 1})
+        dupes = _repeated(s.name for s in added)
         if dupes:
             raise ROSConfigError(f"backend_options.sim_sensors names {dupes} more than once.")
         update["sensors"] = merge_deploy_sensors(description.sensors, added)
@@ -3237,7 +3242,7 @@ class ForceObserverSpec(BaseModel):
             ("links", [x.link for x in self.links]),
             ("joints", [x.joint for x in self.joints]),
         ):
-            dupes = sorted({n for n in names if names.count(n) > 1})
+            dupes = _repeated(names)
             if dupes:
                 raise ValueError(f"force_observer.{label} names {dupes} more than once")
         return self
@@ -4383,7 +4388,10 @@ class PlaceRegion(BaseModel):
             frame — the frame ``OccupancyVoxels`` is published in. The kernel
             refuses a region whose frame does not match the occupancy grid's,
             because a region measured in one frame and applied in another is a
-            relaxation aimed at the wrong volume.
+            relaxation aimed at the wrong volume. (A ``PlaceZone`` or a declared
+            ``search_box`` / ``workspace_box`` may name a fixed frame — ``map`` /
+            ``odom`` — but its producer re-expresses it in the grid frame,
+            ``openral_core.geometry.rebase_box``, before the kernel sees it.)
         pose: Region box centre pose in ``frame_id``.
         half_extents: Box half-extents along its own axes (m), each in
             ``(0, MAX_HALF_EXTENT_M]``.
@@ -4893,7 +4901,7 @@ _ZONE_NAME = r"^[a-z0-9]+(?:_[a-z0-9]+)*$"
 class PlaceZone(BaseModel):
     """A named place zone on fixed station furniture (a shelf slot), declared by the station.
 
-    The destination of a prompt such as "restock box x3 into upper slot 2" is a position on a
+    The destination of a prompt such as "put box x3 into upper slot 2" is a position on a
     fixed shelf, which an open-vocabulary detector cannot ground (unlike a plate, a tracked
     ``DESTINATION`` object). A station declares such positions here
     (``DeployScene.place_zones``); the rSkill runner names the one a goal's prompt names as its
@@ -4902,14 +4910,30 @@ class PlaceZone(BaseModel):
     payload is held (``TrackerSession.place_region``). The zone arms nothing on its own.
 
     **A declared, not measured, region** — a deliberate exception to ADR-0097's
-    producer-measured rule, sound only for furniture fixed in the robot base frame (a
-    fixed-base station). Safety-WG review, a hazard-log row and an ADR amendment are owed.
+    producer-measured rule, sound only for furniture that does not move in the zone's frame.
+    Safety-WG review, a hazard-log row and an ADR amendment are owed.
+
+    **Two frames** (``region.frame_id``, checked against the robot by ``openral deploy``):
+
+    * the robot base frame (the voxel grid's) — a fixed-base station only (``manipulator`` /
+      ``bimanual``): on a moving base a base-frame box rides away from the furniture;
+    * the robot's ``map_frame`` ("station mode", any embodiment whose deploy publishes that
+      map — its SLAM or the platform's navigation —, e.g. one set per shelf an AMR docks at),
+      gravity-aligned (a yaw-only quaternion; ``geometry.is_gravity_aligned``). The tracker
+      re-expresses it in the grid frame through tf2 at the grid's ``source_stamp`` every
+      publish (``rebase_box``, at most 0.5 deg of base tilt); no tf2 at that stamp, or more
+      tilt, and the zone yields no region. The kernel still receives a grid-frame region and
+      still refuses any other frame (``frame_mismatch``).
+
+    Any other frame is refused by the deploy, ``odom_frame`` included (odometry drifts while
+    the base drives). Schema-wise both are the same model. One zone names itself once: its
+    name and aliases are distinct.
 
     Attributes:
         name: The zone's name, lower-case words joined by ``_`` (``upper_slot_2``).
         aliases: Other names a prompt may use (``upper_2``), same form.
-        region: The zone's box in the robot base frame (the voxel grid's); ``geometry`` empty,
-            ``pose`` in ``region.frame_id``.
+        region: The zone's box in the robot base frame, or in its map frame (above);
+            ``geometry`` empty, ``pose`` in ``region.frame_id``.
 
     Example:
         >>> zone = PlaceZone(
@@ -4927,6 +4951,22 @@ class PlaceZone(BaseModel):
         ... )
         >>> zone.target_id
         'zone:upper_slot_2'
+        >>> shelf = zone.model_copy(  # station mode: the same slot, fixed in the map
+        ...     update={
+        ...         "region": zone.region.model_copy(
+        ...             update={
+        ...                 "frame_id": "map",
+        ...                 "pose": Pose6D(
+        ...                     xyz=(4.2, -1.5, 0.62),
+        ...                     quat_xyzw=(0.0, 0.0, 0.0, 1.0),
+        ...                     frame_id="map",
+        ...                 ),
+        ...             }
+        ...         )
+        ...     }
+        ... )
+        >>> PlaceZone.model_validate_json(shelf.model_dump_json()) == shelf
+        True
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -4942,6 +4982,13 @@ class PlaceZone(BaseModel):
     def _validate_zone(self) -> Self:
         if self.region.geometry:
             raise ValueError(f"PlaceZone {self.name!r}: region.geometry must be empty.")
+        # One zone names itself once: a repeated alias, or its own name as an alias, is a
+        # typo (refused before aliases could repeat across zones, and still).
+        names = (self.name, *self.aliases)
+        if len(set(names)) != len(names):
+            raise ValueError(
+                f"PlaceZone {self.name!r}: its name and aliases repeat {_repeated(names)}."
+            )
         # The tracker frame-checks `region.frame_id` only, and the IDL drops the pose's own
         # frame: a pose written in another frame would arm the box at the wrong place.
         if self.region.pose.frame_id != self.region.frame_id:
@@ -4955,6 +5002,82 @@ class PlaceZone(BaseModel):
     def target_id(self) -> str:
         """The ``PlaceDeclaration.target_id`` naming this zone."""
         return f"{self.TARGET_PREFIX}{self.name}"
+
+
+#: A navigation goal's off-plane tolerance (z, quaternion x/y) and unit-quaternion tolerance.
+_PLANAR_TOL: Final = 1e-6
+_UNIT_QUAT_TOL: Final = 1e-3
+
+
+class NavGoal(BaseModel):
+    """A named navigation goal a mobile robot drives to: a station of the cell (ADR-0133).
+
+    Declared task knowledge, not a measured pose: the cell names where its stations are
+    (the pose in front of a shelf, a charging spot) so Nav2 can drive there and the reasoner
+    can pick one by name. It grants nothing; Nav2's costmaps and the kernel still check every
+    motion, and a goal that cannot be planned fails in Nav2. Not a ``PlaceZone`` (a put-down
+    box in the base frame).
+
+    Attributes:
+        name: The goal's name, lower-case words joined by ``_`` (``s6``, ``shelf_6``).
+        aliases: Other names a prompt may use, same form.
+        pose: Where the base goes and its heading (the yaw), in the robot's map frame
+            (``RobotDescription.map_frame``, checked by the deploy), the frame Nav2 plans in.
+            Planar: z = 0 and a unit yaw-only quaternion.
+        description: What the station is, for the reasoner (``"in front of shelf 6"``).
+
+    Example:
+        >>> goal = NavGoal(
+        ...     name="s6",
+        ...     aliases=("shelf_6",),
+        ...     pose=Pose6D(xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="map"),
+        ...     description="in front of shelf 6",
+        ... )
+        >>> goal.node_id
+        'nav_goal:s6'
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Spatial-memory ``node_id`` prefix of a declared goal.
+    NODE_PREFIX: ClassVar[str] = "nav_goal:"
+
+    name: Annotated[str, StringConstraints(pattern=_ZONE_NAME)]
+    aliases: tuple[Annotated[str, StringConstraints(pattern=_ZONE_NAME)], ...] = ()
+    pose: Pose6D
+    description: str | None = None
+
+    @model_validator(mode="after")
+    def _planar_pose_in_a_frame(self) -> Self:
+        x, y, z, w = self.pose.quat_xyzw
+        if not self.pose.frame_id:
+            raise ValueError(f"NavGoal {self.name!r}: pose.frame_id is empty.")
+        if not all(math.isfinite(v) for v in (*self.pose.xyz, x, y, z, w)):
+            raise ValueError(f"NavGoal {self.name!r}: the pose is not finite.")
+        if max(abs(self.pose.xyz[2]), abs(x), abs(y)) > _PLANAR_TOL:
+            raise ValueError(
+                f"NavGoal {self.name!r}: a navigation goal is planar (z = 0, yaw only); got "
+                f"xyz {self.pose.xyz} quat_xyzw {self.pose.quat_xyzw}."
+            )
+        if abs(math.hypot(z, w) - 1.0) > _UNIT_QUAT_TOL:
+            raise ValueError(f"NavGoal {self.name!r}: quat_xyzw is not a unit quaternion.")
+        return self
+
+    @property
+    def node_id(self) -> str:
+        """The spatial-memory ``PLACE`` node this goal is seeded as."""
+        return f"{self.NODE_PREFIX}{self.name}"
+
+
+def repeated_nav_goal_names(goals: Sequence[NavGoal]) -> list[str]:
+    """Names or aliases used by more than one goal (or twice by one), sorted.
+
+    Example:
+        >>> pose = Pose6D(xyz=(0, 0, 0), quat_xyzw=(0, 0, 0, 1), frame_id="map")
+        >>> repeated_nav_goal_names([NavGoal(name="s1", pose=pose), NavGoal(name="s1", pose=pose)])
+        ['s1']
+    """
+    return _repeated(n for g in goals for n in (g.name, *g.aliases))
 
 
 def place_zone_for_prompt(prompt: str, zones: Sequence[PlaceZone]) -> PlaceZone | None:
@@ -5089,6 +5212,9 @@ class GraspDeclaration(BaseModel):
     #: Ceiling on ``timeout_s`` (Safety-WG placeholder): a grasp is one phase
     #: of a goal, not the goal.
     MAX_TIMEOUT_S: ClassVar[float] = 120.0
+    #: Seconds a goal-built declaration outlives its goal's budget (the reasoner's patience,
+    #: the runner's resolved execution budget) before the backstop expires it.
+    TIMEOUT_MARGIN_S: ClassVar[float] = 10.0
     #: Ceiling on one region half-extent (Safety-WG placeholder).
     MAX_HALF_EXTENT_M: ClassVar[float] = 0.20
     #: Ceiling on the region volume (Safety-WG placeholder).
@@ -6513,6 +6639,9 @@ class SpatialNode(BaseModel):
         last_seen_ns: Timestamp of the most recent observation, in nanoseconds;
             must be ``>= first_seen_ns``.
         observation_count: Number of times this node has been observed.
+        aliases: Other names the node answers to exactly (a declared station's aliases).
+        description: What the node is, for the reasoner (a declared station's description).
+        declared: Declared task knowledge (``DeployScene.nav_goals``), not perceived.
 
     Example:
         >>> node = SpatialNode(
@@ -6543,6 +6672,9 @@ class SpatialNode(BaseModel):
     first_seen_ns: int = Field(ge=0)
     last_seen_ns: int = Field(ge=0)
     observation_count: int = Field(default=1, ge=1)
+    aliases: tuple[str, ...] = ()
+    description: str = ""
+    declared: bool = False
 
     @model_validator(mode="after")
     def _check_node_invariants(self) -> SpatialNode:
@@ -6587,19 +6719,28 @@ class SceneGraph(BaseModel):
     nodes.
 
     Attributes:
-        schema_version: On-disk schema version (``"0.1"``; no
-            backward-incompatible change yet). Now the repo is published it
-            is versioned for real (CLAUDE.md §1.6): an incompatible change
-            bumps it and ships a migrator.
+        schema_version: On-disk schema version (CLAUDE.md §1.6). ``"0.2"`` added
+            ``SpatialNode.aliases`` / ``description`` / ``declared`` (ADR-0133); a
+            ``"0.2"`` graph does not load under a ``"0.1"`` reader (``extra="forbid"``).
+            A ``"0.1"`` file is migrated on load (``_migrate_scene_graph``): the added
+            fields take their defaults, so the migration only restamps the version.
         nodes: All scene-graph nodes.
         edges: All directed relations between nodes.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["0.1"] = "0.1"
+    schema_version: Literal["0.2"] = "0.2"
     nodes: list[SpatialNode] = Field(default_factory=list)
     edges: list[SpatialEdge] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_scene_graph(cls, data: object) -> object:
+        """Migrate a ``"0.1"`` graph to ``"0.2"`` (the added node fields default)."""
+        if isinstance(data, Mapping) and data.get("schema_version") == "0.1":
+            return {**data, "schema_version": "0.2"}
+        return data
 
     @model_validator(mode="after")
     def _check_graph_integrity(self) -> SceneGraph:
@@ -6729,6 +6870,9 @@ class ResolvePlaceResult(BaseModel):
         path_node_ids: Ordered ``traversable_to`` path of node ids from the
             robot's current place to the goal (empty when no path is needed or
             known).
+        declared: The goal is a declared station (``SpatialNode.declared``,
+            ``DeployScene.nav_goals``), whose orientation is part of the goal; a
+            perceived place's pose orientation is not.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -6736,6 +6880,7 @@ class ResolvePlaceResult(BaseModel):
     node_id: str = Field(min_length=1)
     goal: Pose6D
     path_node_ids: list[str] = Field(default_factory=list)
+    declared: bool = False
 
 
 # ─── Action ────────────────────────────────────────────────────────────────────
@@ -10081,6 +10226,28 @@ class RSkillManifest(BaseModel):
             for field in (self.name, self.weights_uri, self.base_weights_uri, self.source_repo)
         )
 
+    @property
+    def actuates_manipulator(self) -> bool | None:
+        """Whether the skill moves an arm, gripper or hand, from ``actuators_required``.
+
+        ``True`` when any actuator is outside the base family (``TaskSpaceFamily.BASE``:
+        ``body_twist`` / ``foot_placement``), ``False`` when every one is a base mode (Nav2,
+        a VLN policy), ``None`` when it actuates nothing. The one predicate the runner's
+        station mode and object-target grounding, and the reasoner palette, decide on.
+
+        Example:
+            >>> nav2 = "rskills/rskill-nav2-navigate-to-pose/rskill.yaml"
+            >>> RSkillManifest.from_yaml(nav2).actuates_manipulator
+            False
+            >>> pi05 = "rskills/pi05-metal-pick-place/rskill.yaml"
+            >>> RSkillManifest.from_yaml(pi05).actuates_manipulator
+            True
+        """
+        families = {_FAMILY_FOR_MODE[a.kind] for a in self.actuators_required}
+        if not families:
+            return None
+        return families != {TaskSpaceFamily.BASE}
+
     # ── Preprocessing block ───────────────────────────────────────────────
     # Knobs the trained checkpoint needs to interpret IO. Grouped here so
     # manifest readers see them together. ``processors`` is the explicit
@@ -13380,15 +13547,50 @@ class DeployScene(BaseModel):
     goal-scope place declaration names the one zone the goal's prompt names
     (``place_zone_for_prompt``), and to the object tracker, which publishes it as the place
     region while a payload is held (sim only: ``deploy run`` refuses every tracking mode
-    until Safety-WG sign-off). Names and aliases are unique across zones. Empty = no
+    until Safety-WG sign-off). A zone is in the robot base frame (fixed-base robots only) or
+    in its map frame (any robot whose deploy publishes the map; re-expressed through tf2): the
+    deploy refuses
+    anything else (``PlaceZone``). Names are unique across zones; an alias may repeat only
+    across zones in one fixed frame (the same slot at several stations, chosen by reach at run
+    time; the deploy refuses a repeat among base-frame zones). Empty = no
     zone; a prompt naming none arms none. Declared, not measured: Safety-WG review owed."""
+
+    nav_goals: list[NavGoal] = Field(default_factory=list)
+    """Named navigation goals: the cell's stations a mobile robot drives to (ADR-0133).
+
+    ``openral deploy sim`` / ``deploy run`` forward them (``nav_goals_json``) to the
+    reasoner, which seeds each as a ``PLACE`` node of its spatial memory, so
+    ``resolve_place`` returns its pose and the context lists it; the Nav2 rSkill drives
+    there. Refused on a robot without a mobile base. Names and aliases are unique. Empty =
+    none."""
 
     @model_validator(mode="after")
     def _unique_zone_names(self) -> Self:
-        names = [n for z in self.place_zones for n in (z.name, *z.aliases)]
-        dupes = sorted({n for n in names if names.count(n) > 1})
+        # Zone names are unique across the scene, and no alias is another zone's name. An
+        # alias may repeat only across zones that all share one frame: the same slot at
+        # several stations of a mobile robot, declared in its map frame and told apart
+        # by the robot's reach at run time (`zone_candidates_target_id`). The deploy, which
+        # knows the robot, still refuses a repeat among base-frame zones
+        # (`_check_place_zone_frames`), so a fixed-base scene is refused exactly as before.
+        # Backward compatible: every file that loaded still loads.
+        names = [z.name for z in self.place_zones]
+        frames: dict[str, set[str]] = {}
+        for z in self.place_zones:
+            for a in z.aliases:
+                frames.setdefault(a, set()).add(z.region.frame_id)
+        dupes = sorted(
+            {*_repeated(names)}
+            | {a for a in frames if a in names}
+            | {a for a, fs in frames.items() if len(fs) > 1}
+        )
         if dupes:
-            raise ValueError(f"place_zones names/aliases must be unique; repeated: {dupes}.")
+            raise ValueError(
+                f"place_zones names must be unique, no alias may be a zone name, and a "
+                f"repeated alias must stay in one frame; refused: {dupes}."
+            )
+        dupes = repeated_nav_goal_names(self.nav_goals)
+        if dupes:
+            raise ValueError(f"nav_goals names/aliases must be unique; repeated: {dupes}.")
         return self
 
     @model_validator(mode="before")

@@ -21,8 +21,9 @@ once per URDF revision and caches the result under
 * add the mimic-finger equality, the wrist cameras on the URDF optical frames
   (OpenArm's wrist mount),
   and a visual-only floor. The head ZED is spliced by the generic camera rig
-  from the manifest's ``sim_placement``, on upstream's ``head_camera_link`` (not
-  OpenArm's measured mount, which lands inside the Getac tablet here).
+  from the manifest's ``sim_placement``, on ``openarm_left_base_link`` at the OpenArm
+  shelf cell's head-camera pose. The URDF's ``head_camera_link`` (upstream's ZED body
+  box) sits 2.5 mm behind that lens; the rig's camera is not a URDF frame.
 
 Robot geoms collide with the world but not with each other (``contype`` 2 /
 ``conaffinity`` 1), as in the bare OpenArm twin. Self-collision is the safety
@@ -81,7 +82,7 @@ _LINK_FINISH: dict[str, list[float]] = {
     "lift_carriage_link": _srgb("#C9CDD2"),  # lift stage (model.js alu)
     "adapter_plate_link": _srgb("#0A0A0A"),  # RAL 9005, satin (finish.json)
     "arm_profile_link": _srgb("#383E42"),  # RAL 7016, satin (finish.json)
-    "head_camera_link": _srgb("#15181C"),  # ZED Mini body (model.js black)
+    "head_camera_link": _srgb("#15181C"),  # ZED Mini body at the head_zed lens (model.js black)
     "head_camera_bracket_link": _srgb("#C9CDD2"),
     "lift_flag_rod_link": _srgb("#C9CDD2"),
     "lift_flag_link": _srgb("#4A4F55"),

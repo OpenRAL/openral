@@ -30,6 +30,7 @@ from openral_core import (
     RobotDescription,
 )
 from openral_core.exceptions import ROSConfigError
+from openral_core.geometry import rebase_box
 from openral_core.perception_geometry import (
     VoxelLattice,
     _in_region,
@@ -50,7 +51,6 @@ from openral_hal._grasp_target_leg import (
     _Refusal,
     _refused_fit,
     approach_box,
-    rebase_box,
     search_column,
 )
 from openral_hal.vision_attachment_bridge import (
@@ -155,6 +155,27 @@ def test_a_fixed_frame_search_box_stays_put_while_the_base_moves() -> None:
         assert np.allclose(box.pose.xyz[:2], expected, atol=1e-9)
     assert tracker.generation == generation  # same declaration: nothing re-arms
     assert tracker.region == _measured(11 * _S)
+
+
+def test_a_moving_base_retracts_a_held_region_but_never_a_handed_over_one() -> None:
+    """The region is measured in the grid's frame, which rides a mobile base: after the base
+    moves it no longer bounds the target (``on_base_moved``), until the hand took it."""
+    tracker, lines = _tracker()
+    generation = tracker.generation
+    tracker.on_base_moved(now_ns=10 * _S)  # nothing held yet: a reply in flight is voided
+    assert tracker.generation == generation + 1
+    tracker.accept(_measured(11 * _S), generation=generation)
+    assert tracker.region is None, "measured before the base moved"
+    tracker.accept(_measured(11 * _S))
+    generation = tracker.generation
+    tracker.on_base_moved(now_ns=12 * _S)
+    assert tracker.region is None and tracker.generation > generation
+    assert any("retracted — base_moved" in line for line in lines)
+    tracker.accept(_measured(13 * _S))
+    tracker.on_attach("openarm_left_finger_pair", confirm=_CONFIRMED)
+    assert tracker.handed_over is not None
+    tracker.on_base_moved(now_ns=14 * _S)
+    assert tracker.region == _measured(13 * _S)
 
 
 def test_a_tilted_frame_never_rebases_a_declared_box() -> None:
@@ -1439,7 +1460,9 @@ def _released_record() -> AttachedCollisionObject:
         t_link_from_region=np.eye(4),
         stamp_ns=11 * _S,
     )
-    return freeze_released_attachment(held, base_link=robot.base_frame, t_base_from_link=np.eye(4))
+    return freeze_released_attachment(
+        held, base_link=robot.base_frame, t_base_from_link=np.eye(4), stamp_ns=held.stamp_ns
+    )
 
 
 class _LiveLeg:

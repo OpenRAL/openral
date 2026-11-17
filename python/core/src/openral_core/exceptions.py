@@ -119,7 +119,19 @@ class ROSObjectNotInMemory(ROSPerceptionStale):
     / ``ResolvePlaceQuery`` cannot be satisfied. The caller degrades by treating
     the target as unknown (and may trigger active search) — it never fabricates
     a pose (CLAUDE.md §1.2, §1.4).
+
+    ``candidates`` set means the reference matched several nodes (ambiguous, not absent):
+    the caller asks which one instead of searching.
+
+    Example:
+        >>> ROSObjectNotInMemory("dock is ambiguous", candidates=("a", "b")).candidates
+        ('a', 'b')
     """
+
+    def __init__(self, *args: object, candidates: tuple[str, ...] = ()) -> None:
+        """The message args, and the matched node ids when the reference was ambiguous."""
+        super().__init__(*args)
+        self.candidates = candidates
 
 
 # ─── Planning ──────────────────────────────────────────────────────────────────

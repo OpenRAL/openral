@@ -1509,20 +1509,27 @@ namespace {
 
 // Why a live workspace does not tolerate `link` against a cell centred at `center`
 // (base frame): see `CollisionHit::workspace_denied`. 0 when it would (or no live
-// workspace).
+// workspace). Disclosure only: the in-tree region, else the provider's #349 verdict region
+// (`ProviderGate::workspace`, ADR-0121 API v5), so a provider stop names its failing conjunct.
 int workspace_denial(const VoxelGrid& grid, int link, const Vec3& center) noexcept {
-  const WorkspaceContactRegion& ws = grid.workspace_region;
-  if (!ws.valid) {
+  const WorkspaceContactRegion* gate =
+      grid.workspace_region.valid ? &grid.workspace_region : grid.provider_gate.workspace;
+  if (gate == nullptr || !gate->valid) {
     return 0;
   }
+  const WorkspaceContactRegion& ws = *gate;
   if (link < 0 || static_cast<std::size_t>(link) >= kMaxGraspMaskLinks ||
       !ws.link_mask[static_cast<std::size_t>(link)]) {
     return 1;
   }
-  if (!std::isfinite(ws.hand_speed_mps) || ws.hand_speed_mps > ws.max_speed_mps) {
+  // The same conjuncts as `workspace_link_slow`, so a NaN/inf or non-positive bound names the
+  // conjunct it fails rather than reading as satisfied.
+  if (!(std::isfinite(ws.max_speed_mps) && ws.max_speed_mps > 0.0 &&
+        std::isfinite(ws.hand_speed_mps) && ws.hand_speed_mps <= ws.max_speed_mps)) {
     return 2;
   }
-  if (!std::isfinite(ws.hand_lead_m) || ws.hand_lead_m > ws.max_lead_m) {
+  if (!(std::isfinite(ws.max_lead_m) && ws.max_lead_m > 0.0 && std::isfinite(ws.hand_lead_m) &&
+        ws.hand_lead_m <= ws.max_lead_m)) {
     return 3;
   }
   if (!point_in_obb(ws.pose, ws.half_extents, center)) {
@@ -1660,7 +1667,7 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
               provider_tolerates(result, grid, scratch, li, idx, voxel.t, d);
           const bool tripped = !exempt && !ws_exempt && !provider_exempt && d <= margin;
           fold_pair(result, sweep_min, d, tripped, li, static_cast<int>(idx), false, false, false,
-                    false, tripped ? workspace_denial(grid, li, base_center) : 0);
+                    false, tripped ? workspace_denial(grid, li, apply(grid.pose, voxel.t)) : 0);
         }
       }
     }
@@ -1766,7 +1773,7 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
               provider_tolerates(result, grid, scratch, lb, idx, center, d);
           const bool tripped = !exempt && !provider_exempt && d <= margin;
           fold_pair(result, sweep_min, d, tripped, lb, static_cast<int>(idx), false, false, false,
-                    false, tripped ? workspace_denial(grid, lb, base_center) : 0);
+                    false, tripped ? workspace_denial(grid, lb, apply(grid.pose, center)) : 0);
         }
       }
     }

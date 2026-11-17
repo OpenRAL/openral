@@ -684,8 +684,13 @@ class ObjectTracker:
         *,
         stamp_ns: int,
         invocation_id: str = "",
+        within: PlaceRegion | None = None,
     ) -> None:
-        """Start a standing query (G.1) at goal dispatch, source time ``stamp_ns``."""
+        """Start a standing query (G.1) at goal dispatch, source time ``stamp_ns``.
+
+        ``within``: only tracks centred in it are the query's instances
+        (``StandingQuery.within``).
+        """
         self.queries.open(
             goal_id,
             query_id,
@@ -693,12 +698,23 @@ class ObjectTracker:
             declaration_key,
             stamp_ns=stamp_ns,
             invocation_id=invocation_id,
+            within=within,
         )
 
     def close_goal(self, goal_id: str) -> None:
         """End every query of ``goal_id``; tracks persist across goals."""
         self.queries.close_goal(goal_id)
         self._pending = [r for r in self._pending if not r.query_key or r.query_key[0] != goal_id]
+
+    def drop_requests(self) -> None:
+        """Forget the in-flight request, every pending prompt and every placed record.
+
+        All were taken at the last station; a placed record is a base-frame box, wrong once
+        the base drove (``TrackerSession.leave_station``).
+        """
+        self._sched.abandon()
+        self._pending = []
+        self._placed.clear()
 
     def feed(  # noqa: PLR0912, PLR0915  # reason: flat pass over steps 0-7 with refusal propagation
         self,
@@ -1818,6 +1834,13 @@ class ObjectTracker:
                 tight = ()
                 log.info("object_tracker.covered_move_size_kept", object_id=oid,
                          shift_m=round(shift, 3))  # fmt: skip
+        if provisional != old.provisional:
+            # The flag decides a later grasp's outcome (``GraspBinder.on_attach``: a provisional
+            # sole candidate binds the pinch stand-in, never the track); logged on each flip so a
+            # run shows why a hold bound PROVISIONAL (CLAUDE.md 1.4).
+            log.info("object_tracker.provisional_changed", object_id=oid, provisional=provisional,
+                     moved=moved, robot_beyond_band_px=fit.assumptions.get(
+                         "a4_robot_beyond_band_px"))  # fmt: skip
         track = old.model_copy(
             update={
                 "fit_kind": fit_kind,

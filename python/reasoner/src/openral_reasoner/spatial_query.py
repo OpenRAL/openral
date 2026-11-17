@@ -15,11 +15,13 @@ module does not import the Layer-2 ``openral_world_state`` package — the concr
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import math
+from collections.abc import Callable, Sequence
 from typing import NamedTuple, Protocol
 
 from openral_core import (
     ApproachViewpoint,
+    NavGoal,
     RecallObjectQuery,
     RecallObjectResult,
     RecallObjectTool,
@@ -27,8 +29,11 @@ from openral_core import (
     ResolvePlaceResult,
     ResolvePlaceTool,
     SceneGraph,
+    SpatialNode,
+    SpatialNodeKind,
 )
 from openral_core.exceptions import ROSObjectNotInMemory
+from openral_core.geometry import quat_xyzw_to_yaw
 
 SpatialQueryTool = RecallObjectTool | ResolvePlaceTool
 """The read-only ``ReasonerToolCall`` variants this bridge dispatches."""
@@ -123,11 +128,23 @@ def format_recall_object_result(
 
 
 def format_resolve_place_result(reference: str, result: ResolvePlaceResult) -> str:
-    """Render a ``ResolvePlaceResult`` as an LLM-readable text block."""
+    """Render a ``ResolvePlaceResult`` as an LLM-readable text block.
+
+    Only a declared station (``result.declared``) carries a heading: its orientation is
+    part of the goal. A perceived place's (or an object's place's) orientation is an
+    artefact of how it was seen, so it is not offered as one.
+    """
     text = (
         f"spatial_memory: {reference!r} resolves to node {result.node_id} "
-        f"at map {_fmt_xyz(result.goal.xyz)}"
+        f"at {result.goal.frame_id} {_fmt_xyz(result.goal.xyz)}"
     )
+    if result.declared:
+        q = result.goal.quat_xyzw
+        yaw = math.degrees(quat_xyzw_to_yaw(*q))
+        text += (
+            f" heading yaw={yaw:.0f}deg quat_xyzw=({q[0]:.4f},{q[1]:.4f},{q[2]:.4f},{q[3]:.4f})"
+            " (a declared station: drive there with this pose AND orientation)"
+        )
     if result.path_node_ids:
         text += ". Path: " + " -> ".join(result.path_node_ids)
     return text
@@ -140,11 +157,14 @@ class SpatialQueryOutcome(NamedTuple):
     even if every approach is grid-BLOCKED — the object is still known) or
     ``resolve_place`` resolved the reference; ``False`` on a "not in memory"
     miss. The reasoner node uses ``found`` to decide whether to escalate a
-    recall miss to a live ``locate_in_view`` before handoff.
+    recall miss to a live ``locate_in_view`` before handoff. ``ambiguous``: the
+    reference matched several declared places (named in ``text``) — a question
+    for the LLM, never an absence to search for.
     """
 
     text: str
     found: bool
+    ambiguous: bool = False
 
 
 def run_spatial_query_detailed(
@@ -203,7 +223,16 @@ def run_spatial_query_detailed(
     query = resolve_place_tool_to_query(call)
     try:
         resolved = querier.resolve_place(query, from_node_id=from_node_id)
-    except ROSObjectNotInMemory:
+    except ROSObjectNotInMemory as exc:
+        if exc.candidates:
+            return SpatialQueryOutcome(
+                text=(
+                    f"spatial_memory: {call.reference!r} is ambiguous between "
+                    f"{list(exc.candidates)}; resolve_place again naming one of them."
+                ),
+                found=False,
+                ambiguous=True,
+            )
         return SpatialQueryOutcome(
             text=(
                 f"spatial_memory: {call.reference!r} is not in memory. Check the "
@@ -239,3 +268,37 @@ def run_spatial_query(
         from_node_id=from_node_id,
         refine_approach=refine_approach,
     ).text
+
+
+def nav_goal_places(goals: Sequence[NavGoal], stamp_ns: int = 0) -> list[SpatialNode]:
+    """The spatial-memory ``PLACE`` nodes a scene's navigation goals seed (ADR-0133).
+
+    One declared node per goal: ``node_id`` ``nav_goal:<name>``, labelled with the name so an
+    exact name scores an exact match, its aliases and description as typed fields.
+
+    Example:
+        >>> from openral_core import NavGoal, Pose6D
+        >>> goal = NavGoal(
+        ...     name="s6",
+        ...     aliases=("shelf_6",),
+        ...     pose=Pose6D(xyz=(1.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="map"),
+        ...     description="in front of shelf 6",
+        ... )
+        >>> node = nav_goal_places([goal])[0]
+        >>> node.node_id, node.kind.value, node.label, node.aliases, node.declared
+        ('nav_goal:s6', 'place', 's6', ('shelf_6',), True)
+    """
+    return [
+        SpatialNode(
+            node_id=goal.node_id,
+            kind=SpatialNodeKind.PLACE,
+            pose=goal.pose,
+            label=goal.name,
+            aliases=goal.aliases,
+            description=goal.description or "",
+            declared=True,
+            first_seen_ns=stamp_ns,
+            last_seen_ns=stamp_ns,
+        )
+        for goal in goals
+    ]

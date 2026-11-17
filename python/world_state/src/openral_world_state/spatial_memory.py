@@ -363,7 +363,10 @@ class SpatialMemory:
             else []
         )
         return ResolvePlaceResult(
-            node_id=goal_node.node_id, goal=goal_node.pose, path_node_ids=path
+            node_id=goal_node.node_id,
+            goal=goal_node.pose,
+            path_node_ids=path,
+            declared=goal_node.declared,
         )
 
     # ── Query helpers ─────────────────────────────────────────────────────────
@@ -401,15 +404,30 @@ class SpatialMemory:
         if node is not None and (kind is None or node.kind is kind):
             return node
         ref = reference.strip().lower()
-        best: SpatialNode | None = None
+        best: list[SpatialNode] = []
         best_quality = 0.0
         for node in self._nodes.values():
             if kind is not None and node.kind is not kind:
                 continue
-            quality = _label_match_quality(node.label, ref)
+            # A declared station answers to its label and aliases, exactly: a substring
+            # would send "shelf_12" to shelf_1 and "shelf" to whichever is listed first.
+            names = (node.label, *node.aliases)
+            quality = (
+                float(any(n.strip().lower() == ref for n in names))
+                if node.declared
+                else max(_label_match_quality(n, ref) for n in names)
+            )
             if quality > best_quality:
-                best_quality, best = quality, node
-        return best
+                best_quality, best = quality, [node]
+            elif quality == best_quality and quality > 0.0:
+                best.append(node)
+        if len(best) > 1 and any(n.declared for n in best):
+            ids = tuple(sorted(n.node_id for n in best))
+            raise ROSObjectNotInMemory(
+                f"reference {reference!r} is ambiguous between {list(ids)}; name one of them",
+                candidates=ids,
+            )
+        return best[0] if best else None
 
     def _traversable_path(self, start: str, goal: str) -> list[str]:
         """BFS shortest path over ``traversable_to`` edges; [] if none (or start==goal handled)."""

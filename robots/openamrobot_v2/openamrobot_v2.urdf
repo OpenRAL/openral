@@ -562,7 +562,7 @@
   <joint name="head_camera_mount_joint" type="fixed">
     <parent link="lift_carriage_link" />
     <child link="head_camera_mount_link" />
-    <origin rpy="0 0 0" xyz="0.24 0.0 0.389" />
+    <origin rpy="-0.028403 0.621812 -0.00224" xyz="0.258568 0.027277 0.267553" />
   </joint>
   <link name="head_camera_link">
     <inertial>
@@ -593,7 +593,7 @@
   <joint name="head_camera_optical_joint" type="fixed">
     <parent link="head_camera_link" />
     <child link="head_camera_optical_frame" />
-    <origin rpy="-1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0" />
+    <origin rpy="-1.5707963267948966 0 -1.5707963267948966" xyz="0.0025 0 0" />
   </joint>
   <link name="getac_tablet_link">
     <inertial>

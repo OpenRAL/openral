@@ -738,3 +738,33 @@ def test_a_target_query_prompts_through_a_context_track_and_retires_it(
     assert tracks[context.object_id].status is TrackStatus.LOST
     retired = [e for e in logs if e["event"] == "object_tracker.context_duplicate_retired"]
     assert len(retired) == 1, "retired once: a context refit never revives it"
+
+
+def test_a_grasped_track_stays_an_instance_outside_the_search_box() -> None:
+    """``within`` scopes which object is grasped, not where it is carried (review of #621):
+    a lifted carton leaving the tote's box keeps its query RESOLVED, and its release outside
+    the box still seeds the search prior."""
+    from openral_core import PlaceRegion, Pose6D
+    from openral_world_state.object_tracker.grounding import QueryBook
+
+    from tests.unit._object_tracker_fixtures import track
+
+    box = PlaceRegion(
+        frame_id="b",
+        pose=Pose6D(xyz=(0.5, 0.0, 0.4), quat_xyzw=(0, 0, 0, 1), frame_id="b"),
+        half_extents=(0.08, 0.08, 0.08),
+    )
+    book = QueryBook(search_start_s=5.0, search_max_s=60.0)
+    query = ObjectQuery(label="orange", count="one", role=ObjectRole.TARGET)
+    book.open("g", "q0", query, "obj:orange@1", stamp_ns=0, within=box)
+    lifted = np.array([0.5, 0.0, 0.7])  # 30 cm above the tote: outside the box
+    elsewhere = track("o2", "b", lifted, (0.03, 0.03, 0.03))
+    book.update([elsewhere], now_ns=_S)
+    q = book.get("g", "q0")
+    assert q is not None
+    assert q.status.value == "unresolved", "unbound: gated"
+    held = elsewhere.model_copy(update={"object_id": "o1", "status": TrackStatus.BOUND})
+    book.update([held], now_ns=2 * _S)
+    assert q.status.value == "resolved"
+    book.note_released(held.model_copy(update={"status": TrackStatus.RELEASED}))
+    assert q.prior is not None and q.prior.pose.xyz[2] > 0.5

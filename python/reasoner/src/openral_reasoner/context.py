@@ -22,7 +22,11 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 from collections import Counter, deque
+from collections.abc import Mapping
+from types import MappingProxyType
+from typing import Final
 
 from openral_core import (
     CollisionEvidence,
@@ -38,6 +42,7 @@ from openral_core import (
     TimeoutEvidence,
     WorldState,
 )
+from openral_core.geometry import quat_xyzw_to_yaw
 from pydantic import TypeAdapter, ValidationError
 
 from openral_reasoner.mission import MissionState, TaskState
@@ -207,7 +212,9 @@ _FAILURE_KIND_REFLECTIONS: dict[str, str] = {
         "this robot lacks a capability the skill needs — use a different skill."
     ),
     "FAILURE_PLANNING_ERROR": (
-        "no motion plan was found — reposition or choose a different approach."
+        "the goal could not be planned as sent (no motion plan, or the runner refused the "
+        "call for what it lacks, named in the reason) — fix what the reason names and "
+        "re-send, else reposition or choose a different approach."
     ),
 }
 
@@ -330,11 +337,17 @@ def _reflect_on_collision(evidence: CollisionEvidence) -> str:
             "then change the approach or start pose, the commanded arm configuration hits "
             "the robot itself and repeating it will stop again."
         )
+    where = (
+        ""
+        if evidence.world_cell_center_m is None
+        else f"; its {_COLLISION_BASE_FRAME_KEYS['world_cell_center_m']}[<frame>] is a "
+        "point in the bracketed robot frame, not a map position"
+    )
     return (
-        "the safety kernel stopped a collision (see evidence: which link, against "
-        "what) — the stop stays latched until an operator resets it, so no goal runs "
-        "before that; then change the approach or clear the obstacle, repeating the "
-        "same motion will stop again."
+        f"the safety kernel stopped a collision (see evidence: which link, against what{where}) "
+        "— the stop stays latched until an operator resets it, so no goal runs before "
+        "that; then change the approach or clear the obstacle, repeating the same motion "
+        "will stop again."
     )
 
 
@@ -678,6 +691,9 @@ class ContextRenderer:
             )
         self._buffer_size = buffer_size
         self._robot_model = robot_model
+        # The robot manifest's base_frame (the kernel voxel grid's frame), set via
+        # `set_robot_model`; labels a collision's voxel coordinates. None = unknown.
+        self._base_frame: str | None = None
         # The rendered `## MEMORY` block (the self-
         # maintained MEMORY.md), set via `set_memory_block`. None omits the section.
         self._memory_block: str | None = None
@@ -740,14 +756,20 @@ class ContextRenderer:
 
     # ── static robot self-model ─────────────────────────────────────────────
 
-    def set_robot_model(self, robot_model: str | None) -> None:
+    def set_robot_model(self, robot_model: str | None, *, base_frame: str | None = None) -> None:
         """Set (or clear) the static robot self-model rendered as ``## ROBOT``.
 
         Called once after the ``RobotDescription`` is loaded. Static config, not
         an event: it does not touch the rolling buffers or bump ``seq``, so
         it is safe to call on a live renderer.
+
+        Args:
+            robot_model: Pre-rendered self-model text, or ``None`` to clear it.
+            base_frame: The manifest's ``base_frame``; a collision's voxel
+                coordinates render as ``cell_center_m[<base_frame>]``.
         """
         self._robot_model = robot_model
+        self._base_frame = base_frame
 
     def set_memory_block(self, memory_block: str | None) -> None:
         """Set (or clear) the ``## MEMORY`` block — the self-maintained MEMORY.md.
@@ -1133,7 +1155,11 @@ class ContextRenderer:
         if world_state is None:
             # The camera-space in_view enumeration is depth-free and may
             # arrive before the first WorldState snapshot — surface it regardless.
-            parts = (self._render_memory_objects(), self._render_in_view())
+            parts = (
+                self._render_nav_goals(),
+                self._render_memory_objects(),
+                self._render_in_view(),
+            )
             extra = "\n".join(x for x in parts if x)
             return f"(no snapshot yet)\n{extra}" if extra else "(no snapshot yet)"
         lines: list[str] = [f"stamp_ns: {world_state.stamp_ns}"]
@@ -1188,6 +1214,9 @@ class ContextRenderer:
                     "to pin one as grasp_target, name the instance's memory_objects id as "
                     "grasp_target.object_id (recall_object it when it is not listed)."
                 )
+        nav_goals = self._render_nav_goals()
+        if nav_goals:
+            lines.append(nav_goals)
         memory = self._render_memory_objects()
         if memory:
             lines.append(memory)
@@ -1215,6 +1244,40 @@ class ContextRenderer:
                 ],
             )
         )
+
+    def _render_nav_goals(self) -> str:
+        """Render the cell's declared navigation goals, one per line, or ``""`` (ADR-0133).
+
+        A header that says how to use them, then per goal its name, aliases, frame, position,
+        heading (yaw and the exact quaternion the navigation skill takes) and description.
+        Only declared places (``SpatialNode.declared``), never perceived ones.
+        """
+        graph = self._spatial_memory
+        if graph is None:
+            return ""
+        goals = sorted(
+            (n for n in graph.nodes if n.kind is SpatialNodeKind.PLACE and n.declared),
+            key=lambda n: n.node_id,
+        )
+        if not goals:
+            return ""
+        lines = [
+            "nav_goals (declared stations, not perceived; to go to one, dispatch the "
+            "navigation skill with its exact position and quat_xyzw):"
+        ]
+        for n in goals:
+            q = n.pose.quat_xyzw
+            aliases = f" aliases={','.join(n.aliases)}" if n.aliases else ""
+            # One line per goal: a multi-line YAML description must not break the format.
+            description = " ".join(n.description.split())
+            note = f' "{description}"' if description else ""
+            lines.append(
+                f"- {n.label} id={n.node_id}{aliases} {n.pose.frame_id}"
+                f"@({n.pose.xyz[0]:+.3f},{n.pose.xyz[1]:+.3f}) "
+                f"yaw={math.degrees(quat_xyzw_to_yaw(*q)):.0f}deg "
+                f"quat_xyzw=({q[0]:.4f},{q[1]:.4f},{q[2]:.4f},{q[3]:.4f}){note}"
+            )
+        return "\n".join(lines)
 
     def _render_in_view(self) -> str:
         """Render the camera-space ``in_view`` enumeration, or ``""``.
@@ -1252,7 +1315,9 @@ class ContextRenderer:
             return "(none)"
         lines: list[str] = []
         for rec in self._failures:
-            evidence_summary = _summarise_evidence_json(rec.evidence_json)
+            evidence_summary = _summarise_evidence_json(
+                rec.evidence_json, base_frame=self._base_frame
+            )
             lines.append(
                 f"[{rec.source}] kind={rec.kind} severity={rec.severity} "
                 f"skill={rec.rskill_id or '-'} trace={rec.trace_id[:8] or '-'} {evidence_summary}",
@@ -1288,7 +1353,9 @@ class ContextRenderer:
         for rec in self._executions:
             line = f"[{rec.outcome}] skill={rec.rskill_id or '-'}: {rec.summary}"
             if rec.evidence_json:
-                line += f" {_summarise_evidence_json(rec.evidence_json)}"
+                line += (
+                    f" {_summarise_evidence_json(rec.evidence_json, base_frame=self._base_frame)}"
+                )
             if rec.reflection:
                 line += f" — reflect: {rec.reflection}"
             lines.append(line)
@@ -1431,6 +1498,22 @@ _PROMPT_EXCLUDED_FIELDS = frozenset({"joint_positions_rad", "joint_names"})
 _PROMPT_FIELD_BUDGET = 48
 _COLLISION_IDENTIFIER_BUDGET = 256
 
+#: Prompt keys for the collision evidence's voxel coordinates, rendered as
+#: ``<key>[<frame>]`` like every other framed prompt line. The wire names say
+#: ``world_`` (a world-collision voxel) but the kernel's grid is the robot manifest's
+#: ``base_frame`` (``base_footprint``, ``openarm_base``, ``pelvis``, ``world``...),
+#: never the map frame.
+_COLLISION_BASE_FRAME_KEYS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "world_cell_center_m": "cell_center_m",
+        "world_grid_origin_m": "grid_origin_m",
+    }
+)
+
+#: Frame label for the voxel keys when no robot manifest is loaded (the frame is the
+#: robot's ``base_frame``, but which one is unknown).
+_UNKNOWN_BASE_FRAME = "robot base frame"
+
 
 def _render_instances(
     key: str,
@@ -1476,8 +1559,11 @@ def _decode_evidence(payload: str) -> FailureEvidence | None:
         return None
 
 
-def _summarise_evidence_json(payload: str) -> str:
+def _summarise_evidence_json(payload: str, *, base_frame: str | None = None) -> str:
     """Return a one-line summary of a FailureEvidence payload.
+
+    ``base_frame`` is the robot manifest's ``base_frame``, the frame a collision's
+    voxel coordinates are in; ``None`` labels them with a generic robot-frame name.
 
     Falls back to ``"evidence=<raw-truncated>"`` when the payload does
     not decode against the discriminator (a malformed publisher should
@@ -1509,6 +1595,17 @@ def _summarise_evidence_json(payload: str) -> str:
             )
             for k, v in summary_fields.items()
             if v is not None
+        }
+        # The kernel's voxel grid is in the robot base frame, not the map: rename the
+        # schema's `world_*` keys so the planner cannot read them as map coordinates.
+        frame = base_frame or _UNKNOWN_BASE_FRAME
+        summary_fields = {
+            (
+                f"{_COLLISION_BASE_FRAME_KEYS[k]}[{frame}]"
+                if k in _COLLISION_BASE_FRAME_KEYS
+                else k
+            ): v
+            for k, v in summary_fields.items()
         }
         summary_fields["check"] = "measured" if evidence.horizon_step == -1 else "predicted"
         summary = f"evidence={json.dumps(summary_fields, sort_keys=True)}"

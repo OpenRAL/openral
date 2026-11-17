@@ -183,6 +183,7 @@ def _run_goal(
     deadline_s: float = 0.4,
     cancel: bool = False,
     fill_goal: Any = None,
+    result_timeout_s: float = 5.0,
 ) -> Any:
     """Dispatch one real ExecuteRskill goal and let it resolve (or cancel it).
 
@@ -213,7 +214,7 @@ def _run_goal(
         _spin_for(executor, 0.1)
         goal_handle.cancel_goal_async()
     result_future = goal_handle.get_result_async()
-    deadline = time.monotonic() + 5.0
+    deadline = time.monotonic() + result_timeout_s
     while not result_future.done() and time.monotonic() < deadline:
         executor.spin_once(timeout_sec=0.02)
     assert result_future.done(), "goal result timed out"
@@ -532,22 +533,30 @@ def test_the_goal_scope_place_backstop_never_exceeds_120_s(
     assert declaration.timeout_s == pytest.approx(expected_s)
 
 
+_SHELF_DESTINATION = (
+    '[{"label": "box", "count": "one", "role": "target"},'
+    ' {"label": "shelf", "count": "one", "role": "destination"}]'
+)
+
+
 @pytest.mark.parametrize(
-    ("prompt", "mode", "target_id"),
+    ("prompt", "mode", "queries", "target_id"),
     [
-        ("restock box x3 into upper slot 2", "tracking", "zone:upper_slot_2"),
-        ("restock box x3 onto the shelf", "tracking", "surface"),  # names no zone: none armed
-        # `on` takes the tracked destination: a zone would shadow it in the tracker.
-        ("restock box x3 into upper slot 2", "on", "surface"),
-        ("restock box x3 into upper slot 2", "off", "surface"),
+        ("put box x3 into upper slot 2", "tracking", "", "zone:upper_slot_2"),
+        ("put box x3 onto the shelf", "tracking", "", "surface"),  # names no zone
+        # `on` with no DESTINATION query (a reasoner-driven goal): the zone, as `tracking`.
+        ("put box x3 into upper slot 2", "on", "", "zone:upper_slot_2"),
+        # `on` with one: the tracked destination; a zone would shadow it in the tracker.
+        ("put box x3 into upper slot 2", "on", _SHELF_DESTINATION, "surface"),
+        ("put box x3 into upper slot 2", "off", "", "surface"),
     ],
 )
 def test_the_goal_scope_place_declaration_names_the_zone_its_prompt_names(
-    prompt: str, mode: str, target_id: str
+    prompt: str, mode: str, queries: str, target_id: str
 ) -> None:
-    """The station's declared zones (the restock shelf fixture): under ``tracking`` the
-    prompt's slot becomes the goal-scope declaration's ``zone:<name>`` target, which the
-    tracker resolves; no other mode names a zone."""
+    """The station's declared zones (the committed OpenArm shelf fixture): under ``tracking``, and
+    under ``on`` with no DESTINATION query, the prompt's slot becomes the goal-scope
+    declaration's ``zone:<name>`` target, which the tracker resolves; ``off`` names none."""
     import json
     from pathlib import Path
 
@@ -555,7 +564,12 @@ def test_the_goal_scope_place_declaration_names_the_zone_its_prompt_names(
 
     fixture = Path(__file__).parents[3] / "scenes/deploy/place_zones/openarm_restock_shelf.yaml"
     zones = json.dumps(yaml.safe_load(fixture.read_text())["place_zones"])
-    params = {"place_zones_json": zones, "object_tracking": mode, "grounding_wait_s": 0.2}
+    params = {
+        "place_zones_json": zones,
+        "object_tracking": mode,
+        "object_queries_json": queries,
+        "grounding_wait_s": 0.2,
+    }
     with _harness("", approach=True, params=params) as (_, runtime, _seen):
         declaration = runtime.skill_runner_node._goal_scope_place_declaration(30.0, prompt=prompt)
     assert declaration.target_id == target_id
@@ -573,12 +587,15 @@ _BANANA_QUERIES = (
 def test_tracking_on_attaches_the_destination_query() -> None:
     from openral_core import ObjectQuery
 
+    # The grasp side needs a declaration for the TARGET query to ride, or the goal is
+    # refused before anything is armed (it would name no object to grasp).
     with _harness(
         _scene_declaration_json(),
         params={
             "object_tracking": "on",
             "object_queries_json": _BANANA_QUERIES,
             "grounding_wait_s": 0.2,
+            "grasp_approach_enabled": True,
         },
     ) as (executor, runtime, seen):
         _run_goal(executor, runtime.skill_runner_node)

@@ -29,6 +29,7 @@ from openral_core.exceptions import (
     ROSReasonerInvalidPlan,
 )
 from openral_observability import semconv, start_reasoner_span
+from openral_observability.compliance import free_text_may_leave_host
 from openral_observability.propagation import current_traceparent
 from opentelemetry.trace import Span, use_span
 
@@ -51,6 +52,18 @@ def _stamp_mission(span: Span, renderer: ContextRenderer) -> None:
     mission = renderer.mission
     if mission is not None and not mission.is_empty():
         span.set_attribute(semconv.REASONER_MISSION_JSON, json.dumps(mission.to_summary()))
+
+
+def _stamp_rationale(span: Span, call: ReasonerToolCall) -> None:
+    """Stamp the call's rationale (capped) so the dashboard trace can say why it chose it.
+
+    Free model text that can paraphrase the operator's prompt: stamped only where it may
+    leave the host (a local collector, or the deployer's consent; CLAUDE.md §3).
+    """
+    if call.rationale and free_text_may_leave_host():
+        span.set_attribute(
+            semconv.REASONER_RATIONALE, call.rationale[: semconv.REASONER_RATIONALE_MAX]
+        )
 
 
 # Read-only search tools (recall_object/resolve_place/locate_in_view) are
@@ -529,6 +542,9 @@ class ReasonerCore:
             force=force,
         )
         span.set_attribute(semconv.REASONER_TIER, tier)
+        if inflight:
+            span.set_attribute(semconv.REASONER_INFLIGHT_SKILL, inflight)
+            span.set_attribute(semconv.REASONER_INFLIGHT_STATE, renderer.inflight_state or "")
         # Stamp the active mission queue on every tick span so
         # the dashboard can render the task checklist. Set before the gate
         # short-circuits below so suppressed (retry_cap / error) ticks still
@@ -655,6 +671,7 @@ class ReasonerCore:
                 )
             if call is None:
                 raise ValueError("finish_tick: pass exactly one of `call` or `error`")
+            _stamp_rationale(span, call)  # before the retry-cap branch: a capped tick says why too
             # retry-cap ("bounded retry counter per failure kind") — keyed
             # on the full call identity (tool + args minus rationale), so
             # only a *verbatim* repeat accumulates; a different skill /
@@ -713,12 +730,13 @@ class ReasonerCore:
                 _log_kwargs["prompt_tokens"] = prep.prompt_tokens
             if rskill_id:
                 _log_kwargs["rskill_id"] = rskill_id
+            # Free text rides the OTLP log export too: the span's consent rule applies.
             rationale = getattr(call, "rationale", None)
-            if rationale:
+            if rationale and free_text_may_leave_host():
                 _log_kwargs["rationale"] = rationale
             # Surface the active prompt so the caller can correlate which
             # operator goal drove this tool selection (multi-task tracing).
-            if prep.prompts:
+            if prep.prompts and free_text_may_leave_host():
                 _log_kwargs["active_prompt"] = prep.prompts[0].text[:200]
             log.info("reasoner.tick.selected", **_log_kwargs)
             # Capture the active traceparent WHILE the span is still in

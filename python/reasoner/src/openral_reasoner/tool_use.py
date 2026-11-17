@@ -1378,7 +1378,35 @@ def _format_skill_tool_description(entry: RSkillToolEntry) -> str:
         parts.append("Objects: " + ", ".join(entry.objects) + ".")
     if entry.scenes:
         parts.append("Scenes: " + ", ".join(entry.scenes) + ".")
+    if entry.object_target == "grasp_required":
+        parts.append(_GRASP_TARGET_REQUIRED)
+    elif entry.object_target == "grasp_and_hand_required":
+        parts.append(_GRASP_TARGET_AND_HAND_REQUIRED)
+    elif entry.object_target == "not_applicable":
+        parts.append(_OBJECT_TARGETS_NOT_APPLICABLE)
     return " ".join(parts)
+
+
+# Object tracking on (``RSkillToolEntry.object_target``): what each skill tool says about
+# its targets. Overrides the system prompt's "grasp_target is OPTIONAL" for that skill.
+_GRASP_TARGET_REQUIRED = (
+    "Object tracking is on: grasp_target is REQUIRED for this skill (not optional). Set its "
+    "label to the visible object class the policy will grasp, as a detector names it (e.g. "
+    "'box'), not the task wording. Leave its contact_links unset unless the task itself "
+    "fixes the hand: the deployment supplies the grasping hand. A goal without grasp_target "
+    "is refused before any motion. place_target stays optional."
+)
+_GRASP_TARGET_AND_HAND_REQUIRED = (
+    "Object tracking is on: grasp_target is REQUIRED for this skill (not optional). Set its "
+    "label to the visible object class the policy will grasp, as a detector names it (e.g. "
+    "'box'), not the task wording, and its contact_links to the grasping hand's links: this "
+    "robot has several hands and the deployment declares none. A goal without them is "
+    "refused before any motion. place_target stays optional."
+)
+_OBJECT_TARGETS_NOT_APPLICABLE = (
+    "Object tracking is on, but this skill only drives the base: grasp_target and "
+    "place_target do not apply; leave both unset."
+)
 
 
 # The argument type of ``GenerateJsonSchema.field_title_should_be_set``; pydantic
@@ -1593,6 +1621,8 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
             ),
         )
         for q_kind, q_cls, q_description in query_tools:
+            if q_kind == "recall_object" and palette.places_only:
+                continue  # a places-only memory holds no object to recall
             tools.append(
                 {
                     "name": q_kind,

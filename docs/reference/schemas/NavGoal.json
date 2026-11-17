@@ -1,0 +1,97 @@
+{
+  "$defs": {
+    "Pose6D": {
+      "description": "6D pose: position + quaternion.\n\nAttributes:\n    xyz: Position (x, y, z) in meters.\n    quat_xyzw: Quaternion (x, y, z, w).\n    frame_id: tf2 reference frame.",
+      "properties": {
+        "xyz": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Xyz",
+          "type": "array"
+        },
+        "quat_xyzw": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Quat Xyzw",
+          "type": "array"
+        },
+        "frame_id": {
+          "title": "Frame Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "xyz",
+        "quat_xyzw",
+        "frame_id"
+      ],
+      "title": "Pose6D",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A named navigation goal a mobile robot drives to: a station of the cell (ADR-0133).\n\nDeclared task knowledge, not a measured pose: the cell names where its stations are\n(the pose in front of a shelf, a charging spot) so Nav2 can drive there and the reasoner\ncan pick one by name. It grants nothing; Nav2's costmaps and the kernel still check every\nmotion, and a goal that cannot be planned fails in Nav2. Not a ``PlaceZone`` (a put-down\nbox in the base frame).\n\nAttributes:\n    name: The goal's name, lower-case words joined by ``_`` (``s6``, ``shelf_6``).\n    aliases: Other names a prompt may use, same form.\n    pose: Where the base goes and its heading (the yaw), in the robot's map frame\n        (``RobotDescription.map_frame``, checked by the deploy), the frame Nav2 plans in.\n        Planar: z = 0 and a unit yaw-only quaternion.\n    description: What the station is, for the reasoner (``\"in front of shelf 6\"``).\n\nExample:\n    >>> goal = NavGoal(\n    ...     name=\"s6\",\n    ...     aliases=(\"shelf_6\",),\n    ...     pose=Pose6D(xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=\"map\"),\n    ...     description=\"in front of shelf 6\",\n    ... )\n    >>> goal.node_id\n    'nav_goal:s6'",
+  "properties": {
+    "name": {
+      "pattern": "^[a-z0-9]+(?:_[a-z0-9]+)*$",
+      "title": "Name",
+      "type": "string"
+    },
+    "aliases": {
+      "default": [],
+      "items": {
+        "pattern": "^[a-z0-9]+(?:_[a-z0-9]+)*$",
+        "type": "string"
+      },
+      "title": "Aliases",
+      "type": "array"
+    },
+    "pose": {
+      "$ref": "#/$defs/Pose6D"
+    },
+    "description": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Description"
+    }
+  },
+  "required": [
+    "name",
+    "pose"
+  ],
+  "title": "NavGoal",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

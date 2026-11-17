@@ -25,6 +25,7 @@ Synth: ``openral_sim.backends.depth_camera.synthesize_depth_image``.
 from __future__ import annotations
 
 import functools
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -83,8 +84,9 @@ def depth_optical_frame_id(spec: Any) -> str:
         >>> depth_optical_frame_id(SimpleNamespace(frame_id="front_depth_optical_frame"))
         'front_depth_optical_frame'
     """
-    frame = str(spec.frame_id)
-    return frame if frame.endswith("_optical_frame") else f"{frame}_optical_frame"
+    from openral_core.depth_extrinsic import optical_frame_id
+
+    return optical_frame_id(spec.frame_id)
 
 
 def mjcf_camera_name(spec: Any) -> str:
@@ -839,8 +841,10 @@ def camera_info_from_intrinsics(
     cy: float,
     frame_id: str,
     stamp: Any = None,
+    distortion_model: str = "plumb_bob",
+    d: Sequence[float] = (),
 ) -> Any:
-    """Build a pinhole ``sensor_msgs/CameraInfo`` for a synthesised depth image.
+    """Build a ``sensor_msgs/CameraInfo`` for a synthesised image.
 
     The intrinsics are those of the **rasterised** image — for a strided depth
     synth (``openral_sim.backends.depth_camera.synthesize_depth_image``) the
@@ -848,9 +852,11 @@ def camera_info_from_intrinsics(
     ``width``/``height`` = the strided raster dims) so the model is consistent
     with the image nvblox receives.
 
-    Distortion is zero (``plumb_bob``, ``D = [0,0,0,0,0]``) — the MuJoCo pinhole
-    ray-cast has no lens distortion — with an identity rectification ``R`` and a
-    ``P`` that mirrors ``K`` (no stereo baseline).
+    Distortion defaults to zero (``plumb_bob``, ``D = [0,0,0,0,0]``) — the MuJoCo
+    pinhole ray-cast has no lens distortion; a renderer with a lens (Isaac) passes its
+    ``distortion_model`` and ``d`` (``IntrinsicsPinhole`` naming; ``none`` becomes a
+    zero ``plumb_bob``). Identity rectification ``R`` and a ``P`` that mirrors ``K``
+    (no stereo baseline).
 
     Args:
         width: Rasterised image width (pixels).
@@ -859,8 +865,11 @@ def camera_info_from_intrinsics(
         fy: Focal length y of the rasterised image (pixels).
         cx: Principal point x of the rasterised image (pixels).
         cy: Principal point y of the rasterised image (pixels).
-        frame_id: tf2 frame; must match the companion depth image.
+        frame_id: tf2 frame; must match the companion image.
         stamp: ``builtin_interfaces/Time`` header stamp; ``None`` leaves zero.
+        distortion_model: REP-104 model name (``plumb_bob``, ``rational_polynomial``,
+            ``equidistant``) or ``none``.
+        d: The model's coefficients; empty = all zero.
     """
     from sensor_msgs.msg import CameraInfo  # reason: defer ROS dep
 
@@ -870,8 +879,13 @@ def camera_info_from_intrinsics(
         msg.header.stamp = stamp
     msg.height = int(height)
     msg.width = int(width)
-    msg.distortion_model = "plumb_bob"
-    msg.d = [0.0, 0.0, 0.0, 0.0, 0.0]
+    if distortion_model == "none":
+        distortion_model, d = "plumb_bob", ()
+    if not d:
+        # Zero coefficients keep the model: an equidistant (fisheye) lens is not pinhole.
+        d = [0.0] * {"equidistant": 4, "rational_polynomial": 8}.get(distortion_model, 5)
+    msg.distortion_model = distortion_model
+    msg.d = [float(v) for v in d]
     msg.k = [fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0]
     msg.r = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
     msg.p = [fx, 0.0, cx, 0.0, 0.0, fy, cy, 0.0, 0.0, 0.0, 1.0, 0.0]

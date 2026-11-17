@@ -152,7 +152,10 @@ grade terminates the episode with `success`; otherwise the episode's
 scene has no task reward. A region with `relative_to: <object>` is a box in
 that scene object's frame as it is at each graded step (a plate's surface; it
 turns and tilts with the object, starting from the declared yaw), and a graded object may be one the environment USD already holds
-(`backend_options.stage_objects`, see [`scenes/README.md`](https://github.com/OpenRAL/openral/tree/master/scenes/README.md#isaac-sim-any-stage-any-robot)).
+(`backend_options.stage_objects`, see [`scenes/README.md`](https://github.com/OpenRAL/openral/tree/master/scenes/README.md#isaac-sim-any-stage-any-robot)). A prim of the environment USD can also ride a robot link
+(`backend_options.link_attachments: [{prim, link}]`): it becomes a kinematic body that keeps
+its authored offset from the link, e.g. a tote on a mobile base's lift carriage, with the
+cartons in it carried by friction.
 
 Under `openral deploy sim` the scene is task-less (`<scene>/_hal_deploy_noop`, empty
 instruction), so no rubric is active at boot and every prompt's rubric ships to the

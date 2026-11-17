@@ -31,17 +31,12 @@ from pydantic import ValidationError
 REPO_ROOT = Path(__file__).resolve().parents[2]
 runner = importlib.import_module("openral_rskill_ros.rskill_runner_node")
 
-REAL_ROBOTS = [
-    "aloha_bimanual",
-    "franka_panda",
-    "galaxea_a1",
-    "openarm",
-    "sawyer",
-    "so100_follower",
-    "so101_follower",
-    "ur5e",
-    "ur10e",
-]
+# Every manifest that declares a real HAL: a new real robot is guarded without a list edit.
+REAL_ROBOTS = sorted(
+    p.parent.name
+    for p in (REPO_ROOT / "robots").glob("*/robot.yaml")
+    if RobotDescription.from_yaml(str(p)).hal.real is not None
+)
 # The value every real manifest used before this change, in whatever unit.
 _OLD_SPEED, _OLD_TOLERANCE = 0.5, 0.05
 
@@ -362,3 +357,30 @@ def test_a_republished_runner_without_a_control_rate_is_refused(launch_module: o
     )
     with pytest.raises(ROSConfigError, match="control_freq_hz"):
         fn(bare, "real", republished=True)
+
+
+def test_the_amr_elbow_sag_misses_the_manifest_and_arrives_under_the_sim_param() -> None:
+    """The OpenAMRobot 2.0's elbows settle 0.064-0.065 rad short of the stocking starting
+    pose on position gains without gravity feed-forward (Isaac twin, q5090, 2026-11-16).
+
+    The manifest keeps the OpenArm cell's 0.05 rad, so on its own the miss is named with
+    its residual and tolerance (not 'no fresh joint state'); only the runner's
+    ``starting_pose_tolerance`` param, which the Isaac twin deploys set, admits the sag.
+    """
+    desc = _robot("openamrobot_v2")
+    assert desc.hal.real is not None and desc.safety.starting_pose_tolerance_rad == 0.05
+    names = [j.name for j in desc.joints]
+    target = [0.0] * len(names)
+    target[names.index("left_joint4")] = 1.797
+    target[names.index("right_joint4")] = 1.917
+    current = list(target)
+    current[names.index("left_joint4")] = 1.797 - 0.065
+    current[names.index("right_joint4")] = 1.917 - 0.064
+    manifest = runner.starting_pose_joint_bounds(0.0, 0.0, desc)
+    assert runner.starting_pose_misses(current, target, manifest, names) == [
+        ("left_joint4", 0.065, 0.05),
+        ("right_joint4", 0.064, 0.05),
+    ]
+    sim = runner.starting_pose_joint_bounds(0.0, 0.08, desc)
+    assert runner.starting_pose_misses(current, target, sim, names) == []
+    assert runner.starting_pose_reached(current, target, sim)

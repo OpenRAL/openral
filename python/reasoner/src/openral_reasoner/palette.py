@@ -276,6 +276,14 @@ class RSkillToolEntry(BaseModel):
         completes_task_on_success: Mirrors
             ``RosIntegration.completes_task_on_success``: the goal's success
             completes the reasoner's active mission task. Not shown to the LLM.
+        object_target: What the deploy's object tracking asks of the call's
+            ``grasp_target`` / ``place_target`` for this skill, told to the LLM in the
+            tool description: ``"grasp_required"`` (it actuates an arm, gripper or hand:
+            the runner refuses a goal naming no object to grasp; the deployment supplies the
+            hand), ``"grasp_and_hand_required"`` (the same on a robot with several hands and
+            no declared grasping hand: the call names the hand too), ``"not_applicable"`` (it
+            only drives the base: no target is grounded for it), ``None`` (tracking off,
+            or a skill actuating nothing: the description is unchanged).
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -289,6 +297,9 @@ class RSkillToolEntry(BaseModel):
     quantization_dtype: QuantizationDtype = QuantizationDtype.FP32
     result_only: bool = False
     completes_task_on_success: bool = False
+    object_target: Literal["grasp_required", "grasp_and_hand_required", "not_applicable"] | None = (
+        None
+    )
 
 
 class ToolPalette(BaseModel):
@@ -345,6 +356,10 @@ class ToolPalette(BaseModel):
     reasoner_node only when a spatial-memory scene-graph ``SpatialMemory`` query
     backend is wired (Phase 2); off by default so the tools never appear without
     a dispatcher."""
+    places_only: bool = False
+    """The spatial memory holds only declared places (``DeployScene.nav_goals``, ADR-0133): no
+    path was loaded and nothing is ingested, so ``recall_object`` could never find an object
+    and is not offered; ``resolve_place`` is."""
     detector_available: bool = False
     """When ``True`` the LLM additionally sees the **read-only**
     ``locate_in_view`` tool (ask a live VLM detector whether an object is in the
@@ -449,10 +464,13 @@ def build_tool_palette(
     node_ids: Iterable[str] = (),
     commercial_deployment: bool = False,
     spatial_memory_available: bool = False,
+    places_only: bool = False,
     detector_available: bool = False,
     scene_query_available: bool = False,
     task_progress_available: bool = False,
     memory_available: bool = False,
+    object_tracking: bool = False,
+    grasp_hand_required: bool = False,
 ) -> ToolPalette:
     """Build a ``ToolPalette`` from the installed-skill registry.
 
@@ -493,6 +511,9 @@ def build_tool_palette(
         spatial_memory_available: When ``True`` the palette advertises the
             read-only ``recall_object`` / ``resolve_place`` query tools;
             set by the reasoner when a ``SpatialMemory`` backend is wired.
+        places_only: The spatial memory holds only declared places, so
+            ``recall_object`` is withheld (``ToolPalette.places_only``); a rebuild
+            must carry it or the tool reappears.
         detector_available: When ``True`` the palette advertises the read-only
             ``locate_in_view`` query tool; set by the reasoner when an
             object detector exposes ``/openral/perception/locate_in_view``.
@@ -506,6 +527,13 @@ def build_tool_palette(
         memory_available: When ``True`` the palette advertises the ``memory_write``
             + ``memory_search`` tools; set by the reasoner when a
             ``MEMORY.md`` is wired via the ``memory_md_path`` param.
+        object_tracking: The deploy runs the Layer-2 object tracker (its
+            ``object_tracking`` is ``tracking`` or ``on``): each entry's ``object_target``
+            is set from the manifest's ``actuates_manipulator``, so the LLM is told a
+            manipulation skill needs a ``grasp_target`` and a base-only one takes none.
+        grasp_hand_required: With ``object_tracking``, the robot has several hands and the
+            deployment declares no grasping hand (``grasp_contact_links``): a manipulation
+            skill's ``object_target`` is ``"grasp_and_hand_required"``.
 
     Returns:
         A frozen ``ToolPalette``.
@@ -584,6 +612,13 @@ def build_tool_palette(
                 quantization_dtype=skill.quantization.dtype,
                 result_only=ros is not None and ros.result_trajectory_field is None,
                 completes_task_on_success=ros is not None and ros.completes_task_on_success,
+                object_target=(
+                    None
+                    if not object_tracking or skill.actuates_manipulator is None
+                    else ("grasp_and_hand_required" if grasp_hand_required else "grasp_required")
+                    if skill.actuates_manipulator
+                    else "not_applicable"
+                ),
             ),
         )
     # Stable order so tool schemas are deterministic across builds.
@@ -597,6 +632,7 @@ def build_tool_palette(
         continuous_detectors=tuple(continuous_detectors),
         on_demand_detectors=tuple(on_demand_detectors),
         spatial_memory_available=spatial_memory_available,
+        places_only=places_only,
         detector_available=detector_available,
         scene_query_available=scene_query_available,
         task_progress_available=task_progress_available,

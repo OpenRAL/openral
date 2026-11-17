@@ -52,7 +52,12 @@ bt_navigator:
     # (goal-ack p99 19 ms, max 29 ms on 20 saturated cores, trivial server), so a
     # busy planner aborts the leg. Latency tolerance only; not a nav precision knob.
     default_server_timeout: 1000
-    wait_for_service_timeout: 1000
+    # ms the BT waits at bring-up for each action server (compute_path_to_pose, ...)
+    # before failing the whole Nav2 bring-up. 1000 ms aborted it on a loaded host when
+    # the planner came up 1 s late (Spark, Isaac + pi0.5, 2026-11-15), and 10000 ms when
+    # the BT's "spin" client took >10 s to discover an active behavior_server during the
+    # Isaac boot (Spark, 2026-11-16). Bring-up only.
+    wait_for_service_timeout: 30000
     action_server_result_timeout: 900.0
     navigators: ["navigate_to_pose", "navigate_through_poses"]
     navigate_to_pose:

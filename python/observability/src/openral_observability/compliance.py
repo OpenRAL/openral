@@ -45,6 +45,7 @@ from openral_observability.compliance_log import ComplianceLog
 __all__ = [
     "CLOCK_SOURCE_ENV",
     "ComplianceEmitter",
+    "free_text_may_leave_host",
     "images_may_leave_host",
     "send_record",
     "software_inventory",
@@ -54,6 +55,7 @@ CLOCK_SOURCE_ENV = "OPENRAL_CLOCK_SOURCE"
 """How the host clock is disciplined (``ptp`` / ``ntp`` / ``monotonic_unsynced``)."""
 
 _IMAGE_CONSENT_ENV = "OPENRAL_TELEMETRY_IMAGE_CONSENT"
+_TEXT_CONSENT_ENV = "OPENRAL_TELEMETRY_TEXT_CONSENT"
 
 log = structlog.get_logger(__name__)
 
@@ -327,11 +329,37 @@ def images_may_leave_host(endpoint: str | None = None) -> bool:
         from openral_observability import _sdk
 
         endpoint = _sdk._endpoint
-    return _images_allowed(endpoint or "", os.environ.get(_IMAGE_CONSENT_ENV) == "1")
+    return _may_leave_host(
+        endpoint or "", os.environ.get(_IMAGE_CONSENT_ENV) == "1", "images", _IMAGE_CONSENT_ENV
+    )
 
 
-@functools.lru_cache(maxsize=8)
-def _images_allowed(endpoint: str, consent: bool) -> bool:
+def free_text_may_leave_host(endpoint: str | None = None) -> bool:
+    """Whether model free text (a reasoner tick's rationale) may ride in exported telemetry.
+
+    The same rule as ``images_may_leave_host``, with its own consent,
+    ``OPENRAL_TELEMETRY_TEXT_CONSENT=1``: a rationale paraphrases the operator's prompt
+    and the scene, so it may name a person (CLAUDE.md §3: no PII in cloud logs without
+    consent). Withholding is logged once per endpoint.
+
+    Args:
+        endpoint: The OTLP endpoint; default the one ``configure_observability`` installed.
+
+    Example:
+        >>> free_text_may_leave_host("http://127.0.0.1:4318")
+        True
+    """
+    if endpoint is None:
+        from openral_observability import _sdk
+
+        endpoint = _sdk._endpoint
+    return _may_leave_host(
+        endpoint or "", os.environ.get(_TEXT_CONSENT_ENV) == "1", "free_text", _TEXT_CONSENT_ENV
+    )
+
+
+@functools.lru_cache(maxsize=16)
+def _may_leave_host(endpoint: str, consent: bool, what: str, consent_env: str) -> bool:
     """The decision for one ``(endpoint, consent)``; cached so it is logged once."""
     if consent or not endpoint:
         return True
@@ -343,8 +371,8 @@ def _images_allowed(endpoint: str, consent: bool) -> bool:
         local = host == "localhost" or "." not in host
     if not local:
         log.warning(
-            "telemetry.images_withheld",
+            f"telemetry.{what}_withheld",
             endpoint=endpoint,
-            hint=f"set {_IMAGE_CONSENT_ENV}=1 if the deployer consents to camera frames leaving",
+            hint=f"set {consent_env}=1 if the deployer consents to {what} leaving the host",
         )
     return local
