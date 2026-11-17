@@ -882,7 +882,7 @@ class ReasonerCore:
             # capped tick still burned the LLM round-trip, and those are the
             # ticks worth attributing.
             span.set_attribute(semconv.REASONER_LLM_S, round(prep.llm_s, 4))
-            usage = {
+            usage: dict[str, int | str | None] = {
                 semconv.REASONER_PROMPT_TOKENS: prep.prompt_tokens,
                 semconv.REASONER_SERVED_MODEL: prep.served_model,
             }
