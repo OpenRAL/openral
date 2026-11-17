@@ -262,6 +262,19 @@ REASONER_INFLIGHT_SKILL: Final[str] = "reasoner.inflight_skill"
 """rskill_id of the ``execute_rskill`` goal in flight when the tick ran; absent when idle."""
 REASONER_INFLIGHT_STATE: Final[str] = "reasoner.inflight_state"
 """Phase of that goal: ``"dispatching"`` (accepted / loading weights) or ``"running"``."""
+# Event-driven ticks (issue #620). ``reasoner.tick.trigger`` names what started
+# the tick: the event of a forced tick (``prompt``, ``skill_result``,
+# ``failure:<source>``, ``object_query``, ``mission_advance``, ``verdict``, ...)
+# or the gate that let a timer beat through (``context_changed``,
+# ``backstop``, ``wait_timeout``, ``llm_error_retry``).
+REASONER_TRIGGER: Final[str] = "reasoner.tick.trigger"
+# Triggers merged into this tick while the previous one was in flight.
+REASONER_COALESCED_TRIGGERS: Final[str] = "reasoner.tick.coalesced_triggers"
+# Timer beats suppressed (no LLM call) since the previous LLM call.
+REASONER_SKIPPED_SINCE_LAST: Final[str] = "reasoner.tick.skipped_since_last"
+# ``WaitTool.until`` / ``WaitTool.timeout_s`` of a tick that chose ``wait``.
+REASONER_WAIT_UNTIL: Final[str] = "reasoner.wait.until"
+REASONER_WAIT_TIMEOUT_S: Final[str] = "reasoner.wait.timeout_s"
 
 SPAN_SIM_RUN: Final[str] = "sim.run"
 SPAN_SIM_STEP: Final[str] = "sim.step"
@@ -471,6 +484,7 @@ __all__ = [
     "METRIC_WORLD_STATE_COMPONENTS_STALE",
     "METRIC_WORLD_STATE_STALENESS_MS",
     "ORG_ID",
+    "REASONER_COALESCED_TRIGGERS",
     "REASONER_ERROR_KIND",
     "REASONER_FORCE",
     "REASONER_INFLIGHT_SKILL",
@@ -483,10 +497,14 @@ __all__ = [
     "REASONER_RATIONALE",
     "REASONER_RATIONALE_MAX",
     "REASONER_RSKILL_ID",
+    "REASONER_SKIPPED_SINCE_LAST",
     "REASONER_SUPPRESSED_REASON",
     "REASONER_TICK_IDX",
     "REASONER_TIER",
     "REASONER_TOOL",
+    "REASONER_TRIGGER",
+    "REASONER_WAIT_TIMEOUT_S",
+    "REASONER_WAIT_UNTIL",
     "RECORD_ID",
     "RECORD_KIND",
     "RECORD_RETENTION_CLASS",

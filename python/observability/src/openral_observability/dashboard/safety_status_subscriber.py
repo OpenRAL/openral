@@ -22,6 +22,7 @@ from __future__ import annotations
 import threading
 from typing import TYPE_CHECKING, Any
 
+from openral_observability.failure_bus import drop_reason_label
 from openral_observability.rclpy_spin import spin_executor_until_shutdown
 
 if TYPE_CHECKING:
@@ -38,39 +39,6 @@ SAFETY_STATUS_TOPIC = "/openral/safety_status"
 # The HAL lifecycle node's 1 Hz heartbeat carries its own e-stop latch (``estopped``):
 # a kernel release does not release a HAL that needs a restart, or whose re-arm failed.
 DIAGNOSTICS_TOPIC = "/diagnostics"
-
-
-def drop_reason_label(code: int, status_cls: Any) -> str:  # reason: ROS message class is untyped
-    """Name a ``SafetyStatus.drop_reason`` from the IDL's own constants.
-
-    Reverse-maps the value against the generated message class's ``KIND_*`` /
-    ``DROP_*`` constants, so a constant added to ``SafetyStatus.msg`` shows up
-    here with no second table to keep in sync — and an unknown value degrades
-    to a readable placeholder instead of a wrong label.
-
-    Args:
-        code: The ``drop_reason`` value received on the wire.
-        status_cls: The generated ``openral_msgs.msg.SafetyStatus`` class.
-
-    Returns:
-        The constant's name lower-cased (e.g. ``"kind_collision"``), or
-        ``"drop_reason_<code>"`` when this build does not know the value.
-
-    Example:
-        >>> class _S:
-        ...     KIND_COLLISION = 10
-        ...     DROP_NONE = 255
-        >>> drop_reason_label(10, _S)
-        'kind_collision'
-        >>> drop_reason_label(200, _S)
-        'drop_reason_200'
-    """
-    for name in dir(status_cls):
-        if not name.startswith(("KIND_", "DROP_")):
-            continue
-        if getattr(status_cls, name, None) == code:
-            return name.lower()
-    return f"drop_reason_{code}"
 
 
 class SafetyStatusSubscriber:

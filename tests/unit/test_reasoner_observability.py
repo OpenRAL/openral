@@ -16,7 +16,7 @@ from openral_core import (
 )
 from openral_core.exceptions import ROSPlanningError
 from openral_observability import reasoner_span, semconv
-from openral_reasoner import ContextRenderer, ReasonerCore, ToolPalette
+from openral_reasoner import ContextRenderer, MissionState, ReasonerCore, ToolPalette
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from tests.integration.fakes.fake_llm import FakeToolUseClient
@@ -68,7 +68,9 @@ def test_tick_records_suppressed_reason_palette_empty(
     """An empty palette + no prompts produces a span with suppressed_reason=palette_empty."""
     client = FakeToolUseClient(responses=[])
     core = ReasonerCore(client=client, min_interval_s=0.0)
-    core.tick(world_state=None, renderer=ContextRenderer(), palette=_palette())
+    renderer = ContextRenderer()
+    renderer.set_mission(MissionState.from_prompt("pick the cube"))
+    core.tick(world_state=None, renderer=renderer, palette=_palette())
 
     spans = exporter.get_finished_spans()
     assert len(spans) == 1

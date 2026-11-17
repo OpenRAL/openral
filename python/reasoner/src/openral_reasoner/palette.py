@@ -284,6 +284,9 @@ class RSkillToolEntry(BaseModel):
             no declared grasping hand: the call names the hand too), ``"not_applicable"`` (it
             only drives the base: no target is grounded for it), ``None`` (tracking off,
             or a skill actuating nothing: the description is unchanged).
+        max_execution_s: The manifest's ``latency_budget.max_execution_s``
+            (``None`` when unset). Sizes the reasoner's in-flight backstop
+            (``inflight_backstop_s``). Not shown to the LLM.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -300,6 +303,7 @@ class RSkillToolEntry(BaseModel):
     object_target: Literal["grasp_required", "grasp_and_hand_required", "not_applicable"] | None = (
         None
     )
+    max_execution_s: float | None = None
 
 
 class ToolPalette(BaseModel):
@@ -619,6 +623,7 @@ def build_tool_palette(
                     if skill.actuates_manipulator
                     else "not_applicable"
                 ),
+                max_execution_s=skill.latency_budget.max_execution_s,
             ),
         )
     # Stable order so tool schemas are deterministic across builds.

@@ -29,6 +29,7 @@ from openral_reasoner import (
     ReasonerCore,
     ToolPalette,
 )
+from openral_reasoner.core import BACKSTOP_MIN_S
 from openral_reasoner.palette import RSkillToolEntry
 
 from tests.integration.fakes.fake_llm import FakeToolUseClient
@@ -342,7 +343,9 @@ def test_palette_empty_short_circuits_tick() -> None:
         responses=[EmitPromptTool(target_topic="/openral/prompt", text="ok")],
     )
     core = ReasonerCore(client=client, min_interval_s=0.0)
-    r = core.tick(world_state=None, renderer=ContextRenderer(), palette=palette)
+    renderer = ContextRenderer()
+    renderer.set_mission(MissionState.from_prompt("pick the cube"))
+    r = core.tick(world_state=None, renderer=renderer, palette=palette)
     assert r.tool_call is None
     assert r.suppressed_reason == "palette_empty"
 
@@ -646,7 +649,7 @@ def test_wait_is_transparent_to_the_retry_cap() -> None:
 def test_result_only_inflight_skill_does_not_keep_the_heartbeat_live() -> None:
     """A result-only skill in flight has no progress to poll: unchanged context stays idle.
 
-    A pollable (VLA) skill in flight keeps the heartbeat live so the LLM can call
+    A pollable (VLA) skill in flight keeps a backstop heartbeat so the LLM can call
     query_task_progress mid-execution; a wrapped Nav2-shape action reports only its
     terminal result, so heartbeat ticks there are pure `wait` calls (2026-11-11:
     103 of 109 LLM calls during one drive).
@@ -664,21 +667,32 @@ def test_result_only_inflight_skill_does_not_keep_the_heartbeat_live() -> None:
     client = FakeToolUseClient(
         responses=[EmitPromptTool(target_topic="/openral/prompt", text=str(i)) for i in range(4)],
     )
-    core = ReasonerCore(client=client, min_interval_s=0.0)
+    now = [0.0]
+    core = ReasonerCore(client=client, min_interval_s=0.0, clock=lambda: now[0])
     renderer = _renderer_with_prompt("drive to x=4")
+    renderer.set_mission(MissionState.from_prompt("drive to x=4"))
     renderer.set_inflight_skill("openral/rskill-nav", stamp_ns=1)
     assert core.tick(world_state=None, renderer=renderer, palette=palette).tool_call is not None
+    now[0] += 60.0
     idle = core.tick(world_state=None, renderer=renderer, palette=palette)
     assert idle.tool_call is None
     assert idle.suppressed_reason == "heartbeat_idle"
     # The terminal result (an event) still wakes the very next tick.
     renderer.set_inflight_skill(None)
     assert core.tick(world_state=None, renderer=renderer, palette=palette).tool_call is not None
-    # A pollable skill in flight keeps the heartbeat live on unchanged context.
+    # A pollable skill in flight keeps a backstop heartbeat on unchanged context
+    # (a new in-flight line is new context, but still waits for the backstop).
     renderer.set_inflight_skill("openral/rskill-vla", stamp_ns=2)
+    now[0] += BACKSTOP_MIN_S
     assert core.tick(world_state=None, renderer=renderer, palette=palette).tool_call is not None
+    assert (
+        core.tick(world_state=None, renderer=renderer, palette=palette).suppressed_reason
+        == "backstop_not_due"
+    )
+    now[0] += BACKSTOP_MIN_S
     live = core.tick(world_state=None, renderer=renderer, palette=palette)
     assert live.suppressed_reason == ""
+    assert live.trigger == "backstop"
 
 
 def test_result_only_inflight_skill_stays_pollable_with_a_reward_monitor() -> None:
@@ -693,10 +707,12 @@ def test_result_only_inflight_skill_stays_pollable_with_a_reward_monitor() -> No
     client = FakeToolUseClient(
         responses=[EmitPromptTool(target_topic="/openral/prompt", text=str(i)) for i in range(3)],
     )
-    core = ReasonerCore(client=client, min_interval_s=0.0)
+    now = [0.0]
+    core = ReasonerCore(client=client, min_interval_s=0.0, clock=lambda: now[0])
     renderer = _renderer_with_prompt("drive to x=4")
     renderer.set_inflight_skill("openral/rskill-nav", stamp_ns=1)
     assert core.tick(world_state=None, renderer=renderer, palette=palette).tool_call is not None
+    now[0] += BACKSTOP_MIN_S
     live = core.tick(world_state=None, renderer=renderer, palette=palette)
     assert live.tool_call is not None
     assert not live.suppressed_reason

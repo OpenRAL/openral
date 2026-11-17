@@ -54,6 +54,7 @@ from openral_core import (
 )
 from openral_core.exceptions import ROSConfigError
 from openral_core.schemas import ControlMode, JointType
+from openral_observability.failure_bus import drop_reason_label
 from openral_rskill.execution_budget import (
     DEFAULT_CLOCK_STALL_S,
     DEFAULT_WALL_CAP_FACTOR,
@@ -393,38 +394,6 @@ _SAFETY_EVIDENCE_WAIT_S = 1.0
 # it only arms once a status has actually been seen, so a graph with no
 # SafetyStatus publisher at all behaves exactly as it did before ADR-0096.
 _SAFETY_STATUS_LIVENESS_S = 3.0
-
-
-def _drop_reason_label(code: int, status_cls: Any) -> str:  # reason: ROS message class is untyped
-    """Name a ``SafetyStatus.drop_reason`` value from the IDL's own constants.
-
-    Reverse-maps against the generated message class's ``KIND_*`` / ``DROP_*`` constants, so a
-    new constant in ``SafetyStatus.msg`` is named here without a second table to keep in sync.
-
-    Args:
-        code: The ``drop_reason`` value received on the wire.
-        status_cls: The generated ``openral_msgs.msg.SafetyStatus`` class.
-
-    Returns:
-        The constant's name lower-cased (e.g. ``"kind_collision"``), or
-        ``"drop_reason_<code>"`` when the publisher is newer than this node
-        and the value is unknown here.
-
-    Example:
-        >>> class _S:
-        ...     KIND_COLLISION = 10
-        ...     DROP_NONE = 255
-        >>> _drop_reason_label(10, _S)
-        'kind_collision'
-        >>> _drop_reason_label(42, _S)
-        'drop_reason_42'
-    """
-    for name in dir(status_cls):
-        if not (name.startswith(("KIND_", "DROP_"))):
-            continue
-        if getattr(status_cls, name, None) == code:
-            return name.lower()
-    return f"drop_reason_{code}"
 
 
 def _drop_exception_type(
@@ -4089,7 +4058,7 @@ if _ROS2_AVAILABLE:
                 and not bool(getattr(msg, "latched", False))
             ):  # SafetyStatus DROP_*
                 detail = str(getattr(msg, "detail", "") or "")
-                label = _drop_reason_label(code, type(msg))
+                label = drop_reason_label(code, type(msg))
                 self._last_drop = (
                     self._safety_status_recv_monotonic,
                     f"{_SAFETY_STATUS_TOPIC}:{label}" + (f" ({detail})" if detail else ""),
@@ -4295,7 +4264,7 @@ if _ROS2_AVAILABLE:
             if status is not None:
                 age_s = time.monotonic() - self._safety_status_recv_monotonic
                 if bool(status.latched):
-                    label = _drop_reason_label(int(status.drop_reason), type(status))
+                    label = drop_reason_label(int(status.drop_reason), type(status))
                     detail = str(getattr(status, "detail", "") or "")
                     status_reason = f"{_SAFETY_STATUS_TOPIC}:{label}" + (
                         f" ({detail})" if detail else ""

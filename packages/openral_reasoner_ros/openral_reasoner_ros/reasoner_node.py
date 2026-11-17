@@ -89,6 +89,7 @@ from openral_core import (
 from openral_core.depth_extrinsic import MAX_PLANAR_ERR_M
 from openral_core.exceptions import ROSConfigError, ROSGPUMemoryError, ROSReasonerInvalidPlan
 from openral_observability import log_lifecycle_errors
+from openral_observability.failure_bus import drop_reason_label
 from openral_reasoner.active_search import (
     SearchBudget,
     SearchProgress,
@@ -124,6 +125,7 @@ from openral_reasoner.context import (
     PerceptionEventRecord,
     PromptRecord,
     RewardStateRecord,
+    SafetyStateRecord,
     reflect_on_failure,
     reflect_on_invalid_plan,
     reflect_on_retry_cap,
@@ -131,7 +133,13 @@ from openral_reasoner.context import (
     render_playbooks_block,
     render_robot_self_model,
 )
-from openral_reasoner.core import PreparedTick, ReasonerCore, ReasonerTickResult
+from openral_reasoner.core import (
+    LLM_ERROR_BACKOFF_S,
+    QUIET_SUPPRESSIONS,
+    PreparedTick,
+    ReasonerCore,
+    ReasonerTickResult,
+)
 from openral_reasoner.grounding import (
     gripper_hands,
     ground_grasp_target,
@@ -177,6 +185,7 @@ from openral_reasoner.tool_use import (
     resolve_reasoner_system_prompt,
 )
 from pydantic import TypeAdapter, ValidationError
+from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.executors import ExternalShutdownException
 from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
 from rclpy.qos import (
@@ -201,9 +210,11 @@ try:  # pragma: no cover — gated by colcon-built artifact
     from openral_msgs.msg import FailureTrigger as IDLFailureTrigger
     from openral_msgs.msg import ObjectQuery as IDLObjectQuery
     from openral_msgs.msg import PromptStamped as IDLPromptStamped
+    from openral_msgs.msg import SafetyStatus as IDLSafetyStatus
     from openral_msgs.msg import WorldStateStamped as IDLWorldStateStamped
 except ImportError:  # pragma: no cover — only firing when openral_msgs absent
     IDLExecuteRskill = None
+    IDLSafetyStatus = None
     IDLFailureTrigger = None
     IDLObjectQuery = None
     IDLPromptStamped = None
@@ -278,6 +289,20 @@ _QOS_REGISTRY_CHANGED = QoSProfile(
 # The occupancy-grid-refined approach phase — the slam_toolbox map is latched (description/static
 # QoS class): RELIABLE + TRANSIENT_LOCAL so a late-joining reasoner still receives the current grid
 # snapshot.
+# /openral/safety_status is latched: the "description/static" profile its
+# publishers use (SafetyStatus.msg), so a late-starting reasoner still gets the
+# current state.
+# A SafetyStatus latch within this long of a safety FailureTrigger's forced tick is
+# the same stop: it does not force a second LLM call (``_on_safety_status``).
+_SAFETY_TICK_DEDUP_S: float = 2.0
+
+_QOS_SAFETY_STATUS = QoSProfile(
+    history=QoSHistoryPolicy.KEEP_LAST,
+    depth=1,
+    reliability=QoSReliabilityPolicy.RELIABLE,
+    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+)
+
 _QOS_MAP = QoSProfile(
     history=QoSHistoryPolicy.KEEP_LAST,
     depth=1,
@@ -988,6 +1013,13 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # latency observed live so executor starvation (issue #21) cannot
         # produce false wedge verdicts; <= 0 disables the watchdog.
         self.declare_parameter("dispatch_watchdog_s", 30.0)
+        # Timer beat rate. Since issue #620 the beat only evaluates gates (context
+        # moved with nothing in flight, in-flight backstop due, a wait lapsed, an
+        # LLM retry due) — every event forces its own tick — so it sets how soon
+        # those are noticed, not how often the LLM is called.
+        # dynamic_typing: a YAML / launch override written as an integer (`tick_hz: 1`)
+        # must not fail the node's construction on rclpy's strict DOUBLE type.
+        self.declare_parameter("tick_hz", tick_hz, ParameterDescriptor(dynamic_typing=True))
         # Bound on waiting for /openral/execute_rskill to appear before a
         # dispatch fails with KIND_CONTROLLER (see _EXECUTE_SKILL_SERVER_PROBE_S).
         # 0 = fail on the first missed probe.
@@ -1184,7 +1216,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         self._completion_frame_max_age_s: float = 0.0
 
         # Populated by on_configure.
-        self._renderer: ContextRenderer = ContextRenderer()
+        self._renderer: ContextRenderer = ContextRenderer(now_ns=self._now_ns)
         self._world_state_msg: Any = None
         self._core: ReasonerCore | None = None
         # Log a `retry_cap` suppression only ONCE per streak — without this it
@@ -1222,7 +1254,17 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # outer tick returns — same semantics, flat stack, one LLM call at a
         # time.
         self._tick_in_flight: bool = False
-        self._queued_tick: tuple[bool, str] | None = None
+        # (force, tier, triggers) of the tick coalesced while one is in flight.
+        self._queued_tick: tuple[bool, str, tuple[str, ...]] | None = None
+        # Every _on_tick request, and every reward-verify query issued: the
+        # execute_rskill result handler forces a tick only when neither moved.
+        self._tick_requests: int = 0
+        self._verify_queries: int = 0
+        # One operator hand-off per run of LLM failures (cleared on the next good call).
+        self._llm_handoff_sent: bool = False
+        # Monotonic time of the last Tier-A tick a safety FailureTrigger forced
+        # (pairs a kernel stop with its SafetyStatus latch, ``_on_safety_status``).
+        self._last_safety_failure_tick_s: float = -float("inf")
         # Consecutive queued-tick replays (backstop counter for the
         # trampoline; reset whenever a tick finishes with nothing queued).
         self._tick_replays: int = 0
@@ -1344,7 +1386,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
     # ── lifecycle transitions ───────────────────────────────────────────────
 
     @log_lifecycle_errors
-    def on_configure(  # noqa: PLR0915  # reason: linear lifecycle setup — declare params, build the tool-use client, and open each gated subscriber in sequence; splitting hurts readability
+    def on_configure(  # noqa: PLR0912, PLR0915  # reason: linear lifecycle setup — declare params, build the tool-use client, and open each gated subscriber in sequence; splitting hurts readability
         self, state: LifecycleState
     ) -> TransitionCallbackReturn:
         """Build the tool-use client + subscribers; no ticking yet."""
@@ -1506,6 +1548,17 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 )
             else:
                 self.create_subscription(OccupancyGrid, map_topic, self._on_map, _QOS_MAP)
+
+        # Latched safety state (ADR-0096). Read-only: the reasoner never clears or
+        # weakens a stop; it only needs to know one is latched so it stops
+        # planning motion and hands the situation to the operator.
+        if IDLSafetyStatus is not None:
+            self.create_subscription(
+                IDLSafetyStatus,
+                "/openral/safety_status",
+                self._on_safety_status,
+                _QOS_SAFETY_STATUS,
+            )
 
         # Palette is rebuilt on every
         # /openral/skill_registry_changed event (fired by
@@ -1785,8 +1838,12 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
     def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
         """Arm the periodic tick timer."""
         del state
-        period_s = 1.0 / self._tick_hz
-        self._tick_timer = self.create_timer(period_s, self._on_tick)
+        tick_hz = float(self.get_parameter("tick_hz").value)
+        if tick_hz <= 0:
+            self.get_logger().error(f"on_activate: tick_hz must be > 0; got {tick_hz!r}")
+            return TransitionCallbackReturn.FAILURE
+        self._tick_hz = tick_hz
+        self._tick_timer = self.create_timer(1.0 / tick_hz, self._on_tick)
         self._is_active = True
         self.get_logger().info("on_activate: ticking")
         return TransitionCallbackReturn.SUCCESS
@@ -1818,7 +1875,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         del state
         self._core = None
         self._occupancy_grid = None
-        self._renderer = ContextRenderer()
+        self._renderer = ContextRenderer(now_ns=self._now_ns)
         # Drop the spatial memory this node built; a re-configure rebuilds it from the
         # parameters instead of mistaking it for an injected backend.
         self._spatial_memory = self._injected_spatial_memory
@@ -2108,7 +2165,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 f"mission: task {active.task_id} done ✓ ({verdict}); MISSION COMPLETE",
             )
             self._emit_mission_complete(mission, traceparent=traceparent)
-        self._on_tick(force=True, tier="C")
+        self._on_tick(force=True, tier="C", trigger="mission_advance")
 
     def _on_failure(self, source: str, msg: Any) -> None:
         """Append a failure event; preempt per the reasoner+supervisor design trigger taxonomy.
@@ -2123,7 +2180,14 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         WARN/INFO are buffered without preemption.
 
         See the reasoner+supervisor design amendment 2026-05-25 §3 for the full taxonomy.
+
+        A trigger this node published itself (``_publish_skill_failure``,
+        ``header.frame_id`` = the node name) is dropped: its outcome is already
+        in ``## EXECUTION`` and the publisher forced the tick, so the echo only
+        duplicated the line and paid for a second LLM call.
         """
+        if str(getattr(msg.header, "frame_id", "") or "") == self.get_name():
+            return
         record = FailureEventRecord(
             source=source,
             kind=int(msg.kind),
@@ -2153,7 +2217,13 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             return
         preempt_threshold = _SEVERITY_WARN if source == "safety" else _SEVERITY_FAIL
         if record.severity >= preempt_threshold:
-            self._on_tick(force=True, tier=_FAILURE_TIER_FOR_SOURCE.get(source, "B"))
+            if source == "safety":
+                self._last_safety_failure_tick_s = time.monotonic()
+            self._on_tick(
+                force=True,
+                tier=_FAILURE_TIER_FOR_SOURCE.get(source, "B"),
+                trigger=f"failure:{source}",
+            )
 
     def _on_object_query(self, record: FailureEventRecord) -> None:
         """Cancel unsafe manipulation, then recover within the persisted task budget."""
@@ -2238,7 +2308,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 )
             return
         if step.rung == "recover":
-            self._on_tick(force=True, tier=_FAILURE_TIER_FOR_SOURCE["world_state"])
+            self._on_tick(
+                force=True, tier=_FAILURE_TIER_FOR_SOURCE["world_state"], trigger="object_query"
+            )
 
     def _finish_object_query_cancel(
         self,
@@ -2261,7 +2333,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 current_mission_generation=self._mission_generation,
             )
         ):
-            self._on_tick(force=True, tier=_FAILURE_TIER_FOR_SOURCE["world_state"])
+            self._on_tick(
+                force=True, tier=_FAILURE_TIER_FOR_SOURCE["world_state"], trigger="object_query"
+            )
 
     def _band_edges(self) -> tuple[float, float]:
         """Three-tier verdict band edges from the active reward calibration (§1/§5).
@@ -2415,7 +2489,48 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 self._core.reset_kind_streak()
             self._spatial_search.reset()
             self._locate_escalated.clear()
-        self._on_tick(force=True, tier="D")
+        self._on_tick(
+            force=True,
+            tier="D",
+            # A cascade re-prompt is the result of the model's own query tool.
+            trigger=f"tool_result:{source}" if source in CASCADE_PROMPT_SOURCES else "prompt",
+        )
+
+    def _on_safety_status(self, msg: Any) -> None:
+        """Track ``/openral/safety_status``; a new latch forces a Tier-A tick.
+
+        A latch with no FailureTrigger behind it (dashboard E-STOP, the
+        passthrough supervisor, an unconfigured envelope) used to be invisible
+        to the reasoner unless a skill happened to be running. The 1 Hz
+        liveness refresh of an unchanged state is not an event.
+        """
+        code = int(msg.drop_reason)
+        reason = ""
+        if code != int(IDLSafetyStatus.DROP_NONE):
+            reason = drop_reason_label(code, IDLSafetyStatus)
+            if msg.detail:
+                reason += f" ({str(msg.detail)[:160]})"
+        was_latched = self._renderer.safety_latched
+        self._renderer.set_safety_status(
+            SafetyStateRecord(
+                latched=bool(msg.latched),
+                reason=reason,
+                # Receipt time, not header.stamp: the kernel may run on sim time
+                # while this node runs on wall time.
+                stamp_ns=self._now_ns(),
+            )
+        )
+        # A kernel stop also publishes a FailureTrigger on /openral/failure/safety,
+        # which already forced a Tier-A tick: skip a second full call for the same
+        # stop. The latch still moved ``seq``, and ``ReasonerCore``'s
+        # ``safety_latched`` gate lets one beat through to show it if that tick
+        # rendered before the status landed.
+        # ponytail: time window, not a stop id; SafetyStatus carries no id to pair on.
+        recent_safety_tick = (
+            time.monotonic() - self._last_safety_failure_tick_s < _SAFETY_TICK_DEDUP_S
+        )
+        if msg.latched and not was_latched and not recent_safety_tick:
+            self._on_tick(force=True, tier="A", trigger="safety_latched")
 
     def _on_estop_cleared(self, _msg: Any) -> None:
         """Operator cleared the safety e-stop — drop stale failure context.
@@ -3280,13 +3395,13 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
     def _handle_suppressed_tick(self, result: Any) -> None:
         """Log a suppressed tick and reflect on an exhausted retry streak.
 
-        `min_interval` fires every fractional second and would spam at INFO;
-        `heartbeat_idle` is the steady-state on a quiet system (one suppression
-        per heartbeat period); both stay at DEBUG. Everything else is rare and
+        The timer-beat gates (``openral_reasoner.core.QUIET_SUPPRESSIONS``: `min_interval`,
+        `heartbeat_idle`, `backstop_not_due`, `wait_hold`, …) fire on most beats
+        of a healthy run and stay at DEBUG. Everything else is rare and
         operationally important — `retry_cap` in particular used to be silent
         and left operators wondering why their prompt did nothing.
         """
-        if result.suppressed_reason in ("min_interval", "heartbeat_idle", "retry_cap_hold"):
+        if result.suppressed_reason in QUIET_SUPPRESSIONS:
             # retry_cap_hold is the steady-state after a capped streak whose
             # context has not moved (the LLM call is skipped entirely) —
             # debug-level like the other quiet suppressions. None of these
@@ -3341,7 +3456,14 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
     #: so a future bug degrades to a logged skip, not an unbounded loop.
     _MAX_TICK_REPLAYS: int = 4
 
-    def _on_tick(self, *, force: bool = False, tier: str = "heartbeat") -> None:
+    def _on_tick(
+        self,
+        *,
+        force: bool = False,
+        tier: str = "heartbeat",
+        trigger: str = "heartbeat",
+        coalesced: tuple[str, ...] = (),
+    ) -> None:
         """Start one orchestrator pass (single-flight, queued-replay trampoline).
 
         Several dispatch/verify handlers force a follow-up tick synchronously
@@ -3362,7 +3484,15 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             tier: Trigger tier driving this call — ``"A"``/``"B"``/``"C"``/``"D"``
                 for the four event tiers, or ``"heartbeat"`` (default) for the
                 periodic timer. Recorded on the OTel span as ``reasoner.tier``.
+            trigger: The event this tick is for (``prompt``, ``skill_result``,
+                ``failure:<source>``, …), recorded as ``reasoner.tick.trigger``.
+                A timer beat passes ``"heartbeat"`` and the core names the gate
+                that let it through. Requests arriving while a tick is in flight
+                are merged; their triggers ride on the replay as
+                ``reasoner.tick.coalesced_triggers``.
+            coalesced: Triggers merged into this (replayed) request.
         """
+        self._tick_requests += 1
         if not self._is_active:
             # Inactive: subscriptions still deliver prompts/failures (they are
             # kept in the renderer for the next activation) but nothing ticks.
@@ -3374,13 +3504,26 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         if active is not None and active.task_id == self._object_query_blocked_task_id:
             return
         if self._tick_in_flight:
+            # Coalesce: one replay after the in-flight tick, forced if any request
+            # was, carrying every trigger so none is lost from the trace (the
+            # events themselves are already in the renderer buffers).
             prev = self._queued_tick
-            if prev is None or (force and not prev[0]):
-                self._queued_tick = (force, tier)
+            if prev is None:
+                self._queued_tick = (force, tier, (trigger, *coalesced))
+            else:
+                p_force, p_tier, p_triggers = prev
+                keep_new = force and not p_force
+                self._queued_tick = (
+                    p_force or force,
+                    tier if keep_new else p_tier,
+                    (*p_triggers, trigger, *coalesced),
+                )
             return
         self._tick_in_flight = True
         try:
-            llm_in_flight = self._start_tick(force=force, tier=tier)
+            llm_in_flight = self._start_tick(
+                force=force, tier=tier, trigger=trigger, coalesced=coalesced
+            )
         except BaseException:
             self._tick_in_flight = False
             self._queued_tick = None
@@ -3411,7 +3554,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             )
             self._tick_replays = 0
             return
-        self._on_tick(force=queued[0], tier=queued[1])
+        q_force, q_tier, q_triggers = queued
+        self._on_tick(force=q_force, tier=q_tier, trigger=q_triggers[0], coalesced=q_triggers[1:])
 
     def _post_to_executor(self, fn: Callable[[], None]) -> None:
         """Marshal ``fn`` onto the rclpy executor thread. Thread-safe.
@@ -3451,7 +3595,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                         self._inbox_guard.trigger()
                 raise
 
-    def _start_tick(self, *, force: bool, tier: str) -> bool:
+    def _start_tick(
+        self, *, force: bool, tier: str, trigger: str, coalesced: tuple[str, ...]
+    ) -> bool:
         """One orchestrator pass: render context → hand the LLM phase to the worker.
 
         Returns ``True`` when the blocking LLM phase went to the worker
@@ -3495,6 +3641,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             palette=self._palette,
             force=force,
             tier=tier,
+            trigger=trigger,
+            coalesced=coalesced,
         )
         if isinstance(prep, ReasonerTickResult):
             # A suppression gate fired — no LLM call, finish synchronously.
@@ -3504,6 +3652,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             raise ROSConfigError("reasoner tick with no LLM worker pool — configure first")
         core = self._core
         generation = self._llm_generation
+        task_key = self._task_key()
 
         def _llm_worker() -> None:
             # Worker thread: ONLY the blocking client round-trip. Everything
@@ -3516,7 +3665,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             except Exception as exc:  # reason: marshaled to finish_tick, the single handler
                 error = exc
             self._post_to_executor(
-                lambda: self._finish_llm_tick(prep, call=call, error=error, generation=generation)
+                lambda: self._finish_llm_tick(
+                    prep, call=call, error=error, generation=generation, task_key=task_key
+                )
             )
 
         self._llm_pool.submit(_llm_worker)
@@ -3529,6 +3680,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         call: Any,
         error: BaseException | None,
         generation: int,
+        task_key: tuple[int, str | None] | None = None,
     ) -> None:
         """Executor-thread continuation of ``_start_tick`` (worker done).
 
@@ -3537,7 +3689,11 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         releases the single-flight window and replays the coalesced queued
         tick, if any. A round-trip that lands after deactivate/cleanup
         (generation mismatch) is dropped — the span is closed, nothing
-        dispatches.
+        dispatches. So is a plan for a mission task that ended while the call
+        was in flight (``task_key`` mismatch: a verdict completed or abandoned
+        it, a new goal replaced it): an ``execute_rskill`` or
+        ``decompose_mission`` decided against that task would act on the next
+        one blind. The discard is recorded in ``## EXECUTION``.
         """
         if generation != self._llm_generation or self._core is None:
             prep.span.end()
@@ -3545,7 +3701,14 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             return
         try:
             result = self._core.finish_tick(prep, call=call, error=error)
-            self._handle_tick_result(result)
+            if (
+                task_key is not None
+                and isinstance(result.tool_call, ExecuteRskillTool | DecomposeMissionTool)
+                and task_key != self._task_key()
+            ):
+                self._discard_stale_plan(result.tool_call, task_key)
+            else:
+                self._handle_tick_result(result)
         except BaseException:
             self._tick_in_flight = False
             self._queued_tick = None
@@ -3581,7 +3744,17 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                         stamp_ns=self.get_clock().now().nanoseconds,
                     )
                 )
+            elif self._core is not None and self._core.llm_gave_up and not self._llm_handoff_sent:
+                # Deadline fallback (CLAUDE.md §3): every bounded retry failed, so the
+                # reasoner stops re-sending and hands the situation to the operator.
+                self._llm_handoff_sent = True
+                self._handoff_to_operator(
+                    f"The planner model failed {len(LLM_ERROR_BACKOFF_S) + 1} calls in a row "
+                    f"(last: {result.error!s:.200}). I stopped retrying; send a prompt to "
+                    "try again.",
+                )
             return
+        self._llm_handoff_sent = False
         if result.tool_call is None:
             return
         self._dispatched_calls.append(result.tool_call)
@@ -3649,6 +3822,12 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             self.get_logger().warning(
                 f"dispatch: reload_gst_pipeline sensor_id={call.sensor_id!r} ignored — "
                 "F6 sensor-package service IDL not yet on disk (see GH-126).",
+            )
+            self._note_outcome(
+                "reload_gst_pipeline",
+                f"{call.sensor_id}: not supported on this stack yet; nothing changed",
+                ok=False,
+                reflection="do not retry it; carry on with the sensors as they are.",
             )
             return
         self.get_logger().warning(f"dispatch: unhandled tool call {type(call).__name__}")
@@ -3721,6 +3900,12 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         self.get_logger().info(
             f"dispatch: emit_prompt → {call.target_topic} text={call.text!r}",
         )
+        # The operator's reply arrives as a bare PROMPTS line; keep what was said
+        # to them in context so the reply reads as an answer to it.
+        if call.target_topic == "/openral/prompt":
+            self._note_outcome(
+                "emit_prompt", f"said to the operator: {call.text[:300]}", ok=True, wake=False
+            )
 
     def _dispatch_spatial_query(
         self,
@@ -3873,7 +4058,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             f"mission: task {active.task_id} abandoned ✗ ({reason}); "
             f"advancing to {nxt.task_id}={nxt.text[:60]!r}",
         )
-        self._on_tick(force=True, tier="C")
+        self._on_tick(force=True, tier="C", trigger="active_search")
 
     def _reset_task_locate_budget(self) -> None:
         """Reset the per-task locate budget (VLM-adjudicated completion amendment).
@@ -3965,7 +4150,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             )
         else:
             self._emit_mission_complete(mission, traceparent=traceparent)
-        self._on_tick(force=True, tier="C")
+        self._on_tick(force=True, tier="C", trigger="active_search")
         return True
 
     def _dispatch_locate_in_view(
@@ -4224,6 +4409,12 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 f"dispatch: query_scene question={call.question!r} camera={call.camera!r} — "
                 "/openral/perception/query_scene not on graph; skipping",
             )
+            self._note_outcome(
+                "query_scene",
+                "no answer: the scene VLM service is not running",
+                ok=False,
+                reflection="do not ask again; decide from the snapshot.",
+            )
             return
         req = QueryScene.Request()
         req.question = call.question
@@ -4248,6 +4439,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             resp = future.result()
         except Exception as exc:  # best-effort; a failed query must not kill the tick
             self.get_logger().warning(f"dispatch: query_scene response failed: {exc}")
+            self._note_outcome(
+                "query_scene", f"no answer: the call failed ({exc!s:.120})", ok=False
+            )
             return
         assert self._prompt_pub is not None
         cam = _camera_label(resp.camera or call.camera)
@@ -4307,6 +4501,12 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 f"dispatch: query_task_progress window_s={call.window_s} — "
                 "/openral/perception/query_task_progress not on graph; skipping",
             )
+            self._note_outcome(
+                "query_task_progress",
+                "no answer: the reward monitor is not running",
+                ok=False,
+                reflection="do not ask again; judge progress from the snapshot or query_scene.",
+            )
             return
         # Blank = the active mission task, as the tool's ``task`` field promises. Sent
         # blank, the reward monitor would score its launch-time ``task`` parameter instead
@@ -4354,6 +4554,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             resp = future.result()
         except Exception as exc:  # best-effort; a failed query must not kill the tick
             self.get_logger().warning(f"dispatch: query_task_progress response failed: {exc}")
+            self._note_outcome(
+                "query_task_progress", f"no answer: the call failed ({exc!s:.120})", ok=False
+            )
             return
         mission = self._renderer.mission
         active = mission.active() if mission is not None else None
@@ -4485,7 +4688,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 f"(attempt {active.attempts}) — {verdict}",
             )
             if action == "step":
-                self._on_tick(force=True, tier="C")  # the next step, now
+                self._on_tick(force=True, tier="C", trigger="mission_advance")  # next step
                 return
             self._apply_mission_verdict(
                 action,
@@ -4541,6 +4744,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         pending = (self._mission_generation, active.task_id) if succeeded else None
         if pending is not None:
             self._pending_success_verdicts[pending] += 1
+        self._verify_queries += 1
         future = client.call_async(req)
         # Carry BOTH the task id and text into the response guard: two tasks
         # frequently share text after a decompose ("pick up the milk…" twice),
@@ -4850,7 +5054,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             f"({spent}/{DEFAULT_MAX_ATTEMPTS}); block lifted",
         )
         if tick and not outstanding:
-            self._on_tick(force=True, tier=_FAILURE_TIER_FOR_SOURCE["world_state"])
+            self._on_tick(
+                force=True, tier=_FAILURE_TIER_FOR_SOURCE["world_state"], trigger="object_query"
+            )
 
     def _bound_unjudged_dispatch(
         self,
@@ -4917,7 +5123,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                     stamp_ns=self.get_clock().now().nanoseconds,
                 )
             )
-            self._on_tick(force=True, tier="C")
+            self._on_tick(force=True, tier="C", trigger="verdict")
             return
         if action == "complete":
             self._complete_active_and_advance(active, verdict, traceparent=traceparent)
@@ -4963,7 +5169,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 f"mission: task {active.task_id} abandoned ✗ ({verdict}); MISSION COMPLETE",
             )
             self._emit_mission_complete(mission, traceparent=traceparent)
-        self._on_tick(force=True, tier="C")
+        self._on_tick(force=True, tier="C", trigger="verdict")
 
     def _emit_mission_complete(self, mission: MissionState, *, traceparent: str | None) -> None:
         """Emit an honest operator-facing mission summary (self-prompt, §2).
@@ -5019,12 +5225,19 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 self.get_logger().warning(
                     f"decompose_mission: target {call.target_task_id!r} but no active mission",
                 )
+                self._note_outcome("decompose_mission", "ignored: there is no mission", ok=False)
                 return
             active = mission.active()
             if active is None or active.task_id != call.target_task_id:
                 self.get_logger().warning(
                     f"decompose_mission: target {call.target_task_id!r} is not the active task "
                     f"(active={active.task_id if active else None!r}) — ignored",
+                )
+                self._note_outcome(
+                    "decompose_mission",
+                    f"ignored: {call.target_task_id!r} is not the active task "
+                    f"({active.task_id if active else 'none'} is)",
+                    ok=False,
                 )
                 return
             child = mission.subdivide_active(call.rendered_subtasks())
@@ -5034,6 +5247,12 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 self.get_logger().info(
                     f"decompose_mission: refused to subdivide {call.target_task_id!r} "
                     f"(depth {active.depth} ≥ {DEFAULT_MAX_SUBDIVIDE_DEPTH}) — will hand off",
+                )
+                self._note_outcome(
+                    "decompose_mission",
+                    f"refused: {call.target_task_id!r} is already split as finely as allowed",
+                    ok=False,
+                    reflection="do not split it again; try another skill or hand off.",
                 )
                 return
             self._renderer.set_mission(mission)  # bump seq so the new active task wakes a tick
@@ -5048,6 +5267,12 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                     "decompose_mission: populate ignored — the mission has already started "
                     "(use target_task_id to subdivide the active task instead)",
                 )
+                self._note_outcome(
+                    "decompose_mission",
+                    "ignored: the mission has started; only the active task can be split "
+                    "(set target_task_id)",
+                    ok=False,
+                )
                 return
             new_mission = MissionState(call.rendered_subtasks())
             if new_mission.is_empty():
@@ -5061,7 +5286,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             )
         if self._core is not None:
             self._core.reset_kind_streak()
-        self._on_tick(force=True, tier="C")
+        self._on_tick(force=True, tier="C", trigger="decompose")
 
     def _emit_subdivision_invite(
         self,
@@ -6012,6 +6237,20 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         has every chunk).
         """
         fb = feedback_msg.feedback
+        active = self._active_rskill_goal
+        # Match on the goal, not the skill id: a late message from the previous
+        # goal of the same skill must not show its progress on the new attempt.
+        if (
+            active is not None
+            and self._renderer.inflight_skill == rskill_id
+            and bytes(feedback_msg.goal_id.uuid) == bytes(active[0].goal_id.uuid)
+        ):
+            chunks = f" chunk={fb.chunk_index}" + (
+                f"/{fb.chunks_total}" if int(fb.chunks_total) > 0 else ""
+            )
+            self._renderer.set_inflight_feedback(
+                f"state={fb.state} progress={fb.progress:.2f}{chunks}"
+            )
         line = (
             f"execute_rskill feedback rskill_id={rskill_id!r} state={fb.state!r} "
             f"progress={fb.progress:.2f} chunk={fb.chunk_index}/{fb.chunks_total}"
@@ -6232,9 +6471,28 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         future: Any,
         traceparent: str | None,
     ) -> None:
-        """Result done callback. Cancels deadline timer; emits on abort."""
+        """Result done callback: handle the result, then make sure the model hears of it.
+
+        A terminal result is an event (issue #620). When handling it neither
+        forced a tick (failure, verdict, next step) nor started a reward verify
+        (whose verdict ticks), force one here — otherwise the outcome waited up to
+        a whole heartbeat period for the model to see it.
+        """
         if generation != self._active_dispatch_generation:
             return
+        ticks, verifies = self._tick_requests, self._verify_queries
+        self._handle_execute_rskill_result(call, goal_id, future, traceparent)
+        if (ticks, verifies) == (self._tick_requests, self._verify_queries):
+            self._on_tick(force=True, tier="C", trigger="skill_result")
+
+    def _handle_execute_rskill_result(
+        self,
+        call: ExecuteRskillTool,
+        goal_id: bytes,
+        future: Any,
+        traceparent: str | None,
+    ) -> None:
+        """Cancels the deadline timer, records the outcome, emits on abort."""
         # Single-resident-skill VRAM eviction — the skill is terminal (success/abort/cancel/error),
         # so the policy's VRAM is released; restore the GPU peers (detector) we froze for it. Runs
         # before any early return below so it always fires.
@@ -6350,6 +6608,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 f"execute_rskill {cancel_reason}-cancelled rskill_id={call.rskill_id!r} "
                 "— verifying",
             )
+            self._note_reasoner_stop(call, cancel_reason, now_ns)
             self._maybe_verify_active_mission_task(
                 call,
                 traceparent=traceparent,
@@ -6464,6 +6723,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 elapsed_s=elapsed,
             ),
             traceparent=traceparent,
+            # The cancel result records why the attempt stopped and forces the
+            # tick; ticking now would show the model nothing new.
+            tick=False,
         )
 
     def _handle_object_query_result(
@@ -6540,7 +6802,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             self._object_query_blocked_task_id = active.task_id
         self._count_failure(active)  # one write: the failure and any block
         if not blocked:
-            self._on_tick(force=True, tier=_FAILURE_TIER_FOR_SOURCE["world_state"])
+            self._on_tick(
+                force=True, tier=_FAILURE_TIER_FOR_SOURCE["world_state"], trigger="object_query"
+            )
         return True
 
     # ── Lifecycle service callback ──────────────────────────────────────────
@@ -6563,6 +6827,11 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 f"lifecycle_transition node={call.node!r} transition={call.transition!r} "
                 f"call failed: {type(exc).__name__}: {exc}",
             )
+            self._note_outcome(
+                "lifecycle_transition",
+                f"{call.transition} {call.node}: call failed ({type(exc).__name__})",
+                ok=False,
+            )
             return
         if resp.success:
             self.get_logger().info(
@@ -6573,6 +6842,101 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 f"lifecycle_transition node={call.node!r} transition={call.transition!r} "
                 "rejected by the target node",
             )
+        self._note_outcome(
+            "lifecycle_transition",
+            f"{call.transition} {call.node}: "
+            + ("done" if resp.success else "rejected by the node (wrong state for it?)"),
+            ok=bool(resp.success),
+        )
+
+    def _note_reasoner_stop(self, call: ExecuteRskillTool, cancel_reason: str, now_ns: int) -> None:
+        """Record that the reasoner itself ended an attempt (reward wake or patience).
+
+        The model must see that the attempt ended and why; the reward verdict (if
+        any) follows as its own line.
+        """
+        why = (
+            "the reward monitor judged the attempt over"
+            if cancel_reason == "reward"
+            else f"its patience ceiling ({self._effective_patience_s(call):.0f}s) elapsed"
+        )
+        self._renderer.append_execution(
+            ExecutionEventRecord(
+                rskill_id=call.rskill_id,
+                outcome="stopped",
+                summary=f"stopped by the reasoner: {why}",
+                reflection=None,
+                stamp_ns=now_ns,
+            )
+        )
+
+    def _handoff_to_operator(self, text: str) -> None:
+        """Tell the operator something needs them, without waking this node.
+
+        Published on ``/openral/prompt`` with this node's frame_id (dropped by
+        ``_on_prompt``'s self-emit filter, like ``EmitPromptTool``) and kept in
+        context as what was said.
+        """
+        self.get_logger().error(f"reasoner hand-off: {text}")
+        if self._prompt_pub is None or IDLPromptStamped is None:
+            return
+        msg = IDLPromptStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = self.get_name()
+        msg.text = text
+        msg.metadata_json = json.dumps({"source": "openral_reasoner", "handoff": True})
+        self._prompt_pub.publish(msg)
+        self._note_outcome("emit_prompt", f"said to the operator: {text}", ok=True, wake=False)
+
+    def _task_key(self) -> tuple[int, str | None]:
+        """``(mission generation, active task id)``: what a plan was made for."""
+        mission = self._renderer.mission
+        active = mission.active() if mission is not None else None
+        return (self._mission_generation, active.task_id if active is not None else None)
+
+    def _discard_stale_plan(self, call: Any, task_key: tuple[int, str | None]) -> None:
+        """Drop a plan whose mission task ended while its LLM call was in flight."""
+        _generation, task_id = task_key
+        self.get_logger().warning(
+            f"tick: discarding {call.tool} planned for task {task_id!r} "
+            f"(mission generation {task_key[0]}), which ended while the call was in flight",
+        )
+        self._note_outcome(
+            call.tool,
+            f"not sent: planned for task {task_id or '-'}, which ended before the decision arrived",
+            ok=False,
+            reflection="decide again for the task now active.",
+        )
+
+    def _now_ns(self) -> int:
+        """Graph-clock now in ns — the time base of every renderer record's ``stamp_ns``."""
+        return int(self.get_clock().now().nanoseconds)
+
+    def _note_outcome(
+        self,
+        tool: str,
+        summary: str,
+        *,
+        ok: bool,
+        reflection: str | None = None,
+        wake: bool = True,
+    ) -> None:
+        """Put the outcome of a non-skill tool call in ``## EXECUTION``.
+
+        For calls whose result used to reach only the log (lifecycle transitions,
+        refused or unanswerable queries, …): without it the model re-issues a call
+        it cannot see failed, or never learns one worked.
+        """
+        self._renderer.append_execution(
+            ExecutionEventRecord(
+                rskill_id=f"({tool})",
+                outcome="ok" if ok else "failed",
+                summary=summary,
+                reflection=reflection,
+                stamp_ns=self._now_ns(),
+            ),
+            wake=wake,
+        )
 
     # ── FailureTrigger emit helper ──────────────────────────────────────────
 
@@ -6584,8 +6948,13 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         evidence: Any,
         traceparent: str | None,
         trace_id: str | None = None,
+        tick: bool = True,
     ) -> None:
         """Publish a ``FailureTrigger`` on ``/openral/failure/rskill``.
+
+        ``tick=False`` publishes without waking the reasoner, for a caller whose
+        own follow-up carries the news (the patience deadline: its cancel result
+        records why the attempt stopped and forces that tick).
 
         ``trace_id`` (when supplied — e.g. propagated by the action
         server's result) takes precedence; otherwise the reasoner's
@@ -6596,7 +6965,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             return
         msg = IDLFailureTrigger()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = "rskill"
+        # The node's own name: ``_on_failure`` drops its own echo by it.
+        msg.header.frame_id = self.get_name()
         msg.kind = int(kind)
         msg.severity = _SEVERITY_FAIL
         msg.evidence_json = evidence.model_dump_json()
@@ -6626,6 +6996,21 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # The ROS FailureTrigger bus is invisible to the dashboard (it ingests
         # OTLP, not ROS topics); this event is the only thing that reaches it.
         self._emit_skill_failure_event(kind=kind, rskill_id=rskill_id, evidence=evidence)
+        # The tick its echo on /openral/failure/rskill used to force (now dropped
+        # in ``_on_failure``) — after the calling handler returns, like the echo
+        # did, so the context includes everything that handler records (the
+        # failure counted, the task abandoned, the dispatch released).
+        if tick:
+            self._tick_after_handler(tier="B", trigger="skill_failure")
+
+    def _tick_after_handler(self, *, tier: str, trigger: str) -> None:
+        """Force a tick once the current executor callback has returned.
+
+        Counted as a tick request now, so ``_on_execute_rskill_result`` does not
+        add a second one for the same result.
+        """
+        self._tick_requests += 1
+        self._post_to_executor(lambda: self._on_tick(force=True, tier=tier, trigger=trigger))
 
     def _emit_skill_failure_event(self, *, kind: int, rskill_id: str, evidence: Any) -> None:
         """Stamp an ``EVENT_SKILL_FAILURE`` span event for the live dashboard.

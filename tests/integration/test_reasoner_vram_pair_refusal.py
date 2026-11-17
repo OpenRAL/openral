@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 import time
 from typing import Any
 
@@ -239,7 +240,9 @@ def test_execute_rskill_refused_when_vla_reward_pair_exceeds_vram(
     )
     # The LLM reads the refusal with a hint, not just a failure-buffer line: re-sending
     # the same skill is refused again, so it must pick a smaller one.
-    assert f"skill={_VLA_ID}: not run: vram_insufficient" in rendered, rendered
+    assert re.search(
+        rf"skill={re.escape(_VLA_ID)}( age=[0-9.]+s)?: not run: vram_insufficient", rendered
+    ), rendered
     assert "pick a smaller skill" in rendered, rendered
     vram_failures = [m for m in failures if "vram_insufficient" in m.evidence_json]
     assert vram_failures, (

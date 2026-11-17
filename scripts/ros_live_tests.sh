@@ -29,6 +29,8 @@ TARGETS=(
     tests/integration/test_reasoner_node_end_to_end.py
     tests/integration/test_reasoner_dispatch_robustness.py
     tests/integration/test_reasoner_async_llm.py
+    # #620: a safety latch, a skill result and an abort each reach the LLM as one tick.
+    tests/integration/test_reasoner_event_ticks_live.py
     tests/integration/test_reasoner_vram_pair_refusal.py
     tests/integration/test_reasoner_vram_eviction.py
     tests/integration/test_reasoner_palette_primes_vram_gate.py

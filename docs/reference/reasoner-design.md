@@ -20,11 +20,13 @@ is to wrap an unreliable LLM in deterministic, bounded scaffolding (see
 tokens doing nothing, and a free-form LLM that emits prose or multiple
 simultaneous actions can't be safely dispatched or replayed.
 
-**Solution.** An event-driven loop with a slow heartbeat (`tick_hz = 0.2`; idle
-heartbeat ticks short-circuit with no LLM call), event preemption across four
-tiers (safety, execution, critic, operator) gated by a hard
-`min_interval_s = 100 ms` so nothing can thrash the LLM, and exactly one
-Pydantic-validated `ReasonerToolCall` per tick. The tier table and tool palette are
+**Solution.** An event-driven loop: events (safety, execution, critic,
+operator, skill results, tool results, verdicts) force a tick; a cheap timer
+beat (`tick_hz = 0.2`) only runs gates and reaches the LLM when the context
+moved with nothing in flight, when a running skill's backstop
+(`clamp(max_execution_s / 4, 15 s, 30 s)`) is due, when the model's own
+`wait(until=…, timeout_s=…)` lapses, or to retry a failed LLM call (issue #620).
+Exactly one Pydantic-validated `ReasonerToolCall` per tick. The tier table and tool palette are
 in [`reasoner.md`](reasoner.md#cadence-event-model).
 
 **Execution model.** The blocking LLM round-trip (`select_tool`, and the VLM
@@ -43,8 +45,10 @@ operator prompt survives for the next tick.
 **Authority boundary.** Only `rskill_runner_node` publishes `ActionChunk`, and
 every action passes the C++ safety kernel before it reaches a motor.
 
-**Why.** Event-driven cuts idle LLM calls ~85% vs a fast timer; the heartbeat is
-the deadlock insurance ("task not progressing"). One typed call per tick is what
+**Why.** Event-driven cuts idle LLM calls ~85% vs a fast timer. Polling a
+running skill every beat still made most calls answer `wait` (2026-11 AMR
+restock runs), so the beat became a backstop; it remains the deadlock insurance
+("task not progressing"). One typed call per tick is what
 makes a run dispatchable, traceable, and replayable from the trace alone.
 
 ---
