@@ -90,7 +90,7 @@ _Publish the durable object nodes as a dashboard OTel span (advisory; never a sa
 
 - const `_DEFAULT_FRAME = "map"` (L27) — Default frame name used by callers building `SceneGraph` nodes for this emitter (the SLAM 2D map frame the dashboard overlays markers on).
 - `scene_objects_payload(graph) -> list[dict[str, object]]` — Project a `SceneGraph`'s `object`-kind nodes to JSON-friendly dicts; non-object nodes are skipped. (L30)
-- `emit_scene_objects_span(graph, *, source_node) -> int` — Emit one `world.scene_objects` span carrying the object list; returns the object count. Currently emitted by the Reasoner from its preloaded map. (L66)
+- `emit_scene_objects_span(graph, *, source_node) -> int` — Emit one `world.scene_objects` span carrying the object list; returns the object count. Currently emitted by the Reasoner from its preloaded map. (L76)
 
 ### `python/world_state/src/openral_world_state/embedder.py`
 _Open-vocabulary text embedder (optional; `uv sync --group clip`)._
