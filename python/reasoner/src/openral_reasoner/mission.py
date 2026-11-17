@@ -338,6 +338,13 @@ class MissionState:
         ]
         if self._tasks:
             self._tasks[0].status = "active"
+        # Display-only budget context for ``to_summary``, set by the reasoner node before
+        # each tick; not persisted. ``pending_verdicts``: task id → successes whose reward
+        # verdict is still pending (the node already counts them against
+        # ``DEFAULT_MAX_ATTEMPTS``). ``reward_gated``: a reward monitor judges non-step
+        # results, so ``DEFAULT_MAX_TASK_DISPATCHES`` binds only steps; ``None`` = unknown.
+        self.pending_verdicts: dict[str, int] = {}
+        self.reward_gated: bool | None = None
 
     @classmethod
     def from_prompt(cls, text: str) -> MissionState:
@@ -590,9 +597,12 @@ class MissionState:
         Stamped on the ``reasoner.tick`` span as ``reasoner.mission_json`` so the
         live dashboard can render the mission checklist (status, attempts, last
         verdict) instead of only the single ``## MISSION`` text ledger. Pure data;
-        no rclpy, no Pydantic. A task's budget is ``failures`` of ``max_attempts``
-        and ``attempts`` of ``max_dispatches``; ``attempts`` of ``max_attempts``
-        mixes the two (a healthy task shows "5/3").
+        no rclpy, no Pydantic. A task's budget is ``failures`` plus ``pending`` (successes
+        awaiting a reward verdict, which the node already counts) of ``max_attempts``,
+        and ``attempts`` of ``max_dispatches``; ``attempts`` of ``max_attempts`` mixes
+        the two (a healthy task shows "5/3"). ``reward_gated`` (when the node set it)
+        says a reward monitor judges non-step results, so ``max_dispatches`` binds
+        only steps.
 
         Example:
             >>> m = MissionState(["pick the bowl", "place the butter"])
@@ -602,10 +612,15 @@ class MissionState:
             (3, 10, 2)
             >>> s["tasks"][0]["status"], s["tasks"][0]["attempts"], s["tasks"][0]["failures"]
             ('active', 1, 0)
+            >>> m.pending_verdicts, m.reward_gated = {"t1": 1}, True
+            >>> s = m.to_summary()
+            >>> s["tasks"][0]["pending"], s["reward_gated"]
+            (1, True)
         """
         return {
             "max_attempts": DEFAULT_MAX_ATTEMPTS,
             "max_dispatches": DEFAULT_MAX_TASK_DISPATCHES,
+            "reward_gated": self.reward_gated,
             "tasks": [
                 {
                     "id": t.task_id,
@@ -613,6 +628,7 @@ class MissionState:
                     "status": t.status,
                     "attempts": t.attempts,
                     "failures": t.failures,
+                    "pending": self.pending_verdicts.get(t.task_id, 0),
                     "verdict": t.last_verdict,
                     "rskill_id": t.last_rskill_id,
                 }
