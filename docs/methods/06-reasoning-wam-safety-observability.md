@@ -7,23 +7,23 @@ Layer 6 (Observability) is fully shipped — traces + metrics + structlog→OTLP
 ### `python/reasoner/src/openral_reasoner/tool_use.py`
 _Typed LLM tool-use clients (direct-dispatch surface); the `ReasonerToolCall` union is the sole planner output._
 
-- module constant `DEFAULT_SYSTEM_PROMPT: str` — Base S2 system prompt: one-tool-per-tick, safe skill selection, never bypass e-stop, exact field names, `wait` while a skill runs. Deployments may override. (L101)
+- module constant `DEFAULT_SYSTEM_PROMPT: str` — Base S2 system prompt: one-tool-per-tick, safe skill selection, never bypass e-stop, exact field names, `wait` while a skill runs. Deployments may override. (L104)
 - module constants `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` / `OPENROUTER_BASE_URL` / `OLLAMA_BASE_URL` / `OLLAMA_CLOUD_BASE_URL` / `VLLM_BASE_URL` / `GEMINI_BASE_URL` / `XAI_BASE_URL` / `DEEPSEEK_BASE_URL` / `HUGGINGFACE_BASE_URL: str` — Named-endpoint base URLs; canonical copy now lives in `openral_core.schemas`, re-exported here unchanged.
-- module constant `_ENDPOINT_PRESETS: dict[str, ReasonerEndpointPreset]` — Back-compat alias of `openral_core.REASONER_ENDPOINT_PRESETS`: per-endpoint `url`/`dialect`/`auth_required`/`timeout_s`/`tool_choice` for each `OPENRAL_REASONER_ENDPOINT` name. The curated model-first path takes only the endpoint properties from it; the uncurated path takes all five. (L931)
-- module constant `SYSTEM_PROMPT_ENV_VAR: str = "OPENRAL_REASONER_SYSTEM_PROMPT"` (L473) — env var that overrides the base operating brief; honoured by `resolve_reasoner_system_prompt`.
-- `render_robot_context_prompt(capabilities: RobotCapabilities | None, *, base_prompt=DEFAULT_SYSTEM_PROMPT) -> str` (L362) — Appends a deterministic `## THIS ROBOT` body-awareness block (embodiment, locomotion, manipulation/sensing, payload, control modes) to the prompt; `None` returns `base_prompt` unchanged. No cell geometry is listed: place surfaces are measured, not surveyed.
-- `resolve_reasoner_system_prompt(capabilities: RobotCapabilities | None, *, env=None) -> str` (L476) — Composes the full reasoner system prompt (env override or default base brief + `## THIS ROBOT` block). `env` is injectable for tests; called from `ReasonerNode.on_configure`.
-- `class ToolUseClient(Protocol)` (L523) — LLM tool-use client contract: `model_id`, optional `last_prompt_tokens`. Raises `ROSReasonerInvalidPlan` on a bad/mismatched tool call, `ROSPlanningError` on transport failure.
-  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L545) — Pick exactly one `ReasonerToolCall` for `context_text`.
-  - `describe_image(self, *, image_jpeg, question) -> str` (L577) — Ask the model a free-text question about a single camera frame.
+- module constant `_ENDPOINT_PRESETS: dict[str, ReasonerEndpointPreset]` — Back-compat alias of `openral_core.REASONER_ENDPOINT_PRESETS`: per-endpoint `url`/`dialect`/`auth_required`/`timeout_s`/`tool_choice` for each `OPENRAL_REASONER_ENDPOINT` name. The curated model-first path takes only the endpoint properties from it; the uncurated path takes all five. (L955)
+- module constant `SYSTEM_PROMPT_ENV_VAR: str = "OPENRAL_REASONER_SYSTEM_PROMPT"` (L476) — env var that overrides the base operating brief; honoured by `resolve_reasoner_system_prompt`.
+- `render_robot_context_prompt(capabilities: RobotCapabilities | None, *, base_prompt=DEFAULT_SYSTEM_PROMPT) -> str` (L365) — Appends a deterministic `## THIS ROBOT` body-awareness block (embodiment, locomotion, manipulation/sensing, payload, control modes) to the prompt; `None` returns `base_prompt` unchanged. No cell geometry is listed: place surfaces are measured, not surveyed.
+- `resolve_reasoner_system_prompt(capabilities: RobotCapabilities | None, *, env=None) -> str` (L479) — Composes the full reasoner system prompt (env override or default base brief + `## THIS ROBOT` block). `env` is injectable for tests; called from `ReasonerNode.on_configure`.
+- `class ToolUseClient(Protocol)` (L526) — LLM tool-use client contract: `model_id`, optional `last_prompt_tokens`. Raises `ROSReasonerInvalidPlan` on a bad/mismatched tool call, `ROSPlanningError` on transport failure.
+  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L548) — Pick exactly one `ReasonerToolCall` for `context_text`.
+  - `describe_image(self, *, image_jpeg, question) -> str` (L580) — Ask the model a free-text question about a single camera frame.
 - `class OpenAICompatibleToolUseClient` — OpenAI-compatible tool-use client. `tool_choice='auto'` covers endpoints that reject `'required'` (nudges once on a prose reply, then raises `ROSReasonerInvalidPlan`); `max_tokens` optionally caps completion tokens, else the endpoint default applies; `max_tokens_param` names the cap field, switched to `max_completion_tokens` at runtime when the endpoint asks for it.
-- module constant `REASONER_MODEL_ENV: str = "OPENRAL_REASONER_MODEL"` (L611)
-- module constant `REASONER_ENDPOINT_ENV: str = "OPENRAL_REASONER_ENDPOINT"` (L612)
-- module constant `REASONER_API_KEY_ENV: str = "OPENRAL_REASONER_API_KEY"` (L613)
-- module constant `REASONER_DIALECT_ENV: str = "OPENRAL_REASONER_DIALECT"` (L614)
-- module constant `REASONER_MAX_TOKENS_ENV: str = "OPENRAL_REASONER_MAX_TOKENS"` (L615)
-- module constant `REASONER_TIMEOUT_ENV: str = "OPENRAL_REASONER_TIMEOUT_S"` (L616) — model-first env names (ADR-0088).
-- module constant `REASONER_TOOL_CHOICE_ENV: str = "OPENRAL_REASONER_TOOL_CHOICE"` (L627) — `auto`/`required` override for an uncurated model on a bare-URL `openai` endpoint or on the `anthropic` dialect (`required` → Anthropic `any`); validated on every path via `openral_core.parse_reasoner_tool_choice`, and ignored with a `reasoner.tool_choice_ignored` warning for curated models and named `openai` endpoints.
+- module constant `REASONER_MODEL_ENV: str = "OPENRAL_REASONER_MODEL"` (L614)
+- module constant `REASONER_ENDPOINT_ENV: str = "OPENRAL_REASONER_ENDPOINT"` (L615)
+- module constant `REASONER_API_KEY_ENV: str = "OPENRAL_REASONER_API_KEY"` (L616)
+- module constant `REASONER_DIALECT_ENV: str = "OPENRAL_REASONER_DIALECT"` (L617)
+- module constant `REASONER_MAX_TOKENS_ENV: str = "OPENRAL_REASONER_MAX_TOKENS"` (L618)
+- module constant `REASONER_TIMEOUT_ENV: str = "OPENRAL_REASONER_TIMEOUT_S"` (L619) — model-first env names (ADR-0088).
+- module constant `REASONER_TOOL_CHOICE_ENV: str = "OPENRAL_REASONER_TOOL_CHOICE"` (L630) — `auto`/`required` override for an uncurated model on a bare-URL `openai` endpoint or on the `anthropic` dialect (`required` → Anthropic `any`); validated on every path via `openral_core.parse_reasoner_tool_choice`, and ignored with a `reasoner.tool_choice_ignored` warning for curated models and named `openai` endpoints.
 - module constant `_ANTHROPIC_UNCURATED_MAX_TOKENS: int = 16000` — completion cap for an uncurated `anthropic` model with no `OPENRAL_REASONER_MAX_TOKENS` (thinking counts against it).
 - module constant `_NO_TOOL_CALL_NUDGE: str` — the one-shot follow-up sent when a `tool_choice='auto'` model answers in prose.
 - `_rejects_forced_tool_choice(exc) -> bool` — True for a provider HTTP 400 worded as a forced-tool-use refusal (Claude 5's `"any"` refusal, thinking-mode gateways, the HF router, thinking-with-forced-tool), not any 400 that merely mentions `tool_choice` or its `disable_parallel_tool_use` sub-field; triggers the runtime `required` → `auto` retry.
@@ -34,23 +34,23 @@ _Typed LLM tool-use clients (direct-dispatch surface); the `ReasonerToolCall` un
 - module constant `_FORCED_TOOL_CHOICE_REFUSALS: tuple[re.Pattern[str], ...]` — Provider wordings of a forced-tool-use refusal that `_rejects_forced_tool_choice` matches.
 - `_openai_tool_calls(choices) -> list` / `_openai_may_nudge(choices) -> bool` — First choice's tool calls; whether a tool-less reply is nudge-worthy (not `length` / `content_filter`).
 - `_anthropic_tool_use_block(response)` / `_anthropic_may_nudge(response) -> bool` — First `tool_use` block or `None`; whether a tool-less reply is nudge-worthy (not `refusal` / `max_tokens`).
-- module constant `REASONER_MAX_SKILL_TOOLS_ENV: str = "OPENRAL_REASONER_MAX_SKILL_TOOLS"` (L618) — per-tick skill-tool cap override read by `resolve_max_skill_tools`; `0` = no cap.
-- `resolve_max_skill_tools(client) -> int | None` (L1006) — The per-tick skill-tool cap for the model `client` talks to (#494): `OPENRAL_REASONER_MAX_SKILL_TOOLS` when set (`0` → `None`, negative / non-integer → `ROSConfigError`), else the `max_skill_tools` of the curated `ReasonerModel` whose `served_model_id` is `client.model_id`, else `None`. Keyed on the built (or injected) client so the two cannot disagree; `ReasonerNode.on_configure` resolves it right after building the client, before any resource opens.
-- `build_tool_use_client_from_env() -> ToolUseClient` — Model-first client factory: `OPENRAL_REASONER_MODEL` resolves `openral_core.REASONER_MODELS` for dialect/endpoint/auth/hosting/tool-choice/token-cap; `OPENRAL_REASONER_ENDPOINT` overrides location (a named preset, a bare URL, or `managed`); `API_KEY`/`MAX_TOKENS`/`TIMEOUT_S` override the rest. With no endpoint set, a registry default that is a named endpoint's URL brings that preset's properties (a curated Ollama model gets Ollama's 60 s timeout and `auto`). `DIALECT` is needed only for a bare URL and always wins when set. No hidden model default. On an Ollama reply (`system_fingerprint` `fp_ollama`) `OpenAICompatibleToolUseClient.select_tool` raises `ROSPlanningError` when the reported prompt tokens show the server truncated the prompt to its context window. (L934)
-- `class AnthropicToolUseClient` (L1989) — Anthropic SDK-backed client; builds/reuses one client/HTTP pool and marks the static system/tools prefix cacheable. `tool_choice` `required` (sent as `any`) or `auto`; a forced-tool-use refusal downgrades to `auto` for the client's life once an `auto` retry succeeds (`reasoner.tool_choice_downgraded`).
+- module constant `REASONER_MAX_SKILL_TOOLS_ENV: str = "OPENRAL_REASONER_MAX_SKILL_TOOLS"` (L621) — per-tick skill-tool cap override read by `resolve_max_skill_tools`; `0` = no cap.
+- `resolve_max_skill_tools(client) -> int | None` (L1047) — The per-tick skill-tool cap for the model `client` talks to (#494): `OPENRAL_REASONER_MAX_SKILL_TOOLS` when set (`0` → `None`, negative / non-integer → `ROSConfigError`), else the `max_skill_tools` of the curated `ReasonerModel` whose `served_model_id` is `client.model_id`, else `None`. Keyed on the built (or injected) client so the two cannot disagree; `ReasonerNode.on_configure` resolves it right after building the client, before any resource opens.
+- `build_tool_use_client_from_env() -> ToolUseClient` — Model-first client factory: `OPENRAL_REASONER_MODEL` resolves `openral_core.REASONER_MODELS` for dialect/endpoint/auth/hosting/tool-choice/token-cap; `OPENRAL_REASONER_ENDPOINT` overrides location (a named preset, a bare URL, or `managed`); `API_KEY`/`MAX_TOKENS`/`TIMEOUT_S` override the rest. With no endpoint set, a registry default that is a named endpoint's URL brings that preset's properties (a curated Ollama model gets Ollama's 60 s timeout and `auto`). `DIALECT` is needed only for a bare URL and always wins when set. No hidden model default. On an Ollama reply (`system_fingerprint` `fp_ollama`) `OpenAICompatibleToolUseClient.select_tool` raises `ROSPlanningError` when the reported prompt tokens show the server truncated the prompt to its context window. (L973)
+- `class AnthropicToolUseClient` (L2044) — Anthropic SDK-backed client; builds/reuses one client/HTTP pool and marks the static system/tools prefix cacheable. `tool_choice` `required` (sent as `any`) or `auto`; a forced-tool-use refusal downgrades to `auto` for the client's life once an `auto` retry succeeds (`reasoner.tool_choice_downgraded`).
   - `_create(self, client, **kwargs)` — `messages.create` with the current `tool_choice`, retried once as `auto` on a forced-tool-use refusal; the downgrade is kept only if that retry succeeds.
   - `_wire_tool_choice(self) -> dict` — `{"type": "any"|"auto", "disable_parallel_tool_use": True}`.
-  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L2117) — Call Anthropic and decode the resulting tool payload; under `auto` a prose reply is nudged once, then raises `ROSReasonerInvalidPlan`; a refusal or `max_tokens` cut-off raises `ROSPlanningError`. `last_prompt_tokens` sums both calls.
-  - `describe_image(self, *, image_jpeg, question) -> str` (L2194) — Ask the Anthropic model a free-text question about a camera frame.
+  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L2172) — Call Anthropic and decode the resulting tool payload; under `auto` a prose reply is nudged once, then raises `ROSReasonerInvalidPlan`; a refusal or `max_tokens` cut-off raises `ROSPlanningError`. `last_prompt_tokens` sums both calls.
+  - `describe_image(self, *, image_jpeg, question) -> str` (L2249) — Ask the Anthropic model a free-text question about a camera frame.
 - `_anthropic_response_text(response) -> str` — Concatenate all text blocks so thinking-enabled responses do not lose an answer after a leading thinking block.
-- `class OpenAICompatibleToolUseClient` (L2241) — OpenAI-compatible client with cached SDK/HTTP pool, endpoint/tool-choice/token-cap configuration, and image-description support.
-  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L2336) — Call the OpenAI-compatible endpoint and decode the tool call; under `auto` a prose reply is nudged once, then raises `ROSReasonerInvalidPlan`; a `length` / `content_filter` finish raises `ROSPlanningError`. `last_prompt_tokens` sums both calls.
+- `class OpenAICompatibleToolUseClient` (L2296) — OpenAI-compatible client with cached SDK/HTTP pool, endpoint/tool-choice/token-cap configuration, and image-description support.
+  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L2400) — Call the OpenAI-compatible endpoint and decode the tool call; under `auto` a prose reply is nudged once, then raises `ROSReasonerInvalidPlan`; a `length` / `content_filter` finish raises `ROSPlanningError`. `last_prompt_tokens` sums both calls.
   - `_complete(self, client, messages, tools) -> tuple[list, Any]` — One `chat.completions.create`, adapting at runtime to a forced-tool-use refusal (→ `auto`) and a `max_completion_tokens` 400; each adaptation is logged and kept only after a call made with it succeeds.
-  - `describe_image(self, *, image_jpeg, question) -> str` (L2461) — Ask an OpenAI-compatible model a free-text question about a frame.
-- `class OpenAIResponsesToolUseClient(OpenAICompatibleToolUseClient)` (L2523) — `ToolUseClient` over OpenAI's Responses API (`/v1/responses`), built for the `openai` endpoint: OpenAI's reasoning models take function tools only there. Same tick contract as the Chat Completions client (forced call, runtime `auto` downgrade, one nudge then `ROSReasonerInvalidPlan`, refusal / `max_output_tokens` cut-off → `ROSPlanningError`); `store=False`, `parallel_tool_calls=False`, reasoning left at the model default, `max_tokens` sent as `max_output_tokens`.
+  - `describe_image(self, *, image_jpeg, question) -> str` (L2539) — Ask an OpenAI-compatible model a free-text question about a frame.
+- `class OpenAIResponsesToolUseClient(OpenAICompatibleToolUseClient)` (L2601) — `ToolUseClient` over OpenAI's Responses API (`/v1/responses`), built for the `openai` endpoint: OpenAI's reasoning models take function tools only there. Same tick contract as the Chat Completions client (forced call, runtime `auto` downgrade, one nudge then `ROSReasonerInvalidPlan`, refusal / `max_output_tokens` cut-off → `ROSPlanningError`); `store=False`, `parallel_tool_calls=False`, reasoning left at the model default, `max_tokens` sent as `max_output_tokens`.
   - `_respond(self, client, instructions, inputs, tools)` — One `responses.create`, retried once as `auto` on a forced-tool-use refusal.
-  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L2588) — Call the Responses API and decode the `function_call` output item.
-  - `describe_image(self, *, image_jpeg, question) -> str` (L2631) — Frame question as `input_text` + `input_image` over the Responses API.
+  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L2666) — Call the Responses API and decode the `function_call` output item.
+  - `describe_image(self, *, image_jpeg, question) -> str` (L2709) — Frame question as `input_text` + `input_image` over the Responses API.
 - `_openai_client_cls(preset, base_url) -> type[OpenAICompatibleToolUseClient]` — Responses client for OpenAI's own API (`preset.wire_api == "responses"`, or its URL spelled out), Chat Completions client for every other openai-dialect endpoint.
 - `_decode_function_call(name, raw_arguments, palette) -> ReasonerToolCall` — Shared JSON-arguments check (malformed / non-object → `ROSReasonerInvalidPlan`) then `_decode_tool_payload`, for both OpenAI wire APIs.
 - `_tool_palette_to_responses_tools(palette) -> list[dict]` — The palette as flat Responses-API function tools with `strict: False`.
@@ -58,16 +58,16 @@ _Typed LLM tool-use clients (direct-dispatch surface); the `ReasonerToolCall` un
 - `_tool_palette_to_anthropic_tools(palette) -> list[dict]` — Render the closed palette, including `WaitTool`; per-skill names use collision-resistant `execute_rskill__<slug>_<sha1-8>`. `lifecycle_transition`'s `node` carries `enum: sorted(palette.node_ids)` (the decoder refuses anything else); with no peers its description says every call is refused.
 - `_tool_palette_to_openai_tools(palette) -> list[dict]` — Convert the same surface to OpenAI function shape without leaking the Anthropic-only `input_schema` key.
 - `_decode_tool_payload(*, tool_name, arguments, palette) -> ReasonerToolCall` — Validate provider output against the union + palette; per-skill names resolve through the same hashed mapping used to render them. A `lifecycle_transition` whose `node` is not in `palette.node_ids` raises `ROSReasonerInvalidPlan`.
-- module constant `_PER_SKILL_TOOL_PREFIX: str = "execute_rskill__"` — prefix the decoder matches on to identify per-skill tool calls. (L1358)
-- module constant `_LLM_TOOL_NAME_MAX_LEN: int = 64` — Anthropic + OpenAI tool-name regex limit; long HF Hub ids are sha1-suffix-truncated to fit. (L1361)
-- `_skill_id_to_tool_name(rskill_id: str) -> str` — Map a `<owner>/<repo>` id into a collision-resistant 64-char-max `execute_rskill__<slug>_<sha1-8>` name. (L1364)
-- `_format_skill_tool_description(entry: RSkillToolEntry) -> str` — Render the skill's id + description + actions + objects + scenes into the NL string the LLM scores, plus the object-tracking target rule when `entry.object_target` is set (`_GRASP_TARGET_REQUIRED` / `_GRASP_TARGET_AND_HAND_REQUIRED` / `_OBJECT_TARGETS_NOT_APPLICABLE`). (L1381)
-- `_llm_schema(model: type[BaseModel]) -> dict[str, Any]` — `model_json_schema(schema_generator=_LLMSchemaGenerator)`, which emits no `title`s and no model/enum docstrings; built once per class, cached as a JSON string and returned as a fresh dict; field descriptions are kept and are the LLM's only field guidance, so every reasoner tool field must have one (#440). (L1473)
-- `class _LLMSchemaGenerator(GenerateJsonSchema)` — Pydantic schema generator behind `_llm_schema`: drops the auto-generated `title` of every field/model/enum and model/enum docstring `description`s (an explicit `Field(title=...)` and dataclass/TypedDict schemas keep theirs). (L1438)
-- `_llm_schema_json(model: type[BaseModel]) -> str` — `functools.cache`d JSON string of the stripped schema, one per class; `_llm_schema` parses a fresh dict from it. (L1468)
-- `AnthropicToolUseClient._tools(palette)` / `OpenAICompatibleToolUseClient._tools(palette)` — The provider tool list, rendered once per palette object (a registry refresh installs a new palette) instead of every tick; the Anthropic one carries the prompt-cache breakpoint. Each returns the list it rendered or read, never a re-read of the shared cache, so overlapping calls cannot swap palettes. (L2056)
-- `_drop_property(schema: dict, name: str) -> dict` — Return a copy of a JSON Schema dict with `name` stripped from both `properties` and `required`. Used to drop `rskill_id` from per-skill `ExecuteRskillTool` schemas. (L1855)
-- module constant `_TOOL_ADAPTER: TypeAdapter[ReasonerToolCall]` (L359) — cached `TypeAdapter(ReasonerToolCall)` used to validate a decoded tool payload against the discriminated union.
+- module constant `_PER_SKILL_TOOL_PREFIX: str = "execute_rskill__"` — prefix the decoder matches on to identify per-skill tool calls. (L1413)
+- module constant `_LLM_TOOL_NAME_MAX_LEN: int = 64` — Anthropic + OpenAI tool-name regex limit; long HF Hub ids are sha1-suffix-truncated to fit. (L1416)
+- `_skill_id_to_tool_name(rskill_id: str) -> str` — Map a `<owner>/<repo>` id into a collision-resistant 64-char-max `execute_rskill__<slug>_<sha1-8>` name. (L1419)
+- `_format_skill_tool_description(entry: RSkillToolEntry) -> str` — Render the skill's id + description + actions + objects + scenes into the NL string the LLM scores, plus the object-tracking target rule when `entry.object_target` is set (`_GRASP_TARGET_REQUIRED` / `_GRASP_TARGET_AND_HAND_REQUIRED` / `_OBJECT_TARGETS_NOT_APPLICABLE`). (L1436)
+- `_llm_schema(model: type[BaseModel]) -> dict[str, Any]` — `model_json_schema(schema_generator=_LLMSchemaGenerator)`, which emits no `title`s and no model/enum docstrings; built once per class, cached as a JSON string and returned as a fresh dict; field descriptions are kept and are the LLM's only field guidance, so every reasoner tool field must have one (#440). (L1528)
+- `class _LLMSchemaGenerator(GenerateJsonSchema)` — Pydantic schema generator behind `_llm_schema`: drops the auto-generated `title` of every field/model/enum and model/enum docstring `description`s (an explicit `Field(title=...)` and dataclass/TypedDict schemas keep theirs). (L1493)
+- `_llm_schema_json(model: type[BaseModel]) -> str` — `functools.cache`d JSON string of the stripped schema, one per class; `_llm_schema` parses a fresh dict from it. (L1523)
+- `AnthropicToolUseClient._tools(palette)` / `OpenAICompatibleToolUseClient._tools(palette)` — The provider tool list, rendered once per palette object (a registry refresh installs a new palette) instead of every tick; the Anthropic one carries the prompt-cache breakpoint. Each returns the list it rendered or read, never a re-read of the shared cache, so overlapping calls cannot swap palettes. (L2111)
+- `_drop_property(schema: dict, name: str) -> dict` — Return a copy of a JSON Schema dict with `name` stripped from both `properties` and `required`. Used to drop `rskill_id` from per-skill `ExecuteRskillTool` schemas. (L1910)
+- module constant `_TOOL_ADAPTER: TypeAdapter[ReasonerToolCall]` (L362) — cached `TypeAdapter(ReasonerToolCall)` used to validate a decoded tool payload against the discriminated union.
 
 ### `python/reasoner/src/openral_reasoner/cosmos3.py`
 _NVIDIA Cosmos 3 reasoner backend (`OPENRAL_REASONER_MODEL=cosmos3-edge`), the physical-AI-native S2 planner. Runs the on-device 4B Edge tier behind an OpenAI-compatible endpoint, so the typed tool-use contract is unchanged. Companion boot helper: `tools/cosmos3_reasoner_sidecar.py`._
@@ -311,7 +311,7 @@ _`ContextRenderer` builds the structured text snapshot the LLM consumes per tick
 ### `python/reasoner/src/openral_reasoner/core.py`
 _`ReasonerCore`, the transport-agnostic orchestrator. The ROS-side `reasoner_node` wraps this with rclpy._
 
-- `class ReasonerTickResult` (frozen dataclass) (L203) — Tick outcome; fields `tool_call`, `error`, `elapsed_s`, `suppressed_reason` (`""`, `"min_interval"`, `"safety_latched"`, `"llm_error_backoff"`, `"retry_cap_hold"`, `"mission_finished"`, `"wait_hold"`, `"backstop_not_due"`, `"heartbeat_idle"`, `"no_goal"`, `"retry_cap"`, `"palette_empty"`), `trigger` (the tick's `PreparedTick.trigger`, `""` when suppressed before the LLM), `traceparent` (`None` when no real `TracerProvider` is installed).
+- `class ReasonerTickResult` (frozen dataclass) (L206) — Tick outcome; fields `tool_call`, `error`, `elapsed_s`, `suppressed_reason` (`""`, `"min_interval"`, `"safety_latched"`, `"llm_error_backoff"`, `"retry_cap_hold"`, `"mission_finished"`, `"wait_hold"`, `"backstop_not_due"`, `"heartbeat_idle"`, `"no_goal"`, `"retry_cap"`, `"palette_empty"`), `trigger` (the tick's `PreparedTick.trigger`, `""` when suppressed before the LLM), `traceparent` (`None` when no real `TracerProvider` is installed).
 - `const BACKSTOP_MIN_S: float = 15.0` — lower clamp of the in-flight backstop (issue #620). (L105)
 - `const BACKSTOP_MAX_S: float = 30.0` — upper clamp of the in-flight backstop. (L106)
 - `const LLM_ERROR_BACKOFF_S: tuple[float, ...] = (5.0, 10.0, 20.0)` — delays before re-trying an LLM call that failed in transport; after the last, `ReasonerCore.llm_gave_up`. (L111)
@@ -320,18 +320,18 @@ _`ReasonerCore`, the transport-agnostic orchestrator. The ROS-side `reasoner_nod
 - `_call_identity(call) -> str` — Canonical retry-cap identity of a tool call: the full argument payload minus `rationale` (rephrasing rationale between identical retries must not dodge the cap), JSON-serialised with sorted keys.
 - `class PreparedTick` (dataclass) (L161) — In-flight state of a phased tick between `prepare_tick` and `finish_tick`: LLM inputs (`context_text`, `palette`, `system_prompt`) plus prepare-time snapshots (`started`, `seq`, `prompts`, an unattached OTel `span`, `renderer`, `force`, `tier`, `trigger`, `coalesced`). The `seq`/`prompts` snapshots bound `finish_tick` to only what the model actually saw. `llm_s`/`prompt_tokens` are the only fields the LLM phase writes back, so tick latency can be attributed to the provider vs. reasoner-side overhead.
 - module constant `_RETRY_CAP_EXEMPT_TOOLS: frozenset[str]` (L97) — `{"recall_object", "resolve_place", "locate_in_view", "wait"}`, the tool kinds transparent to the retry cap (see `ReasonerCore` below).
-- `class ReasonerCore` (L237) — Orchestrator.
-  - `max_skill_tools(self) -> int | None` (L370) — the configured per-tick skill-tool cap, or `None` (read-only).
-  - `llm_gave_up(self) -> bool` — True once every `LLM_ERROR_BACKOFF_S` retry failed in a row; cleared by the next good call. The node hands off to the operator when it flips. (L356)
-  - `wait_hold(self) -> tuple[str, float] | None` — `(until, monotonic deadline)` of the model's active `wait`, or `None`. (L365)
-  - `offered_palette(self, palette, renderer) -> ToolPalette` (L374) — The palette the LLM sees this tick: `palette` narrowed by `select_skill_subset` to `max_skill_tools` skills, ranked against the active mission task plus every pending prompt (when both are empty — mission finished, prompt drained — the last non-empty query is kept rather than ranking on nothing). The in-flight skill is `sticky`; the newest prompt of the top-priority band is the `focus` (offered on the tick it arrives, before `finish_tick` drains it); the task's last dispatched skill is `recent` (outside a mission, the last `ExecuteRskillTool` this core returned); the task's `tried_rskill_ids` are demoted among equal scores. Recomputed only when the palette object, query or sticky / tried ids change, reusing the previous palette object while the offered set is unchanged so the clients' per-palette tool render and the provider prefix cache hold. Each recompute logs `reasoner.skill_subset` (query, every score, kept and tried ids, `max_score`); with a cap set, `prepare_tick` stamps `reasoner.offered_skills` on every tick span (absent without a cap). Without a cap, returns `palette` unchanged.
-  - `retry_cap(self) -> int` (L455) — the configured consecutive-identical-call cap (read-only).
-  - `streak_tool(self) -> str` (L460) — tool kind of the current consecutive-call streak (`""` when none).
-  - `reset_kind_streak(self) -> None` (L464) — reset the consecutive-call counter used by the retry-cap gate.
-  - `tick(self, *, world_state, renderer, palette, force=False, tier='heartbeat', trigger='heartbeat') -> ReasonerTickResult` (L475) — Synchronous composition of the phased API (prepare → off-thread LLM call → finish) so the executor is never starved. Enforces the min-interval and retry cap (search tools + `wait` are exempt); short-circuits on a finished mission or idle heartbeat. `force=True` bypasses every gate but the retry cap. Wraps the tick in a `reasoner.tick` OTel span.
-  - `prepare_tick(self, *, world_state, renderer, palette, force=False, tier='heartbeat', trigger='heartbeat', coalesced=()) -> PreparedTick | ReasonerTickResult` (L648) — Phase 1 of a tick: run the suppression gates and render the context; must run on the owning/executor thread. A forced tick ends any `wait`. A timer beat reaches the LLM only as `llm_error_retry`, `wait_timeout`, `backstop` (skill in flight, `inflight_backstop_s` since the last call) or `context_changed` (nothing in flight, mission or prompt pending); the trigger, coalesced triggers and beats skipped since the last call land on the span.
-  - `run_prepared_llm(self, prep) -> ReasonerToolCall` (L779) — Phase 2 of a tick: the blocking `select_tool` round-trip; the ONLY phase safe off-thread.
-  - `finish_tick(self, prep, *, call=None, error=None) -> ReasonerTickResult` (L851) — Phase 3 of a tick: retry-cap ladder + bookkeeping + span close, back on the owning thread. A `WaitTool` arms the wait hold (`reasoner.wait.*` on the span); a transport `ROSPlanningError` leaves the context unseen and arms the `LLM_ERROR_BACKOFF_S` retry (marked seen once they run out); `ROSReasonerInvalidPlan` marks it seen.
+- `class ReasonerCore` (L240) — Orchestrator.
+  - `max_skill_tools(self) -> int | None` (L373) — the configured per-tick skill-tool cap, or `None` (read-only).
+  - `llm_gave_up(self) -> bool` — True once every `LLM_ERROR_BACKOFF_S` retry failed in a row; cleared by the next good call. The node hands off to the operator when it flips. (L359)
+  - `wait_hold(self) -> tuple[str, float] | None` — `(until, monotonic deadline)` of the model's active `wait`, or `None`. (L368)
+  - `offered_palette(self, palette, renderer) -> ToolPalette` (L377) — The palette the LLM sees this tick: `palette` narrowed by `select_skill_subset` to `max_skill_tools` skills, ranked against the active mission task plus every pending prompt (when both are empty — mission finished, prompt drained — the last non-empty query is kept rather than ranking on nothing). The in-flight skill is `sticky`; the newest prompt of the top-priority band is the `focus` (offered on the tick it arrives, before `finish_tick` drains it); the task's last dispatched skill is `recent` (outside a mission, the last `ExecuteRskillTool` this core returned); the task's `tried_rskill_ids` are demoted among equal scores. Recomputed only when the palette object, query or sticky / tried ids change, reusing the previous palette object while the offered set is unchanged so the clients' per-palette tool render and the provider prefix cache hold. Each recompute logs `reasoner.skill_subset` (query, every score, kept and tried ids, `max_score`); with a cap set, `prepare_tick` stamps `reasoner.offered_skills` on every tick span (absent without a cap). Without a cap, returns `palette` unchanged.
+  - `retry_cap(self) -> int` (L458) — the configured consecutive-identical-call cap (read-only).
+  - `streak_tool(self) -> str` (L463) — tool kind of the current consecutive-call streak (`""` when none).
+  - `reset_kind_streak(self) -> None` (L467) — reset the consecutive-call counter used by the retry-cap gate.
+  - `tick(self, *, world_state, renderer, palette, force=False, tier='heartbeat', trigger='heartbeat') -> ReasonerTickResult` (L478) — Synchronous composition of the phased API (prepare → off-thread LLM call → finish) so the executor is never starved. Enforces the min-interval and retry cap (search tools + `wait` are exempt); short-circuits on a finished mission or idle heartbeat. `force=True` bypasses every gate but the retry cap. Wraps the tick in a `reasoner.tick` OTel span.
+  - `prepare_tick(self, *, world_state, renderer, palette, force=False, tier='heartbeat', trigger='heartbeat', coalesced=()) -> PreparedTick | ReasonerTickResult` (L651) — Phase 1 of a tick: run the suppression gates and render the context; must run on the owning/executor thread. A forced tick ends any `wait`. A timer beat reaches the LLM only as `llm_error_retry`, `wait_timeout`, `backstop` (skill in flight, `inflight_backstop_s` since the last call) or `context_changed` (nothing in flight, mission or prompt pending); the trigger, coalesced triggers and beats skipped since the last call land on the span.
+  - `run_prepared_llm(self, prep) -> ReasonerToolCall` (L782) — Phase 2 of a tick: the blocking `select_tool` round-trip; the ONLY phase safe off-thread.
+  - `finish_tick(self, prep, *, call=None, error=None) -> ReasonerTickResult` (L855) — Phase 3 of a tick: retry-cap ladder + bookkeeping + span close, back on the owning thread. A `WaitTool` arms the wait hold (`reasoner.wait.*` on the span); a transport `ROSPlanningError` leaves the context unseen and arms the `LLM_ERROR_BACKOFF_S` retry (marked seen once they run out); `ROSReasonerInvalidPlan` marks it seen.
 
 ### `python/reasoner/src/openral_reasoner/critic_watchdog.py`
 _Tier-C critic progress-stall / success watchdog — default decision core for the reserved `/openral/failure/critic` source. Pure logic, import-safe (no rclpy). Source-agnostic: any reward model emitting a higher-is-better scalar drives the same watchdog; the critic producer node routes samples through `CriticWatchdogGroup` and publishes to the failure bus on a fire. Fires on stall OR success, waking the reasoner promptly when an attempt is likely done._
@@ -840,7 +840,7 @@ _Single source of truth for OpenRAL OTel attribute / span / metric names. `Final
 - `const RECORD_ID: str = "openral.record.id"` (L88)
 - `const RECORD_SCHEMA_VERSION: str = "openral.schema.version"` (L89)
 - `const RECORD_RETENTION_CLASS: str = "openral.retention.class"` (L90)
-- `const METRIC_FAILURE_COUNT: str = "openral.failure.count"` (L359)
+- `const METRIC_FAILURE_COUNT: str = "openral.failure.count"` (L363)
 
 **openral.tick.* — runner cadence**
 - `const TICK_IDX: str = "openral.tick.idx"` (L94)
@@ -937,90 +937,90 @@ _Single source of truth for OpenRAL OTel attribute / span / metric names. `Final
 - `const REASONER_LLM_S: str = "reasoner.llm_s"` (L235)
 - `const REASONER_PROMPT_TOKENS: str = "reasoner.prompt_tokens"` (L237)
 - `const REASONER_SERVED_MODEL: str = "reasoner.served_model"` (L240) — the model the endpoint reported serving the tick's call (an OpenRouter `~…-latest` alias resolves server-side); set from `OpenAICompatibleToolUseClient.served_model`.
-- `const REASONER_MISSION_JSON: str = "reasoner.mission_json"` (L243)
-- `const REASONER_OFFERED_SKILLS: str = "reasoner.offered_skills"` (L244) — skill ids offered on the tick when a skill-tool cap narrows the palette (#494); absent without a cap.
-- `const SKILL_FAILURE_STATE: str = "openral.event.skill_failure.state"` (L251)
-- `const REASONER_TIER: str = "reasoner.tier"` (L256)
-- `const REASONER_RATIONALE: str = "reasoner.rationale"` (L257) — the selected call's rationale, capped at `REASONER_RATIONALE_MAX`; the dashboard folds it into `topics.reasoner.detail`.
-- `const REASONER_RATIONALE_MAX: int = 500` (L260)
-- `const REASONER_MESSAGE: str = "reasoner.message"` (L261) — an `emit_prompt` call's prompt text, capped at `REASONER_MESSAGE_MAX`; the dashboard passes it as `topics.reasoner.message` so the console folds only identical prompts.
-- `const REASONER_MESSAGE_MAX: int = 300` (L264)
-- `const REASONER_INFLIGHT_SKILL: str = "reasoner.inflight_skill"` (L265) — rskill_id in flight when the tick ran.
-- `const REASONER_INFLIGHT_STATE: str = "reasoner.inflight_state"` (L267) — phase of that goal: `"dispatching"` (accepted / loading weights) or `"running"`; stamped by `ReasonerCore` on every tick, read by the dashboard's `_reasoner_detail`.
-- `const REASONER_TRIGGER: str = "reasoner.tick.trigger"` — what started the tick (issue #620). (L274)
-- `const REASONER_COALESCED_TRIGGERS: str = "reasoner.tick.coalesced_triggers"` — triggers merged into the tick while the previous one was in flight. (L276)
-- `const REASONER_SKIPPED_SINCE_LAST: str = "reasoner.tick.skipped_since_last"` — timer beats suppressed since the previous LLM call. (L278)
-- `const REASONER_WAIT_UNTIL: str = "reasoner.wait.until"` — the chosen `wait`'s condition. (L280)
-- `const REASONER_WAIT_TIMEOUT_S: str = "reasoner.wait.timeout_s"` — the chosen `wait`'s bound. (L281)
-- `const SPAN_SIM_RUN: str = "sim.run"` (L283)
-- `const SPAN_SIM_STEP: str = "sim.step"` (L284)
-- `const SPAN_PHYSICS_STEP: str = "physics.step"` (L285)
+- `const REASONER_MISSION_JSON: str = "reasoner.mission_json"` (L247)
+- `const REASONER_OFFERED_SKILLS: str = "reasoner.offered_skills"` (L248) — skill ids offered on the tick when a skill-tool cap narrows the palette (#494); absent without a cap.
+- `const SKILL_FAILURE_STATE: str = "openral.event.skill_failure.state"` (L255)
+- `const REASONER_TIER: str = "reasoner.tier"` (L260)
+- `const REASONER_RATIONALE: str = "reasoner.rationale"` (L261) — the selected call's rationale, capped at `REASONER_RATIONALE_MAX`; the dashboard folds it into `topics.reasoner.detail`.
+- `const REASONER_RATIONALE_MAX: int = 500` (L264)
+- `const REASONER_MESSAGE: str = "reasoner.message"` (L265) — an `emit_prompt` call's prompt text, capped at `REASONER_MESSAGE_MAX`; the dashboard passes it as `topics.reasoner.message` so the console folds only identical prompts.
+- `const REASONER_MESSAGE_MAX: int = 300` (L268)
+- `const REASONER_INFLIGHT_SKILL: str = "reasoner.inflight_skill"` (L269) — rskill_id in flight when the tick ran.
+- `const REASONER_INFLIGHT_STATE: str = "reasoner.inflight_state"` (L271) — phase of that goal: `"dispatching"` (accepted / loading weights) or `"running"`; stamped by `ReasonerCore` on every tick, read by the dashboard's `_reasoner_detail`.
+- `const REASONER_TRIGGER: str = "reasoner.tick.trigger"` — what started the tick (issue #620). (L278)
+- `const REASONER_COALESCED_TRIGGERS: str = "reasoner.tick.coalesced_triggers"` — triggers merged into the tick while the previous one was in flight. (L280)
+- `const REASONER_SKIPPED_SINCE_LAST: str = "reasoner.tick.skipped_since_last"` — timer beats suppressed since the previous LLM call. (L282)
+- `const REASONER_WAIT_UNTIL: str = "reasoner.wait.until"` — the chosen `wait`'s condition. (L284)
+- `const REASONER_WAIT_TIMEOUT_S: str = "reasoner.wait.timeout_s"` — the chosen `wait`'s bound. (L285)
+- `const SPAN_SIM_RUN: str = "sim.run"` (L287)
+- `const SPAN_SIM_STEP: str = "sim.step"` (L288)
+- `const SPAN_PHYSICS_STEP: str = "physics.step"` (L289)
 
 **Span-event names**
-- `const EVENT_ESTOP_REQUESTED: str = "openral.event.estop_requested"` (L303)
-- `const EVENT_ROBOT_MANIFEST: str = "openral.robot.manifest"` (L306) — `event_name` of the OTLP log record carrying the robot manifest (ADR-0129), emitted by `producer.emit_robot_manifest`.
-- `const EVENT_SENSOR_STALE: str = "openral.event.sensor_stale"` (L307)
-- `const EVENT_STALENESS_LATCHED: str = "openral.event.staleness_latched"` (L308)
-- `const EVENT_ERROR_LATCHED: str = "openral.event.error_latched"` (L309)
-- `const EVENT_SAFETY_VIOLATION: str = "openral.event.safety_violation"` (L310)
-- `const EVENT_ACTION_DROPPED: str = "openral.event.action_dropped"` (L313)
-- `const EVENT_DEADLINE_MISSED: str = "openral.event.deadline_missed"` (L314)
-- `const EVENT_SKILL_FAILURE: str = "openral.event.skill_failure"` (L321)
-- `const EVENT_CHUNK_PREFETCH_HIT: str = "openral.event.chunk_prefetch_hit"` (L325)
-- `const EVENT_CHUNK_PREFETCH_MISS: str = "openral.event.chunk_prefetch_miss"` (L326)
-- `const EVENT_EPISODE_CLOSED: str = "openral.event.episode_closed"` (L331)
+- `const EVENT_ESTOP_REQUESTED: str = "openral.event.estop_requested"` (L307)
+- `const EVENT_ROBOT_MANIFEST: str = "openral.robot.manifest"` (L310) — `event_name` of the OTLP log record carrying the robot manifest (ADR-0129), emitted by `producer.emit_robot_manifest`.
+- `const EVENT_SENSOR_STALE: str = "openral.event.sensor_stale"` (L311)
+- `const EVENT_STALENESS_LATCHED: str = "openral.event.staleness_latched"` (L312)
+- `const EVENT_ERROR_LATCHED: str = "openral.event.error_latched"` (L313)
+- `const EVENT_SAFETY_VIOLATION: str = "openral.event.safety_violation"` (L314)
+- `const EVENT_ACTION_DROPPED: str = "openral.event.action_dropped"` (L317)
+- `const EVENT_DEADLINE_MISSED: str = "openral.event.deadline_missed"` (L318)
+- `const EVENT_SKILL_FAILURE: str = "openral.event.skill_failure"` (L325)
+- `const EVENT_CHUNK_PREFETCH_HIT: str = "openral.event.chunk_prefetch_hit"` (L329)
+- `const EVENT_CHUNK_PREFETCH_MISS: str = "openral.event.chunk_prefetch_miss"` (L330)
+- `const EVENT_EPISODE_CLOSED: str = "openral.event.episode_closed"` (L335)
 
 **Metric instrument names**
-- `const METRIC_TICK_DURATION: str = "openral.tick.duration"` (L335)
-- `const METRIC_INFERENCE_DURATION: str = "openral.inference.duration"` (L336)
-- `const METRIC_TICK_BUDGET_VIOLATIONS: str = "openral.tick.budget_violations"` (L337)
-- `const METRIC_TICK_DEADLINE_MISSES: str = "openral.tick.deadline_misses"` (L338)
-- `const METRIC_SAFETY_VIOLATIONS: str = "openral.safety.violations"` (L339)
-- `const METRIC_HAL_READ_STATE_DURATION: str = "openral.hal.read_state.duration"` (L340)
-- `const METRIC_HAL_SEND_ACTION_DURATION: str = "openral.hal.send_action.duration"` (L341)
-- `const METRIC_HAL_ESTOP_COUNT: str = "openral.hal.estop.count"` (L342)
-- `const METRIC_SENSORS_AGE_MS: str = "openral.sensors.age_ms"` (L343)
-- `const METRIC_SENSORS_STALE_READS: str = "openral.sensors.stale_reads"` (L344)
-- `const METRIC_WORLD_STATE_STALENESS_MS: str = "openral.world_state.staleness_ms"` (L345)
-- `const METRIC_WORLD_STATE_COMPONENTS_STALE: str = "openral.world_state.components_stale"` (L346)
-- `const METRIC_OBSERVABILITY_EXPORT_FAILURES: str = "openral.observability.export_failures"` (L347)
-- `const METRIC_SIM_EPISODE_COUNT: str = "openral.sim.episode.count"` (L348)
-- `const METRIC_SYSTEM_GPU_MEMORY_USED_MB: str = "openral.system.gpu.memory_used_mb"` (L352)
-- `const METRIC_SYSTEM_GPU_MEMORY_TOTAL_MB: str = "openral.system.gpu.memory_total_mb"` (L353)
-- `const METRIC_SYSTEM_GPU_UTIL_PCT: str = "openral.system.gpu.utilization_pct"` (L354)
-- `const METRIC_SYSTEM_CPU_UTIL_PCT: str = "openral.system.cpu.utilization_pct"` (L355)
-- `const METRIC_SYSTEM_RAM_USED_MB: str = "openral.system.ram.used_mb"` (L356)
-- `const METRIC_SYSTEM_RAM_TOTAL_MB: str = "openral.system.ram.total_mb"` (L357)
-- `const METRIC_SIM_EPISODE_SUCCESS: str = "openral.sim.episode.success"` (L358)
+- `const METRIC_TICK_DURATION: str = "openral.tick.duration"` (L339)
+- `const METRIC_INFERENCE_DURATION: str = "openral.inference.duration"` (L340)
+- `const METRIC_TICK_BUDGET_VIOLATIONS: str = "openral.tick.budget_violations"` (L341)
+- `const METRIC_TICK_DEADLINE_MISSES: str = "openral.tick.deadline_misses"` (L342)
+- `const METRIC_SAFETY_VIOLATIONS: str = "openral.safety.violations"` (L343)
+- `const METRIC_HAL_READ_STATE_DURATION: str = "openral.hal.read_state.duration"` (L344)
+- `const METRIC_HAL_SEND_ACTION_DURATION: str = "openral.hal.send_action.duration"` (L345)
+- `const METRIC_HAL_ESTOP_COUNT: str = "openral.hal.estop.count"` (L346)
+- `const METRIC_SENSORS_AGE_MS: str = "openral.sensors.age_ms"` (L347)
+- `const METRIC_SENSORS_STALE_READS: str = "openral.sensors.stale_reads"` (L348)
+- `const METRIC_WORLD_STATE_STALENESS_MS: str = "openral.world_state.staleness_ms"` (L349)
+- `const METRIC_WORLD_STATE_COMPONENTS_STALE: str = "openral.world_state.components_stale"` (L350)
+- `const METRIC_OBSERVABILITY_EXPORT_FAILURES: str = "openral.observability.export_failures"` (L351)
+- `const METRIC_SIM_EPISODE_COUNT: str = "openral.sim.episode.count"` (L352)
+- `const METRIC_SYSTEM_GPU_MEMORY_USED_MB: str = "openral.system.gpu.memory_used_mb"` (L356)
+- `const METRIC_SYSTEM_GPU_MEMORY_TOTAL_MB: str = "openral.system.gpu.memory_total_mb"` (L357)
+- `const METRIC_SYSTEM_GPU_UTIL_PCT: str = "openral.system.gpu.utilization_pct"` (L358)
+- `const METRIC_SYSTEM_CPU_UTIL_PCT: str = "openral.system.cpu.utilization_pct"` (L359)
+- `const METRIC_SYSTEM_RAM_USED_MB: str = "openral.system.ram.used_mb"` (L360)
+- `const METRIC_SYSTEM_RAM_TOTAL_MB: str = "openral.system.ram.total_mb"` (L361)
+- `const METRIC_SIM_EPISODE_SUCCESS: str = "openral.sim.episode.success"` (L362)
 
 **Closed-set label vocabularies (for metric labels)**
-- `const LABEL_RSKILL_ID: str = "rskill.id"` (L366)
-- `const LABEL_RSKILL_REVISION: str = "rskill.revision"` (L367)
-- `const LABEL_HAL_ADAPTER: str = "hal.adapter"` (L368)
-- `const LABEL_ROBOT_MODEL: str = "robot.model"` (L369)
-- `const LABEL_CONTROL_MODE: str = "control_mode"` (L370)
-- `const LABEL_ENGINE: str = "engine"` (L371)
-- `const LABEL_DEVICE: str = "device"` (L372)
-- `const LABEL_KIND: str = "kind"` (L373)
-- `const LABEL_MODALITY: str = "modality"` (L374)
-- `const LABEL_CHECK_NAME: str = "check_name"` (L375)
-- `const LABEL_SEVERITY: str = "severity"` (L376)
-- `const LABEL_SIGNAL_KIND: str = "signal_kind"` (L377)
-- `const LABEL_COMPONENT: str = "component"` (L378)
-- `const LABEL_REASON: str = "reason"` (L379)
-- `const METRIC_THRESHOLD_MS: str = "openral.metric.threshold_ms"` (L385)
-- `const METRIC_THRESHOLD_DIR: str = "openral.metric.threshold_dir"` (L391)
-- `const THRESHOLD_DIR_UPPER: str = "upper"` (L392)
-- `const THRESHOLD_DIR_LOWER: str = "lower"` (L393)
+- `const LABEL_RSKILL_ID: str = "rskill.id"` (L370)
+- `const LABEL_RSKILL_REVISION: str = "rskill.revision"` (L371)
+- `const LABEL_HAL_ADAPTER: str = "hal.adapter"` (L372)
+- `const LABEL_ROBOT_MODEL: str = "robot.model"` (L373)
+- `const LABEL_CONTROL_MODE: str = "control_mode"` (L374)
+- `const LABEL_ENGINE: str = "engine"` (L375)
+- `const LABEL_DEVICE: str = "device"` (L376)
+- `const LABEL_KIND: str = "kind"` (L377)
+- `const LABEL_MODALITY: str = "modality"` (L378)
+- `const LABEL_CHECK_NAME: str = "check_name"` (L379)
+- `const LABEL_SEVERITY: str = "severity"` (L380)
+- `const LABEL_SIGNAL_KIND: str = "signal_kind"` (L381)
+- `const LABEL_COMPONENT: str = "component"` (L382)
+- `const LABEL_REASON: str = "reason"` (L383)
+- `const METRIC_THRESHOLD_MS: str = "openral.metric.threshold_ms"` (L389)
+- `const METRIC_THRESHOLD_DIR: str = "openral.metric.threshold_dir"` (L395)
+- `const THRESHOLD_DIR_UPPER: str = "upper"` (L396)
+- `const THRESHOLD_DIR_LOWER: str = "lower"` (L397)
 
 **Run-mode enum (closed set for openral.run.mode)**
-- `const RUN_MODE_SIM: str = "sim"` (L397)
-- `const RUN_MODE_HARDWARE: str = "hardware"` (L398)
-- `const RUN_MODE_BENCHMARK: str = "benchmark"` (L399)
+- `const RUN_MODE_SIM: str = "sim"` (L401)
+- `const RUN_MODE_HARDWARE: str = "hardware"` (L402)
+- `const RUN_MODE_BENCHMARK: str = "benchmark"` (L403)
 
 **Safety kernel enum (closed set for safety.kernel — see SAFETY_KERNEL)**
-- `const SAFETY_KERNEL_NULL: str = "null"` (L403)
-- `const SAFETY_KERNEL_CPP: str = "cpp"` (L404)
+- `const SAFETY_KERNEL_NULL: str = "null"` (L407)
+- `const SAFETY_KERNEL_CPP: str = "cpp"` (L408)
 
 
 ### `python/observability/src/openral_observability/metrics.py`
