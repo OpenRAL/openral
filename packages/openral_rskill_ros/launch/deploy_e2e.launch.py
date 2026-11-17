@@ -4954,7 +4954,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             # backs up: the VLM sidecar (LocateAnything) is slow (~1-2 s / frame),
             # the in-process OmDet-Turbo zero-shot backend is ~hundreds of ms, the
             # RT-DETR ONNX path is fast, and the OVB diffusion sidecar is slowest
-            # (~2.5 s / query at its 1-step 224 px default on Orin). See DetectorEngine.
+            # (~2 s / query at its 1-step 224 px default on Orin). See DetectorEngine.
             engine: str = (man.get("detector") or {}).get("engine") or ""
             max_rate_hz = {"vlm_sidecar": 0.5, "zeroshot_hf": 2.0, "ovb_sidecar": 0.3}.get(
                 engine, 5.0

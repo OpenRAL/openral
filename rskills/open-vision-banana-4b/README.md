@@ -81,7 +81,7 @@ One RGB frame, at least 256 × 256. The frame's longest edge is capped at
 | `runtime` / dtype | `pytorch` / `bf16` |
 | `license` | `flux_non_commercial` |
 | `detector.max_side` / `ovb.num_inference_steps` | 224 / 1 |
-| `latency_budget.per_chunk_ms` | 5000 (measured median 2.5 s on Jetson AGX Orin) |
+| `latency_budget.per_chunk_ms` | 5000 (measured median 2.04 s on Jetson AGX Orin) |
 
 ## How it answers
 
@@ -111,9 +111,12 @@ label "B3"). Latency is end to end through `OpenVisionBananaDetector`.
 | 8 | 512 | 19.6 s | ✓ | ✓ | ✓ | ✗ (B2) |
 | 4 | 512 | 10.6 s | ✓ | ✓ | ✓ | ✗ (B2) |
 | 2 | 224 | 3.3 s | ✗ | ✓ | ✗ | ✗ |
-| **1** | **224** | **2.5 s** | ✓ (loose) | ✓ | ✓ (loose) | ✗ (none) |
+| **1** | **224** | **2.04 s** | ✓ (loose) | ✓ | ✓ (loose) | ✗ (none) |
 
-Model load: 13.4 s, 16.0 GB. Latency scales with steps × pixels; the default
+Rows other than the default were measured before regions were labelled at
+the painted resolution, so they include ~0.4 s (2.4 s for the large bin) of
+region search the current code no longer spends. The default row is 12
+queries with the current code (2.00–2.09 s). Model load: 11–13 s, 16.0 GB. Latency scales with steps × pixels; the default
 trades box tightness for speed. It does not read handwritten text at any
 setting.
 
