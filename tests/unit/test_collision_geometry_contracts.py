@@ -252,6 +252,9 @@ def test_collision_evidence_accepts_bounded_kernel_diagnostics_and_old_records()
         {"payload_evidence_kind": "pinch_fallback"},
         {"payload_evidence_ref": "missing-kind"},
         {"workspace_denial_reason": "guessed_reason"},
+        # A place target is disclosed only while the place allowance is active.
+        {"place_target": "shelf_2"},
+        {"place_target": "shelf_2", "place_allowance_active": False},
     ):
         fields = {
             "collision_kind": "world",
