@@ -72,7 +72,9 @@ class StandingQuery:
         within: The grasp declaration's ``search_box`` (grid frame) for a TARGET query of
             its goal: only a track whose box centre lies in it is an instance, so a
             same-label object elsewhere (a carton on the shelf while the declared one is in
-            the tote) neither resolves the query nor ends its search. ``None``: label and role.
+            the tote) neither resolves the query nor ends its search. A seeded TARGET query
+            (a recalled memory node, #631) is scoped by its seed instead, re-expressed in the
+            grid frame on every grid (``TrackerSession._rescope``). ``None``: label and role.
             A BOUND or RELEASED track is exempt (``in_scope``): the box says where the
             object was to be grasped, not where the hand carries or lets it go.
     """

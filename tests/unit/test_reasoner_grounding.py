@@ -220,6 +220,39 @@ def test_a_map_frame_memory_node_is_refused_not_reinterpreted() -> None:
         _ground(GraspTargetRef(label="bottle of wine", object_id="wine_bottle"), [], graph)
 
 
+def test_a_map_frame_memory_node_scopes_the_tracked_query_to_its_instance() -> None:
+    """Issue #631: with tracking on, a named ``map``-frame node is not dropped to a label-only
+    query any same-label track could answer: its padded box rides the TARGET query's ``seed``
+    in ``map`` (the tracker re-expresses it through tf2). No base-frame ``search_box``."""
+    graph = SceneGraph.model_validate(
+        json.loads((_REPO_ROOT / "tests/unit/fixtures/home_scene_graph.json").read_text())
+    )
+    decl = ground_grasp_target(
+        GraspTargetRef(
+            label="bottle of wine",
+            object_id="wine_bottle",
+            contact_links=["openarm_left_finger_pair"],
+        ),
+        live_objects=[],
+        scene_graph=graph,
+        base_frame=_BASE,
+        default_contact_links=gripper_hands(_OPENARM),
+        patience_s=60.0,
+        pad_m=_PAD,
+        object_tracking=True,
+    )
+    assert decl.search_box is None and decl.target_id == "obj:wine_bottle"
+    (query,) = decl.target_queries
+    seed = query.seed
+    assert seed is not None and seed.frame_id == "map" and query.count == "one"
+    node = next(n for n in graph.nodes if n.node_id == "wine_bottle")
+    assert node.bbox_3d is not None
+    lo, hi = node.bbox_3d[:3], node.bbox_3d[3:]
+    for i in range(3):
+        assert seed.pose.xyz[i] == pytest.approx((lo[i] + hi[i]) / 2.0)
+        assert seed.half_extents[i] == pytest.approx((hi[i] - lo[i]) / 2.0 + _PAD)
+
+
 def test_the_reasoner_supplied_contact_links_win() -> None:
     live = _lift({"a": ("box", (0.40, -0.15, -0.10))})
     decl = _ground(GraspTargetRef(label="box", contact_links=["openarm_left_finger_pair"]), live)

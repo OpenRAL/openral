@@ -898,6 +898,9 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 from openral_world_state.object_tracker import read_static_cells
 
                 self.session.tracker.set_static_geometry(read_static_cells(static_file))
+            # tf2 ``grid <- frame``: re-expresses a fixed-frame place zone and a goal's scope (a
+            # recalled memory node's box in ``map``, issue #631) in the grid frame.
+            self.session.zone_transform = self._zone_lookup
             zones_json = str(self._p("place_zones_json"))
             if zones_json:
                 zones = TypeAdapter(list[PlaceZone]).validate_json(zones_json)
@@ -911,10 +914,6 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 }
                 if refused:
                     slog.error("object_tracker.place_zones_refused", zones=refused)
-                # A zone in a fixed frame (map / odom: a docked mobile manipulator) is
-                # re-expressed in the grid frame through tf2 at the grid's stamp; no tf2
-                # there and the zone yields no region (`TrackerSession._zone_region`).
-                self.session.zone_transform = self._zone_lookup
                 radius = float(self._p("zone_reach_radius_m"))
                 if radius > 0.0:
                     cx, cy, cz = (float(v) for v in self._p("zone_reach_center"))
@@ -1269,7 +1268,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             return homogeneous_from_quat_xyz((t.x, t.y, t.z), (q.x, q.y, q.z, q.w))
 
         def _zone_lookup(self, frame: str, stamp_ns: int) -> NDArray[np.float64] | None:
-            """tf2 ``grid <- frame`` at ``stamp_ns`` for a fixed-frame place zone, or ``None``."""
+            """tf2 ``grid <- frame`` at ``stamp_ns`` (fixed-frame zone, goal scope), or ``None``."""
             return None if self._tf_buffer is None else self._lookup(frame, stamp_ns)
 
         # -- the frame loop --------------------------------------------------------------

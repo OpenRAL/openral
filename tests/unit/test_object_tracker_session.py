@@ -768,6 +768,40 @@ def test_several_targets_are_narrowed_to_the_one_in_the_search_box() -> None:
     assert s.grasp_region() is None, "both oranges inside the search box"
 
 
+def test_a_named_memory_node_binds_only_its_instance_through_tf2() -> None:
+    """Issue #631: a goal naming one memory node seeds its TARGET query with the node's box in
+    ``map``. With two same-label oranges tracked, only the one centred in it, re-expressed in
+    the grid frame through tf2, is the goal's; with no tf2 neither is (fail closed), never the
+    neighbour. The scope follows tf2 per grid (the base moves under ``map``)."""
+    s, oid, _, centre = _grasp_region_rig(box=False)
+    other = _mint(s, centre + np.array([0.12, 0.0, 0.0]))
+    offset = np.array([1.0, -0.5, 0.0])  # grid <- map: a pure translation
+    shift = np.eye(4)
+    shift[:3, 3] = offset
+    s.zone_transform = lambda frame, _ns: shift if frame == "map" else None
+    decl = s.grasp_declaration
+    assert decl is not None
+    (query,) = decl.target_queries
+    seeded = query.model_copy(update={"seed": _search_box("map", centre - offset)})
+    named = decl.model_copy(update={"target_queries": (seeded,)})
+    s.on_grasp_declaration(named)
+    store = s.tracker.store
+    assert store.get(oid).declaration_key == "orange@1"  # type: ignore[union-attr]
+    assert store.get(other).declaration_key == ""  # type: ignore[union-attr]
+    (standing,) = s.tracker.queries.queries
+    assert standing.matches(store.get(oid))  # type: ignore[arg-type]
+    assert not standing.matches(store.get(other))  # type: ignore[arg-type]
+
+    # The base drives 0.12 m: the same map box now lies over the other orange.
+    shift[:3, 3] = offset + np.array([0.12, 0.0, 0.0])
+    s.on_grid(s.grid, s.grid_stamp_ns + 1)  # type: ignore[arg-type]
+    assert standing.matches(store.get(other)) and not standing.matches(store.get(oid))  # type: ignore[arg-type]
+
+    s.zone_transform = lambda _frame, _ns: None  # tf2 lost
+    s.on_grid(s.grid, s.grid_stamp_ns + 1)  # type: ignore[arg-type]
+    assert not standing.matches(store.get(oid)) and not standing.matches(store.get(other))  # type: ignore[arg-type]
+
+
 def test_a_count_all_declaration_makes_every_orange_eligible_and_nothing_else() -> None:
     """r7po_on1..3: the policy grasps whichever orange it picks, while the declaration names
     ``obj:orange_1``. Every live track of the declaration's own query (label + role) carries its
