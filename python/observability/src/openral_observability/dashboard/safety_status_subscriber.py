@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from openral_core import ROSSafetyViolation
 
-from openral_observability.failure_bus import drop_reason_label
+from openral_observability.failure_bus import FailureSource, drop_reason_label, topic_for
 from openral_observability.rclpy_spin import spin_executor_until_shutdown
 
 if TYPE_CHECKING:
@@ -45,9 +45,7 @@ _logger = structlog.get_logger(__name__)
 
 SAFETY_STATUS_TOPIC = "/openral/safety_status"
 # The safety kernel's typed stops (``FailureTrigger``); the console's trace shows each.
-# A literal, not ``topic_for(FailureSource.SAFETY)``, so the static topic graph
-# (tools/gen_ros_topic_graph.py) resolves it; a test pins the two equal.
-SAFETY_FAILURE_TOPIC = "/openral/failure/safety"
+SAFETY_FAILURE_TOPIC = topic_for(FailureSource.SAFETY)
 # The HAL lifecycle node's 1 Hz heartbeat carries its own e-stop latch (``estopped``):
 # a kernel release does not release a HAL that needs a restart, or whose re-arm failed.
 DIAGNOSTICS_TOPIC = "/diagnostics"

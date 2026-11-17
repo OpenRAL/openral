@@ -9,8 +9,9 @@ source tree statically and joins every endpoint on its name:
   ``ActionServer`` / ``ActionClient`` constructions. The name argument is
   resolved through string literals, f-strings, module constants (also across
   ``from x import NAME``), class attributes, ``self._x = ...`` assignments,
-  parameter defaults, ``declare_parameter(name, default)`` and
-  ``openral_core.camera_topic(name, kind)`` (ADR-0108).
+  parameter defaults, ``declare_parameter(name, default)``,
+  ``openral_core.camera_topic(name, kind)`` (ADR-0108) and
+  ``openral_observability.failure_bus.topic_for(FailureSource.X)``.
 * **C++** (``cpp/``, ``packages/``): ``create_publisher<T>`` /
   ``create_subscription<T>`` / ``create_service<T>`` / ``create_client<T>``
   and ``rclcpp_action::create_server<T>`` / ``create_client<T>``.
@@ -48,8 +49,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # from a git worktree the shared venv resolves the main checkout, whose camera-topic kinds
 # can differ, and the page would flip on every commit.
 sys.path.insert(0, str(REPO_ROOT / "python" / "core" / "src"))
+sys.path.insert(0, str(REPO_ROOT / "python" / "observability" / "src"))
 
 from openral_core import CAMERA_TOPIC_PREFIX, CameraTopicKind, camera_topic  # noqa: E402
+from openral_observability.failure_bus import (  # noqa: E402
+    TOPIC_PREFIX as FAILURE_TOPIC_PREFIX,
+)
+from openral_observability.failure_bus import FailureSource, topic_for  # noqa: E402
 
 OUT_PATH = REPO_ROOT / "docs" / "topics" / "README.md"
 SCAN_ROOTS = ("python", "packages", "cpp", "tools")
@@ -74,6 +80,9 @@ _PY_CTORS: dict[str, tuple[str, str, int, str, str]] = {
 # Every camera_topic() name that is not a literal is, by contract, a SensorSpec
 # name — the one placeholder allowed to join rows from different call sites.
 _SENSOR_PLACEHOLDER = "{sensor}"
+# A topic_for() source that is not a FailureSource member in source text (a loop
+# variable, a caller's argument) is some failure-bus layer: one shared placeholder.
+_SOURCE_PLACEHOLDER = "{source}"
 _CPP_RE = re.compile(
     r"(?P<action>rclcpp_action::)?create_(?P<what>publisher|subscription|service|client|server)"
     r"\s*<\s*(?P<type>[\w:]+)\s*>\s*\(",
@@ -221,6 +230,8 @@ class _Resolver:
             return self.resolve(expr.args[0], path, depth + 1) if expr.args else None
         if isinstance(expr, ast.Call) and _callee(expr) == "camera_topic":
             return self._camera_topic(expr, path, depth)
+        if isinstance(expr, ast.Call) and _callee(expr) == "topic_for":
+            return self._failure_topic(expr, path, depth)
         if isinstance(expr, ast.BoolOp) and isinstance(expr.op, ast.Or):
             # `topic or DEFAULT` -> the default is the only statically known value.
             return self.resolve(expr.values[-1], path, depth + 1)
@@ -267,6 +278,16 @@ class _Resolver:
         if not name or "/" in name or " (param " in name:
             name = _SENSOR_PLACEHOLDER
         return camera_topic(name, CameraTopicKind(kind), prefix=prefix)
+
+    def _failure_topic(self, call: ast.Call, path: Path, depth: int) -> str:
+        """``failure_bus.topic_for(source)`` through the real function."""
+        arg = _arg(call, 0, "source")
+        if isinstance(arg, ast.Attribute) and arg.attr in FailureSource.__members__:
+            return topic_for(FailureSource[arg.attr])
+        value = self.resolve(arg, path, depth + 1) if arg else None
+        if value in {s.value for s in FailureSource}:
+            return topic_for(FailureSource(value))
+        return f"{FAILURE_TOPIC_PREFIX}/{_SOURCE_PLACEHOLDER}"
 
     def _module_constant(self, name: str, path: Path, depth: int) -> str | None:
         tree = self.trees.get(path)
@@ -587,7 +608,8 @@ def render(endpoints: list[Endpoint], remaps: list[tuple[str, str, str]]) -> str
         "Nav2, a driver) or is a dead end worth checking. A `{placeholder}` in a",
         "per-instance name is filled at runtime (a robot id, a manifest sensor name);",
         "rows join only on identical placeholder text, except that every",
-        "`openral_core.camera_topic(<name>)` is `{sensor}` — a `SensorSpec.name` by contract.",
+        "`openral_core.camera_topic(<name>)` is `{sensor}` — a `SensorSpec.name` by contract —",
+        "and every non-literal `failure_bus.topic_for(<source>)` is `{source}`, a `FailureSource`.",
         "",
         "Regenerate with `uv run python tools/gen_ros_topic_graph.py`;",
         "`just lint` and pre-commit fail when this page is stale.",

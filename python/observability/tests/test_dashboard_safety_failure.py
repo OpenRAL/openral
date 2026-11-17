@@ -129,13 +129,6 @@ def test_unevaluated_and_box_bound_distances_are_not_shown_as_depth() -> None:
     assert "≤ 25.7 mm deep (box bound)" in text
 
 
-def test_the_failure_topic_is_the_failure_bus_safety_topic() -> None:
-    from openral_observability.dashboard.safety_status_subscriber import SAFETY_FAILURE_TOPIC
-    from openral_observability.failure_bus import FailureSource, topic_for
-
-    assert topic_for(FailureSource.SAFETY) == SAFETY_FAILURE_TOPIC
-
-
 def test_unknown_severity_keeps_its_prefix() -> None:
     pytest.importorskip("openral_msgs")
     from openral_msgs.msg import FailureTrigger

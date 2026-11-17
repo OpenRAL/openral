@@ -11,7 +11,8 @@ name is that ROS parameter's declared default, overridable at launch. A row with
 Nav2, a driver) or is a dead end worth checking. A `{placeholder}` in a
 per-instance name is filled at runtime (a robot id, a manifest sensor name);
 rows join only on identical placeholder text, except that every
-`openral_core.camera_topic(<name>)` is `{sensor}` — a `SensorSpec.name` by contract.
+`openral_core.camera_topic(<name>)` is `{sensor}` — a `SensorSpec.name` by contract —
+and every non-literal `failure_bus.topic_for(<source>)` is `{source}`, a `FailureSource`.
 
 Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 `just lint` and pre-commit fail when this page is stale.
@@ -39,7 +40,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/estop` | `std_msgs/Empty` | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_compliance/openral_compliance/recorder_node.py (ComplianceRecorderNode.on_configure)<br>packages/openral_human_estop/openral_human_estop/forwarder_node.py (HumanEstopForwarderNode.on_configure)<br>packages/openral_safety/openral_safety/supervisor_node.py (SafetyPassthroughNode.on_configure)<br>packages/openral_safety_watchdog/openral_safety_watchdog/deadman_watchdog_node.py (DeadmanWatchdogNode.on_configure)<br>packages/openral_safety_watchdog/openral_safety_watchdog/hardware_estop_node.py (HardwareEstopNode.on_configure)<br>python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase._arm_tracking_watch)<br>python/observability/src/openral_observability/dashboard/estop_publisher.py (EstopPublisher._start) | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) [param `estop_topic`]<br>packages/openral_safety/openral_safety/supervisor_node.py (SafetyPassthroughNode.on_configure)<br>packages/openral_safety_watchdog/openral_safety_watchdog/deadman_watchdog_node.py (DeadmanWatchdogNode.on_configure)<br>python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_estop_ground_truth)<br>tools/_validation_matrix_monitor.py (Monitor.__init__)<br>tools/kernel_replay_diff.py (_Side.__init__) |
 | `/openral/estop_cleared` | `std_msgs/Empty` | python/cli/src/openral_cli/estop.py (estop_reset_command)<br>python/observability/src/openral_observability/dashboard/estop_publisher.py (EstopPublisher._start) | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure)<br>packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure)<br>python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate) |
 | `/openral/failure/rskill` | `openral_msgs/FailureTrigger` | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) | — |
-| `/openral/failure/safety` | `openral_msgs/FailureTrigger` | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_human_estop/openral_human_estop/forwarder_node.py (HumanEstopForwarderNode.on_configure)<br>packages/openral_safety_watchdog/openral_safety_watchdog/deadman_watchdog_node.py (DeadmanWatchdogNode.on_configure)<br>packages/openral_safety_watchdog/openral_safety_watchdog/hardware_estop_node.py (HardwareEstopNode.on_configure) | packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py (Bucket2MarkersNode.__init__)<br>packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_estop_ground_truth)<br>python/observability/src/openral_observability/dashboard/safety_status_subscriber.py (SafetyStatusSubscriber._start)<br>tools/_validation_matrix_monitor.py (Monitor.__init__) |
+| `/openral/failure/safety` | `openral_msgs/FailureTrigger` | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_compliance/openral_compliance/recorder_node.py (ComplianceRecorderNode.on_configure)<br>packages/openral_human_estop/openral_human_estop/forwarder_node.py (HumanEstopForwarderNode.on_configure)<br>packages/openral_safety_watchdog/openral_safety_watchdog/deadman_watchdog_node.py (DeadmanWatchdogNode.on_configure)<br>packages/openral_safety_watchdog/openral_safety_watchdog/hardware_estop_node.py (HardwareEstopNode.on_configure) | packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py (Bucket2MarkersNode.__init__)<br>packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_estop_ground_truth)<br>python/observability/src/openral_observability/dashboard/safety_status_subscriber.py (SafetyStatusSubscriber._start)<br>tools/_validation_matrix_monitor.py (Monitor.__init__) |
 | `/openral/failure/world_state` | `openral_msgs/FailureTrigger` | — | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) |
 | `/openral/grasp_declaration` | `openral_msgs/GraspDeclaration` | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode._subscribe)<br>python/hal/src/openral_hal/_grasp_target_leg.py (GraspTargetLeg.setup)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_grasp_declaration) |
 | `/openral/grasp_events` | `openral_msgs/GraspEvent` | python/hal/src/openral_hal/vision_attachment_bridge.py (VisionAttachmentBridge.setup) | packages/openral_reasoner_ros/openral_reasoner_ros/completion_check_node.py (CompletionCheckNode.__init__)<br>packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode._subscribe) |
@@ -89,7 +90,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/cameras/{sensor}/image` | `sensor_msgs/Image` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._advertise_camera)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._colour_publishers) | packages/openral_reasoner_ros/openral_reasoner_ros/completion_check_node.py (CompletionCheckNode.__init__)<br>packages/world_state/openral_world_state_ros/instance_mask_propagator_node.py (main.Propagator.on_configure)<br>packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) |
 | `/openral/cameras/{sensor}/points` | `sensor_msgs/PointCloud2` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_depth) | — |
 | `/openral/cameras/{sensor}/robot_mask` | `sensor_msgs/Image` | — | packages/world_state/openral_world_state_ros/instance_mask_propagator_node.py (main.Propagator.on_configure)<br>packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode._subscribe) |
-| `/openral/failure/{source}` | `openral_msgs/FailureTrigger` | — | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) |
+| `/openral/failure/{source}` | `openral_msgs/FailureTrigger` | python/observability/src/openral_observability/failure_bus.py (FailureBusPublisher.create_publisher) | packages/openral_compliance/openral_compliance/recorder_node.py (ComplianceRecorderNode.on_configure)<br>packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) |
 | `/openral/perception/{detector.kind}` | `openral_msgs/PromptStamped` | python/runner/src/openral_runner/backends/gstreamer/perception_tee.py (PerceptionEventPublisher.start) | — |
 | `/openral/perception/{kind}` | `openral_msgs/PromptStamped` | — | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) |
 | `/openral/prompt_in/{source}` | `openral_msgs/PromptStamped` | — | packages/openral_prompt_router/openral_prompt_router/prompt_router_node.py (PromptRouterNode.on_configure) |
@@ -135,7 +136,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/execute_rskill` | `openral_msgs/ExecuteRskill` | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure)<br>tools/_validation_matrix_dispatch.py (main) |
 | `navigate_to_pose` | `nav2_msgs/NavigateToPose` | — | tools/_nav2_costmap_silhouette_probe.py (_drive)<br>tools/_nav2_mppi_loop_probe.py (Probe.__init__) |
 
-## Unresolved endpoints (52)
+## Unresolved endpoints (49)
 
 Names only known at runtime (built from a manifest, a robot id or a
 caller's argument). Shown as their source expression.
@@ -157,7 +158,6 @@ caller's argument). Shown as their source expression.
 | topic | pub | `points_topic` | `sensor_msgs/PointCloud2` | packages/openral_perception_ros/openral_perception_ros/depth_provider_node.py (main.DepthProviderNode.__init__) |
 | topic | pub | `self._cmd_vel_topic` | `geometry_msgs/Twist` | python/hal/src/openral_hal/platform_base.py (PlatformBaseHAL.attach_ros_node) |
 | topic | pub | `self._info_topic` | `sensor_msgs/CameraInfo` | python/sensors/src/openral_sensors/ros_publisher.py (SensorRosPublisher.prepare) |
-| topic | pub | `self._topic` | `openral_msgs/FailureTrigger` | python/observability/src/openral_observability/failure_bus.py (FailureBusPublisher.create_publisher) |
 | topic | pub | `self._topic` | `sensor_msgs/Image` | python/runner/src/openral_runner/backends/gstreamer/ros_tee.py (RosImagePublisher._start_ros) |
 | topic | pub | `self._topic` | `sensor_msgs/Image` | python/sensors/src/openral_sensors/ros_publisher.py (SensorRosPublisher.prepare) |
 | topic | pub | `t` | `geometry_msgs/Polygon` | tools/_nav2_mppi_loop_probe.py (Probe.__init__) |
@@ -167,7 +167,6 @@ caller's argument). Shown as their source expression.
 | topic | pub | `topic` | `openral_msgs/PromptStamped` | python/cli/src/openral_cli/prompt.py (prompt_command) |
 | topic | pub | `topic` | `sensor_msgs/JointState` | tools/joint_state_staleness_probe.py (run) |
 | topic | pub | `topic` | `std_msgs/Empty` | python/hal/src/openral_hal/ros_control_transport.py (RosControlTransport.__init__) |
-| topic | pub | `topic_for(FailureSource.SAFETY)` | `openral_msgs/FailureTrigger` | packages/openral_compliance/openral_compliance/recorder_node.py (ComplianceRecorderNode.on_configure) |
 | topic | pub | `viz_cloud_topic(topic)` | `sensor_msgs/PointCloud2` | packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py (Bucket2MarkersNode._open_viz_clouds) |
 | topic | sub | `arm_status_topic` | `action_msgs/GoalStatusArray` | packages/openral_safety_watchdog/openral_safety_watchdog/deadman_watchdog_node.py (DeadmanWatchdogNode.on_configure) |
 | topic | sub | `completion_camera_topic` | `sensor_msgs/Image` | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) |
@@ -193,7 +192,6 @@ caller's argument). Shown as their source expression.
 | topic | sub | `topic` | `sensor_msgs/Image` | packages/openral_perception_ros/openral_perception_ros/scene_vlm_node.py (main.SceneVlmNode.__init__) |
 | topic | sub | `topic` | `sensor_msgs/Image` | packages/openral_perception_ros/openral_perception_ros/segmenter_node.py (_node_class.SegmenterNode.on_configure) |
 | topic | sub | `topic` | `sensor_msgs/PointCloud2` | packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py (Bucket2MarkersNode._follow_viz_viewers) |
-| topic | sub | `topic_for(source)` | `openral_msgs/FailureTrigger` | packages/openral_compliance/openral_compliance/recorder_node.py (ComplianceRecorderNode.on_configure) |
 
 ## Launch remappings (14)
 

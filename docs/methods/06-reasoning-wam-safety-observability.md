@@ -1212,12 +1212,12 @@ _Persistent ROS 2 e-stop publisher for the dashboard (safety-critical) — the d
 _The dashboard's first rclpy subscriber: one node created at launch, spun on a daemon thread, inert-but-harmless without rclpy / the `openral_msgs` overlay. Read-only: no publisher, no service client, no authority over the robot._
 
 - module constant `SAFETY_STATUS_TOPIC: str = "/openral/safety_status"` (L46)
-- module constant `SAFETY_FAILURE_TOPIC: str = "/openral/failure/safety"` (L50) — equal to `topic_for(FailureSource.SAFETY)` (a test pins it; a literal so the static topic graph resolves it); the kernel's typed stops, fed to `TelemetryStore.record_safety_failure`.
-- `DIAGNOSTICS_TOPIC: str` (L53) — `/diagnostics`: the subscriber also reads each HAL heartbeat's own `estopped` latch (`TelemetryStore.set_hal_estop`), since a kernel release does not release a restart-only HAL or one whose re-arm failed.
+- module constant `SAFETY_FAILURE_TOPIC: str = topic_for(FailureSource.SAFETY)` (L48) — `/openral/failure/safety` (the static topic graph resolves the call); the kernel's typed stops, fed to `TelemetryStore.record_safety_failure`.
+- `DIAGNOSTICS_TOPIC: str` (L51) — `/diagnostics`: the subscriber also reads each HAL heartbeat's own `estopped` latch (`TelemetryStore.set_hal_estop`), since a kernel release does not release a restart-only HAL or one whose re-arm failed.
 - `drop_reason_label` — re-exported from `openral_observability.failure_bus` (moved there so the skill runner and the reasoner share it).
-- `class SafetyStatusSubscriber` — Opens the node + subscription immediately at the publishers' QoS (RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1) — a VOLATILE subscriber would never match and the card would sit silently empty. Also subscribes to `/diagnostics` (each HAL heartbeat's `estopped`, into `TelemetryStore.set_hal_estop`) and `/openral/failure/safety` (logging each new stop). Every callback logs, never raises, an exception (`ROSSafetyViolation` excepted), since they share one spin thread; a missing ROS install is left to `run_dashboard` to report. Wired in `run_dashboard` onto `app.state.safety_status`. (L83)
-  - `available(self) -> bool` (L159) — True when the subscription is live (rclpy + `openral_msgs` present).
-  - `close(self) -> None` (L211) — Tear down the node/executor and shuts rclpy down only if it started it.
+- `class SafetyStatusSubscriber` — Opens the node + subscription immediately at the publishers' QoS (RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1) — a VOLATILE subscriber would never match and the card would sit silently empty. Also subscribes to `/diagnostics` (each HAL heartbeat's `estopped`, into `TelemetryStore.set_hal_estop`) and `/openral/failure/safety` (logging each new stop). Every callback logs, never raises, an exception (`ROSSafetyViolation` excepted), since they share one spin thread; a missing ROS install is left to `run_dashboard` to report. Wired in `run_dashboard` onto `app.state.safety_status`. (L81)
+  - `available(self) -> bool` (L157) — True when the subscription is live (rclpy + `openral_msgs` present).
+  - `close(self) -> None` (L209) — Tear down the node/executor and shuts rclpy down only if it started it.
 
 ### `python/observability/src/openral_observability/dashboard/discovery.py`
 _mDNS advertise + browse for the live dashboard. Optional, requires the `mdns` extra; when `zeroconf` is not importable, `Discovery` stays disabled and the dashboard runs exactly as before._
