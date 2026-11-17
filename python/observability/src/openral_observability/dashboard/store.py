@@ -423,7 +423,7 @@ class TelemetryStore:
         # they cannot evict the error lane (see _HEADLINE_EVENT_RING_SIZE).
         self._headline_events: deque[TelemetryEvent] = deque(maxlen=_HEADLINE_EVENT_RING_SIZE)
         self._counters: dict[str, int] = defaultdict(int)
-        # (kind, severity, rskill_id) of the last safety stop and when it last repeated:
+        # (kind, severity, rskill_id) of the last safety stop and when (monotonic) it last repeated:
         # a stale input makes the kernel publish one stop per dropped chunk (tens per
         # second), which ``record_safety_failure`` folds into the first one's row.
         self._safety_failure_run: tuple[tuple[str, str, str], float] | None = None
@@ -757,12 +757,15 @@ class TelemetryStore:
             ``True`` for a new row, ``False`` when it was folded into the previous one.
         """
         now = time.time()
+        # The coalescing window runs on a monotonic clock: a wall-clock step back
+        # must not stretch it. ``now`` stays the display stamp.
+        mono = time.monotonic()
         key = (kind_label, severity_label, rskill_id)
         with self._lock:
             run = self._safety_failure_run
-            self._safety_failure_run = (key, now)
-            if run is not None and run[0] == key and now - run[1] < _SAFETY_FAILURE_COALESCE_S:
+            if run is not None and run[0] == key and mono - run[1] < _SAFETY_FAILURE_COALESCE_S:
                 prev = self._topics["safety_failure"]
+                self._safety_failure_run = (key, mono)
                 self._topics["safety_failure"] = {**prev, "repeats": prev["repeats"] + 1}
                 return False
         try:
@@ -784,6 +787,9 @@ class TelemetryStore:
             "ts_unix": now,
         }
         with self._lock:
+            # Set with the row it describes, so a concurrent repeat never sees a
+            # marker without its row.
+            self._safety_failure_run = (key, mono)
             self._topics["safety_failure"] = entry
             self._append_event(
                 TelemetryEvent(

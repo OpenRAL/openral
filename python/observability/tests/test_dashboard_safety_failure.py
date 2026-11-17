@@ -8,12 +8,14 @@ kernel serializes; the console only renders ``topics.safety_failure``. No mocks
 from __future__ import annotations
 
 import sys
+import time
 import uuid
 
 import pytest
 import structlog
 from openral_core import CollisionEvidence, ForceEvidence
 from openral_observability.dashboard import TelemetryStore
+from openral_observability.dashboard import store as store_module
 from openral_observability.dashboard.store import _SAFETY_FAILURE_COALESCE_S
 
 # The stop seen in the station sim: world voxel, 25.7 mm deep, grasp exemption live.
@@ -103,6 +105,51 @@ def test_a_repeat_after_the_window_is_a_new_row() -> None:
     assert run is not None
     store._safety_failure_run = (run[0], run[1] - _SAFETY_FAILURE_COALESCE_S - 0.1)
     _record(store, _COLLISION.model_dump_json())
+    assert sum(e["kind"] == "safety.failure" for e in store.snapshot()["events"]) == 2
+
+
+def test_a_wall_clock_step_back_does_not_stretch_the_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The window is measured on the monotonic clock, not on ``time.time()``."""
+    wall, mono = [1000.0], [50.0]
+    monkeypatch.setattr(time, "time", lambda: wall[0])
+    monkeypatch.setattr(time, "monotonic", lambda: mono[0])
+    store = TelemetryStore()
+    _record(store, _COLLISION.model_dump_json())
+    wall[0], mono[0] = 995.0, 50.0 + _SAFETY_FAILURE_COALESCE_S + 1.0  # NTP stepped back 5 s
+    entry = _record(store, _COLLISION.model_dump_json())
+    assert sum(e["kind"] == "safety.failure" for e in store.snapshot()["events"]) == 2
+    assert entry["ts_unix"] == 995.0  # display stamps stay wall clock
+
+
+def test_a_repeat_landing_mid_record_is_its_own_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A same-key stop arriving between the coalescing check and the row commit.
+
+    It replays the interleaving of a second thread deterministically: the text
+    builder (run outside the lock) records the same stop again. It must not find a
+    coalescing marker without the row it describes.
+    """
+    store = TelemetryStore()
+    real_text = store_module._safety_failure_text
+    reentered: list[bool] = []
+
+    def text_then_concurrent_stop(*args: str) -> str:
+        if not reentered:
+            reentered.append(True)
+            assert store.record_safety_failure(
+                kind_label="kind_collision",
+                severity_label="severity_abort",
+                evidence_json=_COLLISION.model_dump_json(),
+                rskill_id="rskills/rskill-pick-openarm",
+                trace_id="",
+                stamp_unix=1.0,
+            )
+        return real_text(*args)
+
+    monkeypatch.setattr(store_module, "_safety_failure_text", text_then_concurrent_stop)
+    entry = _record(store, _COLLISION.model_dump_json())
+    assert entry["repeats"] == 0
     assert sum(e["kind"] == "safety.failure" for e in store.snapshot()["events"]) == 2
 
 
