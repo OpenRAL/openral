@@ -140,24 +140,77 @@ def test_real_deploy_picks_a_bound_camera(launch_module: object) -> None:
 
 
 @pytest.mark.parametrize("robot", ["makermods_metal", "makermods_metal_station"])
-def test_real_deploy_publishes_the_top_cameras_optical_child(
-    launch_module: object, robot: str
-) -> None:
-    """#627: on hardware nothing else publishes ``top_camera_optical_frame``.
+def test_real_deploy_names_the_top_cameras_optical_child(launch_module: object, robot: str) -> None:
+    """#627: the launch's optical child for ``top`` is exactly the lift's frame.
 
     The object lift looks the body-convention ``top`` camera up in its optical child
-    (``image_frame_id``); without the launch's static TF every detection is dropped.
-    In sim the sensor bridge publishes it, so the launch must not.
+    (``image_frame_id``); on hardware only the launch publishes it. In sim the sensor
+    bridge does, so the launch must not.
     """
     from openral_core.depth_extrinsic import image_frame_id
 
     sensors = _robot(robot).sensors
     top = next(s for s in sensors if s.name == "top")
     mounts = launch_module._optical_mounts  # type: ignore[attr-defined]
-    real = mounts(sensors, "real")
-    assert real == {"top_camera": image_frame_id(top, sensors)}
-    assert real["top_camera"] == "top_camera_optical_frame"
+    assert mounts(sensors, "real") == {"top_camera": image_frame_id(top, sensors)}
+    assert image_frame_id(top, sensors) == "top_camera_optical_frame"
     assert mounts(sensors, "sim") == {}
-    node = launch_module._optical_tf_node("top_camera", real["top_camera"])  # type: ignore[attr-defined]
-    args = node._Node__arguments  # launch_ros keeps them private
-    assert args[-4:] == ["--frame-id", "top_camera", "--child-frame-id", "top_camera_optical_frame"]
+
+
+def _compose(launch_module: object, monkeypatch: pytest.MonkeyPatch, **overrides: str) -> list[str]:
+    """Node names of the real ``compose_runtime_graph``, every other arg at its default."""
+    from launch import LaunchContext
+    from launch.actions import DeclareLaunchArgument
+
+    for dep in ("openral_safety",):
+        pytest.importorskip(dep, reason=f"{dep} is imported by compose_runtime_graph")
+    # A real deploy refuses a ROS graph that reaches other hosts.
+    monkeypatch.setenv("ROS_AUTOMATIC_DISCOVERY_RANGE", "LOCALHOST")
+    monkeypatch.delenv("ROS_STATIC_PEERS", raising=False)
+    context = LaunchContext()
+    for action in launch_module.generate_launch_description().entities:  # type: ignore[attr-defined]
+        if isinstance(action, DeclareLaunchArgument):
+            default = "".join(s.perform(context) for s in action.default_value or [])
+            context.launch_configurations[action.name] = overrides.get(action.name, default)
+    actions = launch_module.compose_runtime_graph(context)  # type: ignore[attr-defined]
+    return [n for a in actions if (n := getattr(a, "_Node__node_name", None))]
+
+
+def test_real_launch_publishes_the_optical_child_once(
+    launch_module: object, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#627: a real MakerMods launch publishes ``top_camera -> top_camera_optical_frame``.
+
+    With DA3 estimated depth on ``top`` too, whose cloud frame is that same child, the
+    estimated-depth leg reuses it instead of starting a second, same-named publisher.
+    ``top`` is bound to a driver topic here: a real estimated-depth camera needs one.
+    """
+    import yaml
+
+    manifest = yaml.safe_load((REPO_ROOT / "robots/makermods_metal/robot.yaml").read_text())
+    top = next(s for s in manifest["sensors"] if s["name"] == "top")
+    top["deploy_binding"] = {"backend": "ros2_image", "backend_params": {"topic": "/top/image"}}
+    robot_yaml = tmp_path / "robot.yaml"
+    robot_yaml.write_text(yaml.safe_dump(manifest))
+    names = _compose(
+        launch_module,
+        monkeypatch,
+        robot_yaml=str(robot_yaml),
+        hal_mode="real",
+        estimated_depth_camera="top",
+    )
+    optical = [n for n in names if n.endswith("_optical_frame")]
+    assert optical == ["static_top_camera_to_top_camera_optical_frame"]
+
+
+def test_sim_launch_leaves_the_optical_child_to_the_bridge(
+    launch_module: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In sim the sensor bridge publishes the optical child; the launch adds none."""
+    names = _compose(
+        launch_module,
+        monkeypatch,
+        robot_yaml=str(REPO_ROOT / "robots/makermods_metal/robot.yaml"),
+        hal_mode="sim",
+    )
+    assert not [n for n in names if n.endswith("_optical_frame")]
