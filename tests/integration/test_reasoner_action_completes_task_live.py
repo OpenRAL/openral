@@ -505,6 +505,35 @@ def test_mission_summary_counts_failures_not_dispatches() -> None:
         rclpy.try_shutdown()
 
 
+def test_mission_summary_carries_pending_verdicts_and_reward_gate() -> None:
+    """#587 review: the Mission card shows the budget the node acts on: failures plus the
+    successes whose reward verdict is pending (they count against ``max_attempts``), and
+    whether a reward monitor judges results (``max_dispatches`` then binds only steps).
+    Only the current mission generation's holds are copied."""
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs")
+    from openral_reasoner import MissionState
+
+    rclpy.init()
+    try:
+        reasoner = _reasoner()
+        reasoner._task_progress_available = True
+        mission = MissionState.from_prompt("pick up the cube and put it in the bin")
+        reasoner._renderer.set_mission(mission)
+        active = mission.active()
+        assert active is not None
+        reasoner._pending_success_verdicts[(reasoner._mission_generation, active.task_id)] += 1
+        reasoner._pending_success_verdicts[(reasoner._mission_generation - 1, "t9")] += 1
+        reasoner._sync_mission_budget()
+        summary = mission.to_summary()
+        assert summary["reward_gated"] is True
+        tasks = summary["tasks"]
+        assert isinstance(tasks, list)
+        assert [t["pending"] for t in tasks] == [1]
+    finally:
+        rclpy.try_shutdown()
+
+
 def test_a_failed_dispatch_spends_one_try_of_the_reward_gate() -> None:
     """#586 review: a failed pick is counted once, when it returns, not again when the gate
     judges it: three failed picks reach the subdivision offer, not two."""

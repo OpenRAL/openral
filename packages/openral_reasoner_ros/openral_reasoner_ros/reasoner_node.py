@@ -3660,6 +3660,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         )
         if self._core is None:
             return False
+        self._sync_mission_budget()
         prep = self._core.prepare_tick(
             world_state=world_state,
             renderer=self._renderer,
@@ -5031,6 +5032,23 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             # The abandon path writes the ladder state itself.
             self._count_failure(active, persist=action == "retry")
         return action, verdict
+
+    def _sync_mission_budget(self) -> None:
+        """Copy the budget context the Mission card reads onto the mission, before a tick.
+
+        ``reward_gated`` and, per task of the current mission, the successes whose reward
+        verdict is still pending (already counted against ``DEFAULT_MAX_ATTEMPTS``), so
+        ``MissionState.to_summary`` shows the budget the node acts on.
+        """
+        mission = self._renderer.mission
+        if mission is None:
+            return
+        mission.reward_gated = self._task_progress_available
+        mission.pending_verdicts = {
+            task_id: n
+            for (generation, task_id), n in self._pending_success_verdicts.items()
+            if generation == self._mission_generation
+        }
 
     def _pending_success_verdicts_for(self, active: TaskState) -> int:
         """Reward verdicts still pending for the active task's successful dispatches."""
