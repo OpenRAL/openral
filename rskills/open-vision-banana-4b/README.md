@@ -138,9 +138,12 @@ setting.
 - **Memory.** ~16 GB of bf16 weights (transformer 7.75 GB + Qwen3 text encoder
   8.0 GB). `tools/ovb_sidecar.py --offload none` on unified-memory Jetsons;
   the default `model` offload suits discrete GPUs under 17 GB.
-- **Needs the Hub at load.** diffusers resolves the sharded transformer in a
-  subfolder through the Hub API, so the sidecar does not start with
-  `HF_HUB_OFFLINE=1` yet.
+- **Offline robots.** The sidecar resolves both pinned snapshots with
+  `snapshot_download` and loads from disk, so it starts with
+  `HF_HUB_OFFLINE=1` once the weights are cached (verified on the Orin run).
+  It fetches only the OVB transformer subfolder and the base pipeline's
+  text encoder, tokenizer, VAE and scheduler (~24 GB), never the base
+  transformer.
 - **Depth is not used.** OVB's depth output is relative inverse depth, never
   metric; this rSkill runs only the referring-segmentation task.
 

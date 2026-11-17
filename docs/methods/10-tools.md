@@ -654,10 +654,10 @@ _Boot helper + server for the Open Vision Banana sidecar, companion to `OpenVisi
 - `_LOCK: Path` (L35) — hash-locked deps (`ovb.lock`, or `ovb-aarch64.lock` on cu130); regenerated from `tools/sidecar_requirements/ovb.in`.
 - `ensure_venv(home, *, override=None) -> Path` (L39) — provisions or reuses the sidecar venv from `_LOCK`; honours `$OPENRAL_OVB_SIDECAR_VENV`.
 - `main() -> int` (L71) — argparse (`--model`, `--subfolder`, `--base` required; `--host`, `--port`, `--offload none|model|sequential`, `--home`, `--venv`); scrubs the environment, strips `PYTHONPATH`/`PYTHONHOME` and execs `_ovb_server.py`.
-- `_split_ref(ref) -> tuple[str, str]` (_ovb_server.py L41) — splits `repo@<sha>`; refuses anything but a full 40-hex commit sha.
-- `_load(model, subfolder, base, offload) -> Flux2KleinPipeline` (_ovb_server.py L49) — loads the OVB `Flux2Transformer2DModel` from its subfolder into the base `Flux2KleinPipeline`, both bf16 at pinned revisions; applies the chosen CPU offload.
-- `_generate(pipe, req) -> bytes` (_ovb_server.py L69) — one image-to-image run at the input's own size; returns the painted PNG.
-- `main() -> int` (_ovb_server.py L85) — ZMQ REP loop (`ping`/`generate`/`shutdown`); `{"ok": False, "error": ...}` on exception rather than dying.
+- `_split_ref(ref) -> tuple[str, str]` (_ovb_server.py L43) — splits `repo@<sha>`; refuses anything but a full 40-hex commit sha.
+- `_load(model, subfolder, base, offload) -> Flux2KleinPipeline` (_ovb_server.py L57) — resolves both pinned snapshots with `snapshot_download` (only the OVB transformer subfolder and the base `_BASE_PATTERNS` components; served from cache under `HF_HUB_OFFLINE=1`), then loads the OVB `Flux2Transformer2DModel` into the base `Flux2KleinPipeline` from disk in bf16 and applies the chosen CPU offload.
+- `_generate(pipe, req) -> bytes` (_ovb_server.py L88) — one image-to-image run at the input's own size; returns the painted PNG.
+- `main() -> int` (_ovb_server.py L104) — ZMQ REP loop (`ping`/`generate`/`shutdown`); `{"ok": False, "error": ...}` on exception rather than dying.
 
 ### `tools/locateanything_sidecar.py` + `tools/_locateanything_server.py`
 _Boot helper + server for the `nvidia/LocateAnything-3B` open-vocabulary detector sidecar, companion to `LocateAnythingDetector`. Runs out-of-process over the same ZMQ pattern as `rldx_sidecar` because its pinned transformers version conflicts with the workspace's. No upstream repo to clone — the model is custom-code on the Hub._

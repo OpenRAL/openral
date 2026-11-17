@@ -27,12 +27,14 @@ import io
 import re
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 import msgpack
 import torch
 import zmq
 from diffusers import Flux2KleinPipeline, Flux2Transformer2DModel
+from huggingface_hub import snapshot_download
 from PIL import Image
 
 _SHA = re.compile(r"[0-9a-f]{40}")
@@ -46,14 +48,31 @@ def _split_ref(ref: str) -> tuple[str, str]:
     return repo_id, revision
 
 
+# Everything the pipeline needs from the base repo except its transformer, which
+# the OVB one replaces: the base transformer and the 7.75 GB single-file copy at
+# the repo root are never fetched.
+_BASE_PATTERNS = ["model_index.json", "scheduler/*", "text_encoder/*", "tokenizer/*", "vae/*"]
+
+
 def _load(model: str, subfolder: str, base: str, offload: str) -> Flux2KleinPipeline:
+    """Resolve both pinned snapshots to local paths, then load from disk.
+
+    ``snapshot_download`` at an exact commit sha answers from the local cache
+    under ``HF_HUB_OFFLINE=1`` and downloads only the listed files otherwise.
+    Handing ``from_pretrained`` a repo id instead makes diffusers query the Hub
+    API for the sharded transformer in a subfolder, which fails offline.
+    """
     ovb_repo, ovb_rev = _split_ref(model)
     base_repo, base_rev = _split_ref(base)
+    ovb_dir = snapshot_download(
+        ovb_repo, revision=ovb_rev, allow_patterns=[f"{subfolder.rstrip('/')}/*"]
+    )
+    base_dir = snapshot_download(base_repo, revision=base_rev, allow_patterns=_BASE_PATTERNS)
     transformer = Flux2Transformer2DModel.from_pretrained(
-        ovb_repo, subfolder=subfolder, revision=ovb_rev, torch_dtype=torch.bfloat16
+        str(Path(ovb_dir) / subfolder), torch_dtype=torch.bfloat16
     )
     pipe = Flux2KleinPipeline.from_pretrained(
-        base_repo, revision=base_rev, transformer=transformer, torch_dtype=torch.bfloat16
+        base_dir, transformer=transformer, torch_dtype=torch.bfloat16
     )
     if offload == "model":
         pipe.enable_model_cpu_offload()
