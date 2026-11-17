@@ -226,7 +226,7 @@ def test_llm_error_is_retried_with_backoff_then_gives_up() -> None:
     assert rig.core.llm_gave_up
     # Out of retries: the unchanged context is no longer re-sent on its own.
     rig.now += 100.0
-    assert rig.tick().suppressed_reason == "heartbeat_idle"
+    assert rig.tick().suppressed_reason == "llm_gave_up"
     # The next event still reaches the model, and success clears the give-up.
     rig.renderer.append_prompt(PromptRecord(text="again", metadata_json="", stamp_ns=1))
     assert rig.tick(force=True).tool_call is not None
@@ -282,3 +282,50 @@ def test_event_ticks_failing_during_the_backoff_do_not_spend_the_retry_budget() 
     retried = rig.tick()
     assert retried.trigger == "llm_error_retry"
     assert not rig.core.llm_gave_up
+
+
+def test_after_giving_up_not_even_a_running_skills_backstop_calls_the_llm() -> None:
+    rig = _Rig(*[ROSPlanningError("503") for _ in range(len(LLM_ERROR_BACKOFF_S) + 1)], _emit())
+    rig.renderer.set_inflight_skill(_SKILL, stamp_ns=1)
+    rig.tick(force=True)
+    for delay in LLM_ERROR_BACKOFF_S:
+        rig.now += delay
+        rig.tick()
+    assert rig.core.llm_gave_up
+    for _ in range(3):
+        rig.now += BACKSTOP_MAX_S
+        assert rig.tick().suppressed_reason == "llm_gave_up"
+    assert rig.tick(force=True, trigger="skill_result").tool_call is not None
+
+
+def test_a_scheduled_retry_runs_while_the_safety_status_is_latched() -> None:
+    """The failed call may have been the latch notification itself."""
+    from openral_reasoner.context import SafetyStateRecord
+
+    rig = _Rig(ROSPlanningError("503"), _emit("retried"))
+    rig.renderer = ContextRenderer(now_ns=lambda: int(rig.now * 1e9))
+    rig.renderer.set_mission(MissionState.from_prompt("pick the cube"))
+    rig.renderer.set_safety_status(
+        SafetyStateRecord(latched=True, reason="drop_external_estop", stamp_ns=0)
+    )
+    assert rig.tick(force=True, trigger="safety_latched").error is not None
+    rig.now += LLM_ERROR_BACKOFF_S[0]
+    rig.renderer.set_safety_status(  # the 1 Hz refresh keeps it live
+        SafetyStateRecord(latched=True, reason="drop_external_estop", stamp_ns=int(rig.now * 1e9))
+    )
+    retried = rig.tick()
+    assert retried.trigger == "llm_error_retry"
+    assert retried.tool_call == _emit("retried")
+
+
+def test_an_explicit_wait_timeout_re_decides_a_bare_prompt() -> None:
+    """No mission, nothing in flight: ``until='timeout'`` still promises reconsideration."""
+    rig = _Rig(WaitTool(until="timeout", timeout_s=5.0), _emit())
+    rig.renderer.append_prompt(PromptRecord(text="check back in 5 s", metadata_json="", stamp_ns=0))
+    rig.tick(force=True, trigger="prompt")
+    rig.now += 4.0
+    assert rig.tick().suppressed_reason == "wait_hold"
+    rig.now += 1.0
+    result = rig.tick()
+    assert result.trigger == "wait_timeout"
+    assert result.tool_call is not None

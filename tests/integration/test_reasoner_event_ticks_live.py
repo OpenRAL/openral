@@ -218,3 +218,52 @@ def test_an_abort_is_one_tick_and_its_echo_is_dropped() -> None:
     assert f"[failed] skill={_SKILL}" in context
     failures_section = context.split("## FAILURES\n", 1)[1].split("\n## ", 1)[0]
     assert failures_section.strip() == "(none)", failures_section
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_a_plan_for_a_task_that_ended_mid_call_is_not_sent() -> None:
+    """A verdict ends the task while the LLM call is in flight: its execute_rskill is dropped."""
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg")
+    from openral_core import ExecuteRskillTool
+    from openral_reasoner import MissionState, ToolPalette
+    from openral_reasoner.core import PreparedTick
+    from openral_reasoner_ros import ReasonerNode
+
+    from tests.integration.fakes.fake_llm import FakeToolUseClient
+
+    rclpy.init()
+    try:
+        call = ExecuteRskillTool(rskill_id=_SKILL, prompt="pick the cube")
+        reasoner = ReasonerNode(
+            client=FakeToolUseClient(responses=[call]),
+            palette=ToolPalette(execute_rskill_ids=frozenset({_SKILL})),
+            tick_hz=0.1,
+        )
+        reasoner.trigger_configure()
+        reasoner.trigger_activate()
+        reasoner._renderer.set_mission(MissionState.from_prompt("pick the cube. then wave"))
+        core = reasoner._core
+        assert core is not None
+        prep = core.prepare_tick(
+            world_state=None, renderer=reasoner._renderer, palette=reasoner._palette, force=True
+        )
+        assert isinstance(prep, PreparedTick)  # force=True never suppresses
+        task_key = reasoner._task_key()
+        # The reward verdict lands while the call is in flight: task t1 is done.
+        reasoner._renderer.advance_mission(done=True, verdict="reward")
+        reasoner._finish_llm_tick(
+            prep,
+            call=core.run_prepared_llm(prep),
+            error=None,
+            generation=reasoner._llm_generation,
+            task_key=task_key,
+        )
+        rendered = reasoner._renderer.render(world_state=None)
+        dispatched = reasoner.dispatched_calls
+        reasoner.destroy_node()
+    finally:
+        rclpy.shutdown()
+
+    assert dispatched == ()
+    assert "not sent: planned for task t1" in rendered

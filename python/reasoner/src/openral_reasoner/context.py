@@ -40,7 +40,7 @@ from openral_core import (
     WorldState,
 )
 from openral_observability import failure_bus
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
 from openral_reasoner.mission import MissionState, TaskState
 
@@ -188,19 +188,27 @@ class ExecutionEventRecord:
     evidence_json: str = ""
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
-class SafetyStateRecord:
+class SafetyStateRecord(BaseModel):
     """Latest ``/openral/safety_status`` (latched topic, ADR-0096), as the LLM sees it.
+
+    A frozen Pydantic model: it crosses from the ROS node into
+    ``ContextRenderer.set_safety_status`` (CLAUDE.md §2, boundary types).
+
+    Example:
+        >>> SafetyStateRecord(latched=True, reason="drop_external_estop", stamp_ns=1).latched
+        True
 
     Attributes:
         latched: A fault is latched; only an operator ``/openral/estop_reset``
             clears it, so no skill can move the robot until then.
-        reason: ``drop_reason`` name (``failure_kind_name`` / ``DROP_*``), ``""``
-            when clear.
+        reason: ``drop_reason`` name (``openral_observability.failure_bus.drop_reason_label``),
+            ``""`` when clear.
         stamp_ns: When the reasoner received it, on the renderer's own clock
             (``now_ns``) — liveness is judged on receipt, not on the publisher's
             ``header.stamp``, whose clock base may differ (sim vs wall).
     """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     latched: bool
     reason: str
@@ -984,7 +992,9 @@ class ContextRenderer:
         st = self._safety
         if st is None or self._now_ns is None:
             return False
-        return (self._now_ns() - st.stamp_ns) / 1e9 <= SAFETY_STATUS_LIVENESS_S
+        # A negative age (the graph clock jumped back, e.g. a sim reset) proves
+        # nothing about freshness: UNKNOWN until the next status arrives.
+        return 0.0 <= (self._now_ns() - st.stamp_ns) / 1e9 <= SAFETY_STATUS_LIVENESS_S
 
     @property
     def safety_latched(self) -> bool:
@@ -1372,12 +1382,13 @@ class ContextRenderer:
                     f"quat_xyzw=({qx:+.3f},{qy:+.3f},{qz:+.3f},{qw:+.3f}) "
                     f"frame={pose.frame_id}",
                 )
-        if world_state.attached_objects:
-            # What the robot is carrying right now (the safety kernel's
-            # attachment set) — the ground truth for "is the object in hand".
+        # What the robot is carrying right now (the safety kernel's attachment
+        # set) — the ground truth for "is the object in hand". A released object
+        # kept as a frozen obstacle (``released_by_link`` set) is not carried.
+        carried = [a for a in world_state.attached_objects if a.released_by_link is None]
+        if carried:
             held = ", ".join(
-                f"{a.object_id} on {a.attach_link} (confidence {a.confidence:.2f})"
-                for a in world_state.attached_objects
+                f"{a.object_id} on {a.attach_link} (confidence {a.confidence:.2f})" for a in carried
             )
             lines.append(f"holding: {held}")
         if world_state.battery_pct is not None:

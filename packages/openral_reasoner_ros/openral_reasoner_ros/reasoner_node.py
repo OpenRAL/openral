@@ -3512,6 +3512,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             raise ROSConfigError("reasoner tick with no LLM worker pool — configure first")
         core = self._core
         generation = self._llm_generation
+        task_key = self._task_key()
 
         def _llm_worker() -> None:
             # Worker thread: ONLY the blocking client round-trip. Everything
@@ -3524,7 +3525,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             except Exception as exc:  # reason: marshaled to finish_tick, the single handler
                 error = exc
             self._post_to_executor(
-                lambda: self._finish_llm_tick(prep, call=call, error=error, generation=generation)
+                lambda: self._finish_llm_tick(
+                    prep, call=call, error=error, generation=generation, task_key=task_key
+                )
             )
 
         self._llm_pool.submit(_llm_worker)
@@ -3537,6 +3540,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         call: Any,
         error: BaseException | None,
         generation: int,
+        task_key: tuple[int, str | None] | None = None,
     ) -> None:
         """Executor-thread continuation of ``_start_tick`` (worker done).
 
@@ -3545,7 +3549,11 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         releases the single-flight window and replays the coalesced queued
         tick, if any. A round-trip that lands after deactivate/cleanup
         (generation mismatch) is dropped — the span is closed, nothing
-        dispatches.
+        dispatches. So is a plan for a mission task that ended while the call
+        was in flight (``task_key`` mismatch: a verdict completed or abandoned
+        it, a new goal replaced it): an ``execute_rskill`` or
+        ``decompose_mission`` decided against that task would act on the next
+        one blind. The discard is recorded in ``## EXECUTION``.
         """
         if generation != self._llm_generation or self._core is None:
             prep.span.end()
@@ -3553,7 +3561,14 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             return
         try:
             result = self._core.finish_tick(prep, call=call, error=error)
-            self._handle_tick_result(result)
+            if (
+                task_key is not None
+                and isinstance(result.tool_call, ExecuteRskillTool | DecomposeMissionTool)
+                and task_key != self._task_key()
+            ):
+                self._discard_stale_plan(result.tool_call, task_key)
+            else:
+                self._handle_tick_result(result)
         except BaseException:
             self._tick_in_flight = False
             self._queued_tick = None
@@ -6731,6 +6746,26 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         msg.metadata_json = json.dumps({"source": "openral_reasoner", "handoff": True})
         self._prompt_pub.publish(msg)
         self._note_outcome("emit_prompt", f"said to the operator: {text}", ok=True, wake=False)
+
+    def _task_key(self) -> tuple[int, str | None]:
+        """``(mission generation, active task id)``: what a plan was made for."""
+        mission = self._renderer.mission
+        active = mission.active() if mission is not None else None
+        return (self._mission_generation, active.task_id if active is not None else None)
+
+    def _discard_stale_plan(self, call: Any, task_key: tuple[int, str | None]) -> None:
+        """Drop a plan whose mission task ended while its LLM call was in flight."""
+        _generation, task_id = task_key
+        self.get_logger().warning(
+            f"tick: discarding {call.tool} planned for task {task_id!r} "
+            f"(mission generation {task_key[0]}), which ended while the call was in flight",
+        )
+        self._note_outcome(
+            call.tool,
+            f"not sent: planned for task {task_id or '-'}, which ended before the decision arrived",
+            ok=False,
+            reflection="decide again for the task now active.",
+        )
 
     def _now_ns(self) -> int:
         """Graph-clock now in ns — the time base of every renderer record's ``stamp_ns``."""

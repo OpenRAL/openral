@@ -42,7 +42,7 @@ The reasoner calls the LLM when something happens, never on a fixed timer
   | `llm_error_retry` | the last LLM call failed in transport; retried after 5, 10, 20 s, then the reasoner hands off to the operator |
 
   Otherwise it is suppressed with no LLM call and no span: `heartbeat_idle`,
-  `backstop_not_due`, `wait_hold`, `no_goal` (no mission, no prompt, nothing in
+  `backstop_not_due`, `wait_hold`, `llm_gave_up`, `no_goal` (no mission, no prompt, nothing in
   flight), `safety_latched`, `mission_finished`, `llm_error_backoff`,
   `retry_cap_hold`, `min_interval`.
 - **`wait(until=…, timeout_s=…)`** lets one decision cover a whole wait:

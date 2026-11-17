@@ -44,7 +44,9 @@ or another hand attaching the same target), an e-stop clear or a task change. It
 nothing on it beyond the usual preemption.
 
 An `execute_rskill` result forces its own tick (`skill_result`) unless its handling
-already forced one or started a reward verify. The FailureTriggers the node publishes
+already forced one or started a reward verify. An `execute_rskill` or `decompose_mission`
+planned for a mission task that ended while its LLM call was in flight is not sent; a
+`not sent` line in `## EXECUTION` says so. The FailureTriggers the node publishes
 itself on `/openral/failure/rskill` are dropped on the way back in.
 
 Forced ticks skip the 100 ms min-interval (it only spaces timer beats).
@@ -630,7 +632,7 @@ Each `ReasonerCore.tick` opens an OTel span named `reasoner.tick`
 | `reasoner.force` | Always | `True` when the tick was preempted by `FailureTrigger.severity ≥ FAIL` or a new operator prompt. |
 | `reasoner.tool` | Successful + retry-cap suppressed ticks | The `tool` discriminator of the `ReasonerToolCall` variant the LLM picked (e.g. `execute_rskill`). |
 | `reasoner.rskill_id` | When the call carries a `rskill_id` (`execute_rskill`) | Skill id the LLM chose. |
-| `reasoner.suppressed_reason` | Suppressed ticks | `palette_empty` or `retry_cap`. The `min_interval`, `safety_latched`, `llm_error_backoff`, `retry_cap_hold`, `mission_finished`, `wait_hold`, `backstop_not_due`, `heartbeat_idle` and `no_goal` gates fire BEFORE the span opens (so dashboards don't show noise). |
+| `reasoner.suppressed_reason` | Suppressed ticks | `palette_empty` or `retry_cap`. The `min_interval`, `safety_latched`, `llm_error_backoff`, `retry_cap_hold`, `mission_finished`, `wait_hold`, `backstop_not_due`, `heartbeat_idle`, `no_goal` and `llm_gave_up` gates fire BEFORE the span opens (so dashboards don't show noise). |
 | `reasoner.tick.trigger` | Always | What started the tick: the event of a forced tick (`prompt`, `tool_result:<source>`, `skill_result`, `skill_failure`, `failure:<source>`, `safety_latched`, `object_query`, `mission_advance`, `verdict`, `active_search`, `decompose`) or the gate that let a timer beat through (`context_changed`, `backstop`, `wait_timeout`, `llm_error_retry`). |
 | `reasoner.tick.coalesced_triggers` | When requests merged | Triggers that arrived while the previous tick was in flight and were folded into this one. |
 | `reasoner.tick.skipped_since_last` | Always | Timer beats suppressed since the previous LLM call. |

@@ -76,6 +76,7 @@ def test_safety_latched_renders_and_bumps_only_on_change() -> None:
     assert r.seq == seq + 1
     assert "## SAFETY\nclear" in r.render(world_state=None)
     # 1 Hz liveness refresh of the same state: not an event.
+    now[0] = 11.0
     r.set_safety_status(SafetyStateRecord(latched=False, reason="", stamp_ns=int(11 * _S)))
     assert r.seq == seq + 1
     r.set_safety_status(
@@ -260,3 +261,43 @@ def test_a_latch_reaches_the_model_once_then_beats_hold() -> None:
     assert "LATCHED reason=kind_collision" in contexts[-1]
     now[0] += 1.0
     assert tick().suppressed_reason == "safety_latched"
+
+
+def test_a_safety_status_from_the_future_is_unknown() -> None:
+    """The graph clock jumped back (sim reset): a negative age proves nothing about freshness."""
+    now = [100.0]
+    r = _renderer(now)
+    r.set_safety_status(SafetyStateRecord(latched=False, reason="", stamp_ns=int(100 * _S)))
+    now[0] = 0.0
+    r.refresh_clock_state()
+    assert "## SAFETY\nUNKNOWN" in r.render(world_state=None)
+
+
+def test_a_released_object_is_not_reported_as_held() -> None:
+    description = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+    joint = description.joints[0]
+    gripper = next(j for j in description.joints if j.role == "gripper")
+
+    def attached(object_id: str, released_by: str | None) -> AttachedCollisionObject:
+        return AttachedCollisionObject(
+            object_id=object_id,
+            attach_link=gripper.parent_link,
+            touch_links=[gripper.child_link],
+            primitives=[jaw_span_primitive(object_id=object_id, jaw_span_m=0.06)],
+            pose_in_link=Pose6D(
+                xyz=(0, 0, 0), quat_xyzw=(0, 0, 0, 1), frame_id=gripper.parent_link
+            ),
+            confidence=0.9,
+            evidence_kind=AttachmentEvidenceKind.GRIPPER_FORCE,
+            stamp_ns=1,
+            released_by_link=released_by,
+        )
+
+    ws = WorldState(
+        stamp_ns=1,
+        joint_state=JointState(name=[joint.name], position=[0.1], stamp_ns=1),
+        attached_objects=[attached("milk_1", None), attached("box_2", gripper.child_link)],
+    )
+    out = ContextRenderer().render(world_state=ws)
+    assert "holding: milk_1" in out
+    assert "box_2" not in out

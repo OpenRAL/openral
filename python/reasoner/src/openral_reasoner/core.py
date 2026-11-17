@@ -105,6 +105,7 @@ QUIET_SUPPRESSIONS: frozenset[str] = frozenset(
         "backstop_not_due",
         "heartbeat_idle",
         "no_goal",
+        "llm_gave_up",
     }
 )
 
@@ -545,14 +546,20 @@ class ReasonerCore:
 
     def _held_reason(self, renderer: ContextRenderer, started: float) -> str | None:
         """Why a timer beat must not call the LLM regardless of the context, or ``None``."""
+        if self._llm_retry_at is not None:
+            # A scheduled transport retry runs even while latched: the failed call
+            # may have been the latch notification itself.
+            return "llm_error_backoff" if started < self._llm_retry_at else None
+        if self.llm_gave_up:
+            # Every retry failed: no timer beat re-sends (not even a skill's
+            # backstop); only a new event reaches the model.
+            return "llm_gave_up"
         if renderer.safety_latched and renderer.seq == self._last_seen_seq:
             # A latched stop refuses every motion until the operator resets it:
             # nothing new to show the model means nothing to decide. A context
             # that moved (the latch itself arriving after the kernel's failure
             # tick, an operator note) still gets through once.
             return "safety_latched"
-        if self._llm_retry_at is not None:
-            return "llm_error_backoff" if started < self._llm_retry_at else None
         if self._retry_cap_hold_seq is not None and renderer.seq == self._retry_cap_hold_seq:
             # After a ``retry_cap`` the model would see the same context and
             # re-emit the same capped call. Held until the context moves past the
@@ -576,11 +583,13 @@ class ReasonerCore:
         inflight = renderer.inflight_skill
         if started >= deadline:
             self._wait = None
-            # A lapsed wait re-decides only when there is something to decide
-            # about; idle with no task it falls through to the idle gate.
+            # A lapsed wait re-decides when there is something to decide about,
+            # or when the model asked for exactly that (``until="timeout"``: a
+            # bare prompt with no mission keeps its promised reconsideration).
+            # A default wait, idle with no task, falls through to the idle gate.
             mission = renderer.mission
             busy = inflight is not None or (mission is not None and mission.active() is not None)
-            return "wait_timeout" if busy else None
+            return "wait_timeout" if busy or until == "timeout" else None
         changed = renderer.seq != self._last_seen_seq
         if (until == "next_event" and changed) or (until == "skill_result" and inflight is None):
             self._wait = None
