@@ -461,3 +461,29 @@ def test_some_placed_must_not_reuse_a_rubric_grade_name() -> None:
             tasks={"t": [IsaacPlacement(object="o", target="a")]},
             some_placed={"name": "complete", "score": 0.5},
         )
+
+
+def test_also_targets_resolve_and_grade_as_the_target(scene_mod: Any) -> None:
+    # An aisle: the prompt names the slot, the dock picks the shelf, so the same slot on
+    # another shelf (shelf_2 here) counts as the target too.
+    task = [{"object": "cracker_box", "target": "shelf_1", "also_targets": ["shelf_2"]}]
+    opts = IsaacSimOptions.model_validate(_warehouse_options(_shelf_success(tasks={_PROMPT: task})))
+    spec = _placement_success_spec(opts.placement_success, _PROMPT)
+    assert spec is not None
+    (placement,) = spec["placements"]
+    assert placement["also_targets"] == [{"min": [-0.7, 4.95, 0.2], "max": [-0.4, 5.25, 0.5]}]
+    up = scene_mod._yaw_quat(0.0)
+    assert (
+        scene_mod.placement_grade(np.array([-0.5, 5.1, 0.3]), up, _UP, placement, 20.0, _RUBRIC)
+        == "complete"
+    )
+    assert (
+        scene_mod.placement_grade(np.array([-0.5, 5.5, 0.3]), up, _UP, placement, 20.0, _RUBRIC)
+        == "fail"
+    )
+
+
+def test_an_unknown_also_target_is_refused() -> None:
+    task = [{"object": "cracker_box", "target": "shelf_1", "also_targets": ["shelf_9"]}]
+    with pytest.raises(ValidationError, match="shelf_9"):
+        IsaacSimOptions.model_validate(_warehouse_options(_shelf_success(tasks={_PROMPT: task})))

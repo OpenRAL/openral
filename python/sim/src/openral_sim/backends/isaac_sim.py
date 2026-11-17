@@ -1206,6 +1206,9 @@ class IsaacPlacement(BaseModel):
 
     ``target`` and ``adjacent`` name ``IsaacPlacementSuccess.regions``; ``adjacent`` are
     the regions that count as "the one next to it" (e.g. the neighbouring shelf slots).
+    ``also_targets`` are regions that count as the target too, any of them: the same slot
+    on another shelf of an aisle, where the prompt names the slot and the robot's dock picks
+    the shelf. ``target`` stays the primary region (the ground truth's and the tracker's).
     ``label`` is the open-vocabulary detector label the object tracker queries (issue
     #418); unset, it is derived from ``object`` (``orange_1`` → ``orange``), which only
     works for a name that is a class. Set it for a prim name that is not one
@@ -1220,6 +1223,7 @@ class IsaacPlacement(BaseModel):
 
     object: str
     target: str
+    also_targets: list[str] = Field(default_factory=list)
     adjacent: list[str] = Field(default_factory=list)
     label: str | None = Field(default=None, min_length=1)
     context: list[str] = Field(default_factory=list)
@@ -1367,7 +1371,7 @@ class IsaacPlacementSuccess(BaseModel):
                     f"placement_success.tasks[{prompt!r}] places an object twice: {objects}"
                 )
             for p in placements:
-                unknown = sorted({p.target, *p.adjacent} - set(self.regions))
+                unknown = sorted({p.target, *p.also_targets, *p.adjacent} - set(self.regions))
                 if unknown:
                     raise ValueError(
                         f"placement_success.tasks[{prompt!r}]: {p.object!r} names unknown "
@@ -1697,7 +1701,10 @@ class IsaacSimOptions(BaseModel):
             )
         for ps in self.placement_success.tasks.values():
             for p in ps:
-                if any(regions[r].relative_to == p.object for r in (p.target, *p.adjacent)):
+                if any(
+                    regions[r].relative_to == p.object
+                    for r in (p.target, *p.also_targets, *p.adjacent)
+                ):
                     raise ValueError(
                         f"placement_success places {p.object!r} in a region relative_to itself"
                     )
@@ -2684,7 +2691,12 @@ def _resolve_placement_rubric(
 
     return {
         "placements": [
-            {"object": p.object, "target": box(p.target), "adjacent": [box(a) for a in p.adjacent]}
+            {
+                "object": p.object,
+                "target": box(p.target),
+                "also_targets": [box(t) for t in p.also_targets],
+                "adjacent": [box(a) for a in p.adjacent],
+            }
             for p in placements
         ],
         "grades": [g.model_dump() for g in placement_success.grades],
