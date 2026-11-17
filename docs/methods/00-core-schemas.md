@@ -592,8 +592,8 @@ Discriminated union over the closed palette of typed tool calls the reasoner can
 - `const EMIT_PROMPT_TOPICS: tuple[str, ...] = ("/openral/prompt", "/openral/prompt_in/auto")` — The only topics an LLM-chosen `EmitPromptTool` may publish on: the self-cascade and the prompt router's machine-priority `auto` input; never a human-priority router input (`cli` / `dashboard`) or an arbitrary topic. Re-checked by the reasoner node at dispatch. (L16094)
 - `class EmitPromptTool` (L16105) — `tool="emit_prompt"`; the reasoner node publishes on `target_topic` itself via a per-topic publisher cache.
   fields: `target_topic: Literal["/openral/prompt", "/openral/prompt_in/auto"]` (`EMIT_PROMPT_TOPICS`), `text`, `metadata_json`
-- `class WaitTool` — deliberate no-op; `tool="wait"`, `until: Literal["next_event","skill_result","operator","timeout"] = "next_event"`, `timeout_s: float = 30.0` (0 < t ≤ 300). Lets the LLM choose "observe and wait"; `ReasonerCore` holds the timer beat until `until` or `timeout_s` (any forced tick ends it early, issue #620). No actuation authority. (L16478)
-- `class RecallObjectTool` — read-only query; `tool="recall_object"`; recalls an object from the scene-graph memory. No actuation authority. Dispatch is planned Phase 2, not yet in the live provider palette. (L16074)
+- `class WaitTool` — deliberate no-op; `tool="wait"`, `until: Literal["next_event","skill_result","operator","timeout"] = "next_event"`, `timeout_s: float = 30.0` (0 < t ≤ 300). Lets the LLM choose "observe and wait"; `ReasonerCore` holds the timer beat until `until` or `timeout_s` (any forced tick ends it early, issue #620). No actuation authority. (L16542)
+- `class RecallObjectTool` — read-only query; `tool="recall_object"`; recalls an object from the scene-graph memory. No actuation authority. Dispatch is planned Phase 2, not yet in the live provider palette. (L16138)
   fields: `query` (free-text/label), `limit`
 - `class ResolvePlaceTool` — read-only query; `tool="resolve_place"`; resolves a place/room/agent to a goal pose plus path. No actuation authority. Dispatch is planned Phase 2. (L16162)
   fields: `reference` ("the kitchen", "where I was standing")
