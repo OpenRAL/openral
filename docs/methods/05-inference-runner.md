@@ -321,11 +321,11 @@ _On-demand referring-segmentation locator backed by the Open Vision Banana sidec
 - `decode_painted_mask(rgb, paint_rgb=REFSEG_PAINT_RGB) -> NDArray[bool]` (L96) — snaps each pixel to the nearer of the paint colour or black (upstream's `rgb_to_foreground` rule).
 - `mask_regions_xyxy(mask, *, min_region_frac=0.001) -> list[tuple[int,int,int,int]]` (L121) — 4-connected regions → exclusive-corner pixel boxes in row-major first-appearance order; drops speckle below `min_region_frac` of the frame.
 - `build_objects_metadata_from_paint(rgb, *, label, model_id, sensor_id) -> ObjectsMetadata | None` (L165) — painted answer at frame size → one `ObjectDetection2D` per region; `None` when nothing is painted.
-- `class OpenVisionBananaDetector(ZmqSidecarMixin)` (L202) — `__init__(*, labels, model_id, weights_source, base_pipeline, transformer_subfolder, num_inference_steps=28, guidance_scale=3.5, seed=0, max_side=1024, host="127.0.0.1", port=5759, auto_spawn=True, boot_timeout_s=1800.0, request_timeout_s=300.0)` — stores config, no connection (lazy).
-  - `set_query(text) -> None` (L301) — overrides the persistent referring expression.
-  - `detect(frame_bgr, width, height, sensor_id) -> ObjectsMetadata | None` (L307) — delegates to `detect_with_query` with the persistent query.
-  - `detect_with_query(frame_bgr, width, height, sensor_id, query) -> ObjectsMetadata | None` (L313) — caps the frame at `max_side`, runs one `generate` RPC, resizes the answer back with nearest-neighbour and decodes it.
-  - `close() -> None` (L357) — closes the socket and terminates the sidecar if spawned; idempotent.
+- `class OpenVisionBananaDetector(ZmqSidecarMixin)` (L219) — `__init__(*, labels, model_id, weights_source, base_pipeline, transformer_subfolder, num_inference_steps=28, guidance_scale=3.5, seed=0, max_side=1024, host="127.0.0.1", port=5759, auto_spawn=True, boot_timeout_s=1800.0, request_timeout_s=300.0)` — stores config, no connection (lazy).
+  - `set_query(text) -> None` (L318) — overrides the persistent referring expression.
+  - `detect(frame_bgr, width, height, sensor_id) -> ObjectsMetadata | None` (L324) — delegates to `detect_with_query` with the persistent query.
+  - `detect_with_query(frame_bgr, width, height, sensor_id, query) -> ObjectsMetadata | None` (L330) — caps the frame at `max_side`, runs one `generate` RPC, resizes the answer back with nearest-neighbour and decodes it.
+  - `close() -> None` (L373) — closes the socket and terminates the sidecar if spawned; idempotent.
 
 ### `python/runner/src/openral_runner/backends/gstreamer/qwen_scene_vlm.py`
 

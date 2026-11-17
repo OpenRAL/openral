@@ -90,7 +90,7 @@ its **own** lifecycle node serving a namespaced
 import); add more with the repeatable `--object-detector-locator <manifest|alias>`
 (LocateAnything is opt-in — NVIDIA non-commercial, 5 GB, needs the sidecar venv;
 so is `open-vision-banana-4b`, an Open Vision Banana referring-segmentation locator —
-FLUX non-commercial, a 28-step diffusion run per query, throttled to the node's 0.1 Hz floor).
+FLUX non-commercial, one 1-step diffusion run per query — ~2.5 s on Jetson AGX Orin — throttled to 0.3 Hz).
 Each locator is an independent lifecycle + VRAM peer (per the single-resident-skill VRAM eviction policy), so the reasoner
 can evict it before a co-resident VLA.
 

@@ -18,7 +18,7 @@ metadata:
   quantization: bf16/pytorch
   min_vram_gb: {bf16: 17.0}
   chunk_size: 1
-  latency_budget: {per_chunk_ms: 30000.0}
+  latency_budget: {per_chunk_ms: 5000.0}
   license_code: Apache-2.0
   license_weights: flux_non_commercial   # NOT permissive — see License section
   weights_uri: hf://FunAILab/Open-Vision-Banana@be5da66250cc385ff9c75ebbe4114e13ec305848

@@ -141,8 +141,8 @@ def mask_regions_xyxy(
     min_px = max(1, round(min_region_frac * h * w))
     seen = np.zeros_like(mask, dtype=bool)
     boxes: list[tuple[int, int, int, int]] = []
-    # ponytail: Python BFS over foreground pixels only, ~1 s at a full 1 MP mask;
-    # swap for scipy.ndimage.label if a mask-heavy caller ever needs it per frame.
+    # ponytail: Python BFS over foreground pixels only — milliseconds at the model's
+    # output size (callers label before upscaling), ~2.4 s on a large 1080p mask.
     for y0, x0 in zip(*np.nonzero(mask), strict=True):
         if seen[y0, x0]:
             continue
@@ -168,15 +168,32 @@ def build_objects_metadata_from_paint(
     label: str,
     model_id: str,
     sensor_id: str,
+    frame_size: tuple[int, int] | None = None,
 ) -> ObjectsMetadata | None:
-    """Turn a painted answer (already at frame size) into ``ObjectsMetadata``.
+    """Turn a painted answer into ``ObjectsMetadata`` in the frame's pixel space.
+
+    Regions are found at the painted image's own resolution (the model's output,
+    e.g. 224 px) and their boxes scaled to ``frame_size`` (``(width, height)``,
+    default the painted size) — upscaling the mask first would multiply the
+    region search by the area ratio for no extra information.
 
     Returns ``None`` when nothing was painted — an empty answer, not an error.
     """
-    h, w = rgb.shape[:2]
+    ph, pw = rgb.shape[:2]
+    w, h = frame_size if frame_size is not None else (pw, ph)
+    sx, sy = w / pw, h / ph
     dets = [
-        ObjectDetection2D(label=label, confidence=1.0, bbox_xyxy=box)
-        for box in mask_regions_xyxy(decode_painted_mask(rgb))
+        ObjectDetection2D(
+            label=label,
+            confidence=1.0,
+            bbox_xyxy=(
+                round(x1 * sx),
+                round(y1 * sy),
+                min(w, round(x2 * sx)),
+                min(h, round(y2 * sy)),
+            ),
+        )
+        for x1, y1, x2, y2 in mask_regions_xyxy(decode_painted_mask(rgb))
     ]
     if not dets:
         return None
@@ -345,13 +362,12 @@ class OpenVisionBananaDetector(ZmqSidecarMixin):
         if not reply.get("ok"):
             raise ROSConfigError(f"OVB sidecar error: {reply.get('error')}")
         painted = Image.open(io.BytesIO(reply["image"])).convert("RGB")
-        # NEAREST keeps the painted colours exact (upstream infer.py does the same).
-        painted = painted.resize((width, height), Image.Resampling.NEAREST)
         return build_objects_metadata_from_paint(
             np.asarray(painted, dtype=np.uint8),
             label=expression,
             model_id=self._model_id,
             sensor_id=sensor_id,
+            frame_size=(width, height),
         )
 
     def close(self) -> None:

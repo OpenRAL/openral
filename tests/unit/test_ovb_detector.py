@@ -175,7 +175,7 @@ def test_build_manifest_detector_dispatches_to_ovb_sidecar() -> None:
         assert det._transformer_subfolder.endswith(
             "4B/zeroshot/checkpoint-87500-95000-w25/transformer"
         )
-        assert (det._steps, det._guidance, det._max_side) == (28, 3.5, 1024)
+        assert (det._steps, det._guidance, det._max_side) == (1, 3.5, 224)
     finally:
         det.close()
 
@@ -233,3 +233,22 @@ def test_real_ovb_locates_person_in_coco_sample() -> None:
         det.close()
     assert meta is not None and meta.detections
     assert all(d.label == "person" for d in meta.detections)
+
+
+def test_metadata_scales_painted_regions_to_the_frame() -> None:
+    # A 224 x 126 answer (the 1-step default's output for a 16:9 frame) maps to
+    # the 1920 x 1080 frame: regions are found small, boxes land in frame pixels.
+    painted = np.zeros((126, 224, 3), np.uint8)
+    painted[70:100, 91:120] = REFSEG_PAINT_RGB
+    meta = build_objects_metadata_from_paint(
+        painted, label="box", model_id="m", sensor_id="top", frame_size=(1920, 1080)
+    )
+    assert meta is not None
+    assert (meta.frame_width, meta.frame_height) == (1920, 1080)
+    sx, sy = 1920 / 224, 1080 / 126
+    assert meta.detections[0].bbox_xyxy == (
+        round(91 * sx),
+        round(70 * sy),
+        round(120 * sx),
+        round(100 * sy),
+    )

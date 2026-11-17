@@ -22,7 +22,7 @@ openral:
     which is decoded into one box per connected region. No actuators.
   model_family: null
   min_vram_gb: 17.0
-  latency_ms: 30000.0
+  latency_ms: 5000.0
   runtime: pytorch
   dtype: bf16
 ---
@@ -70,7 +70,7 @@ camera and commands no actuators.
 ## Sensors / observation contract
 
 One RGB frame, at least 256 × 256. The frame's longest edge is capped at
-1024 px before generation; boxes are reported in the frame's own pixel space.
+224 px before generation; boxes are reported in the frame's own pixel space.
 
 ## Manifest summary
 
@@ -80,27 +80,53 @@ One RGB frame, at least 256 × 256. The frame's longest edge is capped at
 | `detector.engine` / `mode` | `ovb_sidecar` / `on_demand` |
 | `runtime` / dtype | `pytorch` / `bf16` |
 | `license` | `flux_non_commercial` |
-| `latency_budget.per_chunk_ms` | 30000 (placeholder, not yet measured) |
+| `detector.max_side` / `ovb.num_inference_steps` | 224 / 1 |
+| `latency_budget.per_chunk_ms` | 5000 (measured median 2.5 s on Jetson AGX Orin) |
 
 ## How it answers
 
 1. The query becomes OVB's upstream referring-segmentation prompt
    (`[TASK: REFERRING_SEGMENTATION] … Paint the matching region red [220, 30, 30] …`).
-2. The sidecar runs 28 denoising steps (guidance 3.5, seed 0) on the frame
-   (longest edge capped at 1024 px) and returns the painted image.
-3. The detector node resizes it back with nearest-neighbour, snaps each pixel
-   to the nearer of the paint colour or black (upstream's evaluation rule), and
-   emits one box per 4-connected region larger than 0.1 % of the frame.
+2. The sidecar runs **1** denoising step (guidance 3.5, seed 0) on the frame
+   with its longest edge capped at **224 px**, and returns the painted image.
+   Upstream's default is 28 steps at ~1 MP; see Performance for the trade.
+3. The detector node snaps each painted pixel to the nearer of the paint colour
+   or black (upstream's evaluation rule), finds 4-connected regions larger than
+   0.1 % of the image at the painted resolution, and scales each region's box
+   to the frame.
 
 Every box carries `confidence=1.0`: OVB emits no score.
 
+## Performance
+
+Measured 2026-11-17 on a Jetson AGX Orin (64 GB, JetPack R39, sidecar
+`--offload none`, bf16), live ZED-M 1920 × 1080 frames, four queries on a
+restock shelf scene (orange light-bulb box, transparent bin, keyboard, shelf
+label "B3"). Latency is end to end through `OpenVisionBananaDetector`.
+
+| Steps | Max side | Median / query | Bulb box | Bin | Keyboard | Label "B3" |
+| --- | --- | --- | --- | --- | --- | --- |
+| 28 | 1024 | 200.8 s | ✓ | ✓ | ✓ | ✗ (B2) |
+| 28 | 512 | 64.3 s | ✓ | ✓ | ✓ | ✗ (B2) |
+| 8 | 512 | 19.6 s | ✓ | ✓ | ✓ | ✗ (B2) |
+| 4 | 512 | 10.6 s | ✓ | ✓ | ✓ | ✗ (B2) |
+| 2 | 224 | 3.3 s | ✗ | ✓ | ✗ | ✗ |
+| **1** | **224** | **2.5 s** | ✓ (loose) | ✓ | ✓ (loose) | ✗ (none) |
+
+Model load: 13.4 s, 16.0 GB. Latency scales with steps × pixels; the default
+trades box tightness for speed. It does not read handwritten text at any
+setting.
+
 ## Limits
 
-- **Slow.** One query is a full diffusion run — seconds, not milliseconds.
-  It is on-demand only and never the continuous detector.
-- **VRAM.** ~16 GB of bf16 weights (transformer 7.75 GB + Qwen3 text encoder
-  8.0 GB). The sidecar defaults to diffusers model CPU offload. Not yet
-  measured on OpenRAL hardware.
+- **On-demand only.** One query is a diffusion run — seconds, not
+  milliseconds — so it is never the continuous detector.
+- **Memory.** ~16 GB of bf16 weights (transformer 7.75 GB + Qwen3 text encoder
+  8.0 GB). `tools/ovb_sidecar.py --offload none` on unified-memory Jetsons;
+  the default `model` offload suits discrete GPUs under 17 GB.
+- **Needs the Hub at load.** diffusers resolves the sharded transformer in a
+  subfolder through the Hub API, so the sidecar does not start with
+  `HF_HUB_OFFLINE=1` yet.
 - **Depth is not used.** OVB's depth output is relative inverse depth, never
   metric; this rSkill runs only the referring-segmentation task.
 
