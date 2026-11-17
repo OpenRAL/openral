@@ -19,10 +19,15 @@ publisher, no service client, no authority over the robot.
 
 from __future__ import annotations
 
+import functools
 import threading
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from openral_observability.failure_bus import drop_reason_label
+import structlog
+from openral_core import ROSSafetyViolation
+
+from openral_observability.failure_bus import FailureSource, drop_reason_label, topic_for
 from openral_observability.rclpy_spin import spin_executor_until_shutdown
 
 if TYPE_CHECKING:
@@ -30,15 +35,47 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DIAGNOSTICS_TOPIC",
+    "SAFETY_FAILURE_TOPIC",
     "SAFETY_STATUS_TOPIC",
     "SafetyStatusSubscriber",
     "drop_reason_label",
 ]
 
+_logger = structlog.get_logger(__name__)
+
 SAFETY_STATUS_TOPIC = "/openral/safety_status"
+# The safety kernel's typed stops (``FailureTrigger``); the console's trace shows each.
+SAFETY_FAILURE_TOPIC = topic_for(FailureSource.SAFETY)
 # The HAL lifecycle node's 1 Hz heartbeat carries its own e-stop latch (``estopped``):
 # a kernel release does not release a HAL that needs a restart, or whose re-arm failed.
 DIAGNOSTICS_TOPIC = "/diagnostics"
+
+
+def _guarded(
+    callback: Callable[[SafetyStatusSubscriber, Any], None],
+) -> Callable[[SafetyStatusSubscriber, Any], None]:
+    """Log, never raise, an exception from a subscription callback.
+
+    The three callbacks share one executor thread, and an exception escaping any of
+    them ends its spin: every later status, heartbeat and stop would be lost with
+    nothing to say so. ``ROSSafetyViolation`` is never swallowed (CLAUDE.md §5).
+    """
+
+    @functools.wraps(callback)
+    def wrapper(self: SafetyStatusSubscriber, msg: Any) -> None:  # reason: ROS msg untyped
+        try:
+            callback(self, msg)
+        except ROSSafetyViolation:
+            raise
+        except Exception as exc:  # reason: see docstring; logged with the message, not lost
+            _logger.warning(
+                "dashboard.safety_callback_failed",
+                callback=callback.__name__,
+                error=repr(exc),
+                message=repr(msg)[:300],
+            )
+
+    return wrapper
 
 
 class SafetyStatusSubscriber:
@@ -55,17 +92,22 @@ class SafetyStatusSubscriber:
         self._node: Any = None
         self._subscription: Any = None
         self._diagnostics: Any = None
+        self._failures: Any = None  # reason: rclpy Subscription; rclpy is imported lazily
         self._executor: Any = None
         self._thread: threading.Thread | None = None
         self._owns_rclpy = False
         try:
             self._start()
-        except Exception:  # reason: a ROS hiccup must never break the dashboard
+        except ImportError:  # reason: no ROS here; server.py reports the inert subscriber
+            self.close()
+        except Exception as exc:  # reason: a ROS hiccup must never break the dashboard
+            # Loud, not silent: an inert subscriber means no safety state and no stop rows.
+            _logger.warning("dashboard.safety_subscriber_start_failed", error=repr(exc))
             self.close()
 
     def _start(self) -> None:
         import rclpy
-        from openral_msgs.msg import SafetyStatus
+        from openral_msgs.msg import FailureTrigger, SafetyStatus
         from rclpy.executors import SingleThreadedExecutor
         from rclpy.node import Node
         from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
@@ -84,6 +126,13 @@ class SafetyStatusSubscriber:
         )
         self._subscription = self._node.create_subscription(
             SafetyStatus, SAFETY_STATUS_TOPIC, self._on_status, qos
+        )
+        # The kernel's publisher profile (RELIABLE, VOLATILE); depth absorbs a burst.
+        self._failures = self._node.create_subscription(
+            FailureTrigger,
+            SAFETY_FAILURE_TOPIC,
+            self._on_failure,
+            QoSProfile(reliability=QoSReliabilityPolicy.RELIABLE, depth=50),
         )
         try:
             from diagnostic_msgs.msg import DiagnosticArray
@@ -109,6 +158,7 @@ class SafetyStatusSubscriber:
         """True when the subscription is live (rclpy + `openral_msgs` present)."""
         return self._subscription is not None
 
+    @_guarded
     def _on_status(self, msg: Any) -> None:  # reason: ROS message is untyped
         """Write one received status into the store (runs on the spin thread)."""
         stamp = msg.header.stamp
@@ -122,6 +172,33 @@ class SafetyStatusSubscriber:
             stamp_unix=float(stamp.sec) + float(stamp.nanosec) * 1e-9,
         )
 
+    @_guarded
+    def _on_failure(self, msg: Any) -> None:  # reason: ROS message is untyped
+        """Write one kernel ``FailureTrigger`` into the store (runs on the spin thread).
+
+        Logs each new stop; a repeat the store folds into the previous row is not
+        logged again (a stale input repeats one per dropped chunk).
+        """
+        stamp = msg.header.stamp
+        cls = type(msg)
+        kind = drop_reason_label(int(msg.kind), cls, ("KIND_",))
+        new = self._store.record_safety_failure(
+            kind_label=kind,
+            severity_label=drop_reason_label(int(msg.severity), cls, ("SEVERITY_",)),
+            evidence_json=str(msg.evidence_json),
+            rskill_id=str(msg.rskill_id),
+            trace_id=str(msg.trace_id),
+            stamp_unix=float(stamp.sec) + float(stamp.nanosec) * 1e-9,
+        )
+        if new:
+            _logger.warning(
+                "dashboard.safety_failure",
+                kind=kind,
+                rskill_id=str(msg.rskill_id),
+                evidence=str(msg.evidence_json)[:200],
+            )
+
+    @_guarded
     def _on_diagnostics(self, msg: Any) -> None:  # reason: ROS message is untyped
         """Record each HAL heartbeat's ``estopped`` (runs on the spin thread)."""
         for status in msg.status:

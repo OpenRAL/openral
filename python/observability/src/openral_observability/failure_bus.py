@@ -132,7 +132,14 @@ class FailureSource(str, Enum):
     WORLD_STATE = "world_state"  # issue #418: the object tracker's query escalations
 
 
-def drop_reason_label(code: int, status_cls: Any) -> str:  # reason: ROS message class is untyped
+_DROP_REASON_PREFIXES = ("KIND_", "DROP_")
+
+
+def drop_reason_label(
+    code: int,
+    status_cls: Any,  # reason: ROS message class is untyped
+    prefixes: tuple[str, ...] = _DROP_REASON_PREFIXES,
+) -> str:
     """Name a ``SafetyStatus.drop_reason`` from the IDL's own constants.
 
     Reverse-maps the value against the generated message class's ``KIND_*`` /
@@ -143,11 +150,16 @@ def drop_reason_label(code: int, status_cls: Any) -> str:  # reason: ROS message
 
     Args:
         code: The ``drop_reason`` value received on the wire.
-        status_cls: The generated ``openral_msgs.msg.SafetyStatus`` class.
+        status_cls: The generated ``openral_msgs.msg.SafetyStatus`` class (or
+            ``FailureTrigger``, whose ``kind`` / ``severity`` map the same way).
+        prefixes: Constant-name prefixes to match (``("SEVERITY_",)`` for a
+            ``FailureTrigger.severity``).
 
     Returns:
-        The constant's name lower-cased (e.g. ``"kind_collision"``), or
-        ``"drop_reason_<code>"`` when this build does not know the value.
+        The constant's name lower-cased (e.g. ``"kind_collision"``), or a
+        placeholder when this build does not know the value: ``"drop_reason_<code>"``
+        for the default prefixes, else the first prefix lower-cased plus the code
+        (``"severity_<code>"``), so a caller's ``removeprefix`` still applies.
 
     Example:
         >>> class _S:
@@ -157,13 +169,17 @@ def drop_reason_label(code: int, status_cls: Any) -> str:  # reason: ROS message
         'kind_collision'
         >>> drop_reason_label(200, _S)
         'drop_reason_200'
+        >>> drop_reason_label(200, _S, ("SEVERITY_",))
+        'severity_200'
     """
     for name in dir(status_cls):
-        if not name.startswith(("KIND_", "DROP_")):
+        if not name.startswith(prefixes):
             continue
         if getattr(status_cls, name, None) == code:
             return name.lower()
-    return f"drop_reason_{code}"
+    if prefixes == _DROP_REASON_PREFIXES:
+        return f"drop_reason_{code}"
+    return f"{prefixes[0].lower()}{code}"
 
 
 def topic_for(source: FailureSource) -> str:

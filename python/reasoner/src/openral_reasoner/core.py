@@ -23,7 +23,7 @@ import time
 from collections.abc import Callable
 
 import structlog
-from openral_core import ReasonerToolCall, WaitTool, WorldState
+from openral_core import EmitPromptTool, ReasonerToolCall, WaitTool, WorldState
 from openral_core.exceptions import (
     ROSPlanningError,
     ROSReasonerInvalidPlan,
@@ -66,13 +66,19 @@ def _stamp_mission(span: Span, renderer: ContextRenderer) -> None:
 def _stamp_rationale(span: Span, call: ReasonerToolCall) -> None:
     """Stamp the call's rationale (capped) so the dashboard trace can say why it chose it.
 
-    Free model text that can paraphrase the operator's prompt: stamped only where it may
-    leave the host (a local collector, or the deployer's consent; CLAUDE.md §3).
+    An ``EmitPromptTool`` also stamps its prompt text (capped), so the console folds
+    only identical prompts. Free model text that can paraphrase the operator's prompt:
+    stamped only where it may leave the host (a local collector, or the deployer's
+    consent; CLAUDE.md §3).
     """
-    if call.rationale and free_text_may_leave_host():
+    if not free_text_may_leave_host():
+        return
+    if call.rationale:
         span.set_attribute(
             semconv.REASONER_RATIONALE, call.rationale[: semconv.REASONER_RATIONALE_MAX]
         )
+    if isinstance(call, EmitPromptTool):
+        span.set_attribute(semconv.REASONER_MESSAGE, call.text[: semconv.REASONER_MESSAGE_MAX])
 
 
 # Read-only search tools (recall_object/resolve_place/locate_in_view) are

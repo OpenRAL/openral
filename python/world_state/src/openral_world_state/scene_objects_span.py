@@ -27,7 +27,9 @@ __all__ = ["emit_scene_objects_span", "scene_objects_payload"]
 _DEFAULT_FRAME = "map"
 
 
-def scene_objects_payload(graph: SceneGraph) -> list[dict[str, object]]:
+def scene_objects_payload(
+    graph: SceneGraph, *, latest_batch_ns: int | None = None
+) -> list[dict[str, object]]:
     """Project the ``object``-kind nodes to JSON-friendly dicts.
 
     Each dict carries the map-frame position, the semantic label, and the
@@ -37,6 +39,12 @@ def scene_objects_payload(graph: SceneGraph) -> list[dict[str, object]]:
 
     Args:
         graph: A scene-graph snapshot (e.g. ``SpatialMemory.to_scene_graph()``).
+        latest_batch_ns: Stamp of the latest detection batch ingested
+            (``now_ns`` passed to ``ingest_detected_objects``), or ``None``
+            when nothing was ingested. Each dict gets ``in_latest_batch``:
+            ``last_seen_ns == latest_batch_ns`` (ingest sets ``last_seen_ns`` to
+            the batch stamp on every match), computed here on exact ints so the
+            browser never compares 19-digit ns values as lossy doubles.
 
     Returns:
         One dict per object node, in graph order.
@@ -58,18 +66,23 @@ def scene_objects_payload(graph: SceneGraph) -> list[dict[str, object]]:
                 "last_seen_ns": node.last_seen_ns,
                 "observation_count": node.observation_count,
                 "is_container": node.is_container,
+                "in_latest_batch": latest_batch_ns is not None
+                and node.last_seen_ns == latest_batch_ns,
             }
         )
     return objects
 
 
-def emit_scene_objects_span(graph: SceneGraph, *, source_node: str) -> int:
+def emit_scene_objects_span(
+    graph: SceneGraph, *, source_node: str, latest_batch_ns: int | None = None
+) -> int:
     """Emit one ``world.scene_objects`` span carrying ``graph``'s object nodes.
 
     Args:
         graph: A scene-graph snapshot to publish.
         source_node: Name of the node emitting the span (shown on the card so
             an operator knows which process produced the map).
+        latest_batch_ns: See :func:`scene_objects_payload`.
 
     Returns:
         The number of object nodes published.
@@ -88,7 +101,7 @@ def emit_scene_objects_span(graph: SceneGraph, *, source_node: str) -> int:
         >>> emit_scene_objects_span(mem.to_scene_graph(), source_node="demo")
         1
     """
-    objects = scene_objects_payload(graph)
+    objects = scene_objects_payload(graph, latest_batch_ns=latest_batch_ns)
     frame = str(objects[0]["frame_id"]) if objects else _DEFAULT_FRAME
     tracer = trace.get_tracer("openral")
     with tracer.start_as_current_span(semconv.SPAN_WORLD_SCENE_OBJECTS) as span:

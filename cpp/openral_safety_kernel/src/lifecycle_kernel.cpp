@@ -4654,6 +4654,12 @@ void SafetyKernelLifecycleNode::publish_collision_failure(
     oss << R"(,"grasp_exemption_provider":")" << json_escape(provider_->name()) << '"';
   }
   oss << R"(,"depth_is_box_bound":)" << (hit.depth_is_box_bound ? "true" : "false");
+  // The ADR-0097 place-approach allowance, as the safety.collision log line discloses it.
+  oss << R"(,"place_allowance_active":)" << (hit.place_allowance_active ? "true" : "false");
+  if (hit.place_allowance_active && !place_declaration_target_.empty() &&
+      place_declaration_target_.size() <= kEvidenceStringMax) {
+    oss << R"(,"place_target":")" << json_escape(place_declaration_target_) << '"';
+  }
   // Expose accepted wire provenance only when the named pair contains that
   // attached object. Keep both values paired and omit malformed or overlong
   // producer text rather than truncating it into a different reference.

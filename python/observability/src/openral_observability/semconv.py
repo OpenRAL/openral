@@ -258,6 +258,10 @@ REASONER_RATIONALE: Final[str] = "reasoner.rationale"
 """The selected tool call's ``rationale`` (the model's one-line why), capped at
 ``REASONER_RATIONALE_MAX`` chars. Lets the dashboard trace say why a ``wait`` waits."""
 REASONER_RATIONALE_MAX: Final[int] = 500
+REASONER_MESSAGE: Final[str] = "reasoner.message"
+"""An ``emit_prompt`` call's prompt ``text``, capped at ``REASONER_MESSAGE_MAX`` chars, so
+the console folds only identical prompts. Same host gate as the rationale."""
+REASONER_MESSAGE_MAX: Final[int] = 300
 REASONER_INFLIGHT_SKILL: Final[str] = "reasoner.inflight_skill"
 """rskill_id of the ``execute_rskill`` goal in flight when the tick ran; absent when idle."""
 REASONER_INFLIGHT_STATE: Final[str] = "reasoner.inflight_state"

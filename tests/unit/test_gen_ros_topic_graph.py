@@ -211,6 +211,40 @@ def test_camera_topic_resolves_literal_expression_and_kinds(tmp_path: Path) -> N
     }
 
 
+def test_failure_bus_topic_for_resolves_members_and_placeholder(tmp_path: Path) -> None:
+    eps = _py(
+        tmp_path,
+        """
+        from openral_observability import failure_bus
+        from openral_observability.failure_bus import FailureSource, topic_for
+
+        SAFETY = topic_for(FailureSource.SAFETY)
+
+        def f(node, given):
+            node.create_publisher(Ft, failure_bus.topic_for(FailureSource.WORLD_STATE), 1)
+            node.create_subscription(Ft, SAFETY, cb, 1)
+            node.create_subscription(Ft, topic_for(source="hal"), cb, 1)
+            for source in FailureSource:
+                node.create_subscription(Ft, topic_for(source), cb, 1)
+            node.create_publisher(Ft, topic_for(given), 1)
+        """,
+    )
+    assert _names(eps) == {
+        ("topic", "pub", "/openral/failure/world_state", True),
+        ("topic", "sub", "/openral/failure/safety", True),
+        ("topic", "sub", "/openral/failure/hal", True),
+        ("topic", "sub", "/openral/failure/{source}", True),
+        ("topic", "pub", "/openral/failure/{source}", True),
+    }
+
+
+def test_dashboard_safety_subscriber_joins_the_kernel_row(endpoints: list[graph.Endpoint]) -> None:
+    subs = _where(endpoints, "topic", "sub", "/openral/failure/safety")
+    assert any("dashboard/safety_status_subscriber.py" in w for w in subs)
+    pubs = _where(endpoints, "topic", "pub", "/openral/failure/safety")
+    assert any("openral_compliance/recorder_node.py" in w for w in pubs)
+
+
 def test_checked_in_page_is_fresh() -> None:
     assert graph.main(["--check"]) == 0, "run `uv run python tools/gen_ros_topic_graph.py`"
 

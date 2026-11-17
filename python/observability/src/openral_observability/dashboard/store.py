@@ -26,6 +26,7 @@ import asyncio
 import contextlib
 import json
 import statistics
+import sys
 import threading
 import time
 from collections import defaultdict, deque
@@ -33,11 +34,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import structlog
-from openral_core import RobotManifest
+from openral_core import CollisionEvidence, FailureEvidence, RobotManifest
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue, KeyValue
 from opentelemetry.proto.logs.v1.logs_pb2 import LogRecord, ResourceLogs
 from opentelemetry.proto.metrics.v1.metrics_pb2 import Metric, ResourceMetrics
 from opentelemetry.proto.trace.v1.trace_pb2 import ResourceSpans, Span
+from pydantic import TypeAdapter, ValidationError
 
 from openral_observability import semconv
 
@@ -421,6 +423,10 @@ class TelemetryStore:
         # they cannot evict the error lane (see _HEADLINE_EVENT_RING_SIZE).
         self._headline_events: deque[TelemetryEvent] = deque(maxlen=_HEADLINE_EVENT_RING_SIZE)
         self._counters: dict[str, int] = defaultdict(int)
+        # (kind, severity, rskill_id) of the last safety stop and when (monotonic) it last repeated:
+        # a stale input makes the kernel publish one stop per dropped chunk (tens per
+        # second), which ``record_safety_failure`` folds into the first one's row.
+        self._safety_failure_run: tuple[tuple[str, str, str], float] | None = None
         self._metrics: dict[str, _MetricSeries] = {}
         # Topical state buckets — one per "topic" the dashboard renders
         # as a dedicated card. Latched/static keys (run mode, robot
@@ -452,6 +458,10 @@ class TelemetryStore:
             # workspace sourced shows forever; the card renders "waiting", never
             # a fabricated "clear".
             "safety_status": {},
+            # The last safety-kernel ``FailureTrigger`` from /openral/failure/safety
+            # (``record_safety_failure``): the console's trace shows it as an error
+            # row. Empty until a kernel stops something.
+            "safety_failure": {},
             "system": {},  # populated by metrics ingest (gpu/cpu/ram)
             # Live 2D SLAM occupancy map from slam_toolbox (and any
             # future Reasoner-managed mapping service). Populated by
@@ -712,6 +722,92 @@ class TelemetryStore:
                 self._topics["safety"]["estopped"] = False
             payload = self._snapshot_locked()
         self._publish(payload)
+
+    def record_safety_failure(
+        self,
+        *,
+        kind_label: str,
+        severity_label: str,
+        evidence_json: str,
+        rskill_id: str,
+        trace_id: str,
+        stamp_unix: float,
+    ) -> bool:
+        """Record one safety-kernel ``FailureTrigger`` for the console's trace.
+
+        Called from ``SafetyStatusSubscriber``'s spin thread for every message on
+        ``/openral/failure/safety``. The one-line ``text`` is built here, not in the
+        console, so its wording changes with the dashboard rather than a console release.
+        Each new stop is also an event-log row (the ``safety_failure`` slot keeps only
+        the latest). A stop repeating the previous one's kind, severity and skill
+        within ``_SAFETY_FAILURE_COALESCE_S`` of its last repeat only bumps that row's
+        ``repeats``: no new row, no event, no fan-out. Whether the kernel is latched
+        is the ``safety_status`` slot's to say; a stop's severity does not tell
+        (a place-advisory refusal is ``SEVERITY_ABORT`` and never latches).
+
+        Args:
+            kind_label: The ``kind`` constant's name (e.g. ``"kind_collision"``).
+            severity_label: The ``severity`` constant's name (e.g. ``"severity_fail"``).
+            evidence_json: The serialized ``openral_core.FailureEvidence``.
+            rskill_id: The skill the kernel stopped, if known.
+            trace_id: W3C traceparent for correlation, if any.
+            stamp_unix: ``header.stamp`` as Unix seconds.
+
+        Returns:
+            ``True`` for a new row, ``False`` when it was folded into the previous one.
+        """
+        now = time.time()
+        # The coalescing window runs on a monotonic clock: a wall-clock step back
+        # must not stretch it. ``now`` stays the display stamp.
+        mono = time.monotonic()
+        key = (kind_label, severity_label, rskill_id)
+        with self._lock:
+            run = self._safety_failure_run
+            if run is not None and run[0] == key and mono - run[1] < _SAFETY_FAILURE_COALESCE_S:
+                prev = self._topics["safety_failure"]
+                self._safety_failure_run = (key, mono)
+                self._topics["safety_failure"] = {**prev, "repeats": prev["repeats"] + 1}
+                return False
+        try:
+            text = _safety_failure_text(kind_label, evidence_json, rskill_id)
+        except Exception as exc:  # reason: a text bug must not drop the stop; the row stays
+            _logger.warning("dashboard.safety_failure_text_failed", error=repr(exc))
+            text = f"{kind_label.removeprefix('kind_')} safety stop (text failed: {exc!r})"
+        kind = kind_label.removeprefix("kind_")
+        severity = severity_label.removeprefix("severity_")
+        entry = {
+            "kind": kind,
+            "severity": severity,
+            "rskill_id": rskill_id,
+            "trace_id": trace_id,
+            "stamp_unix": float(stamp_unix),
+            "text": text,
+            "repeats": 0,
+            # Same clock as the reasoner ticks the console interleaves this with.
+            "ts_unix": now,
+        }
+        with self._lock:
+            # Set with the row it describes, so a concurrent repeat never sees a
+            # marker without its row.
+            self._safety_failure_run = (key, mono)
+            self._topics["safety_failure"] = entry
+            self._append_event(
+                TelemetryEvent(
+                    ts_unix=now,
+                    kind=_SAFETY_FAILURE_EVENT,
+                    title=f"safety stop · {text}",
+                    attrs={
+                        "kind": kind,
+                        "severity": severity,
+                        "rskill_id": rskill_id,
+                        "trace_id": trace_id,
+                    },
+                    severity="error" if severity in ("fail", "abort") else "warn",
+                )
+            )
+            payload = self._snapshot_locked()
+        self._publish(payload)
+        return True
 
     def set_perception_detections(
         self,
@@ -1191,7 +1287,9 @@ class TelemetryStore:
             # Durable spatial-memory scene-object graph. One span per emit
             # (0.2 Hz from the Reasoner's preloaded map today). ``objects`` is a
             # decoded list of {id,label,x,y,z,frame_id,confidence,
-            # last_seen_ns,observation_count,is_container} dicts.
+            # last_seen_ns,observation_count,is_container,in_latest_batch}
+            # dicts (passed through unchanged; ``in_latest_batch`` = seen in the
+            # newest detection batch the world state ingested).
             object_list = attrs.get("openral.world_state.scene_objects.list")
             self._topics["scene_objects"].update(
                 {
@@ -1332,6 +1430,7 @@ class TelemetryStore:
                 "llm_s": attrs.get(semconv.REASONER_LLM_S),
                 "inflight_skill": attrs.get(semconv.REASONER_INFLIGHT_SKILL),
                 "inflight_state": attrs.get(semconv.REASONER_INFLIGHT_STATE),
+                "message": attrs.get(semconv.REASONER_MESSAGE),
                 "detail": _reasoner_detail(attrs),
             }
         )
@@ -1613,9 +1712,15 @@ _WARN_EVENTS = frozenset(
 # is downgraded to a warning, but it must still leave a durable trace — a warn
 # that gets evicted in seconds is the "counter goes up, no trace" bug. So these
 # are mirrored into the protected lane regardless of severity.
+# Event-log kind of a safety-kernel stop (``record_safety_failure``).
+_SAFETY_FAILURE_EVENT = "safety.failure"
+# A repeat of the last stop within this many seconds of its previous repeat folds into it.
+_SAFETY_FAILURE_COALESCE_S = 5.0
+
 _PROTECTED_EVENT_KINDS = frozenset(
     {
         "openral.event.skill_failure",
+        _SAFETY_FAILURE_EVENT,
     }
 )
 
@@ -1734,6 +1839,86 @@ def _reasoner_detail(attrs: dict[str, Any]) -> str | None:
     if rationale := " ".join(str(attrs.get(semconv.REASONER_RATIONALE) or "").split()):
         line = f"{line} — {rationale}" if line else rationale
     return line or None
+
+
+_FAILURE_EVIDENCE: TypeAdapter[FailureEvidence] = TypeAdapter(FailureEvidence)
+# The kernel's NaN-distance sentinel (collision.cpp): geometry it could not evaluate.
+_DISTANCE_NOT_EVALUATED = -sys.float_info.max
+
+
+def _signed(value: float, positive: str, negative: str) -> str:
+    return f"{abs(value):.2f} m {positive if value >= 0 else negative}"
+
+
+def _collision_text(ev: CollisionEvidence) -> list[str]:
+    """``<link> hit <other> · <depth> mm deep · cell … · allowances …`` for one stop."""
+    parts = [f"{ev.collision_kind} collision: {ev.link_a} hit {ev.link_b_or_object}"]
+    if ev.min_distance_m == _DISTANCE_NOT_EVALUATED:
+        parts.append("distance not evaluated")
+    elif ev.min_distance_m < 0 and ev.depth_is_box_bound:
+        # The bounding box over-states penetration (collision.hpp), so this is at most.
+        parts.append(f"≤ {-ev.min_distance_m * 1000:.1f} mm deep (box bound)")
+    elif ev.min_distance_m < 0:
+        parts.append(f"{-ev.min_distance_m * 1000:.1f} mm deep")
+    else:
+        parts.append(f"{ev.min_distance_m * 1000:.1f} mm clearance")
+    if ev.world_cell_center_m is not None:
+        x, y, z = ev.world_cell_center_m
+        parts.append(
+            f"cell {_signed(x, 'forward', 'back')}, {_signed(y, 'left', 'right')}, "
+            f"{_signed(z, 'up', 'down')} of the robot base"
+        )
+
+    def flag(name: str, on: bool | None, extra: str = "") -> str:
+        return f"{name} {'?' if on is None else 'on' if on else 'off'}{extra}"
+
+    source = f" ({ev.grasp_exemption_source})" if ev.grasp_exemption_source else ""
+    parts.append(
+        "allowances: "
+        + ", ".join(
+            (
+                flag(
+                    "place",
+                    ev.place_allowance_active,
+                    f" ({ev.place_target})" if ev.place_target else "",
+                ),
+                flag("grasp", ev.grasp_exemption_active, source),
+                # The declaration, whoever applies it: the in-tree rule
+                # (``workspace_contact_active``) reads false under an exemption provider.
+                flag(
+                    "workspace",
+                    ev.workspace_contact_active
+                    if ev.workspace_declaration_live is None
+                    else ev.workspace_declaration_live,
+                ),
+            )
+        )
+    )
+    return parts
+
+
+def _safety_failure_text(kind_label: str, evidence_json: str, rskill_id: str) -> str:
+    """One line saying what the safety kernel stopped and why, for the trace row.
+
+    Decodes ``evidence_json`` with the core ``FailureEvidence`` union; a payload that
+    does not decode is shown raw (truncated) rather than dropped.
+    """
+    parts: list[str] = []
+    try:
+        ev = _FAILURE_EVIDENCE.validate_json(evidence_json) if evidence_json else None
+    except ValidationError:
+        ev = None
+        parts.append(f"{kind_label.removeprefix('kind_')}: evidence={evidence_json[:120]!r}")
+    if isinstance(ev, CollisionEvidence):
+        parts.extend(_collision_text(ev))
+    elif ev is not None:
+        fields = {k: v for k, v in ev.model_dump(exclude_none=True).items() if k != "kind"}
+        parts.append(f"{ev.kind}: " + ", ".join(f"{k}={v}" for k, v in fields.items() if v != []))
+    elif not parts:
+        parts.append(kind_label.removeprefix("kind_"))
+    if rskill_id:
+        parts.append(f"stopped {rskill_id.rsplit('/', 1)[-1]}")
+    return " · ".join(parts)
 
 
 def _summarise_span(name: str, attrs: dict[str, Any], duration_ms: float) -> str:

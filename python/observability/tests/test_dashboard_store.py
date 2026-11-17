@@ -428,6 +428,7 @@ def test_world_scene_objects_span_populates_topic(
             "last_seen_ns": 1_700_000_000_000_000_000,
             "observation_count": 4,
             "is_container": False,
+            "in_latest_batch": True,
         },
     ]
     span = _make_span(

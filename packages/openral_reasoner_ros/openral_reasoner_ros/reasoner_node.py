@@ -912,6 +912,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # Last emitted semantic scene key and keepalive anchor.
         self._scene_objects_key: tuple[object, ...] | None = None
         self._scene_objects_emitted_monotonic: float = 0.0
+        # Stamp of the last detection batch folded into spatial memory; drives
+        # the dashboard's per-object ``in_latest_batch`` ("seen now") flag.
+        self._latest_batch_ns: int | None = None
         # Occupancy-grid-refined approach phase — latest decoded occupancy grid (an
         # ``openral_world_state.grid.OccupancyGridIndex``), from the latched
         # ``occupancy_map_topic`` subscription. ``None`` until a map arrives;
@@ -1881,6 +1884,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         self._spatial_memory = self._injected_spatial_memory
         self._spatial_memory_writer = None
         self._spatial_places_only = False
+        # The batch stamp belongs to the memory session just dropped.
+        self._latest_batch_ns = None
         self._palette = self._palette.model_copy(
             update={
                 "spatial_memory_available": self._spatial_memory is not None,
@@ -2820,6 +2825,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         self._spatial_memory = None
         self._spatial_memory_writer = None
         self._spatial_places_only = False
+        # A rebuilt memory has seen no batch yet; an old stamp would mark loaded
+        # objects "seen now".
+        self._latest_batch_ns = None
         self._palette = self._palette.model_copy(
             update={"spatial_memory_available": False, "places_only": False}
         )
@@ -2871,8 +2879,17 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             from openral_world_state import emit_scene_objects_span
 
             graph = self._spatial_memory.to_scene_graph()
-            key: tuple[object, ...] = tuple(
-                sorted(
+            # Which objects the latest batch saw ("seen now" on the dashboard): part
+            # of the key, so a visibility change re-emits but a new stamp alone not.
+            seen_now = frozenset(
+                node.node_id
+                for node in graph.nodes
+                if node.kind is SpatialNodeKind.OBJECT
+                and node.last_seen_ns == self._latest_batch_ns
+            )
+            key: tuple[object, ...] = (
+                seen_now,
+                *sorted(
                     (
                         node.node_id,
                         node.label,
@@ -2881,7 +2898,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                     )
                     for node in graph.nodes
                     if node.kind is SpatialNodeKind.OBJECT
-                )
+                ),
             )
             now = _time.monotonic()
             if (
@@ -2889,7 +2906,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 and now - self._scene_objects_emitted_monotonic < self._SCENE_OBJECTS_KEEPALIVE_S
             ):
                 return
-            emit_scene_objects_span(graph, source_node=self.get_name())
+            emit_scene_objects_span(
+                graph, source_node=self.get_name(), latest_batch_ns=self._latest_batch_ns
+            )
             self._scene_objects_key = key
             self._scene_objects_emitted_monotonic = now
         except Exception as exc:  # reason: telemetry must never break the tick
@@ -2899,7 +2918,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         """Fold a snapshot's ``detected_objects`` into the owned SpatialMemory.
 
         No-op unless the reasoner owns a writable backend (``spatial_memory_ingest``
-        or a preloaded map) and the snapshot carries detections. Accrual is
+        or a preloaded map) and the snapshot carries a detection list; an empty list
+        ingests nothing but still advances the latest-batch stamp. Accrual is
         advisory: failures degrade at DEBUG so a hiccup never disturbs the tick.
         Uses the snapshot's ``stamp_ns`` for recency (deterministic in sim),
         falling back to wall-clock.
@@ -2908,11 +2928,16 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         if writer is None or world_state is None:
             return
         objects = getattr(world_state, "detected_objects", None)
-        if not objects:
+        if objects is None:
             return
         try:
             now_ns = int(getattr(world_state, "stamp_ns", 0)) or time.time_ns()
+            if not objects:
+                # An empty batch saw nothing: no object is "seen now" any more.
+                self._latest_batch_ns = now_ns
+                return
             touched = writer.ingest_detected_objects(objects, now_ns=now_ns)
+            self._latest_batch_ns = now_ns
             self.get_logger().debug(
                 f"spatial-memory ingest: {len(touched)} node(s) from {len(objects)} detection(s)",
             )

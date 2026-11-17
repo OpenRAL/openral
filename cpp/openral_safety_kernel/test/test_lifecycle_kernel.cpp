@@ -1961,6 +1961,10 @@ TEST_F(LifecycleKernelTest, CollisionEvidenceReplaysThePredictedConfigurationItA
       << stop_evidence;
   EXPECT_NE(stop_evidence.find(R"("depth_is_box_bound":false)"), std::string::npos)
       << stop_evidence;
+  // No place declaration: the allowance is disclosed as off, with no target.
+  EXPECT_NE(stop_evidence.find(R"("place_allowance_active":false)"), std::string::npos)
+      << stop_evidence;
+  EXPECT_EQ(stop_evidence.find(R"("place_target")"), std::string::npos) << stop_evidence;
   const int step = std::stoi(evidence_field(stop_evidence, "horizon_step"));
   ASSERT_GE(step, 0) << "this must be a predicted step, not the reactive floor: " << stop_evidence;
 
@@ -3037,7 +3041,8 @@ openral_msgs::msg::WorldStateStamped
 declared_carry_state(std::int64_t attachment_stamp_ns, std::int64_t declaration_stamp_ns,
                      double timeout_s, bool carrying = true, std::uint64_t revision = 1,
                      double payload_x = 0.10, double target_face_x = 0.0,
-                     std::string evidence_kind = {}, std::string evidence_ref = {}) {
+                     std::string evidence_kind = {}, std::string evidence_ref = {},
+                     std::string target_id = "sim:cab_1_left_group_main") {
   openral_msgs::msg::WorldStateStamped msg;
   msg.attachment_stamp_ns = attachment_stamp_ns;
   msg.attachment_revision = revision;
@@ -3063,7 +3068,7 @@ declared_carry_state(std::int64_t attachment_stamp_ns, std::int64_t declaration_
   }
 
   msg.place_declaration_valid = true;
-  msg.place_declaration.target_id = "sim:cab_1_left_group_main";
+  msg.place_declaration.target_id = std::move(target_id);
   msg.place_declaration.object_id = "sim:obj_main";
   msg.place_declaration.rskill_id = "place_in_cabinet";
   msg.place_declaration.trace_id = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
@@ -3764,6 +3769,109 @@ TEST_F(LifecycleKernelTest, AnArrivedPlaceRefusesTheChunkWithoutLatching) {
   rclcpp_lifecycle::State active(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "ac");
   node->on_deactivate(active);
   node->on_cleanup(inactive);
+}
+
+// The advisory refusal's collision evidence discloses the place allowance it ran
+// under and names the declared target, but omits a target longer than the evidence
+// string bound (256) rather than truncating it into a different name.
+TEST_F(LifecycleKernelTest, ThePlaceAllowanceEvidenceNamesABoundedTarget) {
+  const std::string overlong(257, 't');
+  for (const std::string& target : {std::string("sim:cab_1_left_group_main"), overlong}) {
+    rclcpp::NodeOptions opts;
+    opts.parameter_overrides(place_declaration_params());
+    auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_place_evidence", opts);
+    rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+    ASSERT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+    rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+    ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+    rclcpp::Node helper("place_evidence_helper");
+    rclcpp::QoS chunk_qos(rclcpp::KeepLast(1));
+    chunk_qos.reliable();
+    auto cand_pub = helper.create_publisher<openral_msgs::msg::ActionChunk>(
+        "/openral/candidate_action", chunk_qos);
+    rclcpp::QoS js_qos(rclcpp::KeepLast(1));
+    js_qos.best_effort();
+    auto js_pub = helper.create_publisher<sensor_msgs::msg::JointState>("/joint_states", js_qos);
+    rclcpp::QoS voxel_qos(rclcpp::KeepLast(1));
+    voxel_qos.reliable();
+    auto voxel_pub = helper.create_publisher<openral_msgs::msg::OccupancyVoxels>(
+        "/openral/world_voxels", voxel_qos);
+    rclcpp::QoS ws_qos(rclcpp::KeepLast(1));
+    ws_qos.reliable();
+    auto ws_pub = helper.create_publisher<openral_msgs::msg::WorldStateStamped>(
+        "/openral/world_state_fast", ws_qos);
+    std::atomic<int> safe_count{0};
+    auto safe_sub = helper.create_subscription<openral_msgs::msg::ActionChunk>(
+        "/openral/safe_action", chunk_qos,
+        [&safe_count](const openral_msgs::msg::ActionChunk::SharedPtr) { ++safe_count; });
+    std::string evidence_json;
+    rclcpp::QoS failure_qos(rclcpp::KeepLast(10));
+    failure_qos.reliable();
+    auto failure_sub = helper.create_subscription<openral_msgs::msg::FailureTrigger>(
+        "/openral/failure/safety", failure_qos,
+        [&evidence_json](const openral_msgs::msg::FailureTrigger::SharedPtr msg) {
+          if (evidence_json.empty() &&
+              msg->kind == openral_msgs::msg::FailureTrigger::KIND_COLLISION) {
+            evidence_json = msg->evidence_json;
+          }
+        });
+
+    rclcpp::executors::SingleThreadedExecutor exec;
+    exec.add_node(node->get_node_base_interface());
+    exec.add_node(helper.get_node_base_interface());
+
+    auto vox = declared_target_voxels();
+    sensor_msgs::msg::JointState js;
+    js.name = {"j0"};
+    js.position = {0.0};
+    const auto chunk = declared_carry_chunk();
+    const auto state = [&](double payload_x) {
+      return declared_carry_state(node->now().nanoseconds(), node->now().nanoseconds(),
+                                  /*timeout_s=*/60.0, /*carrying=*/true, /*revision=*/1, payload_x,
+                                  /*target_face_x=*/0.0, {}, {}, target);
+    };
+
+    // Approach first, so the region is armed before the payload arrives.
+    const auto warm_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (safe_count.load() == 0 && std::chrono::steady_clock::now() < warm_deadline) {
+      vox.source_stamp = helper.now();
+      voxel_pub->publish(vox);
+      js_pub->publish(js);
+      exec.spin_some(std::chrono::milliseconds(5));
+      ws_pub->publish(state(0.10));
+      exec.spin_some(std::chrono::milliseconds(5));
+      cand_pub->publish(chunk);
+      exec.spin_some(std::chrono::milliseconds(10));
+    }
+    ASSERT_GT(safe_count.load(), 0) << "the approach must pass: " << target.size();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (evidence_json.empty() && std::chrono::steady_clock::now() < deadline) {
+      offer_one_chunk(
+          exec,
+          [&] {
+            vox.source_stamp = helper.now();
+            voxel_pub->publish(vox);
+            js_pub->publish(js);
+            ws_pub->publish(state(0.130));
+          },
+          [&] { cand_pub->publish(chunk); });
+    }
+    ASSERT_FALSE(evidence_json.empty()) << "the arrived place is refused with evidence";
+    EXPECT_NE(evidence_json.find(R"("place_allowance_active":true)"), std::string::npos)
+        << evidence_json;
+    if (target.size() <= 256) {
+      EXPECT_NE(evidence_json.find(R"("place_target":")" + target + '"'), std::string::npos)
+          << evidence_json;
+    } else {
+      EXPECT_EQ(evidence_json.find(R"("place_target")"), std::string::npos) << evidence_json;
+    }
+
+    rclcpp_lifecycle::State active(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "ac");
+    node->on_deactivate(active);
+    node->on_cleanup(inactive);
+  }
 }
 
 TEST_F(LifecycleKernelTest, ADeclaredTargetsGeometryAdjudicatesAndNamesTheBody) {

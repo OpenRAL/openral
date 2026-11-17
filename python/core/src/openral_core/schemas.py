@@ -14500,6 +14500,11 @@ class CollisionEvidence(_FailureEvidenceBase):
             ``provider``. Backward-compatible addition.
         depth_is_box_bound: Whether ``min_distance_m`` reports a bounding-box
             lower bound instead of a tight-geometry distance.
+        place_allowance_active: Whether the ADR-0097 place-approach allowance was
+            active at the stop (disclosure, never justification). ``None`` from a
+            producer that predates the field.
+        place_target: The place declaration's target while that allowance is active;
+            present only when ``place_allowance_active`` is true.
         payload_evidence_kind: Attached-payload source kind from the accepted
             attachment wire, only when the reported pair is a carried payload.
         payload_evidence_ref: Producer reference paired with
@@ -14552,6 +14557,10 @@ class CollisionEvidence(_FailureEvidenceBase):
         default=None, min_length=1, max_length=_COLLISION_EVIDENCE_STRING_MAX
     )
     depth_is_box_bound: bool | None = None
+    place_allowance_active: bool | None = None
+    place_target: str | None = Field(
+        default=None, min_length=1, max_length=_COLLISION_EVIDENCE_STRING_MAX
+    )
     payload_evidence_kind: str | None = Field(
         default=None, min_length=1, max_length=_COLLISION_EVIDENCE_STRING_MAX
     )
@@ -14592,6 +14601,8 @@ class CollisionEvidence(_FailureEvidenceBase):
                 "grasp_exemption_provider is present exactly when grasp_exemption_source is "
                 "'provider'"
             )
+        if self.place_target is not None and self.place_allowance_active is not True:
+            raise ValueError("place_target is present only while place_allowance_active is true")
         return self
 
     @property

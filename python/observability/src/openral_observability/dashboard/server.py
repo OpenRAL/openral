@@ -179,12 +179,16 @@ def run_dashboard(  # noqa: PLR0915, PLR0912  # reason: linear bootstrap (app + 
     # TRANSIENT_LOCAL sample lands at launch. Inert + harmless without ROS.
     try:
         from openral_observability.dashboard.safety_status_subscriber import (
+            SAFETY_FAILURE_TOPIC,
             SafetyStatusSubscriber,
         )
 
         app.state.safety_status = SafetyStatusSubscriber(app.state.store)
         if app.state.safety_status.available:
-            _LOG.info("dashboard.safety_status_subscriber ready (latched safety state)")
+            _LOG.info(
+                "dashboard.safety_status_subscriber ready (latched safety state + %s)",
+                SAFETY_FAILURE_TOPIC,
+            )
         else:
             _LOG.warning(
                 "dashboard.safety_status_subscriber inert (no ROS) — "
