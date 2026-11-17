@@ -730,3 +730,23 @@ def test_the_model_an_alias_resolved_to_is_recorded_and_logged_on_change(
         c.kwargs["served"] for c in sink.calls if c.kwargs["event"] == "reasoner.model.served"
     ]
     assert logged == ["google/gemini-4-carbon", "google/gemini-5-pro"]  # once per change
+
+
+def test_a_failed_call_does_not_inherit_the_previous_served_model() -> None:
+    """The served model is this call's: a call that gets no reply records none."""
+    from openral_core import WaitTool
+    from openral_core.exceptions import ROSPlanningError
+    from openral_reasoner.palette import ToolPalette
+
+    status, body = openai_tool_call("wait", {"rationale": "ok"})
+    body["model"] = "google/gemini-4-carbon"
+    with FakeLLMServer([(status, body), (500, {"error": {"message": "upstream down"}})]) as server:
+        client = OpenAICompatibleToolUseClient(
+            model_id="~google/gemini-pro-latest", base_url=server.openai_base_url
+        )
+        tool = client.select_tool(context_text="go", palette=ToolPalette(skills=()))
+        assert isinstance(tool, WaitTool)
+        assert client.served_model == "google/gemini-4-carbon"
+        with pytest.raises(ROSPlanningError):
+            client.select_tool(context_text="go", palette=ToolPalette(skills=()))
+    assert client.served_model is None

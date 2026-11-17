@@ -2358,9 +2358,14 @@ class OpenAICompatibleToolUseClient:
         """Prompt tokens the endpoint reported for the most recent
         ``select_tool`` call; read by ``ReasonerCore.run_prepared_llm``."""
         self.served_model: str | None = None
-        """The model the endpoint reported serving on the last reply. Differs from
-        ``model_id`` for an alias such as OpenRouter's ``~google/gemini-pro-latest``;
-        logged as ``reasoner.model.served`` whenever it changes."""
+        """The model the endpoint reported serving the most recent ``select_tool``
+        call, or ``None`` when that call got no reply naming one (it failed, or the
+        reply carried no model). Differs from ``model_id`` for an alias such as
+        OpenRouter's ``~google/gemini-pro-latest``; read by
+        ``ReasonerCore.run_prepared_llm``."""
+        # The served model last logged, kept apart from ``served_model`` so a failed
+        # call never re-logs or inherits it.
+        self._logged_served_model: str | None = None
         # SDK client built once on first use and reused across ticks (see
         # AnthropicToolUseClient._client for the rationale).
         self._sdk_client: Any = None
@@ -2406,6 +2411,7 @@ class OpenAICompatibleToolUseClient:
         to the model (#522). A reply cut off at the token cap or by a content
         filter is a ``ROSPlanningError``.
         """
+        self.served_model = None  # this call's, set from its reply
         client = self._client()
         tools = self._tools(palette)
         messages: list[dict[str, str]] = [
@@ -2464,9 +2470,10 @@ class OpenAICompatibleToolUseClient:
         needs the model that actually answered, not the alias that was sent.
         """
         served = getattr(response, "model", None)
-        if isinstance(served, str) and served and served != self.served_model:
-            log.info("reasoner.model.served", requested=self.model_id, served=served)
-            self.served_model = served
+        self.served_model = served if isinstance(served, str) and served else None
+        if self.served_model is not None and self.served_model != self._logged_served_model:
+            log.info("reasoner.model.served", requested=self.model_id, served=self.served_model)
+            self._logged_served_model = self.served_model
 
     def _complete(
         self,
