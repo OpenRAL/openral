@@ -137,3 +137,27 @@ def test_real_deploy_picks_a_bound_camera(launch_module: object) -> None:
     assert pick(publishing_sensors(arm.sensors, [], "real")) == "top"
     assert pick(publishing_sensors(only_left, [], "real")) == "wrist_left"
     assert pick(publishing_sensors(unbound, [], "real")) == ""
+
+
+@pytest.mark.parametrize("robot", ["makermods_metal", "makermods_metal_station"])
+def test_real_deploy_publishes_the_top_cameras_optical_child(
+    launch_module: object, robot: str
+) -> None:
+    """#627: on hardware nothing else publishes ``top_camera_optical_frame``.
+
+    The object lift looks the body-convention ``top`` camera up in its optical child
+    (``image_frame_id``); without the launch's static TF every detection is dropped.
+    In sim the sensor bridge publishes it, so the launch must not.
+    """
+    from openral_core.depth_extrinsic import image_frame_id
+
+    sensors = _robot(robot).sensors
+    top = next(s for s in sensors if s.name == "top")
+    mounts = launch_module._optical_mounts  # type: ignore[attr-defined]
+    real = mounts(sensors, "real")
+    assert real == {"top_camera": image_frame_id(top, sensors)}
+    assert real["top_camera"] == "top_camera_optical_frame"
+    assert mounts(sensors, "sim") == {}
+    node = launch_module._optical_tf_node("top_camera", real["top_camera"])  # type: ignore[attr-defined]
+    args = node._Node__arguments  # launch_ros keeps them private
+    assert args[-4:] == ["--frame-id", "top_camera", "--child-frame-id", "top_camera_optical_frame"]
