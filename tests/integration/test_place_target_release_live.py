@@ -392,7 +392,10 @@ def test_the_frozen_record_keeps_its_witness_and_the_kernel_accepts_the_retreat(
                 time.sleep(0.3)
                 frozen = latest_object()
                 assert frozen is not None and frozen.attach_link == _BASE
-                assert (frozen.object_id, frozen.stamp_ns) == (held.object_id, held.stamp_ns)
+                # Stamped at the DETACH sample, never before the held record (#621); the
+                # witness carries over to it (``PlaceTargetTracker.on_released``).
+                assert frozen.object_id == held.object_id
+                assert frozen.stamp_ns >= held.stamp_ns
                 if place_leg:
                     assert frozen.support_contact == witness, (
                         f"the frozen record lost its witness; {place_lines()}"

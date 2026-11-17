@@ -3283,6 +3283,8 @@ class VisionAttachmentBridge:
             base_dofs=base_dofs,
         )
         leg.release = window
+        if self._place_target is not None:
+            self._place_target.tracker.on_released(held, window.record)
         self._node.get_logger().info(
             f"release window opened for {leg.joint_name}: {held.object_id!r} frozen in "
             f"{self._base_link!r} at {window.record.pose_in_link.xyz}; exempt links "

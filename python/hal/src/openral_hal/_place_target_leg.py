@@ -801,6 +801,22 @@ class PlaceTargetTracker:
         self._reported = self._witness
         return changed
 
+    def on_released(self, held: AttachedCollisionObject, record: AttachedCollisionObject) -> None:
+        """Carry the patch and witness keyed on ``held`` over to its frozen ``record``.
+
+        The record is stamped at the DETACH sample (``ReleaseWindow.open``), so it no
+        longer matches the ``(object_id, stamp_ns)`` the patch was latched and the
+        witness armed on; without this both would drop at let-go — exactly when the
+        kernel needs them. The witness itself (and its own stamp, the kernel's arm
+        key) is unchanged.
+        """
+        was, now = (held.object_id, held.stamp_ns), (record.object_id, record.stamp_ns)
+        if self._payload_key == was:
+            self._payload_key = now
+        key = self._attested
+        if key is not None and key[1:] == was:
+            self._attested = (key[0], *now)
+
     def decorate(self, objects: Sequence[AttachedCollisionObject]) -> list[AttachedCollisionObject]:
         """The attachment set with the held witness on the object it names."""
         witness, key = self._witness, self._attested
