@@ -2,7 +2,7 @@
 
 The robot keeps them in ``robot-settings.json`` beside its enrolment
 (``openral_core.enrolment_path()``'s folder, mode 0600): the provider API keys and the
-reasoner model, the same three settings openral.com's Account → Settings holds, in the
+reasoner model, the same settings openral.com's Account → Settings holds, in the
 same shape (``GET``/``PUT /api/settings``), so the console's settings pane edits either.
 A deploy applies them at start (:func:`reasoner_env`); an environment variable already
 set wins, and they win over the openral.com account settings.
@@ -20,7 +20,9 @@ from pathlib import Path
 
 from openral_core import (
     ANTHROPIC_KEY_SETTING,
+    OLLAMA_KEY_SETTING,
     OPENAI_KEY_SETTING,
+    OPENROUTER_KEY_SETTING,
     enrolment_path,
     reasoner_model_options,
 )
@@ -42,10 +44,13 @@ MODEL_SETTING = "OPENRAL_REASONER_MODEL"
 SETTINGS: dict[str, dict[str, object]] = {
     ANTHROPIC_KEY_SETTING: {"label": "Anthropic API key", "secret": True},
     OPENAI_KEY_SETTING: {"label": "OpenAI API key", "secret": True},
+    OPENROUTER_KEY_SETTING: {"label": "OpenRouter API key", "secret": True},
+    # ollama.com's (Ollama Cloud); the robot's own Ollama needs none.
+    OLLAMA_KEY_SETTING: {"label": "Ollama API key", "secret": True},
     MODEL_SETTING: {
         "label": "Reasoner model",
         "secret": False,
-        "options": reasoner_model_options(),
+        "options": [o.model_dump() for o in reasoner_model_options()],
     },
 }
 
@@ -88,7 +93,7 @@ def save_setting(name: str, value: str, path: Path | None = None) -> dict[str, s
     value = value.strip()
     if len(value) > _MAX_VALUE:
         raise ValueError("that value is too long")
-    if name == MODEL_SETTING and value and value not in {o["id"] for o in reasoner_model_options()}:
+    if name == MODEL_SETTING and value and value not in {o.id for o in reasoner_model_options()}:
         raise ValueError("pick one of the models listed")
     target = path or settings_path()
     current = load_settings(target)
@@ -143,28 +148,33 @@ def shown(values: dict[str, str], *, hints: bool = True) -> dict[str, dict[str, 
 def reasoner_env(values: dict[str, str]) -> dict[str, str]:
     """The reasoner's environment from the saved settings (openral.com's ``robotEnv``).
 
-    The model, the key its provider needs as ``OPENRAL_REASONER_API_KEY``, and for an
-    OpenAI model OpenAI's own API (openral's default for those is OpenRouter). Nothing
-    without a curated model, or without the key that model needs: an incomplete choice
-    must not stand in for the account's settings.
+    The model, the first of its keys that is set as ``OPENRAL_REASONER_API_KEY``, and
+    for the OpenAI key OpenAI's own API (openral's default for those models is
+    OpenRouter, which an OpenRouter key reaches with no endpoint set; an Ollama key
+    reaches Ollama Cloud, its models' default, the same way). Nothing without a
+    curated model, or without a key that model runs on: an incomplete choice must not
+    stand in for the account's settings.
 
     Example:
         >>> reasoner_env({"OPENRAL_REASONER_MODEL": "gpt-5.5", "OPENAI_API_KEY": "sk-x"})
         {'OPENRAL_REASONER_MODEL': 'gpt-5.5', 'OPENRAL_REASONER_API_KEY': 'sk-x', \
 'OPENRAL_REASONER_ENDPOINT': 'openai'}
+        >>> reasoner_env({"OPENRAL_REASONER_MODEL": "gpt-5.5", "OPENROUTER_API_KEY": "sk-or"})
+        {'OPENRAL_REASONER_MODEL': 'gpt-5.5', 'OPENRAL_REASONER_API_KEY': 'sk-or'}
         >>> reasoner_env({"OPENRAL_REASONER_MODEL": "gpt-5.5"})
         {}
     """
     chosen = values.get(MODEL_SETTING)
-    model = next((o for o in reasoner_model_options() if o["id"] == chosen), None)
+    model = next((o for o in reasoner_model_options() if o.id == chosen), None)
     if model is None:
         return {}
-    needs = model["needs"]
-    if needs and not values.get(needs):
+    out = {MODEL_SETTING: model.id}
+    if not model.keys:
+        return out
+    key = next((k for k in model.keys if values.get(k)), None)
+    if key is None:
         return {}
-    out = {MODEL_SETTING: str(model["id"])}
-    if needs:
-        out["OPENRAL_REASONER_API_KEY"] = values[needs]
-    if needs == OPENAI_KEY_SETTING:
+    out["OPENRAL_REASONER_API_KEY"] = values[key]
+    if key == OPENAI_KEY_SETTING:
         out["OPENRAL_REASONER_ENDPOINT"] = "openai"
     return out

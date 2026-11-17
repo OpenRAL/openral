@@ -490,6 +490,17 @@ def test_check_reasoner_curated_model_ok_redacts_key(
     assert "sk-ant-secret-12345" not in summary.details
 
 
+def test_check_reasoner_unmeasured_model_warns(
+    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
+) -> None:
+    """A registry model offered unmeasured is a warning, not ``ok``."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "kimi-k3-cloud")
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "ollama-key")
+    summary = next(r for r in _check_reasoner_llm() if r.check == "Reasoner LLM")
+    assert summary.status == "warn"
+    assert "not yet measured" in summary.details
+
+
 def test_check_reasoner_uncurated_model_ok_redacts_key(
     monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
 ) -> None:

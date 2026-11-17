@@ -2,7 +2,7 @@
 
 Drives the model-first env factory (ADR-0088) through every branch — curated
 registry models, the named endpoints (`anthropic` / `openai` / `openrouter` / `gemini` /
-`xai` / `deepseek` / `huggingface` / `ollama` / `vllm`), a bare URL plus an
+`xai` / `deepseek` / `huggingface` / `ollama` / `ollama_cloud` / `vllm`), a bare URL plus an
 explicit dialect, and each missing-required case — with ``monkeypatch.setenv``
 only. No mocks of openral types per CLAUDE.md §1.11; we inspect the constructed
 object's attributes directly.
@@ -20,6 +20,7 @@ from openral_reasoner.tool_use import (
     GEMINI_BASE_URL,
     HUGGINGFACE_BASE_URL,
     OLLAMA_BASE_URL,
+    OLLAMA_CLOUD_BASE_URL,
     OPENROUTER_BASE_URL,
     VLLM_BASE_URL,
     XAI_BASE_URL,
@@ -136,6 +137,55 @@ def test_curated_openrouter_models(monkeypatch: pytest.MonkeyPatch, model_key: s
     assert client.model_id == REASONER_MODELS[model_key].served_model_id
     assert client._base_url == OPENROUTER_BASE_URL
     assert client._max_tokens == 16384
+
+
+@pytest.mark.parametrize(
+    ("model_key", "served", "tool_choice"),
+    [
+        # An OpenRouter alias that always serves the family's newest model, sent as is.
+        ("gemini-pro-latest-openrouter", "~google/gemini-pro-latest", "required"),
+        ("mistral-large-4-openrouter", "mistralai/mistral-large-4-0", "required"),
+        # Qwen 3.8 Flash 400s on a forced tool call (measured on OpenRouter).
+        ("qwen3.8-flash-openrouter", "qwen/qwen3.8-flash", "auto"),
+    ],
+)
+def test_curated_openrouter_only_models(
+    monkeypatch: pytest.MonkeyPatch, model_key: str, served: str, tool_choice: str
+) -> None:
+    """An ``*-openrouter`` model runs on OpenRouter with the OpenRouter key, vendor id as is."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", model_key)
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "sk-or-secret")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert (client.model_id, client._base_url) == (served, OPENROUTER_BASE_URL)
+    assert client._tool_choice == tool_choice
+    assert client._max_tokens == 16384
+
+
+def test_curated_ollama_cloud_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``*-cloud`` model runs on ollama.com with the Ollama key, sending its Ollama tag."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "kimi-k3-cloud")
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "ollama-key")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert client.model_id == "kimi-k3"
+    assert client._base_url == OLLAMA_CLOUD_BASE_URL
+    assert client._tool_choice == "auto"  # Ollama ignores tool_choice
+    assert client._max_tokens == 16384
+    monkeypatch.delenv("OPENRAL_REASONER_API_KEY")
+    with pytest.raises(ROSConfigError, match="OPENRAL_REASONER_API_KEY"):
+        build_tool_use_client_from_env()
+
+
+def test_ollama_cloud_endpoint_serves_an_uncurated_tag(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``ENDPOINT=ollama_cloud`` reaches any ollama.com tag, with a key, on ``auto``."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "gpt-oss:120b")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "ollama_cloud")
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "ollama-key")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert (client.model_id, client._base_url) == ("gpt-oss:120b", OLLAMA_CLOUD_BASE_URL)
+    assert client._tool_choice == "auto"
 
 
 def test_curated_openrouter_without_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -589,3 +639,114 @@ def test_a_malformed_api_ps_body_falls_back_to_the_ratio(ps: object) -> None:
         )
         with pytest.raises(ROSPlanningError, match="cut the prompt"):
             client.select_tool(context_text="x" * 31_000, palette=ToolPalette(skills=()))
+
+
+def test_an_ollama_cloud_reply_is_never_read_as_a_cut_prompt() -> None:
+    """ollama.com loads every model with its full window: the local-Ollama ratio check is off."""
+    from openai.types.chat import ChatCompletion
+    from openral_reasoner.tool_use import _truncation_error
+
+    reply = ChatCompletion.model_validate(_ollama_reply(4096, "fp_ollama")[1])
+    request: list[object] = ["x" * 31_000]
+    cloud = _truncation_error(reply, request, model_id="kimi-k3", base_url=OLLAMA_CLOUD_BASE_URL)
+    assert cloud is None
+    # The same reply from a local Ollama with no window to report is a cut.
+    assert _truncation_error(reply, request, model_id="kimi-k3", base_url=None) is not None
+
+
+def test_an_unmeasured_model_says_so_and_a_measured_one_does_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import structlog
+    from openral_reasoner import tool_use as tool_use_module
+    from structlog.testing import CapturingLogger
+
+    sink = CapturingLogger()
+    monkeypatch.setattr(
+        tool_use_module,
+        "log",
+        structlog.wrap_logger(sink, wrapper_class=structlog.BoundLogger, processors=[]),
+    )
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "key")
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "kimi-k3-cloud")
+    build_tool_use_client_from_env()
+    assert [c.kwargs["event"] for c in sink.calls] == ["reasoner.model.unmeasured"]
+    sink.calls.clear()
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "gpt-5.5")
+    build_tool_use_client_from_env()
+    assert sink.calls == []
+
+
+@pytest.mark.parametrize(
+    ("model_key", "env_timeout", "expected"),
+    [
+        ("glm-flash-latest-openrouter", None, 60.0),  # measured 18-33 s
+        ("qwen3.8-flash-openrouter", None, 30.0),  # measured up to 16.5 s
+        ("kimi-latest-openrouter", None, 10.0),  # the cloud default
+        ("glm-flash-latest-openrouter", "12", 12.0),  # the env override still wins
+    ],
+)
+def test_a_slow_model_gets_its_own_timeout(
+    monkeypatch: pytest.MonkeyPatch, model_key: str, env_timeout: str | None, expected: float
+) -> None:
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", model_key)
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "sk-or-secret")
+    if env_timeout is not None:
+        monkeypatch.setenv("OPENRAL_REASONER_TIMEOUT_S", env_timeout)
+    client = build_tool_use_client_from_env()
+    assert client._timeout_s == expected  # type: ignore[attr-defined]  # reason: client-private
+
+
+def test_the_model_an_alias_resolved_to_is_recorded_and_logged_on_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``~google/gemini-pro-latest`` is sent; the model that answered is what the trace keeps."""
+    import structlog
+    from openral_core import WaitTool
+    from openral_reasoner import tool_use as tool_use_module
+    from openral_reasoner.palette import ToolPalette
+    from structlog.testing import CapturingLogger
+
+    sink = CapturingLogger()
+    monkeypatch.setattr(
+        tool_use_module,
+        "log",
+        structlog.wrap_logger(sink, wrapper_class=structlog.BoundLogger, processors=[]),
+    )
+    replies = []
+    for model in ("google/gemini-4-carbon", "google/gemini-4-carbon", "google/gemini-5-pro"):
+        status, body = openai_tool_call("wait", {"rationale": "ok"})
+        body["model"] = model
+        replies.append((status, body))
+    with FakeLLMServer(replies) as server:
+        client = OpenAICompatibleToolUseClient(
+            model_id="~google/gemini-pro-latest", base_url=server.openai_base_url
+        )
+        for _ in replies:
+            tool = client.select_tool(context_text="go", palette=ToolPalette(skills=()))
+            assert isinstance(tool, WaitTool)
+    assert client.served_model == "google/gemini-5-pro"
+    logged = [
+        c.kwargs["served"] for c in sink.calls if c.kwargs["event"] == "reasoner.model.served"
+    ]
+    assert logged == ["google/gemini-4-carbon", "google/gemini-5-pro"]  # once per change
+
+
+def test_a_failed_call_does_not_inherit_the_previous_served_model() -> None:
+    """The served model is this call's: a call that gets no reply records none."""
+    from openral_core import WaitTool
+    from openral_core.exceptions import ROSPlanningError
+    from openral_reasoner.palette import ToolPalette
+
+    status, body = openai_tool_call("wait", {"rationale": "ok"})
+    body["model"] = "google/gemini-4-carbon"
+    with FakeLLMServer([(status, body), (500, {"error": {"message": "upstream down"}})]) as server:
+        client = OpenAICompatibleToolUseClient(
+            model_id="~google/gemini-pro-latest", base_url=server.openai_base_url
+        )
+        tool = client.select_tool(context_text="go", palette=ToolPalette(skills=()))
+        assert isinstance(tool, WaitTool)
+        assert client.served_model == "google/gemini-4-carbon"
+        with pytest.raises(ROSPlanningError):
+            client.select_tool(context_text="go", palette=ToolPalette(skills=()))
+    assert client.served_model is None

@@ -285,6 +285,8 @@ auth requirement, hosting mode, and local-compute floor.
 | `cosmos3-edge` | `nvidia/Cosmos3-Edge` | `Cosmos3ToolUseClient` | managed local `http://127.0.0.1:8901/v1` | none |
 | `qwen3.5-4b` | `qwen3.5:4b` | `OpenAICompatibleToolUseClient` (`tool_choice: auto`) | your Ollama, `http://localhost:11434/v1` | none |
 | `qwen3.5-9b` | `qwen3.5:9b` | `OpenAICompatibleToolUseClient` (`tool_choice: auto`) | your Ollama, `http://localhost:11434/v1` | none |
+| `<name>-openrouter` (16, below) | the OpenRouter id | `OpenAICompatibleToolUseClient` | OpenRouter cloud | OpenRouter key |
+| `<name>-cloud` (14, below) | the Ollama tag | `OpenAICompatibleToolUseClient` (`tool_choice: auto`) | Ollama Cloud, `https://ollama.com/v1` | ollama.com API key |
 
 The env contract is:
 
@@ -411,7 +413,7 @@ old provider value maps onto a model plus an endpoint:
 |---|---|
 | `anthropic` | curated `claude-opus-4-8` / `claude-opus-5-5` / `claude-sonnet-5-5` / `claude-haiku-5-5`, or `ENDPOINT=anthropic` + a raw model id |
 | `openrouter` / `gemini` / `xai` / `deepseek` / `huggingface` | `ENDPOINT=<name>` + `API_KEY` (an OpenAI key: `ENDPOINT=openai`) |
-| `ollama` / `vllm` | `ENDPOINT=<name>` (no key) |
+| `ollama` / `vllm` | `ENDPOINT=<name>` (no key); Ollama Cloud: `ENDPOINT=ollama_cloud` + `API_KEY` |
 | `cosmos` | curated `cosmos3-edge` (managed autostart included) |
 | `openai-compatible` | `ENDPOINT=<url>` + `DIALECT=openai` |
 
@@ -526,6 +528,88 @@ plus `--kv-cache-dtype fp8`. Pre-warm the pinned sidecar with
 > JIT sampler needs CUDA toolkit headers a JetPack image does not ship, so the
 > sidecar now defaults `VLLM_USE_FLASHINFER_SAMPLER=0`. Full findings in the
 > [assessment page](../../docs/reference/cosmos3-edge-reasoner.md).
+
+### OpenRouter — the `*-openrouter` models (not yet measured)
+
+**Offered unmeasured**, like the Ollama Cloud set below. On 2026-11-16 the
+maintainer chose them from the 182 OpenRouter models whose catalog entry declares tools,
+`tool_choice`, image input and a window of 32K or more (none due to expire): the newest
+flagship and the newest fast tier of each major vendor, taking only the ones with image
+input. Claude and GPT stay on their own entries. Where OpenRouter has a
+`~<vendor>/<family>-latest` alias that passes the same filter, the entry uses it, so it
+always serves the family's newest model (an alias could later point at a model without
+vision or tools: `~deepseek/deepseek-v4-flash-latest` already has no vision). The other
+families have no alias and name the newest model as of 2026-11-16. Measured on
+`so101_follower` before the credit ran out (2026-11-15, on the model the alias then
+served), valid ticks / median:
+
+| `OPENRAL_REASONER_MODEL` | OpenRouter id | measured |
+|---|---|---|
+| `gemini-pro-latest-openrouter` | `~google/gemini-pro-latest` | — |
+| `gemini-flash-latest-openrouter` | `~google/gemini-flash-latest` | — |
+| `grok-latest-openrouter` | `~x-ai/grok-latest` | — |
+| `deepseek-flash-latest-openrouter` | `~deepseek/deepseek-flash-latest` | 8/8 as V4.1 Flash, 3–6 s (one 12.9 s) |
+| `kimi-latest-openrouter` | `~moonshotai/kimi-latest` | — |
+| `glm-flash-latest-openrouter` | `~z-ai/glm-flash-latest` | 2/2 as GLM-5.3 Flash, 18–33 s (over the 10 s timeout) |
+| `qwen3.8-max-prime-openrouter` | `qwen/qwen3.8-max-prime` | — |
+| `qwen3.8-flash-openrouter` | `qwen/qwen3.8-flash` (`tool_choice: auto`) | 5/5 on `auto`, 11.6 s; 400 on `required` |
+| `glm-5.3-flashx-openrouter` | `z-ai/glm-5.3-flashx` | — |
+| `mistral-large-4-openrouter` | `mistralai/mistral-large-4-0` | — |
+| `mistral-small-4-openrouter` | `mistralai/mistral-small-2603` | 23/23, 0.9 s (8 were `wait`) |
+| `muse-wonder-openrouter` | `meta/muse-wonder` | — |
+| `muse-ember-openrouter` | `meta/muse-ember` | 12/12, 3.5 s |
+| `minimax-m3-openrouter` | `minimax/minimax-m3` | — |
+| `minimax-m3.1-flash-openrouter` | `minimax/minimax-m3.1-flash` | 16/16, 2.0 s |
+| `nemotron-3.5-super-vl-openrouter` | `nvidia/nemotron-3.5-super-vl` | 3/4, 6.0 s (one hit the token cap) |
+
+Measure each against the bar (≥ 17/20 on `so101_follower` and on `franka_panda`'s full
+palette, frames, under the 10 s cloud timeout) and drop those that miss it.
+
+At runtime the `*-openrouter` and `*-cloud` entries carry `measured=False`: the client
+logs `reasoner.model.unmeasured` when it builds one, and `openral doctor` reports it as a
+warning. The two measured as slower than the 10 s cloud default get their own timeout
+(`ReasonerModel.timeout_s`): GLM Flash, latest and `glm-5.3-flash-cloud` 60 s, Qwen 3.8
+Flash 30 s; `OPENRAL_REASONER_TIMEOUT_S` still wins. An alias resolves server-side, so
+the client logs `reasoner.model.served` with the model that actually answered whenever
+it changes, and the tick span carries it as `reasoner.served_model`.
+
+### Ollama Cloud — the `*-cloud` models (not yet measured)
+
+Ollama Cloud (ollama.com) serves large models over the same OpenAI-compatible API as a
+local Ollama, behind an ollama.com API key: set `OPENRAL_REASONER_API_KEY` to it (the
+website's and the robot console's **Ollama API key** setting does this for you) and pick
+a `*-cloud` model. Any other ollama.com tag runs uncurated with
+`OPENRAL_REASONER_ENDPOINT=ollama_cloud`.
+
+**These 14 are offered unmeasured**, unlike every other registry entry: on 2026-11-16
+the maintainer chose every ollama.com model whose `/api/show` declares both `tools`
+and `vision`, while the account had no Ollama Cloud credit to run them. Latency against
+the 10 s cloud timeout is unknown. Two were measured through OpenRouter the day before
+on `so101_follower` (MiniMax M3.1 Flash 16/16 valid, median 2.0 s; DeepSeek V4.1 Flash
+8/8, 3–6 s). Measure each on Ollama Cloud against the bar (≥ 17/20 on `so101_follower`
+and on `franka_panda`'s full palette) and drop those that miss it.
+
+| `OPENRAL_REASONER_MODEL` | Ollama tag | size |
+|---|---|---|
+| `deepseek-v4.1-flash-cloud` | `deepseek-v4.1-flash` | 763B, FP8 |
+| `gemma4-31b-cloud` | `gemma4:31b` | 33B, BF16 |
+| `glm-5.3-flash-cloud` | `glm-5.3-flash` | 321B, FP8 |
+| `inkling-2-small-cloud` | `inkling-2-small` | 594B, NVFP4 |
+| `kimi-k2.6-cloud` | `kimi-k2.6` | 1.0T, INT4 |
+| `kimi-k2.7-code-cloud` | `kimi-k2.7-code` | 1.0T, INT4 |
+| `kimi-k3-cloud` | `kimi-k3` | 2.8T, MXFP4 |
+| `kimi-k3.1-pro-cloud` | `kimi-k3.1-pro` | 2.8T, MXFP4 |
+| `mimo-v2.6-flash-cloud` | `mimo-v2.6-flash` | 309B, FP8 |
+| `mimo-v2.6-pro-cloud` | `mimo-v2.6-pro` | 1.0T, FP8 |
+| `minimax-m3-cloud` | `minimax-m3` | — |
+| `minimax-m3.1-flash-cloud` | `minimax-m3.1-flash` | 428B |
+| `mistral-large-4-cloud` | `mistral-large-4` | 1.05T |
+| `muse-spark-open-cloud` | `muse-spark-open` | 822B, FP8 |
+
+Ollama Cloud ignores `tool_choice` like a local Ollama (the entries and the
+`ollama_cloud` preset send `auto`), and it loads every model with its full window
+(262K–1M tokens), so the client's truncated-prompt check, which guards a local
+Ollama's 4096-token default, is off for it.
 
 ### On the robot — Qwen 3.5 4B / 9B via Ollama
 
