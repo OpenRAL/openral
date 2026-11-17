@@ -744,8 +744,12 @@ class TrackerSession:
             within = None
         # A TARGET query's seed names the instance (a recalled memory node, #631): it scopes
         # the query like the search box does, through tf2 (`_rescope`). One seed only: two
-        # TARGET queries seeded apart name no single instance.
-        seeds = [q.seed for q in decl.target_queries if q.role is ObjectRole.TARGET and q.seed]
+        # TARGET queries seeded apart name no single instance; one box on several (the runner
+        # seeds each with the scene's search box) is one scope.
+        seeds: list[PlaceRegion] = []
+        for q in decl.target_queries:
+            if q.role is ObjectRole.TARGET and q.seed is not None and q.seed not in seeds:
+                seeds.append(q.seed)
         scope = seeds[0] if tracking and decl.active and len(seeds) == 1 else None
         self._set_goal(
             "grasp",

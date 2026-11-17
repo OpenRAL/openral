@@ -2834,6 +2834,12 @@ class ObjectTracker:
             # let go (16 stops on a released banana the locator, boxing the table, never
             # re-found).
             seed = _grown(q.prior, PRIOR_MARGIN_M) if q.prior is not None else q.query.seed
+            if seed is not None and seed.frame_id != self.store.frame_id:
+                # A fixed-frame seed (a recalled memory node in `map`, #631) searches where
+                # the session re-expressed it (`within`), else not at all: an off-frame box
+                # would crop nothing and lose the workspace crop below.
+                w = q.within
+                seed = w if w is not None and w.frame_id == self.store.frame_id else None
             base = TrackerRequest(
                 "locate_in_view", cam, stamp, prio, q_served, q.query.label, q.key,
                 roi_norm_xyxy=self._locate_roi(seed or self.search_region, frame),

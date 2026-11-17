@@ -556,6 +556,35 @@ def test_a_locate_is_cropped_to_the_declared_workspace_or_the_seed() -> None:
     assert 0.0 <= req.roi_norm_xyxy[0] < req.roi_norm_xyxy[2] <= 1.0
 
 
+def test_a_fixed_frame_seed_searches_where_it_was_re_expressed_or_in_the_workspace() -> None:
+    """#631: a recalled memory node's seed is in ``map``. The locate crops to the query's
+    grid-frame ``within`` (the session's re-expressed seed); with none it keeps the workspace
+    crop, never losing every crop to a box in another frame."""
+    from openral_core import PlaceRegion, Pose6D
+
+    x, y = _RIG.centre_xy
+
+    def box(frame: str, half: float) -> PlaceRegion:
+        p = Pose6D(xyz=(x, y, _RIG.support_z + 0.05), quat_xyzw=(0, 0, 0, 1), frame_id=frame)
+        return PlaceRegion(frame_id=frame, pose=p, half_extents=(half, half, 0.08))
+
+    depth, _ = render([_BANANA], _RIG)
+    frame = CameraFrame(_RIG.name, 1, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
+    seeded = _QUERY.model_copy(update={"seed": box("map", 0.05)})
+
+    def roi(within: PlaceRegion | None) -> tuple[float, float, float, float] | None:
+        tr = ObjectTracker(_RIG.frame, TrackerParams(search_start_s=5.0, search_max_s=60.0))
+        tr.open_query("g", "q0", seeded, "obj:banana@0", stamp_ns=0, within=within)
+        tr.search_region = box(_RIG.frame, 0.15)
+        (req,) = tr.feed(frame, grid=None, grid_stamp_ns=1, wall_s=0.0).requests
+        return req.roi_norm_xyxy
+
+    scoped, workspace = roi(box(_RIG.frame, 0.05)), roi(None)
+    assert scoped is not None and workspace is not None
+    assert scoped[2] - scoped[0] < workspace[2] - workspace[0], "the scope's tighter crop"
+    assert roi(box("map", 0.05)) == workspace, "an unresolved scope keeps the workspace crop"
+
+
 def test_a_locate_asks_for_the_label_and_its_synonyms() -> None:
     """``ObjectQuery.synonyms`` ride the locate as one comma-separated class list (OmDet
     splits on commas), the label first; without synonyms the prompt is the label."""
