@@ -66,3 +66,27 @@ def test_empty_graph_emits_zero_count_and_default_frame(
     assert attrs[semconv.WORLD_SCENE_OBJECTS_COUNT] == 0
     assert attrs[semconv.WORLD_SCENE_OBJECTS_FRAME] == "map"
     assert json.loads(str(attrs[semconv.WORLD_SCENE_OBJECTS_LIST])) == []
+
+
+def test_in_latest_batch_flags_only_objects_the_latest_batch_saw(
+    memory_exporter: InMemorySpanExporter,
+) -> None:
+    """Two real ingests: the mug seen in batch 2 is fresh, the cup from batch 1 is not."""
+    from openral_core import DetectedObject, Pose6D
+    from openral_world_state import SpatialMemory
+
+    def det(label: str, x: float) -> DetectedObject:
+        pose = Pose6D(xyz=(x, 0.0, 0.8), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="map")
+        return DetectedObject(label=label, confidence=0.9, pose=pose)
+
+    mem = SpatialMemory()
+    t1, t2 = 1_700_000_000_000_000_001, 1_700_000_000_000_000_002  # 1 ns apart, past 2**53
+    mem.ingest_detected_objects([det("cup", 0.0), det("mug", 3.0)], now_ns=t1)
+    mem.ingest_detected_objects([det("mug", 3.0)], now_ns=t2)
+    emit_scene_objects_span(mem.to_scene_graph(), source_node="demo", latest_batch_ns=t2)
+    attrs = memory_exporter.get_finished_spans()[0].attributes
+    assert attrs is not None
+    rows = json.loads(str(attrs[semconv.WORLD_SCENE_OBJECTS_LIST]))
+    assert {o["label"]: o["in_latest_batch"] for o in rows} == {"cup": False, "mug": True}
+    # No ingest yet (preloaded map): nothing is "seen now".
+    assert not any(o["in_latest_batch"] for o in scene_objects_payload(mem.to_scene_graph()))

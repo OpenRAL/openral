@@ -174,3 +174,32 @@ def test_rationale_stays_on_host_without_consent(
     consented = exporter.get_finished_spans()[-1]
     assert consented.attributes is not None
     assert consented.attributes[semconv.REASONER_RATIONALE] == RATIONALE
+
+
+def test_emit_prompt_tick_carries_its_text_to_the_store(exporter: InMemorySpanExporter) -> None:
+    """The console folds EmitPrompt rows on ``message``: identical text only, capped."""
+    renderer = ContextRenderer()
+    renderer.append_prompt(PromptRecord(text="stock aisle 3", metadata_json="", stamp_ns=0))
+    text = "Pick the red can from shelf 2 and place it in the basket. " * 10  # 590 chars
+    core = ReasonerCore(
+        client=FakeToolUseClient(
+            responses=[EmitPromptTool(target_topic="/openral/prompt", text=text, rationale="next")]
+        ),
+        min_interval_s=0.0,
+    )
+    core.tick(world_state=None, renderer=renderer, palette=ToolPalette())
+    (span,) = exporter.get_finished_spans()
+    reasoner = _ingest(span)
+    assert reasoner["message"] == text[: semconv.REASONER_MESSAGE_MAX]
+    assert len(str(reasoner["message"])) == semconv.REASONER_MESSAGE_MAX == 300
+
+
+def test_non_prompt_tick_has_no_message(exporter: InMemorySpanExporter) -> None:
+    renderer = ContextRenderer()
+    renderer.append_prompt(PromptRecord(text="stock aisle 3", metadata_json="", stamp_ns=0))
+    core = ReasonerCore(
+        client=FakeToolUseClient(responses=[WaitTool(rationale=RATIONALE)]), min_interval_s=0.0
+    )
+    core.tick(world_state=None, renderer=renderer, palette=ToolPalette())
+    (span,) = exporter.get_finished_spans()
+    assert _ingest(span)["message"] is None

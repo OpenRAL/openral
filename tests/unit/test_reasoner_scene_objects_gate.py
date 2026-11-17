@@ -42,6 +42,7 @@ class _Holder:
         self._spatial_memory = memory
         self._scene_objects_key: tuple[object, ...] | None = None
         self._scene_objects_emitted_monotonic: float = 0.0
+        self._latest_batch_ns: int | None = None
         self._logger = rclpy.logging.get_logger("test_scene_objects_gate")
 
     def get_name(self) -> str:
@@ -115,3 +116,28 @@ def test_keepalive_reemits_unchanged_scene(memory_exporter: InMemorySpanExporter
     holder._scene_objects_emitted_monotonic -= ReasonerNode._SCENE_OBJECTS_KEEPALIVE_S + 1.0
     holder.emit()
     assert len(memory_exporter.get_finished_spans()) == 2
+
+
+def test_seen_now_change_emits_but_new_batch_stamp_alone_does_not(
+    memory_exporter: InMemorySpanExporter,
+) -> None:
+    """A batch that changes WHICH objects are seen re-emits; a same-set batch does not."""
+    import json
+
+    from openral_observability import semconv
+
+    holder = _make_holder()
+    holder._spatial_memory.upsert_node(_object_node("obj-a", 1.0))
+    holder.emit()
+    seen5 = _object_node("obj-a", 1.0).model_copy(update={"last_seen_ns": 5})
+    holder._spatial_memory.upsert_node(seen5)
+    holder._latest_batch_ns = 5  # obj-a now in the latest batch
+    holder.emit()
+    seen6 = _object_node("obj-a", 1.0).model_copy(update={"last_seen_ns": 6})
+    holder._spatial_memory.upsert_node(seen6)
+    holder._latest_batch_ns = 6  # newer batch, same seen set
+    holder.emit()
+    spans = memory_exporter.get_finished_spans()
+    assert len(spans) == 2
+    rows = json.loads(str(spans[1].attributes[semconv.WORLD_SCENE_OBJECTS_LIST]))  # type: ignore[index]
+    assert {r["id"]: r["in_latest_batch"] for r in rows}["obj-a"] is True

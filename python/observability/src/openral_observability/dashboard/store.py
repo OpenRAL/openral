@@ -1281,7 +1281,9 @@ class TelemetryStore:
             # Durable spatial-memory scene-object graph. One span per emit
             # (0.2 Hz from the Reasoner's preloaded map today). ``objects`` is a
             # decoded list of {id,label,x,y,z,frame_id,confidence,
-            # last_seen_ns,observation_count,is_container} dicts.
+            # last_seen_ns,observation_count,is_container,in_latest_batch}
+            # dicts (passed through unchanged; ``in_latest_batch`` = seen in the
+            # newest detection batch the world state ingested).
             object_list = attrs.get("openral.world_state.scene_objects.list")
             self._topics["scene_objects"].update(
                 {
@@ -1422,6 +1424,7 @@ class TelemetryStore:
                 "llm_s": attrs.get(semconv.REASONER_LLM_S),
                 "inflight_skill": attrs.get(semconv.REASONER_INFLIGHT_SKILL),
                 "inflight_state": attrs.get(semconv.REASONER_INFLIGHT_STATE),
+                "message": attrs.get(semconv.REASONER_MESSAGE),
                 "detail": _reasoner_detail(attrs),
             }
         )
