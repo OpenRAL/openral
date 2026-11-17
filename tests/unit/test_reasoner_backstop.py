@@ -340,3 +340,16 @@ def test_a_scheduled_retry_is_not_dropped_by_an_empty_palette() -> None:
     assert retried.suppressed_reason == ""
     assert retried.trigger == "llm_error_retry"
     assert retried.tool_call == _emit("retried")
+
+
+def test_a_lapsed_wait_is_not_dropped_by_an_empty_palette() -> None:
+    """Bare prompt, bare reasoner: the drained prompt leaves the palette empty, yet the
+    model's ``wait(until='timeout')`` still re-decides at its timeout."""
+    rig = _Rig(WaitTool(until="timeout", timeout_s=5.0), _emit("re-decided"), palette=ToolPalette())
+    rig.renderer.append_prompt(PromptRecord(text="check back in 5 s", metadata_json="", stamp_ns=0))
+    rig.tick(force=True, trigger="prompt")
+    rig.now += 5.0
+    result = rig.tick()
+    assert result.suppressed_reason == ""
+    assert result.trigger == "wait_timeout"
+    assert result.tool_call == _emit("re-decided")
