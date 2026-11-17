@@ -46,7 +46,7 @@ _VENV_SITE = os.environ.get("OPENRAL_VENV_SITE")
 if _VENV_SITE and os.path.isdir(_VENV_SITE):
     site.addsitedir(_VENV_SITE)
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 import numpy as np
@@ -1207,6 +1207,63 @@ _ESTIMATED_DEPTH_MODEL = "depth-anything/DA3METRIC-LARGE"
 _ESTIMATED_DEPTH_PORT = 5772
 
 
+def _optical_mounts(sensors: Sequence[SensorSpec], hal_mode: str) -> dict[str, str]:
+    """``{mount frame: optical child}`` the launch publishes for RGB cameras on a real deploy.
+
+    The object lift looks an RGB camera up in
+    ``openral_core.depth_extrinsic.image_frame_id``; where that is the REP-103 optical
+    child of the camera's mount frame (its own body-convention mount, or the sensor it
+    ``shares_mount_with``), this names ``{mount frame: that child}`` — derived from
+    ``image_frame_id`` itself, so the launch publishes exactly the frame the lift reads.
+    In sim the sensor bridge publishes it; on hardware the launch must, or every
+    detection from the camera is dropped. ``sensors`` must be the set the lift resolves
+    over (the manifest's sensors and its ``sensor_bundles``'), plus the scene's.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> metal = RobotDescription.from_yaml("robots/makermods_metal/robot.yaml").sensors
+        >>> _optical_mounts(metal, "real")
+        {'top_camera': 'top_camera_optical_frame'}
+        >>> _optical_mounts(metal, "sim")
+        {}
+    """
+    from openral_core.depth_extrinsic import image_frame_id
+
+    if hal_mode == "sim":
+        return {}
+    by_name = {s.name: s for s in sensors}
+    mounts: dict[str, str] = {}
+    for s in sensors:
+        if s.modality != "rgb":
+            continue
+        mount = by_name.get(s.shares_mount_with or s.name, s)
+        frame = image_frame_id(s, sensors)
+        if frame != str(mount.frame_id):
+            mounts[str(mount.frame_id)] = frame
+    return mounts
+
+
+def _optical_tf_node(parent: str, optical: str) -> Node:
+    """Static ``parent -> optical`` TF: REP-103 body (x fwd, z up) to optical (z fwd, y down).
+
+    The quaternion is ``openral_hal.depth_cloud.BODY_TO_OPTICAL_QUAT_XYZW``, the sim
+    bridge's ``_publish_optical_mount`` convention.
+    """
+    from openral_hal.depth_cloud import BODY_TO_OPTICAL_QUAT_XYZW
+
+    qx, qy, qz, qw = (str(v) for v in BODY_TO_OPTICAL_QUAT_XYZW)
+    return Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name=f"static_{parent}_to_{optical}",
+        arguments=[
+            *("--qx", qx, "--qy", qy, "--qz", qz, "--qw", qw),
+            *("--frame-id", parent, "--child-frame-id", optical),
+        ],
+        output="log",
+    )
+
+
 def _build_estimated_depth_nodes(
     camera: str,
     *,
@@ -1234,24 +1291,7 @@ def _build_estimated_depth_nodes(
     """
     from launch.actions import ExecuteProcess
 
-    optical_tf = (
-        [
-            Node(
-                package="tf2_ros",
-                executable="static_transform_publisher",
-                name=f"static_{optical_parent}_to_{cloud_frame}",
-                # REP-103 body (x fwd, z up) -> optical (z fwd, y down): the quaternion
-                # openral_hal.depth_cloud.BODY_TO_OPTICAL_QUAT_XYZW.
-                arguments=[
-                    *("--qx", "-0.5", "--qy", "0.5", "--qz", "-0.5", "--qw", "0.5"),
-                    *("--frame-id", optical_parent, "--child-frame-id", cloud_frame),
-                ],
-                output="log",
-            )
-        ]
-        if optical_parent is not None
-        else []
-    )
+    optical_tf = [] if optical_parent is None else [_optical_tf_node(optical_parent, cloud_frame)]
     return [
         *optical_tf,
         ExecuteProcess(
@@ -4709,8 +4749,13 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # Manifest sensors then DeployScene sensors (`merge_deploy_sensors`): a scene never names
     # a robot sensor, so a robot sensor's pose is always the manifest's; iterating only the
     # manifest would silently drop the mount publish for a workcell-mounted camera declared
-    # entirely at scene level.
-    for sensor in merge_deploy_sensors(description.sensors, scene_sensors):
+    # entirely at scene level. Sensor-bundle sensors too: the object lift resolves cameras
+    # over the manifest's sensors and its bundles' (`image_frame_id` below).
+    deploy_sensors = merge_deploy_sensors(
+        [*description.sensors, *(s for b in description.sensor_bundles for s in b.sensors)],
+        scene_sensors,
+    )
+    for sensor in deploy_sensors:
         if sensor.parent_frame is None or sensor.static_transform_xyz_rpy is None:
             continue
         sx, sy, sz, sroll, spitch, syaw = sensor.static_transform_xyz_rpy
@@ -4740,6 +4785,12 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 output="log",
             ),
         )
+    # Each body-convention camera mount's REP-103 optical child, which the object lift
+    # looks a camera up in (``image_frame_id``). The sim bridge publishes it in sim.
+    optical_mounts = _optical_mounts(deploy_sensors, hal_mode)
+    extra_nodes.extend(
+        _optical_tf_node(parent, optical) for parent, optical in optical_mounts.items()
+    )
 
     # Opt-in SLAM. The backend is selected by
     # ``slam_backend`` (resolved from capabilities in deploy_sim.py):
@@ -4910,7 +4961,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         from openral_core.depth_extrinsic import resolve_estimated_depth_camera
         from openral_core.exceptions import ROSConfigError
 
-        estimated_sensors = merge_deploy_sensors(description.sensors, scene_sensors)
+        estimated_sensors = deploy_sensors
         mount = resolve_estimated_depth_camera(
             estimated_sensors,
             estimated_depth_camera,
@@ -4939,7 +4990,10 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 rgb_camera_info_topic=estimated_info_topic,
                 rgb_image_rectified=estimated_rectified,
                 cloud_frame=mount.cloud_frame,
-                optical_parent=mount.optical_parent,
+                # Already published with the sensor mounts above (real deploys).
+                optical_parent=None
+                if optical_mounts.get(mount.optical_parent or "") == mount.cloud_frame
+                else mount.optical_parent,
                 use_sim_time=use_sim_time,
             )
         )
