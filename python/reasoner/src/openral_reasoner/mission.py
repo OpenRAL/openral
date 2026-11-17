@@ -294,6 +294,13 @@ class TaskState:
             from the operator goal is ``0``; a child spliced in by
             ``MissionState.subdivide_active`` is ``parent.depth + 1``. Bounds
             the subdivision ladder against ``DEFAULT_MAX_SUBDIVIDE_DEPTH``.
+        steps: One entry per dispatch at this task, in order: the rSkill, the
+            prompt it got, and how it came back (``running`` until the skill
+            returns, then ``ok`` or ``failed``). Lets the dashboard show a task the
+            reasoner worked through in several skills (navigate, then restock)
+            step by step. Display only: ``attempts`` / ``failures`` drive the ladder.
+        parent_text: Text of the task this one was split from by
+            ``MissionState.subdivide_active``, or ``None`` for a top-level task.
     """
 
     task_id: str
@@ -306,6 +313,8 @@ class TaskState:
     last_trace_id: str | None = None
     last_verdict: str | None = None
     depth: int = 0
+    steps: list[dict[str, str]] = dataclasses.field(default_factory=list)
+    parent_text: str | None = None
 
 
 class MissionState:
@@ -407,8 +416,14 @@ class MissionState:
 
     # ── mutators (each returns the new active task, or None when finished) ────
 
-    def record_attempt(self, *, rskill_id: str | None, trace_id: str | None = None) -> None:
-        """Note a dispatch against the active task (increments ``attempts``)."""
+    def record_attempt(
+        self,
+        *,
+        rskill_id: str | None,
+        trace_id: str | None = None,
+        prompt: str = "",
+    ) -> None:
+        """Note a dispatch against the active task (increments ``attempts``, opens a step)."""
         task = self.active()
         if task is None:
             return
@@ -418,6 +433,22 @@ class MissionState:
             task.tried_rskill_ids = (*task.tried_rskill_ids, rskill_id)
         if trace_id is not None:
             task.last_trace_id = trace_id
+        task.steps.append({"rskill_id": rskill_id or "", "prompt": prompt, "outcome": "running"})
+
+    def settle_step(self, *, succeeded: bool) -> None:
+        """Close the active task's running step as ``ok`` or ``failed`` (display only).
+
+        Example:
+            >>> m = MissionState.from_prompt("go to S3 and restock")
+            >>> m.record_attempt(rskill_id="nav", prompt="go to S3")
+            >>> m.settle_step(succeeded=True)
+            >>> m.record_attempt(rskill_id="restock", prompt="restock slot 1")
+            >>> [s["outcome"] for s in m.active().steps]
+            ['ok', 'running']
+        """
+        task = self.active()
+        if task is not None and task.steps and task.steps[-1]["outcome"] == "running":
+            task.steps[-1]["outcome"] = "ok" if succeeded else "failed"
 
     def mark_verifying(self) -> None:
         """Move the active task ``active → verifying`` (a skill returned; gating)."""
@@ -472,8 +503,8 @@ class MissionState:
         Replaces the blocked active task in the queue with ``subtasks`` —
         flat children ``t<n>.1, t<n>.2, …`` at ``depth + 1`` — and activates
         the first. The parent is removed, children take its slot, and any
-        pending tail keeps its order, so the ledger and dashboard need no
-        change.
+        pending tail keeps its order. Each child keeps the parent's text in
+        ``parent_text`` so the dashboard can still show the goal they split.
 
         Refused (returns ``None``) when the active task is already at
         ``max_depth`` (``DEFAULT_MAX_SUBDIVIDE_DEPTH``), when there is no
@@ -509,6 +540,7 @@ class MissionState:
                 text=text,
                 status="active" if i == 0 else "pending",
                 depth=task.depth + 1,
+                parent_text=task.text,
             )
             for i, text in enumerate(children)
         ]
@@ -556,6 +588,8 @@ class MissionState:
                     "last_trace_id": t.last_trace_id,
                     "last_verdict": t.last_verdict,
                     "depth": t.depth,
+                    "steps": [dict(s) for s in t.steps],
+                    "parent_text": t.parent_text,
                 }
                 for t in self._tasks
             ],
@@ -583,6 +617,12 @@ class MissionState:
                     last_trace_id=raw.get("last_trace_id"),
                     last_verdict=raw.get("last_verdict"),
                     depth=int(raw.get("depth", 0)),
+                    steps=[
+                        {k: str(s.get(k, "")) for k in ("rskill_id", "prompt", "outcome")}
+                        for s in raw.get("steps") or ()
+                        if isinstance(s, dict)
+                    ],
+                    parent_text=raw.get("parent_text"),
                 )
             )
         valid_statuses = {"pending", "active", "verifying", "done", "abandoned"}
@@ -631,6 +671,9 @@ class MissionState:
                     "pending": self.pending_verdicts.get(t.task_id, 0),
                     "verdict": t.last_verdict,
                     "rskill_id": t.last_rskill_id,
+                    "depth": t.depth,
+                    "parent": t.parent_text,
+                    "steps": [dict(s) for s in t.steps],
                 }
                 for t in self._tasks
             ],

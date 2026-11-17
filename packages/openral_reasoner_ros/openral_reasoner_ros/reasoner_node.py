@@ -4697,6 +4697,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         if dispatch_completes_task is None:  # no dispatch-time capture: read the palette
             entry = self._palette.skill(call.rskill_id)
             dispatch_completes_task = entry is not None and entry.completes_task_on_success
+        mission.settle_step(succeeded=succeeded)  # the Mission card's per-step row
         if not succeeded:  # counted once, here; the reward gate never counts it again
             self._count_failure(active)
         step = task_step_without_verifier(
@@ -5843,7 +5844,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # is a manipulation attempt at the active task.
         mission = self._renderer.mission
         if mission is not None and mission.active() is not None:
-            mission.record_attempt(rskill_id=call.rskill_id, trace_id=traceparent)
+            mission.record_attempt(
+                rskill_id=call.rskill_id, trace_id=traceparent, prompt=call.prompt or ""
+            )
             self._unverified_success = None
             # VLM-adjudicated completion amendment — an execute dispatch is real progress on the
             # active task, so the per-task locate budget resets (locate cycles only

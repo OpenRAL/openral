@@ -37,9 +37,10 @@ latency_budget:
 
 description: >
   S2 decision procedure: break a compound, multi-step instruction into an ordered
-  list of subtasks, each with its own verifiable done-condition (an internal TODO
-  list), executing and verifying them in order. Composes execute_rskill,
-  query_scene, query_task_progress, memory_write and memory_search.
+  list of subtasks in the mission ledger (decompose_mission) before the first
+  dispatch, each with its own verifiable done-condition, executing and verifying
+  them in order. Composes decompose_mission, execute_rskill, query_scene and
+  query_task_progress.
 
 # RSkillAction.PLAN — registry/discovery metadata only (a playbook is role s2,
 # never an ExecuteSkill dispatch verb).
@@ -61,14 +62,13 @@ paper_url: "https://github.com/OpenRAL/openral/blob/master/docs/decisions.md"
 
 # The playbook decision-procedure contract.
 playbook:
-  trigger: "the goal is a compound, multi-step instruction (multiple verbs, a 'then'/'after' sequence, or several sub-goals)"
+  trigger: "the goal is a compound, multi-step instruction (multiple verbs, a 'then'/'after' sequence, several sub-goals, or a navigation followed by a manipulation)"
   body_uri: "./PLAYBOOK.md"
   composes_tools:
+    - "decompose_mission"
     - "execute_rskill"
     - "query_scene"
     - "query_task_progress"
-    - "memory_write"
-    - "memory_search"
     - "emit_prompt"
   done_predicate: "every subtask's verifiable goal has been confirmed met, or the mission has been handed off"
   max_steps: 24

@@ -8,7 +8,7 @@ the LLM as one opaque string and forgotten on the pull-once prompt drain.
 
 from __future__ import annotations
 
-from typing import TypeVar
+from typing import Any, TypeVar, cast
 
 from openral_reasoner import (
     MissionState,
@@ -281,3 +281,27 @@ def test_rearm_active_moves_verifying_back_to_active() -> None:
     assert rearmed is m.active() and rearmed.status == "active"
     # idempotent on an already-active task.
     assert _some(m.rearm_active()).status == "active"
+
+
+def test_summary_carries_steps_and_parent_for_the_mission_card() -> None:
+    """A navigate-then-restock task shows each step; a split keeps its parent goal."""
+    m = MissionState.from_prompt("go to shelf S3 and restock lower slot 1")
+    m.record_attempt(rskill_id="nav", prompt="go to S3")
+    m.settle_step(succeeded=True)
+    m.record_attempt(rskill_id="restock", prompt="restock slot 1")
+    m.settle_step(succeeded=False)
+    m.record_attempt(rskill_id="restock", prompt="restock slot 1")
+    steps = cast("list[dict[str, Any]]", m.to_summary()["tasks"])[0]["steps"]
+    assert [(s["rskill_id"], s["outcome"]) for s in steps] == [
+        ("nav", "ok"),
+        ("restock", "failed"),
+        ("restock", "running"),
+    ]
+    m.subdivide_active(["navigate to shelf S3", "restock box x1 into lower slot 1"])
+    tasks = cast("list[dict[str, Any]]", m.to_summary()["tasks"])
+    assert [(t["id"], t["depth"], t["parent"], t["steps"]) for t in tasks] == [
+        ("t1.1", 1, "go to shelf S3 and restock lower slot 1", []),
+        ("t1.2", 1, "go to shelf S3 and restock lower slot 1", []),
+    ]
+    restored = MissionState.from_state_dict(m.to_state_dict())
+    assert restored.to_summary()["tasks"] == tasks

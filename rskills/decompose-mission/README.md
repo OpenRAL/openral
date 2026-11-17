@@ -14,9 +14,9 @@ tags:
 inference: false
 openral:
   description: 'S2 decision procedure: break a compound, multi-step instruction into
-    an ordered list of subtasks, each with its own verifiable done-condition (an internal
-    TODO list), executing and verifying them in order. Composes execute_rskill, query_scene,
-    query_task_progress, memory_write and memory_search.'
+    an ordered list of subtasks in the mission ledger (decompose_mission) before the
+    first dispatch, each with its own verifiable done-condition, executing and verifying
+    them in order. Composes decompose_mission, execute_rskill, query_scene and query_task_progress.'
   model_family: null
   min_vram_gb: null
   latency_ms: 5000.0
@@ -45,8 +45,8 @@ walkthrough: the stack-bowls / drawer / cookie-box example in
 
 This playbook is content, not code. When installed, the reasoner injects
 `PLAYBOOK.md` into its system prompt and follows the SOP, composing tools it
-already has (`execute_rskill`, `query_scene`, `query_task_progress`,
-`memory_write`, `memory_search`, `emit_prompt`). It is `role: s2` and is **never**
+already has (`decompose_mission`, `execute_rskill`, `query_scene`,
+`query_task_progress`, `emit_prompt`). It is `role: s2` and is **never**
 dispatched through `ExecuteRskill`. Every motion it triggers is an `execute_rskill`
 → Action chunk → C++ safety kernel — the playbook holds no actuation authority
 (CLAUDE.md §1.1).
