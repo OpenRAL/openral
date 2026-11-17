@@ -160,6 +160,10 @@ def test_the_tracker_loads_the_stations_declared_place_zones() -> None:
                 if ok:
                     assert "zone:upper_slot_2" in node.session.place_zones
                     assert len(node.session.place_zones) == len(zones)
+                    # Station mode: fixed-frame zones resolve through the node's own tf2;
+                    # nothing publishes map here, so the lookup is None (fail closed).
+                    assert node.session.zone_transform is not None
+                    assert node.session.zone_transform("map", 1) is None
             finally:
                 node.destroy_node()
 
@@ -239,6 +243,10 @@ def test_service_answers_are_fed_on_the_process_timer_never_from_their_callback(
         try:
             k = IntrinsicsPinhole(fx=1.0, fy=1.0, cx=0.0, cy=0.0, width=2, height=2)
             frame = CameraFrame("cam", 1, np.zeros((2, 2)), k, None, None)
+            stale = CameraFrame("cam", 1, np.zeros((2, 2)), k, None, None)
+            node._issued_frame = frame  # as `_issue` sets it
+            node._answer(stale, "cam_optical", None, TrackerResult(10**9))
+            assert not node._answers, "an answer about another frame (a station ago) is dropped"
             node._answer(frame, "cam_optical", None, TrackerResult(10**9))  # an unknown request
             assert len(node._answers) == 1  # queued, not fed on this (callback) thread
             assert wait(lambda: not node._answers, 2.0)  # the process timer drained it
@@ -345,3 +353,60 @@ def test_an_invalid_declaration_is_rejected_without_escaping_its_callback() -> N
             assert rig.ground()
         finally:
             node.destroy_node()
+
+
+def test_station_perception_off_keeps_the_held_payload_and_drops_every_allowance() -> None:
+    """Station mode (mobile base driving): the tracker stays ACTIVE with its station
+    perception off. ``/openral/attachment_state`` keeps flowing (so the kernel's attachment
+    stream stays fresh and the base can drive) carrying the held payload only: no grasp / place
+    declaration, so no region and no tracked key reach the kernel. Back on, they return."""
+    pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs")
+    from std_srvs.srv import SetBool
+
+    with tracker_rig() as rig:
+        node: Any = None
+        try:
+            node = rig.tracker("tracking")
+            rig.declare()
+            assert rig.ground()
+            attach, fast = rig.attach, rig.fast
+
+            def hold_seen() -> bool:
+                rig.publish_hold()  # the hand's pose, before the ATTACH
+                return bool(attach)
+
+            assert wait(hold_seen, 5.0)
+            rig.attach_event()
+            assert wait(lambda: bool(attach) and bool(attach[-1].objects), 5.0)
+            [held] = attach[-1].objects
+            client = rig.helper.create_client(SetBool, "/openral/object_tracker/station_perception")
+            assert client.wait_for_service(timeout_sec=5.0)
+
+            def switch(on: bool) -> None:
+                future = client.call_async(SetBool.Request(data=on))
+                assert wait(future.done, 5.0) and future.result().success
+
+            switch(False)
+            n = len(attach)
+
+            def off_published() -> bool:
+                rig.publish_hold()  # the heartbeat runs while joint states are fresh
+                return len(attach) > n + 3
+
+            assert wait(off_published, 5.0)
+            for m in attach[n:]:
+                assert [o.object_id for o in m.objects] == [held.object_id]
+                assert not m.grasp_declaration_valid and not m.place_declaration_valid
+            # The kernel's copy stays fresh: world_state_fast carries a recent attachment stamp.
+            now_ns = rig.helper.get_clock().now().nanoseconds
+            assert fast and now_ns - fast[-1].attachment_stamp_ns < 1_000_000_000
+            assert [o.object_id for o in fast[-1].attached_objects] == [held.object_id]
+
+            switch(True)
+            n = len(attach)
+            assert wait(off_published, 5.0)
+            assert attach[-1].grasp_declaration_valid and attach[-1].objects
+        finally:
+            if node is not None:
+                node.destroy_node()

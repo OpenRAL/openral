@@ -529,7 +529,9 @@ def test_the_kernel_accepts_the_retreat_only_while_the_frozen_record_is_publishe
         stamp_ns=time.time_ns(),
     )
     # The record the bridge publishes during the window — the code under test.
-    frozen = freeze_released_attachment(held, base_link=_BASE, t_base_from_link=t_hand)
+    frozen = freeze_released_attachment(
+        held, base_link=_BASE, t_base_from_link=t_hand, stamp_ns=held.stamp_ns
+    )
     np.testing.assert_allclose(frozen.pose_in_link.xyz, _PAYLOAD_CENTRE, atol=1e-9)
 
     node_name = f"safety_kernel_release_{uuid.uuid4().hex[:8]}"

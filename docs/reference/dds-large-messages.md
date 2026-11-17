@@ -137,6 +137,28 @@ its lifecycle and `estop_reset` services from a single-threaded executor, so a f
 client (an operator's `ros2 lifecycle get`) could have held its only thread for up to 5 s.
 `tests/unit/test_fastdds_profile_service_scope.py` holds the profile to the twenty names.
 
+### Localhost discovery reach
+
+The profile also sets `maxInitialPeersRange` to 128 on the UDP transport.
+
+With `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` there is no multicast. A participant announces
+itself only to the unicast ports of the first N participant ids on the host, so two
+participants that both start after the Nth never discover each other.
+
+Measured on Jazzy (2026-11-16) with 60 one-node processes, each serving one service, and a
+61st process probing them:
+
+| Profile | Services found |
+|---|---|
+| Shipped before this change | processes 1-30 only; none of 34-60 |
+| `maxInitialPeersRange` 128 | all 60 |
+| `SUBNET` discovery, no profile | all 60 |
+
+A deploy sim graph is about 50 processes, and Nav2 starts last. Its `bt_navigator` never found
+`planner_server` or `behavior_server`, `lifecycle_manager_navigation` aborted the bring-up, and
+every navigate goal was rejected as "action server inactive". The same blind spot explains
+lifecycle replies that never arrived.
+
 ## Reproduce
 
 ```bash

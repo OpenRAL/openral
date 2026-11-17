@@ -249,9 +249,18 @@ own re-dispatch recovers.
 Every `ReasonerCore.tick` opens an OTel span `reasoner.tick` (via
 `openral_observability.reasoner_span`) with attributes including `reasoner.tick.idx`,
 `reasoner.model`, `reasoner.force`, `reasoner.tool`, `reasoner.rskill_id`,
-`reasoner.tier` (`A`/`B`/`C`/`D`/`heartbeat`), and `reasoner.suppressed_reason`
-(`min_interval` / `retry_cap` / `retry_cap_hold` / `mission_finished` /
-`heartbeat_idle` / `palette_empty`). The captured `traceparent` is
+`reasoner.tier` (`A`/`B`/`C`/`D`/`heartbeat`), `reasoner.suppressed_reason` (on the span
+only `palette_empty` and `retry_cap`; `min_interval` / `retry_cap_hold` / `mission_finished` /
+`heartbeat_idle` suppress the tick before a span opens and appear only on the returned
+`ReasonerTickResult`), `reasoner.error_kind`, `reasoner.llm_s`, `reasoner.inflight_skill` and
+`reasoner.inflight_state` (the skill in flight and whether it is `dispatching` or `running`, if
+any) and `reasoner.rationale` (the model's stated why, capped at 500 chars, stamped only when
+the OTLP endpoint is on the deployer's own network or `OPENRAL_TELEMETRY_TEXT_CONSENT=1`,
+CLAUDE.md §3). The dashboard store folds the in-flight skill and state, tier, LLM latency,
+suppressed reason, error kind and rationale into `topics.reasoner.detail`, one line such as
+`stocking running · heartbeat · 2.3s — The stocking skill is running…`, and appends the same
+line to each `reasoner.tick` row of the event log (the `topics.reasoner` slot keeps only the
+latest tick). The pinned robot console bundle does not render `detail` yet. The captured `traceparent` is
 threaded onto outbound `emit_prompt` payloads so the bag↔OTel correlator can join a
 published prompt back to the producing tick. Watch it live on `openral dashboard`.
 

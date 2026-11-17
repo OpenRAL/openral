@@ -63,6 +63,7 @@ from rich.console import Console
 if TYPE_CHECKING:
     from openral_core import (
         DeployScene,
+        PlaceZone,
         RobotDescription,
         RSkillManifest,
         SensorOverlay,
@@ -103,6 +104,87 @@ class _HalSpec:
 _GENERIC_HAL_PACKAGE: Final = "openral_hal_node"
 #: Kinds whose base never moves, so a base-frame box stays on the furniture it names.
 _FIXED_BASE_KINDS: Final = frozenset({EmbodimentKind.MANIPULATOR, EmbodimentKind.BIMANUAL})
+
+
+def _check_place_zone_frames(
+    zones: Sequence[PlaceZone],
+    description: RobotDescription,
+    robot_id: str,
+    *,
+    map_published: bool,
+) -> None:
+    """Refuse a place zone in a frame its robot cannot hold it in (``PlaceZone``).
+
+    A zone's ``region.frame_id`` is the robot base frame (the voxel grid's) — only on a
+    fixed-base kind, where the base cannot carry the box away from the furniture — or the
+    robot's ``map_frame``, when this deploy has a map (``map_published``: its SLAM, or the
+    platform's own navigation), gravity-aligned so the tracker can re-express it yaw-only
+    (``rebase_box``). The ``odom_frame`` is refused: odometry drifts while a mobile base
+    drives, so an odom box slides off the furniture, and a fixed base publishes no odom.
+    Any other frame is refused.
+
+    Args:
+        zones: The scene's declared place zones.
+        description: The robot manifest.
+        robot_id: The robot id, for messages.
+        map_published: Something in this deploy publishes ``map_frame``.
+
+    Raises:
+        ROSConfigError: A zone in the base frame of a moving base, in the odom frame, in the
+            map frame of a deploy without a map, in an unknown frame, a map-frame zone that
+            is not gravity-aligned, or an alias repeated among base-frame zones.
+    """
+    from openral_core.geometry import is_gravity_aligned
+
+    # A repeated alias names the same slot at several stations; only a map-frame zone can
+    # be told apart by station (the tracker's reach choice). Among base-frame zones it is
+    # ambiguous at every pose: refused, as before such repeats were allowed at all.
+    base_aliases = [
+        a for z in zones if z.region.frame_id == description.base_frame for a in z.aliases
+    ]
+    repeated = sorted({a for a in base_aliases if base_aliases.count(a) > 1})
+    if repeated:
+        raise ROSConfigError(
+            f"place_zones of {robot_id!r} repeat the alias(es) {repeated} among zones in the "
+            f"base frame {description.base_frame!r}; only map-frame zones may share one "
+            "(PlaceZone)."
+        )
+    for zone in zones:
+        frame = zone.region.frame_id
+        if frame == description.base_frame:
+            if description.embodiment_kind not in _FIXED_BASE_KINDS:
+                raise ROSConfigError(
+                    f"place_zones on a {description.embodiment_kind.value!r} robot "
+                    f"({robot_id!r}): zone {zone.name!r} is a box fixed in the robot base "
+                    f"frame {frame!r}, declared only for a fixed-base station; declare it in "
+                    f"the map frame {description.map_frame!r} instead (PlaceZone)."
+                )
+        elif frame == description.map_frame:
+            if not map_published:
+                raise ROSConfigError(
+                    f"place zone {zone.name!r} is in {robot_id!r}'s map frame {frame!r}, but "
+                    "nothing in this deploy publishes it (SLAM off and the platform does not "
+                    "own navigation): the zone would never resolve. Enable SLAM, or declare "
+                    "it in the base frame of a fixed-base robot (PlaceZone)."
+                )
+            if not is_gravity_aligned(zone.region.pose.quat_xyzw):
+                raise ROSConfigError(
+                    f"place zone {zone.name!r} in {frame!r} must be gravity-aligned (a yaw-only "
+                    "quaternion): it is re-expressed in the base frame yaw-only (PlaceZone)."
+                )
+        elif frame == description.odom_frame:
+            raise ROSConfigError(
+                f"place zone {zone.name!r} is in {robot_id!r}'s odom frame {frame!r}: odometry "
+                "drifts while the base drives, so the box would slide off the furniture (and a "
+                f"fixed base publishes no odom). Declare it in the map frame "
+                f"{description.map_frame!r} (PlaceZone)."
+            )
+        else:
+            raise ROSConfigError(
+                f"place zone {zone.name!r} is in {frame!r}, which is neither {robot_id!r}'s "
+                f"base frame {description.base_frame!r} nor its map frame "
+                f"{description.map_frame!r} (PlaceZone)."
+            )
 
 
 def _scene_builds_bare_twin(deploy_scene: DeployScene | None) -> bool:
@@ -2132,17 +2214,61 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             f"place_declaration_json:={deploy_scene.place_declaration.model_dump_json()}"
         )
     # The station's declared place zones (shelf slots): the runner names the one a goal's
-    # prompt names, the object tracker publishes its box as the place region. A zone is a
-    # base-frame box, sound only where the base cannot move (`PlaceZone`): refused otherwise.
+    # prompt names, the object tracker publishes its box as the place region. A base-frame
+    # zone is sound only where the base cannot move; a fixed-frame (map / odom) one the
+    # tracker re-expresses in the grid frame through tf2 every tick (`PlaceZone`).
     if deploy_scene is not None and deploy_scene.place_zones:
-        if description.embodiment_kind not in _FIXED_BASE_KINDS:
-            raise ROSConfigError(
-                f"place_zones on a {description.embodiment_kind.value!r} robot "
-                f"({robot_id!r}): a zone is a box fixed in the robot base frame, declared "
-                "only for a fixed-base station (PlaceZone)."
-            )
+        from openral_hal.mobile_base_bridge import platform_owns_navigation
+
+        _check_place_zone_frames(
+            deploy_scene.place_zones,
+            description,
+            robot_id,
+            map_published=enable_slam or platform_owns_navigation(description, hal_mode=hal_mode),
+        )
         zones = "[" + ",".join(z.model_dump_json() for z in deploy_scene.place_zones) + "]"
         argv_template.append(f"place_zones_json:={zones}")
+    # The cell's named navigation goals (ADR-0133): the reasoner seeds them as spatial-memory
+    # places, so resolve_place and its context know them. Refused unless the robot drives, a
+    # navigation stack is running (ours or the platform's) and the goals are in its map frame.
+    if deploy_scene is not None and deploy_scene.nav_goals:
+        from openral_core import NavGoal
+        from openral_hal.mobile_base_bridge import describes_mobile_base, platform_owns_navigation
+        from pydantic import TypeAdapter
+
+        if not (
+            describes_mobile_base(description)
+            or EmbodimentKind.MOBILE_BASE.value in description.capabilities.embodiment_tags
+        ):
+            raise ROSConfigError(
+                f"nav_goals on {robot_id!r}, which has no mobile base: a navigation goal is a "
+                "pose the base drives to (NavGoal, ADR-0133)."
+            )
+        wrong = sorted(
+            {g.name for g in deploy_scene.nav_goals if g.pose.frame_id != description.map_frame}
+        )
+        if wrong:
+            raise ROSConfigError(
+                f"nav_goals {wrong} are not in {robot_id!r}'s map frame "
+                f"{description.map_frame!r}, the frame Nav2 plans in."
+            )
+        # The goals are scene knowledge for the reasoner's navigation: a deploy without
+        # either (--no-enable-reasoner, Nav2 off or auto-disabled on a robot without depth)
+        # still runs, without them -- said, never silently dropped.
+        if not enable_reasoner:
+            _console.print(
+                "[yellow]nav_goals: the reasoner is off, which alone reads them; not "
+                "forwarded.[/yellow]"
+            )
+        elif not (enable_nav2 or platform_owns_navigation(description, hal_mode=hal_mode)):
+            _console.print(
+                f"[yellow]nav_goals: no navigation stack on {robot_id!r} (Nav2 off and the "
+                "platform does not own navigation), nothing could drive to them; not "
+                "forwarded.[/yellow]"
+            )
+        else:
+            goals = TypeAdapter(list[NavGoal]).dump_json(deploy_scene.nav_goals).decode()
+            argv_template.append(f"nav_goals_json:={goals}")
     # The grasp-phase sibling (real pick-and-place design §2.1), same path.
     if deploy_scene is not None and deploy_scene.grasp_declaration is not None:
         argv_template.append(

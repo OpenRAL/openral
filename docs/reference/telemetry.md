@@ -239,6 +239,10 @@ when the OTLP endpoint is on the deployer's own network (loopback, private or li
 address, or a dotless host such as `otelcol`) or the deployer set
 `OPENRAL_TELEMETRY_IMAGE_CONSENT=1` (`compliance.images_may_leave_host`); withholding
 logs `telemetry.images_withheld` once per endpoint.
+The reasoner tick's free-text `reasoner.rationale` follows the same rule with its own
+consent, `OPENRAL_TELEMETRY_TEXT_CONSENT=1` (`compliance.free_text_may_leave_host`; a
+rationale paraphrases the operator's prompt and the scene); withholding logs
+`telemetry.free_text_withheld` once per endpoint.
 
 ## Logs
 

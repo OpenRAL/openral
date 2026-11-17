@@ -33,6 +33,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_sim.backends.isaac_sim import (
     IsaacDomeLight,
     IsaacEnvironmentArchive,
+    IsaacLinkAttachment,
     IsaacSimOptions,
     IsaacStageObject,
     _environment_spec,
@@ -67,6 +68,7 @@ def test_the_shipped_scene_loads_and_validates() -> None:
 def test_default_options_change_nothing_for_existing_scenes() -> None:
     assert _environment_spec(IsaacSimOptions()) == {
         "stage_objects": [],
+        "link_attachments": [],  # empty: no stage prim rides the robot
         "strip_xform_colliders": False,
         "dome_light": None,
         "joint_effort_limits": {},
@@ -101,6 +103,12 @@ def test_the_pick_orange_scene_caps_the_jaw_at_leisaacs_orange_effort() -> None:
 def test_an_effort_cap_must_be_positive() -> None:
     with pytest.raises(ValueError, match="must be > 0"):
         IsaacSimOptions(joint_effort_limits={"gripper": 0.0})
+
+
+@pytest.mark.parametrize(("pattern", "k"), [("joint[", 1.0), ("joint1", -0.1), ("joint1", 2.5)])
+def test_a_gravity_feed_forward_needs_a_regex_and_a_sane_scale(pattern: str, k: float) -> None:
+    with pytest.raises(ValueError, match="gravity_compensation"):
+        IsaacSimOptions(gravity_compensation={pattern: k})
 
 
 def test_spec_carries_the_stage_fixes_and_the_stage_objects() -> None:
@@ -367,8 +375,89 @@ def test_environment_archive_round_trips(sha: str, stem: str) -> None:
     assert IsaacEnvironmentArchive.model_validate_json(archive.model_dump_json()) == archive
 
 
-@pytest.mark.parametrize("model", [IsaacStageObject, IsaacDomeLight, IsaacEnvironmentArchive])
+@pytest.mark.parametrize(
+    "model", [IsaacStageObject, IsaacDomeLight, IsaacEnvironmentArchive, IsaacLinkAttachment]
+)
 def test_models_export_a_json_schema(model: type[Any]) -> None:
     schema = model.model_json_schema()
     assert schema["title"] == model.__name__
     assert set(model.model_fields) <= set(schema["properties"])
+
+
+def test_a_link_attachment_reaches_the_robot_spec() -> None:
+    # The OpenAMRobot 2.0's lift carriage carries both arm bases: a tote on it keeps its
+    # offset to the arms wherever the base drives.
+    link = "lift_carriage_link"
+    urdf = (_REPO / "robots/openamrobot_v2/openamrobot_v2.urdf").read_text()
+    assert f'<link name="{link}"' in urdf
+    opts = IsaacSimOptions.model_validate({"link_attachments": [{"prim": "Tote", "link": link}]})
+    assert _environment_spec(opts)["link_attachments"] == [
+        {"prim": "Tote", "link": link, "carries": []}
+    ]
+
+
+@pytest.mark.parametrize("prim", ["/World/Tote", "Tote/", "", "Tote bin"])
+def test_a_link_attachment_prim_is_a_path_below_the_environment(prim: str) -> None:
+    with pytest.raises(ValidationError):
+        IsaacLinkAttachment(prim=prim, link="lift_carriage_link")
+
+
+def test_a_link_attachment_names_a_link() -> None:
+    with pytest.raises(ValidationError):
+        IsaacLinkAttachment(prim="Tote", link="")
+
+
+@pytest.mark.parametrize(
+    "attachments",
+    [
+        [{"prim": "Tote", "link": "lift_carriage_link"}, {"prim": "Tote", "link": "base_link"}],
+        [{"prim": "Tote", "link": "lift_carriage_link"}, {"prim": "Tote/Lid", "link": "base_link"}],
+    ],
+    ids=["repeated", "nested"],
+)
+def test_link_attachments_are_distinct_prims(attachments: list[dict[str, str]]) -> None:
+    with pytest.raises(ValidationError, match="link_attachments"):
+        IsaacSimOptions.model_validate({"link_attachments": attachments})
+
+
+def test_a_link_attachment_cannot_also_be_a_graded_stage_object() -> None:
+    with pytest.raises(ValidationError, match="overlapping a stage object"):
+        IsaacSimOptions.model_validate(
+            {
+                "stage_objects": [{"name": "tote", "prim": "Tote/Body"}],
+                "link_attachments": [{"prim": "Tote", "link": "lift_carriage_link"}],
+            }
+        )
+
+
+@given(
+    st.builds(
+        IsaacLinkAttachment,
+        prim=st.from_regex(
+            r"[A-Za-z_][A-Za-z0-9_]{0,8}(/[A-Za-z_][A-Za-z0-9_]{0,8}){0,2}", fullmatch=True
+        ),
+        link=st.text(min_size=1, max_size=20),
+    )
+)
+def test_link_attachment_round_trips(attachment: IsaacLinkAttachment) -> None:
+    assert IsaacLinkAttachment.model_validate_json(attachment.model_dump_json()) == attachment
+
+
+def test_an_attachment_carries_only_dynamic_scene_objects_once() -> None:
+    carton = {
+        "name": "carton",
+        "usd": "isaac:Isaac/Props/YCB/Axis_Aligned_Physics/003_cracker_box.usd",
+        "xyz": [0.0, 0.0, 0.5],
+    }
+    tote = {"prim": "Tote", "link": "lift_carriage_link", "carries": ["carton"]}
+    opts = IsaacSimOptions.model_validate({"objects": [carton], "link_attachments": [tote]})
+    assert _environment_spec(opts)["link_attachments"][0]["carries"] == ["carton"]
+    with pytest.raises(ValidationError, match="not dynamic scene objects"):
+        IsaacSimOptions.model_validate(
+            {"objects": [{**carton, "dynamic": False}], "link_attachments": [tote]}
+        )
+    with pytest.raises(ValidationError, match="not dynamic scene objects"):
+        IsaacSimOptions.model_validate({"link_attachments": [tote]})
+    lid = {"prim": "Lid", "link": "lift_carriage_link", "carries": ["carton"]}
+    with pytest.raises(ValidationError, match="carried twice"):
+        IsaacSimOptions.model_validate({"objects": [carton], "link_attachments": [tote, lid]})

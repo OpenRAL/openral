@@ -67,6 +67,7 @@ from contextlib import contextmanager
 from time import monotonic, perf_counter
 from typing import TYPE_CHECKING, Any, Protocol
 
+import numpy as np
 from openral_core import check_urdf_curve, curve_slope, curve_value
 
 from openral_hal.mobile_base_bridge import describes_mobile_base, platform_owns_navigation
@@ -1489,6 +1490,10 @@ if _ROS2_AVAILABLE:
                         mobile = getattr(self, "_mobile_base", None)
                         if mobile is not None:
                             mobile.publish_from_snapshot()
+                        bridge = getattr(self, "_bridge", None)
+                        frame = self._proprio.latest() if self._proprio is not None else None
+                        if bridge is not None and frame is not None:
+                            bridge.publish_scan_from_frame(frame)
                     except Exception as exc:  # reason: a publish hiccup must not kill the thread
                         self.get_logger().warn(f"proprio publisher thread: {exc}")
                     remaining = next_deadline - monotonic()
@@ -1541,6 +1546,10 @@ if _ROS2_AVAILABLE:
                 if policy_state_raw is not None
                 else None
             )
+            # A backend that returns its lidar fan with the observation (Isaac) is read
+            # here, so /scan can leave the executor thread with the rest of proprio.
+            read_scan = getattr(self._hal, "read_scan", None)
+            scan_raw = read_scan() if callable(read_scan) else None
             self._proprio.set(
                 ProprioFrame(
                     state=state,
@@ -1549,6 +1558,8 @@ if _ROS2_AVAILABLE:
                     base_twist=tuple(float(v) for v in twist),
                     sim_time_ns=sim_time_ns,
                     policy_state=policy_state,
+                    # One vectorised copy; the publisher thread converts it.
+                    scan=np.array(scan_raw, dtype=np.float32) if scan_raw is not None else None,
                 )
             )
 
@@ -3093,6 +3104,7 @@ if _ROS2_AVAILABLE:
                 self._hal.description,
                 on_perception_ready=self._on_attachment_perception_ready,
                 trigger_config=trigger_config,
+                hal_mode=hal_mode,
                 config=VisionAttachmentConfig(
                     camera=gp("vision_attachment_camera").get_parameter_value().string_value,
                     depth_topic=gp("vision_attachment_depth_topic")

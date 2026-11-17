@@ -26,6 +26,7 @@ import time
 from collections import deque
 from typing import TYPE_CHECKING, Any
 
+import structlog
 from openral_core import CameraTopicKind, camera_topic, sensor_name_to_slot
 
 from openral_hal.convex_distance import ConvexDistance, convex_geom_distance
@@ -113,7 +114,17 @@ _ESTOP_EVIDENCE_WINDOW_NS = 500_000_000
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
+    from builtin_interfaces.msg import Time
     from openral_core import RobotDescription
+    from sensor_msgs.msg import LaserScan
+
+    from openral_hal.proprio_snapshot import ProprioFrame
+
+log = structlog.get_logger(__name__)
+
+#: At most one ``/scan`` problem warning of a kind per this many ns (the publisher thread
+#: would otherwise log one per observation).
+_SCAN_WARN_PERIOD_NS = 10_000_000_000
 
 __all__ = [
     "SimSensorBridge",
@@ -127,6 +138,7 @@ __all__ = [
     "initial_configuration_stop_record",
     "isaac_estop_ground_truth_record",
     "kernel_checked_body_ids",
+    "next_scan_due",
     "occupied_cell_keys",
     "preattach_verdict",
     "scan_ranges_on_wire",
@@ -188,6 +200,35 @@ def constant_scan_no_hit_ranges(*, n_beams: int, max_range_m: float) -> list[flo
         [12.0, 12.0, 12.0]
     """
     return [float(max_range_m)] * int(n_beams)
+
+
+def next_scan_due(next_due_ns: int | None, now_ns: int, rate_hz: float) -> int | None:
+    """When the scan after one observed at ``now_ns`` is due, or ``None`` if this one is not.
+
+    ``next_due_ns`` is what the previous call returned (``None`` before the first scan).
+    The schedule advances by whole periods (``1 / rate_hz``, sim time, due 1 % early for
+    integer-ns step rounding), so steps that do not divide the period still average the
+    configured rate instead of losing the remainder at every scan. It resyncs to
+    ``now_ns`` when it fell more than a period behind (a pause) and when sim time went
+    back past the last scan's slot (a reset), so neither bursts nor silences ``/scan``.
+
+    Example:
+        >>> next_scan_due(None, 0, 10.0)
+        100000000
+        >>> next_scan_due(100_000_000, 50_000_000, 10.0) is None  # inside the period
+        True
+        >>> next_scan_due(100_000_000, 166_000_000, 10.0)  # late: the phase is kept
+        200000000
+    """
+    period_ns = int(1e9 / max(rate_hz, 1.0))
+    if next_due_ns is None or now_ns < next_due_ns - period_ns:
+        return now_ns + period_ns
+    # 1 % slack: integer-ns sim steps (3 x 33_333_333 ns at 30 Hz) land a few ns short.
+    slack_ns = period_ns // 100
+    if now_ns < next_due_ns - slack_ns:
+        return None
+    following = next_due_ns + period_ns
+    return following if following - slack_ns > now_ns else now_ns + period_ns
 
 
 def scan_ranges_on_wire(ranges: Sequence[float], *, max_range_m: float) -> list[float]:
@@ -2804,6 +2845,10 @@ class SimSensorBridge:
         self._idle_hold_ns = int(max(idle_hold_ms, 0.0) * 1_000_000)
         self._viewer_sync_rate_hz = viewer_sync_rate_hz
         self._scan_rate_hz = scan_rate_hz
+        self._scan_from_snapshot = False
+        self._scan_next_due_ns: int | None = None
+        self._scan_last_frame: ProprioFrame | None = None
+        self._scan_warned_ns: dict[str, int] = {}
         self._scan_n_beams = scan_n_beams
         self._scan_max_range_m = scan_max_range_m
         self._scan_min_range_m = scan_min_range_m
@@ -2818,6 +2863,12 @@ class SimSensorBridge:
         # + a TF-valid frame, which plain RGB streams don't otherwise carry.
         self._camera_info_pubs: dict[str, Any] = {}
         self._camera_info_specs: dict[str, Any] = {}
+        # Per RGB camera: the tf2 frame its pixels are in (``image_frame_id``), stamped on
+        # its Image and CameraInfo alike.
+        self._image_frames: dict[str, str] = {}
+        # (name, width, height) -> that camera's CameraInfo (or None): its K is static,
+        # so it is built once per raster size and only re-stamped per frame.
+        self._rgb_infos: dict[tuple[str, int, int], Any] = {}
         self._image_obs_key: dict[str, str] = {}
         # Per-camera last thumbnail emit timestamp (ns). Throttles the OTel
         # ``sensors.read_latest`` span to ~1 Hz while the ROS topic publishes
@@ -3036,6 +3087,8 @@ class SimSensorBridge:
         self._image_pubs.clear()
         self._camera_info_pubs.clear()
         self._camera_info_specs.clear()
+        self._image_frames.clear()
+        self._rgb_infos.clear()
         self._image_obs_key.clear()
         self._camera_qos = None
         self._last_thumb_ns.clear()
@@ -3105,8 +3158,13 @@ class SimSensorBridge:
         # robocasa also aliases them) — ``_frame_for_camera`` falls back to the
         # sensor name. The topic stays ``/openral/cameras/<sensor.name>/image``.
         self._image_obs_key.update(sensor_name_to_slot(self._description))
+        from openral_core.depth_extrinsic import image_frame_id
+
         for s in rgb:
             self._camera_info_specs[s.name] = s
+            self._image_frames[s.name] = image_frame_id(s, self._description.sensors)
+            # A body-convention mount's optical child, as a real driver publishes it.
+            self._publish_optical_mount(s)
         self._image_timer = self._node.create_timer(
             1.0 / max(self._camera_rate_hz, 1.0), self._publish_images
         )
@@ -3220,7 +3278,9 @@ class SimSensorBridge:
             h, w, c = arr.shape
             msg = RosImage()
             msg.header.stamp = stamp
-            msg.header.frame_id = name
+            # The frame its CameraInfo names (``image_frame_id``): a consumer that places
+            # the pixels by the image header must find the same optical frame in TF.
+            msg.header.frame_id = self._image_frames.get(name, name)
             msg.height = int(h)
             msg.width = int(w)
             msg.encoding = "mono8" if c == 1 else "rgb8" if c == _RGB_CHANNELS else "rgba8"
@@ -3230,7 +3290,7 @@ class SimSensorBridge:
             pub.publish(msg)
             info_pub = self._camera_info_pubs.get(name)
             if info_pub is not None:
-                info = self._rgb_camera_info(name, int(w), int(h), stamp)
+                info = self._cached_rgb_camera_info(name, int(w), int(h), stamp)
                 if info is not None:
                     info_pub.publish(info)
             # Emit a ``sensors.read_latest`` span at most once per second per
@@ -3278,28 +3338,68 @@ class SimSensorBridge:
         ns = frame_stamp_ns(now.nanoseconds, frame_time_ns, sim_now_ns, on_sim_clock=on_sim_clock)
         return type(now)(nanoseconds=ns, clock_type=now.clock_type).to_msg()
 
-    def _rgb_camera_info(self, name: str, width: int, height: int, stamp: Any) -> Any:
-        """Pinhole ``CameraInfo`` for an RGB camera, from its MJCF ``fovy``.
+    def _cached_rgb_camera_info(self, name: str, width: int, height: int, stamp: Any) -> Any:
+        """``_rgb_camera_info`` built once per ``(name, width, height)``, re-stamped per frame."""
+        key = (name, width, height)
+        if key not in self._rgb_infos:
+            self._rgb_infos[key] = self._rgb_camera_info(name, width, height, None)
+        info = self._rgb_infos[key]
+        if info is not None:
+            info.header.stamp = stamp
+        return info
 
-        cuVSLAM builds its rig from these intrinsics and nvblox frames the mono
-        depth against the camera's ``*_optical_frame``. MuJoCo cameras are square-
-        pixel with a vertical ``fovy``, so ``fy = (h/2)/tan(fovy/2)``, ``fx = fy``,
-        principal point at the image centre. No-op for non-MuJoCo backends or an
-        unresolvable MJCF camera (warned once by the TF path).
+    def _rgb_camera_info(self, name: str, width: int, height: int, stamp: Any) -> Any:
+        """``CameraInfo`` for an RGB camera's ``width`` x ``height`` frame, or None.
+
+        cuVSLAM builds its rig from these intrinsics, nvblox frames the mono depth against
+        the camera's ``*_optical_frame``, and the object detector stamps frame + K on its
+        detections for the world-state lift. MuJoCo: its cameras are square-pixel with a
+        vertical ``fovy``, so ``fy = (h/2)/tan(fovy/2)``, ``fx = fy``, principal point at
+        the image centre. A backend that reports the K it renders each camera with
+        (``camera_intrinsics()``, Isaac) gets that K scaled per axis to the frame, with its
+        lens (``distortion_model`` + ``D``) as rendered: a distorted camera's consumers
+        rectify with it (``lens_rectify``) instead of falling back to a manifest pinhole.
+        None for any other backend, a camera the backend reports no K for, or an
+        unresolvable MJCF camera.
+
+        Stamped in ``image_frame_id``, like the camera's Image: a camera sharing another
+        sensor's mount (the AMR's ``top`` on ``head_zed``) is in that mount's optical
+        frame, a body-convention mount in its ``<frame>_optical_frame``, which TF places.
         """
         import math
 
         spec = self._camera_info_specs.get(name)
         if spec is None:
             return None
+        from openral_core.depth_extrinsic import image_frame_id
+
+        from openral_hal.depth_cloud import camera_info_from_intrinsics, mjcf_camera_name
+
+        frame = self._image_frames.get(name) or image_frame_id(spec, self._description.sensors)
         handle = getattr(self._hal, "mujoco_handles", lambda: None)()
         if handle is None:
-            return None
+            from openral_core import scale_intrinsics_to
+
+            reported = getattr(self._hal, "camera_intrinsics", None)
+            k = (reported() if reported is not None else {}).get(name)
+            if k is None:
+                return None
+            k = scale_intrinsics_to(k, width, height)
+            return camera_info_from_intrinsics(
+                width=width,
+                height=height,
+                fx=k.fx,
+                fy=k.fy,
+                cx=k.cx,
+                cy=k.cy,
+                frame_id=frame,
+                stamp=stamp,
+                distortion_model=k.distortion_model,
+                d=k.distortion_coeffs,
+            )
         model, _ = handle
 
         import mujoco
-
-        from openral_hal.depth_cloud import camera_info_from_intrinsics, mjcf_camera_name
 
         cam_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, mjcf_camera_name(spec))
         if cam_id < 0:
@@ -3313,7 +3413,7 @@ class SimSensorBridge:
             fy=fy,
             cx=width / 2.0,
             cy=height / 2.0,
-            frame_id=spec.frame_id,
+            frame_id=frame,
             stamp=stamp,
         )
 
@@ -3583,14 +3683,27 @@ class SimSensorBridge:
             depth=5,
         )
         self._scan_pub = self._node.create_publisher(LaserScan, "/scan", scan_qos)
-        self._scan_timer = self._node.create_timer(
-            1.0 / max(self._scan_rate_hz, 1.0), self._publish_scan
-        )
+        # A backend that returns its lidar fan with each observation (Isaac: no MuJoCo
+        # handles, a `read_scan`) is published by the HAL's proprio publisher thread,
+        # once per new observation and stamped with its sim time
+        # (`publish_scan_from_frame`). On this executor thread, which env.step and
+        # render hold, a 10 Hz timer reached 1.5-3.3 Hz, past Nav2's collision-monitor
+        # source timeout. MuJoCo ray-casts MjData, so it stays on the executor thread.
+        self._scan_from_snapshot = getattr(
+            self._hal, "mujoco_handles", lambda: None
+        )() is None and callable(getattr(self._hal, "read_scan", None))
+        if not self._scan_from_snapshot:
+            self._scan_timer = self._node.create_timer(
+                1.0 / max(self._scan_rate_hz, 1.0), self._publish_scan
+            )
         lidar = self._description.lidar_sensor
-        self._node.get_logger().info(
-            f"SimSensorBridge: publishing /scan @ {self._scan_rate_hz:.1f} Hz "
-            f"frame={lidar.frame_id} beams={self._scan_n_beams} "
-            f"range=[{self._scan_min_range_m}, {self._scan_max_range_m}] m."
+        log.info(
+            "sim_sensor_bridge.scan_publishing",
+            rate_hz=self._scan_rate_hz,
+            source="observation" if self._scan_from_snapshot else "timer",
+            frame=lidar.frame_id,
+            beams=self._scan_n_beams,
+            range_m=(self._scan_min_range_m, self._scan_max_range_m),
         )
 
     def _publish_scan(self) -> None:
@@ -3604,22 +3717,79 @@ class SimSensorBridge:
         """
         if self._scan_pub is None:
             return
-        import math  # reason: stdlib defer
+        n_beams = int(self._scan_n_beams)
+        max_range = float(self._scan_max_range_m)
+        ranges = self._compute_scan_ranges(n_beams=n_beams, max_range_m=max_range)
+        self._scan_pub.publish(self._scan_message(ranges, self._node.get_clock().now().to_msg()))
 
+    def publish_scan_from_frame(self, frame: ProprioFrame) -> None:
+        """Publish the scan a proprio frame carries, once per observation, at most at the rate.
+
+        Called from the HAL's publisher thread (never touches the simulator; the range
+        conversion happens here, not on the executor thread): each new frame with a
+        ``scan`` is published, stamped like ``/odom`` and its TF (the node clock), when
+        ``next_scan_due`` says its slot has come, in sim time (``time.monotonic_ns`` for a
+        HAL with no sim clock). A frame already seen is never re-published. A frame
+        without a scan publishes nothing (no beams are made up) and warns, throttled; a
+        fan whose beam count differs from ``scan_n_beams`` is published as the sensor
+        gave it, its ``angle_increment`` from its own count, and warns, throttled.
+        """
+        if self._scan_pub is None or not self._scan_from_snapshot:
+            return
+        if frame is self._scan_last_frame:
+            return
+        self._scan_last_frame = frame
+        if frame.scan is None:
+            self._warn_scan(
+                "sim_sensor_bridge.scan_missing",
+                detail="the manifest declares a lidar_2d but the backend's observation "
+                "carries no scan; /scan is not published",
+            )
+            return
+        now_ns = frame.sim_time_ns if frame.sim_time_ns is not None else time.monotonic_ns()
+        next_due = next_scan_due(self._scan_next_due_ns, now_ns, float(self._scan_rate_hz))
+        if next_due is None:
+            return
+        self._scan_next_due_ns = next_due
+        ranges: list[float] = frame.scan.tolist()
+        if len(ranges) != int(self._scan_n_beams):
+            self._warn_scan(
+                "sim_sensor_bridge.scan_beam_count_mismatch",
+                configured_beams=int(self._scan_n_beams),
+                sensor_beams=len(ranges),
+                detail="published with the sensor's own beam count and angle_increment",
+            )
+        # Stamped like /odom and odom->base TF (the node clock), not with the frame's sim
+        # time: that can run one step ahead of the last /clock, and a consumer that
+        # transforms the scan at its stamp (Nav2's collision monitor) would then need TF
+        # from the future and drop the source (Spark, 2026-11-15).
+        self._scan_pub.publish(self._scan_message(ranges, self._node.get_clock().now().to_msg()))
+
+    def _warn_scan(self, event: str, **fields: object) -> None:
+        """Log a ``/scan`` problem at most once per ``_SCAN_WARN_PERIOD_NS`` per ``event``."""
+        now = time.monotonic_ns()
+        last = self._scan_warned_ns.get(event)
+        if last is not None and now - last < _SCAN_WARN_PERIOD_NS:
+            return
+        self._scan_warned_ns[event] = now
+        log.warning(event, **fields)
+
+    def _scan_message(self, ranges: list[float], stamp: Time) -> LaserScan:
+        """A ``LaserScan`` of ``ranges`` (the bridge's -π..π fan) stamped ``stamp``.
+
+        ``angle_increment`` follows ``len(ranges)``, the beams actually cast.
+        """
         from sensor_msgs.msg import LaserScan
 
-        n_beams = int(self._scan_n_beams)
+        n_beams = len(ranges)
         max_range = float(self._scan_max_range_m)
         min_range = float(self._scan_min_range_m)
         scan_rate = float(self._scan_rate_hz)
-
-        ranges = self._compute_scan_ranges(n_beams=n_beams, max_range_m=max_range)
-
         lidar = self._description.lidar_sensor
         frame_id = lidar.frame_id if lidar is not None else "base_link"
 
         msg = LaserScan()
-        msg.header.stamp = self._node.get_clock().now().to_msg()
+        msg.header.stamp = stamp
         msg.header.frame_id = frame_id
         msg.angle_min = float(-math.pi)
         msg.angle_max = float(math.pi)
@@ -3630,7 +3800,7 @@ class SimSensorBridge:
         msg.range_max = max_range
         msg.ranges = scan_ranges_on_wire(ranges, max_range_m=max_range)
         msg.intensities = []
-        self._scan_pub.publish(msg)
+        return msg
 
     def _compute_scan_ranges(self, *, n_beams: int, max_range_m: float) -> list[float]:
         """Return scan ranges — live MJCF ray-cast if handles are bound, else no-hit fan.
@@ -3642,13 +3812,8 @@ class SimSensorBridge:
         """
         handle = getattr(self._hal, "mujoco_handles", lambda: None)()
         if handle is None:
-            # Non-MuJoCo backend: use the ranges the HAL surfaces (Isaac lidar
-            # ray-cast), else an honest no-hit fan.
-            read = getattr(self._hal, "read_scan", None)
-            if callable(read):
-                scan = read()
-                if scan is not None and len(scan) == n_beams:
-                    return [float(r) for r in scan]
+            # The bare digital twin: no scene to ray-cast. (A backend that returns its
+            # fan with the observation is published by `publish_scan_from_frame`.)
             return constant_scan_no_hit_ranges(n_beams=n_beams, max_range_m=max_range_m)
         model, data = handle
         from openral_core import (  # reason: scoped to scan synthesis
@@ -4289,7 +4454,7 @@ class SimSensorBridge:
                 CameraInfo, camera_topic(spec.name, CameraTopicKind.DEPTH_CAMERA_INFO), info_qos
             )
             if has_mujoco:
-                self._publish_depth_optical_mount(spec)
+                self._publish_optical_mount(spec)
         self._depth_timer = self._node.create_timer(
             1.0 / max(self._depth_rate_hz, 1.0), self._publish_depth_clouds
         )
@@ -4305,9 +4470,10 @@ class SimSensorBridge:
             )
         )
 
-    def _publish_depth_optical_mount(self, spec: Any) -> None:
-        """Latch ``<mount> -> <mount>_optical_frame`` for a body-frame depth sensor.
+    def _publish_optical_mount(self, spec: Any) -> None:
+        """Latch ``<mount> -> <mount>_optical_frame`` for a body-frame camera.
 
+        An RGB camera's pixels are stamped in that optical child (``image_frame_id``).
         A depth sensor whose ``frame_id`` is a body-convention camera mount with a
         manifest pose (``parent_frame`` + ``static_transform_xyz_rpy``, published by
         the deploy launch) gets its optical child here, the way a real camera

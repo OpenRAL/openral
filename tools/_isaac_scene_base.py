@@ -159,12 +159,14 @@ class IsaacSceneBase:
         self._step_idx = 0
         for _ in range(self.warmup_steps):
             self._before_render()
+            self._before_substep()
             self._world.step(render=True)
         self._after_warmup()
         # The hook may step physics without rendering (a soft-driven arm settling
         # onto its hold target): render once more after it, then drain the RTX
         # pipeline so the first observation shows the settled pose (issue #361).
         self._before_render()
+        self._before_substep()
         self._world.step(render=True)
         self._catch_up_frames()
         return self._observe()
@@ -412,8 +414,9 @@ class IsaacSceneBase:
         """Hook for camera poses that must be updated before a rendered frame."""
 
     def _before_substep(self) -> None:
-        """Hook run before every physics substep of a ``step`` (drive targets that follow
-        the measured state, e.g. mimic followers). Default: nothing."""
+        """Hook run before every physics step, ``step``'s substeps and ``reset``'s warmup
+        alike (drive targets or efforts that follow the measured state, e.g. mimic
+        followers, gravity feed-forward). Default: nothing."""
 
     def _joint_positions(self) -> NDArray[np.float32] | None:
         """Robot joint angles in the host manifest's joint order, or None.

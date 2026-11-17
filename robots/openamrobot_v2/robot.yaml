@@ -221,6 +221,13 @@ joints:
     actuator_kind: "servo"
     role: "gripper"
     sim_joint_name: "openarm_left_finger_joint1"
+    # Position-stall grasp trigger: the same OpenArm v2 gripper mechanism, so OpenArm's
+    # measured robot-type constants (robots/openarm/robot.yaml, which documents them).
+    closure_calibration:
+      closed_position: 0.0
+      closed_rest_offset: 0.0086
+      stall_gap: 0.08
+      settle_tolerance: 0.001
   # ── right arm (OpenArm v2.0, 7 revolute + pinch gripper) ──
   - name: "right_joint1"
     origin_xyz: [0, -0.0625, 0]
@@ -327,6 +334,13 @@ joints:
     actuator_kind: "servo"
     role: "gripper"
     sim_joint_name: "openarm_right_finger_joint1"
+    # Position-stall grasp trigger: the same OpenArm v2 gripper mechanism, so OpenArm's
+    # measured robot-type constants (robots/openarm/robot.yaml, which documents them).
+    closure_calibration:
+      closed_position: 0.0
+      closed_rest_offset: 0.0116
+      stall_gap: 0.08
+      settle_tolerance: 0.001
 
 end_effectors:
   - name: "left_gripper"
@@ -477,16 +491,27 @@ hal:
           #     params: {controller_name: "lift_controller"}
 
 # Head: a ZED Mini with OpenArm's intrinsics (robots/openarm/robot.yaml `head_zed` and
-# `top`, so the policy raster and field of view match), on upstream's own head mount:
-# `head_camera_link`, on its bracket above the lift carriage, pitched 30 deg down.
-# OpenArm's measured mount, re-expressed from the arm bases, puts the camera inside
-# upstream's Getac tablet (1.5 cm between centres; every depth ray hit the tablet),
-# so it cannot carry over. The view is therefore not OpenArm's: about 13 cm higher
-# and 35 deg shallower than OpenArm's 65.6 deg down-pitch, so an OpenArm rSkill sees
-# its workspace from a different angle than it was trained on.
-# Upstream models the ZED body behind `head_camera_link`'s origin (its front face is
-# at x = 0), so the lens sits 5 mm ahead of it, looking along +x
-# (tests/unit/test_openamrobot_v2_head_zed_matches_openarm.py).
+# `top`, so the policy raster and field of view match), looking DOWN at the tote and the
+# shelf as on the fixed OpenArm shelf cell: the robot owner confirmed the real head ZED
+# looks down at the tote and shelf, like the cell's head camera. The mount is the cell's
+# head-camera pose relative to the arm bases (the shelf cell's deploy scene, `top` and
+# `head_zed` `camera_mounts` on `openarm_base`, the arm-base midpoint: xyz (0.077587,
+# 0.027239, 0.099276), quat_wxyz (0.840353, -0.013577, 0.541869, -0.000244) with
+# `axes: world` = x forward, z up). That quaternion is exactly OpenArm's measured rpy
+# (-0.055916, 1.145014, -0.036625): 65.6 deg down. The arm bases sit on
+# lift_carriage_link at y = +/-0.031 with the cell's orientation (openamrobot_v2.urdf
+# `openarm_*_base_link_mount_joint`, as openarm.urdf's), so on `openarm_left_base_link`
+# the pose is the same with y - 0.031, and 2.013 mm further forward (x 0.0796, not
+# 0.077587): at the cell's x the lens sat 1 mm inside the Getac placeholder's collision
+# box, so the octomap self-filter cast every head_zed pixel from inside the robot. Now
+# it clears that box by 1 mm; the view direction is the cell's. A corrected design pose,
+# NOT measured on a robot. It rides the lift with the arms. Upstream's ZED assembly
+# (`head_camera_link` body + `head_camera_bracket_link`, once on the carriage pitched
+# 30 deg down, a view that saw only the shelf) is moved rigidly to this lens: the ZED
+# body box 2.5 mm behind the lens, its optical frame on the lens. That body reaches into
+# the Getac and arm-profile placeholders (rigid neighbours, ACM rows); check the real
+# mount. tests/unit/test_openamrobot_v2_head_zed.py pins the TF / Isaac / MuJoCo
+# agreement and the self-filter's lens clearance.
 # Wrists: frames in the URDF at the OpenArm twin's wrist-camera mount (upstream's
 # placeholder poses looked sideways, README step 6); the twin's
 # MJCF carries a camera of each name on the matching optical frame
@@ -495,9 +520,10 @@ sensors:
   - name: "head_zed"
     modality: "depth"
     frame_id: "zed_camera_link"
-    parent_frame: "head_camera_link"
-    static_transform_xyz_rpy: [0.005, 0.0, 0.0, 0.0, 0.0, 0.0]
-    # Upstream's CAD mount (placeholder bracket), not measured on a robot.
+    parent_frame: "openarm_left_base_link"
+    static_transform_xyz_rpy: [0.0796, -0.003761, 0.099276, -0.055916, 1.145014, -0.036625]
+    # Matched to the OpenArm shelf cell's head-camera pose relative to the arm bases,
+    # confirmed by the robot owner to look down at the tote and shelf; not measured.
     static_transform_calibrated: false
     rate_hz: 10.0
     intrinsics:
@@ -511,11 +537,13 @@ sensors:
     catalog_id: "stereolabs/zed_mini"
     vendor: "StereoLabs"
     model: "ZED Mini"
-    sim_placement:
-      parent_body: "head_camera_link"
-      pos: [0.005, 0.0, 0.0]
-      target: [1.005, 0.0, 0.0]
-      up: [0.0, 0.0, 1.0]
+    # The mount above for the twin's camera rig: `target` one metre along its x axis,
+    # `up` its z axis. `top` reuses it (the anchor), so the two cannot drift apart.
+    sim_placement: &head_zed_placement
+      parent_body: "openarm_left_base_link"
+      pos: [0.0796, -0.003761, 0.099276]
+      target: [0.4924, -0.0189, -0.8114]
+      up: [0.9107, 0.0226, 0.4124]
     deploy_binding:
       backend: ros2_image
       backend_params:
@@ -549,11 +577,8 @@ sensors:
         reliability: best_effort
         qos_depth: 5
       max_age_ms: 200
-    sim_placement:
-      parent_body: "head_camera_link"
-      pos: [0.005, 0.0, 0.0]
-      target: [1.005, 0.0, 0.0]
-      up: [0.0, 0.0, 1.0]
+    # head_zed's mount (the twin's rig needs it on this sensor too).
+    sim_placement: *head_zed_placement
   - name: "wrist_left"
     modality: "rgb"
     frame_id: "left_wrist_camera_optical_frame"
@@ -740,8 +765,8 @@ fixed_attachments:
   - name: "head_camera_mount_joint"
     parent_link: "lift_carriage_link"
     child_link: "head_camera_mount_link"
-    origin_xyz: [0.24, 0, 0.389]
-    origin_rpy: [0, 0, 0]
+    origin_xyz: [0.258568, 0.027277, 0.267553]
+    origin_rpy: [-0.028403, 0.621812, -0.00224]
   - name: "head_camera_pitch_joint"
     parent_link: "head_camera_mount_link"
     child_link: "head_camera_link"
@@ -860,9 +885,12 @@ allowed_collision_pairs:
   - [adapter_plate_link, second_estop_link]
   - [arm_profile_link, getac_tablet_link]
   - [arm_profile_link, head_camera_bracket_link]
+  - [arm_profile_link, head_camera_link]
   - [arm_profile_link, head_light_link]
   - [arm_profile_link, openarm_left_base_link]
   - [arm_profile_link, openarm_right_base_link]
+  - [getac_tablet_link, head_camera_bracket_link]
+  - [getac_tablet_link, head_camera_link]
   - [head_camera_bracket_link, head_camera_link]
   - [lift_carriage_link, lift_column_base_link]
   - [lift_carriage_link, openarm_left_base_link]

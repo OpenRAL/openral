@@ -1060,3 +1060,92 @@ def test_cancel_without_a_terminal_result_is_bounded(
     with pytest.raises(ROSRuntimeError, match="not confirmed terminated"):
         skill._send_action_goal_and_await_result()
     assert time.monotonic() - t0 < 3.0
+
+
+# ── rejected goals name the server's lifecycle state ─────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("server", "namespace", "expect"),
+    [
+        ("inactive", "", "lifecycle state 'inactive'"),
+        ("active", "", "reported 'active' after the rejection"),
+        ("plain", "", "is not a lifecycle node"),
+        ("unspun", "", "did not report its lifecycle state"),
+        # A relative interface name resolves in the client node's namespace, as the
+        # ActionClient's does.
+        ("inactive", "/robot1", "lifecycle state 'inactive'"),
+    ],
+)
+def test_a_rejected_goal_names_its_servers_lifecycle_state(
+    server: str, namespace: str, expect: str
+) -> None:
+    """Nav2's bt_navigator after an aborted bring-up (Spark, 2026-11-16) is a lifecycle node
+    left inactive: it rejects every goal. The reasoner must read that, not a bare rejection;
+    and a server that is slow to answer must not read as "not a lifecycle node"."""
+    import threading
+
+    rclpy = pytest.importorskip("rclpy")
+    lifecycle = pytest.importorskip("rclpy.lifecycle")
+    nav2_action = pytest.importorskip("nav2_msgs.action")
+    from rclpy.action import ActionServer, GoalResponse
+    from rclpy.executors import MultiThreadedExecutor
+
+    context = rclpy.Context()
+    rclpy.init(context=context, domain_id=93)
+    ns = namespace or None
+    host_name = f"rejection_probe_{server}"  # unique: a destroyed node lingers in the graph
+    if server == "plain":
+        host = rclpy.create_node(host_name, namespace=ns, context=context)
+    else:
+        host = lifecycle.LifecycleNode(host_name, namespace=ns, context=context)
+    client = rclpy.create_node("rejection_probe_client", namespace=ns, context=context)
+    # Unique per case: a destroyed node lingers in this process's graph cache.
+    action_name = f"navigate_to_pose_{server}"
+    action_name = action_name if namespace else f"/{action_name}"
+    ActionServer(
+        host,
+        nav2_action.NavigateToPose,
+        action_name,
+        execute_callback=lambda handle: nav2_action.NavigateToPose.Result(),
+        goal_callback=lambda goal: GoalResponse.REJECT,
+    )
+    if server != "plain":
+        host.trigger_configure()
+    if server == "active":
+        host.trigger_activate()
+    executor = MultiThreadedExecutor(context=context)
+    if server != "unspun":  # on the graph, but nothing answers its services
+        executor.add_node(host)
+    executor.add_node(client)
+    spin = threading.Thread(target=executor.spin, daemon=True)
+    spin.start()
+    manifest = _result_only_manifest()
+    assert manifest.ros_integration is not None
+    manifest = manifest.model_copy(
+        update={
+            "ros_integration": manifest.ros_integration.model_copy(
+                update={"interface_name": action_name}
+            )
+        }
+    )
+    try:
+        skill = ROSActionRskill(
+            manifest=manifest,
+            ros_node=client,
+            robot_description=None,
+            prompt="test",
+            prompt_metadata_json="",
+        )
+        deadline = time.monotonic() + 5.0
+        reason = ""
+        while not reason and time.monotonic() < deadline:  # graph discovery
+            reason = skill._rejection_reason()
+        assert f"{namespace}/{host_name}" in reason
+        assert expect in reason
+        assert "restart" not in reason
+    finally:
+        executor.shutdown()
+        host.destroy_node()
+        client.destroy_node()
+        rclpy.shutdown(context=context)

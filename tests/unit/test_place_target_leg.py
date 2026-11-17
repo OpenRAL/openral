@@ -576,7 +576,12 @@ def test_a_frozen_release_record_keeps_the_witness_until_the_window_closes() -> 
     )
     held = obj.model_copy(update={"support_contact": grasp_witness})
     leg.release = ReleaseWindow.open(
-        description, held, base_link=_BASE, t_base_from_link=t_base_link, now_s=0.0
+        description,
+        held,
+        base_link=_BASE,
+        t_base_from_link=t_base_link,
+        now_s=0.0,
+        stamp_ns=held.stamp_ns,
     )
     leg.attachment = None
     record = leg.release.record

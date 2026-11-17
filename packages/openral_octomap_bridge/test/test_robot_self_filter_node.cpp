@@ -991,3 +991,240 @@ TEST_F(SelfFilterNode, CloudOlderThanJointHistoryIsNotBackwardExtrapolated) {
   EXPECT_EQ(received_.load(), 0) << "a later pose cannot prove the robot's earlier geometry";
   EXPECT_GT(filter_->totals().dropped_no_state, 0U);
 }
+
+TEST_F(SelfFilterNode, AJointStateCarryingNoModelJointDoesNotReStampTheArm) {
+  // A message for joints the model does not use (another publisher on the topic) says nothing
+  // about the arm at its stamp: it must not re-stamp the last arm pose and bracket the cloud.
+  const auto t0 = peer_->now();
+  send_joint_state(-M_PI / 4.0, t0 - rclcpp::Duration(20ms));
+  send_joint_state(0.0, t0);
+  const auto captured = t0 + rclcpp::Duration(20ms);
+  sensor_msgs::msg::JointState other;
+  other.header.stamp = captured;
+  other.name = {"not_a_model_joint"};
+  other.position = {1.0};
+  js_pub_->publish(other);
+  spin_for(20ms);
+  cloud_pub_->publish(make_cloud({{0.5F, 0.0F, 0.0F}, {2.0F, 0.0F, 0.0F}}, captured));
+  spin_for(100ms);
+  EXPECT_EQ(received_.load(), 0) << "no arm state at the capture stamp proves the arm's pose";
+}
+
+namespace {
+
+// root -[j1]-> l1 -[j2]-> l2, both revolute about z; the capsule rides l2 at x = 0.5.
+class TwoJointSelfFilterNode : public SelfFilterNode {
+protected:
+  std::vector<rclcpp::Parameter> extra_params() const override {
+    return {
+        {"collision_n_links", std::int64_t{3}},
+        {"collision_parent", std::vector<std::int64_t>{-1, 0, 1}},
+        {"collision_joint_kind", std::vector<std::int64_t>{0, 1, 1}},
+        {"collision_dof_index", std::vector<std::int64_t>{-1, 0, 1}},
+        {"collision_origin_xyzrpy", std::vector<double>(18, 0.0)},
+        {"collision_axis", std::vector<double>{0, 0, 1, 0, 0, 1, 0, 0, 1}},
+        {"collision_link_names", std::vector<std::string>{"root", "l1", "l2"}},
+        {"collision_joint_names", std::vector<std::string>{"j1", "j2"}},
+        {"collision_capsule_link", std::vector<std::int64_t>{2}},
+    };
+  }
+
+  void send(const std::vector<std::string>& names, const rclcpp::Time& stamp) {
+    sensor_msgs::msg::JointState js;
+    js.header.stamp = stamp;
+    js.name = names;
+    js.position.assign(names.size(), 0.0);
+    js_pub_->publish(js);
+  }
+};
+
+}  // namespace
+
+TEST_F(TwoJointSelfFilterNode, PartialMessagesDoNotKeepAnotherJointsOldPositionFresh) {
+  // One complete message, then j1-only messages: j2 was last measured 200 ms (four periods) before
+  // the capture, so no sample there proves the arm's pose. Control: a complete message there does.
+  const auto t0 = peer_->now();
+  send({"j1", "j2"}, t0 - rclcpp::Duration(200ms));
+  for (int k = 3; k >= 0; --k) {
+    send({"j1"}, t0 - rclcpp::Duration(std::chrono::milliseconds(20 * k)));
+  }
+  spin_for(20ms);
+  cloud_pub_->publish(make_cloud({{0.5F, 0.0F, 0.0F}, {2.0F, 0.0F, 0.0F}}, t0));
+  spin_for(160ms);
+  EXPECT_EQ(received_.load(), 0) << "a partial message re-stamped j2's old position";
+  const auto t1 = peer_->now();
+  send({"j1", "j2"}, t1 - rclcpp::Duration(20ms));
+  send({"j1", "j2"}, t1);
+  spin_for(20ms);
+  cloud_pub_->publish(make_cloud({{0.5F, 0.0F, 0.0F}, {2.0F, 0.0F, 0.0F}}, t1));
+  spin_for(160ms);
+  EXPECT_EQ(received_.load(), 1) << "complete messages pose the arm";
+}
+
+namespace {
+
+// A mobile manipulator: `world` -[base_x, prismatic]-> `base` -[j1]-> `l1`, the capsule at
+// x = 0.5 in l1. TF knows only `cam` -> `base` (a robot under its own odom): no `world`.
+class MobileBaseSelfFilterNode : public SelfFilterNode {
+protected:
+  std::vector<rclcpp::Parameter> extra_params() const override {
+    return {
+        {"collision_n_links", std::int64_t{3}},
+        {"collision_parent", std::vector<std::int64_t>{-1, 0, 1}},
+        {"collision_joint_kind", std::vector<std::int64_t>{0, 2, 1}},
+        {"collision_dof_index", std::vector<std::int64_t>{-1, 0, 1}},
+        {"collision_origin_xyzrpy", std::vector<double>(18, 0.0)},
+        {"collision_axis", std::vector<double>{0, 0, 1, 1, 0, 0, 0, 0, 1}},
+        {"collision_link_names", std::vector<std::string>{"world", "base", "l1"}},
+        {"collision_joint_names", std::vector<std::string>{"base_x", "j1"}},
+        {"collision_capsule_link", std::vector<std::int64_t>{2}},
+        {"collision_base_dofs", base_dofs()},
+        {"base_frame", base_frame()},
+    };
+  }
+  virtual std::string base_frame() const { return "base"; }
+  virtual std::vector<std::int64_t> base_dofs() const { return {0}; }
+
+  /// With TF able to place `frame`, the filter still forwards nothing: refused at configuration.
+  void expect_refused_with_tf_to(const std::string& frame) {
+    geometry_msgs::msg::TransformStamped tf;
+    tf.header.stamp = peer_->now();
+    tf.header.frame_id = "cam";
+    tf.child_frame_id = frame;
+    tf.transform.rotation.w = 1.0;
+    tf_->sendTransform(tf);
+    spin_for(200ms);
+    const rclcpp::Time now = peer_->now();
+    send_mobile_joint_state(0.0, now);
+    spin_for(100ms);
+    cloud_pub_->publish(make_cloud({{2.0F, 0.0F, 0.0F}}, now));
+    spin_for(400ms);
+    EXPECT_EQ(received_.load(), 0) << "base_frame " << frame;
+    EXPECT_EQ(filter_->totals().dropped_no_tf, 0U) << "refused at configuration, not by TF";
+  }
+
+  void send_mobile_joint_state(double base_x, const rclcpp::Time& stamp) {
+    sensor_msgs::msg::JointState js;
+    js.header.stamp = stamp;
+    js.name = {"base_x", "j1"};
+    js.position = {base_x, 0.0};
+    js_pub_->publish(js);
+  }
+
+  void publish_cam_to_base() {
+    geometry_msgs::msg::TransformStamped tf;
+    tf.header.stamp = peer_->now();
+    tf.header.frame_id = "cam";
+    tf.child_frame_id = "base";
+    tf.transform.rotation.w = 1.0;
+    tf_->sendTransform(tf);
+    spin_for(200ms);
+  }
+};
+
+class MobileBaseWithoutBaseFrameNode : public MobileBaseSelfFilterNode {
+protected:
+  std::string base_frame() const override { return ""; }
+};
+
+// `base_link` is in TF (cam -> base_link) but not a model link: posing the model there would
+// misplace every primitive, so the filter refuses.
+class MobileBaseUnknownBaseFrameNode : public MobileBaseSelfFilterNode {
+protected:
+  std::string base_frame() const override { return "base_link"; }
+};
+
+// `l1` sits at the zeroed root's pose with every dof at zero, but it hangs under the arm's
+// j1, not the base: the model would be posed in a frame that turns with the arm.
+class MobileBaseFrameUnderAnArmJointNode : public MobileBaseSelfFilterNode {
+protected:
+  std::string base_frame() const override { return "l1"; }
+};
+
+// The model root itself: the base dof is above it, so TF would place the model at the base's
+// odom origin, not on the base.
+class MobileBaseFrameIsTheModelRootNode : public MobileBaseSelfFilterNode {
+protected:
+  std::string base_frame() const override { return "world"; }
+};
+
+// One base dof too many (the arm's j1, held at zero as a base dof): the arm would be frozen
+// in the model while it moves.
+class MobileBaseExtraBaseDofNode : public MobileBaseSelfFilterNode {
+protected:
+  std::vector<std::int64_t> base_dofs() const override { return {0, 1}; }
+};
+
+}  // namespace
+
+TEST_F(MobileBaseFrameUnderAnArmJointNode, ABaseFrameUnderANonBaseJointForwardsNothing) {
+  expect_refused_with_tf_to("l1");
+}
+
+TEST_F(MobileBaseFrameIsTheModelRootNode, TheModelRootAsBaseFrameForwardsNothing) {
+  expect_refused_with_tf_to("world");
+}
+
+TEST_F(MobileBaseExtraBaseDofNode, ABaseDofOffTheBaseChainForwardsNothing) {
+  expect_refused_with_tf_to("base");
+}
+
+TEST_F(MobileBaseSelfFilterNode, PosesTheArmInTheBaseFrameWithNoWorldFrameInTf) {
+  publish_cam_to_base();
+  const rclcpp::Time now = peer_->now();
+  // The base has driven 3 m along its odom: that is TF's to place, not the model's.
+  send_mobile_joint_state(3.0, now);
+  spin_for(100ms);
+  cloud_pub_->publish(make_cloud({{0.5F, 0.0F, 0.0F}, {2.0F, 0.0F, 0.0F}}, now));
+  spin_for(400ms);
+  ASSERT_EQ(received_.load(), 1) << "no `world` in TF must not drop the cloud";
+  ASSERT_EQ(last_.width, 1U) << "the arm is filtered where it is, the world point kept";
+  float x = 0.0F;
+  std::memcpy(&x, last_.data.data(), sizeof(float));
+  EXPECT_FLOAT_EQ(x, 2.0F);
+}
+
+TEST_F(MobileBaseWithoutBaseFrameNode, BaseDofsWithoutABaseFrameForwardNothing) {
+  publish_cam_to_base();
+  const rclcpp::Time now = peer_->now();
+  send_mobile_joint_state(0.0, now);
+  spin_for(100ms);
+  cloud_pub_->publish(make_cloud({{2.0F, 0.0F, 0.0F}}, now));
+  spin_for(400ms);
+  EXPECT_EQ(received_.load(), 0);
+  // Refused at configuration, not by a failed TF lookup on an empty frame.
+  EXPECT_EQ(filter_->totals().dropped_no_tf, 0U);
+}
+
+TEST_F(MobileBaseUnknownBaseFrameNode, ABaseFrameThatIsNotAModelLinkForwardsNothing) {
+  geometry_msgs::msg::TransformStamped tf;
+  tf.header.stamp = peer_->now();
+  tf.header.frame_id = "cam";
+  tf.child_frame_id = "base_link";
+  tf.transform.rotation.w = 1.0;
+  tf_->sendTransform(tf);
+  spin_for(200ms);
+  const rclcpp::Time now = peer_->now();
+  send_mobile_joint_state(0.0, now);
+  spin_for(100ms);
+  cloud_pub_->publish(make_cloud({{2.0F, 0.0F, 0.0F}}, now));
+  spin_for(400ms);
+  EXPECT_EQ(received_.load(), 0);
+  EXPECT_EQ(filter_->totals().dropped_no_tf, 0U);
+}
+
+TEST_F(MobileBaseSelfFilterNode, AJointStateWithoutTheBaseJointsStillPosesTheArm) {
+  // A ros2_control arm HAL publishes no planar base joints; their values are unused anyway.
+  publish_cam_to_base();
+  const rclcpp::Time now = peer_->now();
+  sensor_msgs::msg::JointState js;
+  js.header.stamp = now;
+  js.name = {"j1"};
+  js.position = {0.0};
+  js_pub_->publish(js);
+  spin_for(100ms);
+  cloud_pub_->publish(make_cloud({{0.5F, 0.0F, 0.0F}, {2.0F, 0.0F, 0.0F}}, now));
+  spin_for(400ms);
+  ASSERT_EQ(received_.load(), 1);
+  EXPECT_EQ(last_.width, 1U);
+}

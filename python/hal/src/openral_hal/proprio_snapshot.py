@@ -28,6 +28,8 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 
+import numpy as np
+from numpy.typing import NDArray
 from openral_core.schemas import JointState
 
 # (x, y, z), (qx, qy, qz, qw)
@@ -53,6 +55,11 @@ class ProprioFrame:
             clock-less / wall-clock HAL. Captured here so the publisher
             thread can emit ``/clock`` without touching the simulator.
         policy_state: Optional simulator-native checkpoint state vector.
+        scan: The 2-D lidar ranges the backend returned with this step's observation
+            (``read_scan``; the Isaac scene's ray-cast fan), a float32 copy (no
+            per-beam conversion on the executor thread), or ``None`` when it returns
+            none (MuJoCo backends ray-cast on the executor thread instead). Treat as
+            read-only.
     """
 
     state: JointState
@@ -61,6 +68,7 @@ class ProprioFrame:
     base_twist: tuple[float, ...]
     sim_time_ns: int | None = None
     policy_state: tuple[float, ...] | None = None
+    scan: NDArray[np.float32] | None = None
 
 
 class ProprioSnapshot:

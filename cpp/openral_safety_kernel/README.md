@@ -1281,12 +1281,25 @@ max_lead_m=<m> pairs=<n> step=<s> target=<id>` at most once per second per link;
 `safety.workspace_region_armed` / `_dropped reason=` / `_rejected reason=` (a standing refusal once
 per change) and, when the workspace drops, `safety.workspace_contact_summary target= pairs=
 max_depth_mm= max_speed_mps= max_speed_source= max_mps= max_lead_m= lead_bound_m=`; sets span
-attributes `safety.workspace_contact_active` (the workspace was live for the candidate),
+attributes `safety.workspace_contact_active` (a workspace gate was live for the candidate,
+whoever owns the rule), `safety.workspace_gate` (`in_tree` / `provider` / `none`),
 `safety.workspace_contact_pairs`, `safety.workspace_contact_max_depth_m`,
 `safety.workspace_hand_speed_mps`, `safety.workspace_hand_speed_source`,
 `safety.workspace_hand_lead_m`; and the `safety.collision` stop line carries
-`workspace_contact_active=<0|1> hand_speed_mps=<v> hand_lead_m=<d>
-hand_speed_source=<measured|commanded>` for the reported row.
+`workspace_gate_active=<0|1> hand_speed_mps=<v> hand_lead_m=<d>
+hand_speed_source=<measured|commanded> workspace_denied=<0..4>
+workspace_gate=<in_tree|provider|none>` for the reported row. With the rule handed to an exemption provider (ADR-0121 API v5) the in-tree region is empty
+and the gate is the provider's verdict region (`ProviderGate::workspace`, the live workspace on the
+provider's bounds with this row's hand readings): `workspace_gate_active`, `workspace_gate` and
+`workspace_denied` (1 not a hand link, 2 over speed, 3 over lead, 4 cell outside the box; the
+`FailureTrigger`'s `workspace_denial_reason`) report it, so a provider stop names the failing
+conjunct. Disclosure only: no verdict reads them. The `FailureTrigger`'s
+`workspace_contact_active` stays the in-tree rule (hence the stop line's distinct
+`workspace_gate_active` key); `workspace_declaration_live` names a
+provider-owned workspace. Illustrative line (a provider-owned carry, the hand slow, the cell
+outside the workspace box): `safety.collision kind=world a=attached:<payload> b=voxel_<n> ...
+workspace_gate_active=1 hand_speed_mps=0.006 hand_lead_m=0.004 hand_speed_source=measured
+workspace_denied=4 workspace_gate=provider`.
 
 Tests: `WorkspaceContact.*` (`test_collision.cpp`), the `*Workspace*` lifecycle tests
 (`test_lifecycle_kernel.cpp`), the allocation-free check (`test_no_alloc.cpp`), and
@@ -1764,6 +1777,62 @@ the payload's returns from the scan, reading the same
 `/openral/world_state_fast` attachment set this kernel ingests, so the two sides
 can never act on different attachments. Its README carries the full boundary
 table.
+
+### Station mode: base motion retires every base-frame allowance
+
+The kernel still does not bound base motion, but it **reads** it. On a mobile
+manipulator (`collision_base_dofs` non-empty) a still base is a fixed-base station;
+every allowance it holds — the grasp declaration / region (ADR-0115), the place region
+(ADR-0097), the #349 workspace, the tracked grasp key (#418) and an open K5 release
+window (declared `released_by_link` records and provider tracked releases) — is
+declared in the base frame the voxel grid lives in, so it is valid only at the pose it
+was declared at. `update_station` (fed from `/joint_states`, no TF, no new input) keeps
+an anchor of the base dofs' measured positions; once the base leaves it by more than
+`station_motion_translation_m` (default 0.02 m, on the **planar** distance
+`sqrt(dx² + dy² …)` of every prismatic base dof together, so a diagonal drift trips at the
+threshold, not at √2 of it) or `station_motion_rotation_rad` (default 0.02 rad ≈ 20 mm at
+1 m reach, on each revolute base dof's delta **wrapped to [-π, π]**, so a yaw crossing ±π is
+no motion), on that tick:
+
+- `safety.station_left reason=base_moving dof=… delta=… limit=…` (WARN, only when an
+  allowance was live; `dof` is the yaw dof, or the first prismatic dof for a planar trip),
+  then `safety.grasp_region_dropped reason=base_moving`,
+  `safety.place_region_dropped reason=base_moving`,
+  `safety.workspace_region_dropped reason=base_moving`,
+  `safety.released_payload_closed … reason=base_moving` /
+  `safety.tracked_release_closed … reason=base_moving` as applicable;
+- the grasp identity joins the retired set; every open release window closes (the frozen
+  box stays a plain obstacle, nothing exempt against it); the kernel's tracked-cover passes
+  are dropped (a provider cover hold cannot lean on a pass measured at the old station, and
+  the cover is re-run); the anchor moves to the new pose;
+- the time is stamped: any grasp / place / workspace declaration or region measurement
+  stamped at or before it is refused afterwards (`reason=base_moved`), and a declared
+  release record (`released_by_link`) stamped at or before it opens **closed**
+  (`safety.released_payload_closed … reason=predates_base_motion`). A stop does **not**
+  restore an allowance: only a fresh declaration (stamped after the drive) arms again.
+
+**Re-anchor on the first allowance.** A drive moves the anchor only in threshold steps, so a
+base that stops sits up to one threshold from it; settle noise would then leave the station
+mid-grasp, or a creep back reach twice the threshold from the declared pose. So when an
+allowance goes live after none was (checked after each world-state message and on each
+`/joint_states` tick), the anchor moves to the measured base pose. An allowance that arms
+while another is live keeps the anchor the first was declared at.
+
+**Clock reset.** A kernel clock that runs backwards (a sim reset) would leave the motion stamp
+in the future and refuse every declaration of the new timeline. The kernel treats it as
+leaving the station (`safety.station_left reason=clock_reset dof=-1`, every allowance retired
+with `reason=clock_reset`), re-anchors and stamps the motion time on the new timeline.
+
+Displacement from an anchor, not per-tick velocity: standstill noise (encoders do not tick
+at rest, sim jitter is sub-mm) never accumulates into a trip, and a drive trips once it is
+20 mm (one voxel, the grasp region's own tolerance) from the anchor — from the pose the first
+live allowance armed at, else from the last trip, which a drive in progress can be up to one
+threshold past. Both thresholds are refused at
+configure outside `(0, 0.05]` — tunable per robot, never off. A fixed-base robot (no base
+dofs) never runs the rule: behaviour unchanged. The shipped launch files do not pass the
+`station_motion_*` parameters, so every deployment runs the defaults (`kDefaultStation*`).
+Safety-WG review, a hazard-log row and a decision record are owed, sim-only until then. Tests:
+`test_lifecycle_kernel.cpp` "Station mode".
 
 ## Link geometry for the world-voxel check (staged 26-DOP → convex hull)
 

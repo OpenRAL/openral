@@ -1222,6 +1222,76 @@ def test_safety_loss_aborts_the_starting_pose_move() -> None:
     )
 
 
+def test_the_starting_pose_wait_tells_a_missed_pose_from_no_measurement() -> None:
+    """``ROSPerceptionStale`` unless a fresh post-move frame misses; then a named miss.
+
+    ``smolvla-so101-leisaac-pick-orange``'s all-zero ``starting_pose`` is the case the
+    aggregator's never-received zeros used to "verify". No joint state ever, and a frame
+    stamped before the move ended (a stream that stalled mid-ramp), are stale; a fresh
+    frame with one joint 0.2 rad short is a ``ROSRuntimeError`` naming it, with the
+    residuals in the goal's ``ControllerEvidence``; the same frame on the pose verifies.
+    """
+    import threading
+    from types import SimpleNamespace
+
+    import rclpy
+    from openral_core import ControllerEvidence
+    from openral_core.exceptions import ROSPerceptionStale, ROSRuntimeError
+    from openral_core.schemas import JointState
+    from openral_rskill.loader import load_rskill_manifest
+
+    skill = _make_constant_skill()
+    skill.manifest = load_rskill_manifest(
+        str(_REPO / "rskills" / "smolvla-so101-leisaac-pick-orange")
+    )
+    assert skill.manifest.starting_pose == [0.0] * 6
+    goal = SimpleNamespace(is_cancel_requested=False)  # the wait reads only this flag
+
+    with _compose_harness() as (executor, runtime, _safety, _observed):
+        runner = runtime.skill_runner_node
+        runner.set_parameters([rclpy.parameter.Parameter("action_applied_timeout_s", value=0.3)])
+        names = [joint.name for joint in runtime.description.joints]
+        _spin_for(executor, 0.5)  # a fresh safety status for _raise_if_safety_aborted
+
+        def _frame(positions: list[float]) -> JointState:
+            return JointState(name=names, position=positions, stamp_ns=time.time_ns())
+
+        ramp_start = time.time_ns()
+        with pytest.raises(ROSPerceptionStale, match="no fresh joint state"):
+            runner._wait_for_starting_pose(skill, goal, ramp_start)
+
+        short = [0.0] * 6
+        short[3] = 0.2
+        runtime.aggregator.update_joint_state(_frame(short))  # before the move ended
+        with pytest.raises(ROSPerceptionStale, match="no fresh joint state"):
+            runner._wait_for_starting_pose(skill, goal, ramp_start)
+
+        def _stream(positions: list[float], stop: threading.Event) -> None:
+            while not stop.is_set():
+                runtime.aggregator.update_joint_state(_frame(positions))
+                time.sleep(0.01)
+
+        for positions in (short, [0.0] * 6):
+            stop = threading.Event()
+            feeder = threading.Thread(target=_stream, args=(positions, stop))
+            feeder.start()
+            try:
+                runner._goal_evidence = None
+                if positions is short:
+                    with pytest.raises(ROSRuntimeError, match=names[3]):
+                        runner._wait_for_starting_pose(skill, goal, ramp_start)
+                    assert runner._goal_evidence is not None
+                    evidence = ControllerEvidence.model_validate_json(runner._goal_evidence[1])
+                    assert evidence.state == "starting_pose_not_reached"
+                    assert json.loads(evidence.detail)[0]["joint"] == names[3]
+                    assert json.loads(evidence.detail)[0]["residual"] == -0.2
+                else:
+                    assert runner._wait_for_starting_pose(skill, goal, ramp_start)
+            finally:
+                stop.set()
+                feeder.join()
+
+
 def test_stale_finalized_resident_is_reloaded_on_redispatch() -> None:
     """A key-matching resident left non-ACTIVE is evicted + re-resolved, not stepped.
 

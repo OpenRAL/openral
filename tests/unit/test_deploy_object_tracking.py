@@ -7,13 +7,14 @@ helper is loaded from the real launch file.
 from __future__ import annotations
 
 import importlib.util
+import math
 import sys
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 from openral_cli.deploy_sim import resolve_launch_invocation
-from openral_core import DeployScene
+from openral_core import DeployScene, RobotDescription
 from openral_core.exceptions import ROSConfigError
 from openral_world_state.object_tracker.session import RELEASE_DWELL_S
 
@@ -480,9 +481,9 @@ def test_deploy_forwards_the_stations_declared_place_zones(
 
     import yaml
 
-    fixture = _REPO / "scenes/deploy/place_zones/openarm_restock_shelf.yaml"
-    zones = yaml.safe_load(fixture.read_text())["place_zones"]
     scene = yaml.safe_load(base.read_text())
+    # The shelf fixture's slots, in this robot's base frame (another frame is refused).
+    zones = _shelf_zones_in(RobotDescription.from_yaml(_robot_yaml(scene)).base_frame)
     config = tmp_path / "with_zones.yaml"
     config.write_text(yaml.safe_dump({**scene, "place_zones": zones}))
     argv = _argv(config, mode, {"object_tracking": "off"})
@@ -493,18 +494,104 @@ def test_deploy_forwards_the_stations_declared_place_zones(
     assert not [a for a in _argv(bare, mode, {"object_tracking": "off"}) if "place_zones" in a]
 
 
-def test_deploy_refuses_place_zones_on_a_robot_whose_base_moves(tmp_path: Path) -> None:
-    """A zone is a box fixed in the robot base frame: on a mobile manipulator it would ride
-    the base away from the furniture it names, so the deploy refuses it."""
+def _robot_yaml(scene: dict[str, Any]) -> str:
+    return str(_REPO / "robots" / str(scene["robot_id"]) / "robot.yaml")
+
+
+def _shelf_zones_in(frame: str, *, quat: tuple[float, ...] | None = None) -> list[Any]:
+    """The open OpenArm shelf fixture's zones, re-labelled into ``frame`` (``quat`` if set)."""
     import yaml
 
     fixture = _REPO / "scenes/deploy/place_zones/openarm_restock_shelf.yaml"
     zones = yaml.safe_load(fixture.read_text())["place_zones"]
-    scene = yaml.safe_load((_REPO / "scenes/deploy/isaac_panda_mobile_urdf.yaml").read_text())
-    config = tmp_path / "mobile_with_zones.yaml"
-    config.write_text(yaml.safe_dump({**scene, "place_zones": zones}))
-    with pytest.raises(ROSConfigError, match="mobile_manipulator"):
+    for z in zones:
+        z["region"]["frame_id"] = z["region"]["pose"]["frame_id"] = frame
+        if quat is not None:
+            z["region"]["pose"]["quat_xyzw"] = list(quat)
+    return cast("list[Any]", zones)
+
+
+_AMR = _REPO / "scenes/deploy/openamrobot_v2_empty.yaml"
+_PANDA_MOBILE = _REPO / "scenes/deploy/isaac_panda_mobile_urdf.yaml"
+
+
+def _with_zones(tmp_path: Path, base: Path, zones: list[Any]) -> Path:
+    import yaml
+
+    config = tmp_path / f"{base.stem}_with_zones.yaml"
+    config.write_text(yaml.safe_dump({**yaml.safe_load(base.read_text()), "place_zones": zones}))
+    return config
+
+
+@pytest.mark.parametrize("base", [_PANDA_MOBILE, _AMR])
+def test_deploy_refuses_place_zones_on_a_robot_whose_base_moves(tmp_path: Path, base: Path) -> None:
+    """A base-frame zone on a mobile manipulator would ride the base away from the furniture
+    it names, so the deploy refuses it (and names the map frame to use instead)."""
+    import yaml
+
+    robot = RobotDescription.from_yaml(_robot_yaml(yaml.safe_load(base.read_text())))
+    config = _with_zones(tmp_path, base, _shelf_zones_in(robot.base_frame))
+    with pytest.raises(ROSConfigError, match=r"mobile_manipulator.*map frame"):
         _argv(config, "sim", {})
+
+
+def test_deploy_forwards_map_frame_place_zones_where_slam_publishes_the_map(
+    tmp_path: Path,
+) -> None:
+    """Station mode: a zone in the robot's map frame is fixed to the furniture, so the deploy
+    forwards it on a mobile manipulator (OpenAMRobot 2.0) whose SLAM publishes that map; the
+    tracker re-expresses it in the grid frame through tf2."""
+    import json
+
+    import yaml
+
+    robot = RobotDescription.from_yaml(_robot_yaml(yaml.safe_load(_AMR.read_text())))
+    yawed = (0.0, 0.0, math.sin(0.3), math.cos(0.3))  # a yaw-only quaternion is fine
+    config = _with_zones(tmp_path, _AMR, _shelf_zones_in(robot.map_frame, quat=yawed))
+    argv = _argv(config, "sim", {"enable_slam": True})
+    (raw,) = [a.split(":=", 1)[1] for a in argv if "place_zones_json" in a]
+    assert {z["region"]["frame_id"] for z in json.loads(raw)} == {robot.map_frame}
+
+
+@pytest.mark.parametrize("base", [_AMR, _PICK_ORANGE])
+def test_deploy_refuses_map_frame_place_zones_without_a_map(tmp_path: Path, base: Path) -> None:
+    """Review of #617: SLAM off on the AMR, and the SO-101 never has a map: the zone would
+    never resolve to a region, silently. Refused up front."""
+    import yaml
+
+    robot = RobotDescription.from_yaml(_robot_yaml(yaml.safe_load(base.read_text())))
+    config = _with_zones(tmp_path, base, _shelf_zones_in(robot.map_frame))
+    with pytest.raises(ROSConfigError, match="nothing in this deploy publishes it"):
+        _argv(config, "sim", {"enable_slam": False})
+
+
+@pytest.mark.parametrize("base", [_AMR, _PICK_ORANGE])
+def test_deploy_refuses_odom_frame_place_zones(tmp_path: Path, base: Path) -> None:
+    """Review of #617: odometry drifts while the base drives (and a fixed base publishes no
+    odom), so an odom-frame box slides off the furniture it names."""
+    import yaml
+
+    robot = RobotDescription.from_yaml(_robot_yaml(yaml.safe_load(base.read_text())))
+    config = _with_zones(tmp_path, base, _shelf_zones_in(robot.odom_frame))
+    with pytest.raises(ROSConfigError, match="odometry drifts"):
+        _argv(config, "sim", {"enable_slam": True})
+
+
+def test_deploy_refuses_a_place_zone_in_a_frame_the_robot_does_not_name(tmp_path: Path) -> None:
+    """Neither the base frame nor the map frame (the twin's ``openarm_base`` on an
+    OpenAMRobot): refused, never forwarded to be silently ignored at runtime."""
+    config = _with_zones(tmp_path, _AMR, _shelf_zones_in("openarm_base"))
+    with pytest.raises(ROSConfigError, match=r"neither .*base frame 'base_footprint'"):
+        _argv(config, "sim", {})
+
+
+def test_deploy_refuses_a_tilted_fixed_frame_place_zone(tmp_path: Path) -> None:
+    """A map-frame zone is re-expressed yaw-only (``rebase_box``): a tilted one could never
+    resolve, so the deploy refuses it up front."""
+    tilted = (math.sin(0.1), 0.0, 0.0, math.cos(0.1))
+    config = _with_zones(tmp_path, _AMR, _shelf_zones_in("map", quat=tilted))
+    with pytest.raises(ROSConfigError, match="gravity-aligned"):
+        _argv(config, "sim", {"enable_slam": True})
 
 
 def test_instance_cells_is_forwarded_with_tracking_off_so_the_launch_refuses_it() -> None:
@@ -514,3 +601,14 @@ def test_instance_cells_is_forwarded_with_tracking_off_so_the_launch_refuses_it(
     assert "instance_cells:=true" in off
     assert "instance_cells:=true" in _argv(_PICK_ORANGE, "sim", {"instance_cells": True})
     assert not [a for a in _argv(_PICK_ORANGE, "sim", {}) if a.startswith("instance_cells")]
+
+
+@pytest.mark.parametrize("aliases", [("upper_2", "upper_2"), ("upper_slot_2",)])
+def test_a_place_zone_names_itself_once(aliases: tuple[str, ...]) -> None:
+    """Review of #619: a zone repeating an alias (or its own name) is a typo, refused."""
+    from openral_core import PlaceZone
+    from pydantic import ValidationError
+
+    (zone,) = [z for z in _shelf_zones_in("openarm_base") if z["name"] == "upper_slot_2"]
+    with pytest.raises(ValidationError, match="name and aliases repeat"):
+        PlaceZone.model_validate({**zone, "aliases": list(aliases)})

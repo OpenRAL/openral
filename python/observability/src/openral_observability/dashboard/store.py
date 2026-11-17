@@ -888,6 +888,9 @@ class TelemetryStore:
         else:
             severity = "debug"
         title = _summarise_span(span.name, attrs, duration_ms)
+        if span.name == semconv.SPAN_REASONER_TICK and (detail := _reasoner_detail(attrs)):
+            # The reasoner slot is latest-wins; the event row keeps every tick's why.
+            title = f"{title} · {detail}"
         self._append_event(
             TelemetryEvent(
                 ts_unix=ts_unix,
@@ -1325,6 +1328,11 @@ class TelemetryStore:
                 "suppressed_reason": attrs.get("reasoner.suppressed_reason"),
                 "error_kind": attrs.get("reasoner.error_kind"),
                 "mission": mission,
+                "tier": attrs.get(semconv.REASONER_TIER),
+                "llm_s": attrs.get(semconv.REASONER_LLM_S),
+                "inflight_skill": attrs.get(semconv.REASONER_INFLIGHT_SKILL),
+                "inflight_state": attrs.get(semconv.REASONER_INFLIGHT_STATE),
+                "detail": _reasoner_detail(attrs),
             }
         )
 
@@ -1683,6 +1691,49 @@ def _log_level(severity_number: int, severity_text: str) -> str:
     if severity_number >= 1:  # DEBUG band (>=5) + TRACE (1-4) floor to debug.
         return "debug"
     return _TEXT_LEVEL_ALIASES.get(severity_text.strip().lower(), "info")
+
+
+# LLM latency under this many seconds prints in ms: ``.1f`` would show "0.0s".
+_DETAIL_MS_BELOW_S = 0.1
+
+# The tick span's ``reasoner.tier`` in words: a bare "B" means nothing on a trace row.
+_TIER_WORDS = {
+    "A": "safety event",
+    "B": "replan event",
+    "C": "critic event",
+    "D": "operator event",
+    "heartbeat": "heartbeat",
+}
+
+
+def _reasoner_detail(attrs: dict[str, Any]) -> str | None:
+    """One line saying why a tick did what it did, for the console's trace row.
+
+    ``"<skill> <running|dispatching> · <tier> · <llm latency> · <suppressed/error> —
+    <rationale>"``, each part only when present; ``None`` when there is nothing to say.
+    A suppressed tick (``palette_empty``, ``retry_cap``) and an errored tick say so, so a
+    retry-capped call's rationale never reads as the call that ran. Built here, not in
+    the console, so its wording changes with the dashboard rather than with a console
+    release. The rationale is the span's (already capped at
+    ``semconv.REASONER_RATIONALE_MAX``, and present only where it may leave the host).
+    """
+    parts: list[str] = []
+    if inflight := str(attrs.get(semconv.REASONER_INFLIGHT_SKILL) or "").rstrip("/"):
+        state = attrs.get(semconv.REASONER_INFLIGHT_STATE) or "running"
+        parts.append(f"{inflight.rsplit('/', 1)[-1]} {state}")
+    if tier := attrs.get(semconv.REASONER_TIER):
+        parts.append(_TIER_WORDS.get(str(tier), str(tier)))
+    llm_s = attrs.get(semconv.REASONER_LLM_S)
+    if isinstance(llm_s, int | float) and llm_s > 0:
+        parts.append(f"{llm_s:.1f}s" if llm_s >= _DETAIL_MS_BELOW_S else f"{llm_s * 1000:.0f}ms")
+    if suppressed := attrs.get(semconv.REASONER_SUPPRESSED_REASON):
+        parts.append(f"suppressed: {suppressed}")
+    if error_kind := attrs.get(semconv.REASONER_ERROR_KIND):
+        parts.append(f"error: {error_kind}")
+    line = " · ".join(parts)
+    if rationale := " ".join(str(attrs.get(semconv.REASONER_RATIONALE) or "").split()):
+        line = f"{line} — {rationale}" if line else rationale
+    return line or None
 
 
 def _summarise_span(name: str, attrs: dict[str, Any], duration_ms: float) -> str:

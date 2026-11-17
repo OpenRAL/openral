@@ -135,10 +135,20 @@ adapters. Quick reference:
 - `place_zones` declares named place zones on the cell's fixed furniture (shelf slots,
   `PlaceZone`): under `object_tracking: tracking`, a goal whose prompt names one ("into
   upper slot 2") gets that box as its place region from the object tracker while a payload
-  is held (`on` uses the tracked destination instead). Fixed-base stations only: a deploy
-  refuses them on a robot whose `embodiment_kind` is not `manipulator` / `bimanual`.
-  Declared, not measured; Safety-WG review owed. `scenes/deploy/place_zones/` holds paste-in lists, e.g. the
+  is held (`on` uses the tracked destination instead). A zone is in the robot base frame
+  (fixed-base stations only: refused on a robot whose `embodiment_kind` is not
+  `manipulator` / `bimanual`) or in its map frame (any robot, when the deploy's SLAM or the
+  platform's navigation publishes that map; gravity-aligned, re-expressed through tf2, and an
+  alias may then repeat across stations). The odom frame is refused (it drifts). Declared,
+  not measured; Safety-WG review owed. `scenes/deploy/place_zones/` holds paste-in lists, e.g. the
   OpenArm restock shelf.
+- `nav_goals` names the cell's navigation stations (`NavGoal`, ADR-0133): a pose and heading in
+  the robot's map frame Nav2 plans in (with SLAM, the map starts at the spawn), planar,
+  with an optional description. The reasoner resolves them by name (`resolve_place`) and lists them in its
+  context; the Nav2 rSkill drives there. Refused without a mobile base; not forwarded (with a
+  warning) when the reasoner or the navigation stack is off. With SLAM the map starts at the
+  spawn, so the goals are tied to `base_pose`. See
+  `scenes/deploy/isaac_openamrobot_v2_warehouse.yaml`.
 - A `SimScene` is a `DeployScene` + required `task:` block (+ optional
   `n_episodes`, `record_video`, `save_dir`, `metadata`).
 - A `BenchmarkScene` is a `SimScene` with `metadata: BenchmarkMetadata`
@@ -380,6 +390,17 @@ A dynamic object without physics gets a rigid body and convex-hull colliders;
 `world.reset()` returns every object to its declared pose. Step `info` carries
 `object_positions` and `robot_position` (simulator ground truth, not a policy
 observation).
+
+**A prim that rides the robot** (a tote on a mobile base) is named in
+`backend_options.link_attachments`: `{prim, link}`, the prim's path below the USD's default
+prim and the URDF link that carries it. Author the prim where it should ride, with the robot at
+its spawn and its joints at the import pose: the scene makes it a kinematic body that keeps that
+offset from the link through every base move and joint motion (a lift), and what rests on it
+rides by friction. `carries: [object, …]` holds named `objects` rigidly in it while the
+robot drives (each one inside the prim's bounds, at reset and whenever a base twist is
+commanded) and releases them at the first arm command, so cartons in a tote don't slide
+during a drive. A prim may not repeat, sit inside another attachment, or also be a
+`stage_objects` entry; the link must be in the robot's URDF.
 
 **Objects the stage already holds** (rigid bodies authored inside the
 environment USD) are named, not spawned, in `backend_options.stage_objects`:

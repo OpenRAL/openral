@@ -167,7 +167,7 @@ def _released() -> AttachedCollisionObject:
 
     robot = RobotDescription.from_yaml(_ROBOT_YAML)
     return freeze_released_attachment(
-        _attachment(), base_link=robot.base_frame, t_base_from_link=np.eye(4)
+        _attachment(), base_link=robot.base_frame, t_base_from_link=np.eye(4), stamp_ns=1
     )
 
 

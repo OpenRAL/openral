@@ -576,6 +576,197 @@ _SELF_FILTERED_CLOUD_TOPIC = "/openral/world_cloud/self_filtered"
 _SELF_FILTERED_RGB_CLOUD_TOPIC = "/openral/world_cloud/self_filtered_rgb"
 
 
+def _collision_base_dofs(
+    description: object, collision_params: Mapping[str, object] | None = None
+) -> list[int]:
+    """Dof indices of the planar mobile-base joints (manifest ``base_joints``); empty on an arm.
+
+    The kernel and the robot self-filter both hold these at zero, so the collision model is
+    posed in ``base_frame`` and nothing above the base (``world``, a fleet map) is needed.
+    That is only true when the collision model's chain from its root to ``base_frame`` is
+    exactly the base: every link on it has a zero origin, is fixed or moves on a base dof
+    (no mimic, no calibration curve), its dofs are exactly these, and no other link uses
+    one. Given ``collision_params`` (the model both consumers get), anything else raises,
+    so a bad manifest is refused at launch for the kernel and the filter alike (the filter
+    holds the same rule at runtime).
+
+    Raises:
+        ROSConfigError: the base chain does not match the base dofs.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> _collision_base_dofs(RobotDescription.from_yaml("robots/openamrobot_v2/robot.yaml"))
+        [0, 1, 2]
+        >>> _collision_base_dofs(RobotDescription.from_yaml("robots/openarm/robot.yaml"))
+        []
+    """
+    base = set(getattr(description, "base_joints", None) or [])
+    dofs = [i for i, j in enumerate(getattr(description, "joints", [])) if j.name in base]
+    params = collision_params or {}
+    names = list(cast("list[str]", params.get("collision_link_names", [])))
+    if dofs and names:
+        _check_base_chain(params, names, dofs, getattr(description, "base_frame", ""))
+    return dofs
+
+
+def _check_base_chain(
+    params: Mapping[str, object], names: list[str], dofs: list[int], base_frame: str
+) -> None:
+    """Raise unless the root -> ``base_frame`` chain is exactly the planar base (see above)."""
+    from openral_core.exceptions import ROSConfigError
+
+    parent = cast("list[int]", params["collision_parent"])
+    kind = cast("list[int]", params["collision_joint_kind"])
+    dof = cast("list[int]", params["collision_dof_index"])
+    origin = cast("list[float]", params["collision_origin_xyzrpy"])
+    curve = cast("list[int]", params.get("collision_curve_point_first", []))
+    if base_frame not in names:
+        raise ROSConfigError(f"base_frame {base_frame!r} is not a collision-model link")
+    chain: list[int] = []
+    link = names.index(base_frame)
+    while link >= 0:
+        chain.append(link)
+        link = parent[link]
+    for link in chain:
+        if (
+            any(abs(v) > 1e-9 for v in origin[6 * link : 6 * link + 6])
+            or kind[link] not in (0, 1, 2)
+            or (link < len(curve) and curve[link] >= 0)
+        ):
+            raise ROSConfigError(
+                f"collision link {names[link]!r} on the root -> {base_frame!r} chain has an "
+                "offset, a mimic or a calibration curve: the model cannot be posed in "
+                f"{base_frame!r} with the base dofs held at zero"
+            )
+    on_chain = sorted(dof[link] for link in chain if dof[link] >= 0)
+    users = sorted(dof[i] for i in range(len(names)) if dof[i] in dofs)
+    if on_chain != sorted(dofs) or users != on_chain:
+        raise ROSConfigError(
+            f"the root -> {base_frame!r} chain moves on dofs {on_chain}, but base_joints are "
+            f"dofs {sorted(dofs)}: they must be the same, and used by no other link"
+        )
+
+
+def _vram_locator_peers(locator_specs: list[dict[str, str]], object_tracking: str) -> list[str]:
+    """The on-demand locators the reasoner evicts before a skill dispatch, for VRAM.
+
+    Every locator, except the object tracker's own (the first: its ``locate_service``) when
+    tracking is on. The tracker grounds a goal's ``target_queries`` through that locator
+    DURING the goal, after the reasoner has evicted its VRAM peers: evicted, every query
+    failed ``detector_inactive`` and no carton was ever tracked (q5090, 2026-11-16).
+
+    Example:
+        >>> specs = [{"node": "locator_a"}, {"node": "locator_b"}]
+        >>> _vram_locator_peers(specs, "off")
+        ['locator_a', 'locator_b']
+        >>> _vram_locator_peers(specs, "tracking")
+        ['locator_b']
+    """
+    kept = 1 if object_tracking != "off" and locator_specs else 0
+    if kept:
+        # Co-resident with the policy during every goal: logged, so an OOM on a small GPU
+        # names its cause (no VRAM budget is known here to gate on).
+        structlog.get_logger("deploy_e2e").info(
+            "deploy_e2e.locator_kept_resident",
+            node=locator_specs[0]["node"],
+            object_tracking=object_tracking,
+            why="the object tracker grounds goal queries through it during the goal",
+            hazard="its VRAM stays allocated beside the dispatched policy",
+        )
+    return [spec["node"] for spec in locator_specs[kept:]]
+
+
+def _declared_grasp_contact_links(grasp_declaration_json: str) -> list[str]:
+    """The deploy scene's grasp declaration ``contact_links``: the declared grasping hand.
+
+    Example:
+        >>> _declared_grasp_contact_links("")
+        []
+    """
+    if not grasp_declaration_json:
+        return []
+    from openral_core import GraspDeclaration
+
+    return list(GraspDeclaration.model_validate_json(grasp_declaration_json).contact_links)
+
+
+#: The object tracker's station-perception switch (``std_srvs/SetBool``), which the skill
+#: runner calls per skill in station mode; the tracker node serves it under this name.
+_STATION_PERCEPTION_SERVICE = "/openral/object_tracker/station_perception"
+
+#: Runner ``starting_pose_tolerance`` (rad) per robot in an Isaac Sim twin, where the arms run
+#: position gains without gravity feed-forward (the stocking policies were trained on that
+#: sag): a ramp to the stocking starting pose settles both elbows (joint4) 0.064-0.065 rad
+#: short of it (q5090, 2026-11-16), past the manifests' 0.05. Sim only: real hardware and
+#: MuJoCo keep the manifest's ``safety.starting_pose_tolerance_rad``.
+_ISAAC_STARTING_POSE_TOLERANCE_RAD = {"openamrobot_v2": 0.08, "openarm_v2": 0.08}
+
+
+def _runner_starting_pose_tolerance(robot: str, hal_mode: str, scene_backend: str | None) -> float:
+    """The runner's ``starting_pose_tolerance`` arrival allowance; ``0`` = the manifest's.
+
+    Example:
+        >>> _runner_starting_pose_tolerance("openamrobot_v2", "sim", "isaacsim")
+        0.08
+        >>> _runner_starting_pose_tolerance("openamrobot_v2", "real", "isaacsim")
+        0.0
+        >>> _runner_starting_pose_tolerance("openamrobot_v2", "sim", "mujoco")
+        0.0
+    """
+    if hal_mode != "sim" or scene_backend != "isaacsim":
+        return 0.0
+    return _ISAAC_STARTING_POSE_TOLERANCE_RAD.get(robot, 0.0)
+
+
+def _station_perception_nodes(
+    description: object, object_tracking: str, *, segmenter: bool
+) -> list[str]:
+    """The lifecycle nodes the skill runner toggles per skill (station mode); ``[]`` = none.
+
+    On a mobile base with object tracking on, the tracker's tracks live in the base frame and
+    hold only while the base stands still. The segmenter (VRAM, no output of its own while the
+    tracker owns attachments) is launched configured but INACTIVE; the runner activates it
+    before a skill that actuates an arm / gripper (``station_perception_wanted``) and keeps it
+    active across the goals at that station, deactivating it before a base-only skill. The
+    tracker is NOT among them: it stays ACTIVE so it keeps publishing the held payloads while
+    the base drives, and the runner switches its station perception instead
+    (``_station_mode``, ``_STATION_PERCEPTION_SERVICE``). A fixed-base robot,
+    or tracking off, gets ``[]``: the nodes autostart ACTIVE exactly as before.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> amr = RobotDescription.from_yaml("robots/openamrobot_v2/robot.yaml")
+        >>> _station_perception_nodes(amr, "tracking", segmenter=True)
+        ['openral_segmenter']
+        >>> _station_perception_nodes(amr, "off", segmenter=True)
+        []
+        >>> arm = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+        >>> _station_perception_nodes(arm, "tracking", segmenter=True)
+        []
+    """
+    return (
+        ["openral_segmenter"] if segmenter and _station_mode(description, object_tracking) else []
+    )
+
+
+def _station_mode(description: object, object_tracking: str) -> bool:
+    """Station mode: a mobile base (``base_joints``) with object tracking on.
+
+    The tracker then starts with its station perception OFF (held payloads only) and the
+    runner switches it per skill on ``_STATION_PERCEPTION_SERVICE``.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> _station_mode(
+        ...     RobotDescription.from_yaml("robots/openamrobot_v2/robot.yaml"), "tracking"
+        ... )
+        True
+        >>> _station_mode(RobotDescription.from_yaml("robots/openarm/robot.yaml"), "tracking")
+        False
+    """
+    return object_tracking != "off" and bool(_collision_base_dofs(description))
+
+
 def _self_filter_params(
     collision_params: dict[str, object],
     description: object,
@@ -583,6 +774,7 @@ def _self_filter_params(
     padding_m: float,
     robot_mask_cameras: tuple[str, ...] = (),
     *,
+    base_dofs: list[int] | None = None,
     runtime_period_from_hal: bool = False,
 ) -> dict[str, object]:
     """Parameters for ``openral_octomap_bridge``'s ``robot_self_filter``.
@@ -596,6 +788,10 @@ def _self_filter_params(
     ros2_control HAL's rate-limited ``~/joint_states``, else ``/joint_states``),
     so the filter poses the robot from the same stream the runner acts on.
     ``padding_m`` is the rig's ``DeployRuntime.robot_self_filter_padding_m``.
+    On a mobile manipulator, ``base_dofs`` (``_collision_base_dofs``, the kernel's, computed
+    once by the caller) become ``collision_base_dofs`` and, with the manifest ``base_frame``,
+    make the filter hold the planar base dofs at zero and pose the model in ``base_frame``, so
+    TF needs nothing above the base; omitted on a fixed arm.
     ``joint_state_period_s`` is ``1 / action_spec.control_freq_hz`` when the manifest
     declares it (the filter interpolates joint states at the cloud stamp and refuses a
     gap of more than two periods), else the node's own default.
@@ -621,6 +817,9 @@ def _self_filter_params(
     params["collision_joint_aliases"] = [j.sim_joint_name or "" for j in joints]
     params["joint_states_topic"] = joint_states_topic
     params["padding_m"] = padding_m
+    if base_dofs:  # omitted when empty: launch_ros rejects an empty list (see the kernel's)
+        params["collision_base_dofs"] = base_dofs
+        params["base_frame"] = getattr(description, "base_frame", "")
     rate_hz = getattr(description, "control_rate_hz", None)
     if isinstance(rate_hz, float) and rate_hz > 0.0:
         params["joint_state_period_s"] = 1.0 / rate_hz
@@ -630,7 +829,9 @@ def _self_filter_params(
         params["joint_state_period_from_hal"] = True
         params["joint_state_period_s"] = 0.0
     hand_links = getattr(description, "hand_links", None)
-    params["robot_mask_hand_links"] = list(hand_links()) if callable(hand_links) else []
+    hands = list(hand_links()) if callable(hand_links) else []
+    if hands:  # omitted when empty: launch_ros rejects an empty list; the node defaults to none
+        params["robot_mask_hand_links"] = hands
     if robot_mask_cameras:
         params["robot_mask_enabled"] = True
         params["robot_mask_cameras"] = list(robot_mask_cameras)
@@ -1201,8 +1402,12 @@ def _after_hal_active(
     )
 
 
-def _poll_autostart(node_name: str, transition_timeout_s: float) -> ExecuteProcess:
-    """Drive ``/<node_name>`` to ACTIVE with the poll-based ``tools/lifecycle_autostart.py``.
+def _poll_autostart(
+    node_name: str, transition_timeout_s: float, *, target: str = "active"
+) -> ExecuteProcess:
+    """Drive ``/<node_name>`` to ``target`` (ACTIVE, or INACTIVE = configured only) by polling.
+
+    Uses the poll-based ``tools/lifecycle_autostart.py``.
 
     For nodes whose silent INACTIVE breaks a feature; exits after initial ACTIVE
     so later runtime deactivation remains possible. The event-driven
@@ -1220,7 +1425,7 @@ def _poll_autostart(node_name: str, transition_timeout_s: float) -> ExecuteProce
             "--node",
             f"/{node_name}",
             "--target",
-            "active",
+            target,
             "--service-timeout-s",
             "60.0",
             "--transition-timeout-s",
@@ -1277,11 +1482,17 @@ def _stereo_camera_topics(names_csv: str) -> tuple[str, str, str, str] | None:
 def _primary_rgb_camera(sensors: list[SensorSpec]) -> str:
     """The RGB sensor the perception legs default to, or ``""`` when there is none.
 
-    Prefers an optical-framed RGB camera (its intrinsics/extrinsics resolve directly), else
-    the first RGB sensor. Shared by the object detector's ``locate_in_view`` camera and the
-    reasoner's completion camera so both watch the same view — a hard-coded name is a dead
-    topic on every robot that spells its cameras differently. Pass ``publishing_sensors``,
-    not the raw manifest: on a real deploy only bound cameras have a topic.
+    In order: the colour stream of the robot's depth camera — an RGB camera that
+    ``shares_mount_with`` a depth camera (``modality: depth``; never a lidar, which also
+    feeds the cloud but has no colour stream): it sees what the
+    world map's depth sees, from that declared mount (the OpenAMRobot's
+    and OpenArm's ``top`` on ``head_zed``; its ``frame_id: world`` is a sim stand-in, so
+    the optical-frame rule alone fell through to a wrist camera); else an optical-framed
+    RGB camera (its intrinsics/extrinsics resolve directly); else the first RGB sensor.
+    Shared by the object detector's ``locate_in_view`` camera and the reasoner's
+    completion camera so both watch the same view — a hard-coded name is a dead topic on
+    every robot that spells its cameras differently. Pass ``publishing_sensors``, not the
+    raw manifest: on a real deploy only bound cameras have a topic.
 
     Example:
         >>> from openral_core import RobotDescription
@@ -1291,11 +1502,18 @@ def _primary_rgb_camera(sensors: list[SensorSpec]) -> str:
         >>> so101 = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
         >>> _primary_rgb_camera(so101.sensors)
         'top'
+        >>> amr = RobotDescription.from_yaml("robots/openamrobot_v2/robot.yaml")
+        >>> _primary_rgb_camera(amr.sensors)
+        'top'
     """
     rgb = [s for s in sensors if s.modality == "rgb"]
+    depth = {s.name for s in sensors if s.modality == "depth"}
     return next(
-        (s.name for s in rgb if s.frame_id.endswith("_optical_frame")),
-        rgb[0].name if rgb else "",
+        (s.name for s in rgb if s.shares_mount_with in depth),
+        next(
+            (s.name for s in rgb if s.frame_id.endswith("_optical_frame")),
+            rgb[0].name if rgb else "",
+        ),
     )
 
 
@@ -2677,6 +2895,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     grasp_declaration_json = LaunchConfiguration("grasp_declaration_json").perform(context)
     object_queries_json = LaunchConfiguration("object_queries_json").perform(context)
     place_zones_json = LaunchConfiguration("place_zones_json").perform(context)
+    nav_goals_json = LaunchConfiguration("nav_goals_json").perform(context)
     declared_object_catalog_json = LaunchConfiguration("declared_object_catalog_json").perform(
         context
     )
@@ -3021,6 +3240,11 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         depth_cameras=[s.name for s in publishing if s.modality == "depth"],
         exemption_provider=exemption_provider,
     )
+    # Station mode (mobile base + tracking): the runner toggles these per skill.
+    station_nodes = _station_perception_nodes(
+        description, object_tracking, segmenter=bool(vision_attachment_enabled)
+    )
+    station = _station_mode(description, object_tracking)
     if object_surface_model_json and object_tracking == "off":
         from openral_core.exceptions import ROSConfigError
 
@@ -3156,12 +3380,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # passing it unconditionally crashed the whole launch before any node started. The kernel
     # declares its own ``[]`` default for this parameter, so omitting it means "no base dofs to
     # zero" (same semantics as the ``lifecycle_peer_node_ids`` guard 90 lines below).
-    _base_joint_set = set(getattr(description, "base_joints", None) or [])
-    _collision_base_dofs = [
-        i for i, j in enumerate(description.joints) if j.name in _base_joint_set
-    ]
-    if _collision_base_dofs:
-        kernel_params["collision_base_dofs"] = _collision_base_dofs
+    base_dofs = _collision_base_dofs(description, collision_params)
+    if base_dofs:
+        kernel_params["collision_base_dofs"] = base_dofs
     # Predictive Cartesian: the EE control link for the
     # Jacobian look-ahead (deepest collision link = wrist/tip). -1 (no collision
     # model) leaves predictive Cartesian off; the reactive measured-config check
@@ -3173,7 +3394,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         _coverage_ball(
             collision_params,
             [j.position_limits for j in description.joints],
-            _collision_base_dofs,
+            base_dofs,
             _octomap_resolution(hal_mode),
         )
         if enable_octomap
@@ -3570,7 +3791,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         # LocateAnything is 5 GB so this matters on an 8 GB card).
         for _spec in locator_specs:
             lifecycle_peer_node_ids.append(_spec["node"])
-            vram_lifecycle_peers.append(_spec["node"])
+        vram_lifecycle_peers.extend(_vram_locator_peers(locator_specs, object_tracking))
     # ``lifecycle_peer_node_ids`` is omitted when empty: launch_ros's
     # evaluate_parameter_dict normalises a Python list to a typed array and
     # an EMPTY list collapses to ``()``, which ensure_argument_type rejects
@@ -3616,7 +3837,16 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # producer's WorldState.detected_objects (auto-creates an empty backend when
     # no path is preloaded).
     reasoner_params["spatial_memory_ingest"] = spatial_memory_ingest
+    # The cell's named navigation goals (ADR-0133), seeded as spatial-memory places.
+    if nav_goals_json:
+        reasoner_params["nav_goals_json"] = nav_goals_json
     reasoner_params["object_tracking"] = object_tracking
+    # The deployment's declared grasping hand: a grasp_target naming no contact_links takes it,
+    # so the reasoner never guesses which hand a learned policy grasps with (empty arrays are
+    # rejected by launch_ros; the reasoner defaults to none).
+    grasp_links = _declared_grasp_contact_links(grasp_declaration_json)
+    if grasp_links:
+        reasoner_params["grasp_contact_links"] = grasp_links
     # Offer the read-only locate_in_view tool to the LLM only when an on-demand
     # locator (``--object-detector-locator``) is actually in the graph.
     # ``detector_node_wiring`` (detector_factory.py) makes the two detector
@@ -3904,6 +4134,10 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 # before acknowledging application. Real HALs keep the 5 s
                 # transport watchdog; sim gets a bounded 8 s transaction.
                 "action_applied_timeout_s": 8.0 if hal_mode == "sim" else 5.0,
+                # An Isaac twin's arrival allowance for the starting pose (0 = manifest).
+                "starting_pose_tolerance": _runner_starting_pose_tolerance(
+                    description.name, hal_mode, scene_backend
+                ),
                 "gripper_convention": gripper_convention,
                 "rskill_search_paths": [_RSKILLS_DIR],
                 "reset_to_pose_service": reset_to_pose_service,
@@ -3931,6 +4165,11 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 # names the one the prompt names (`zone:<name>`).
                 "place_zones_json": place_zones_json,
                 "object_tracking": object_tracking,
+                # Station mode: the perception nodes the runner toggles per skill (empty on a
+                # fixed base / tracking off; launch_ros refuses an empty list, hence [""]).
+                "station_perception_nodes": station_nodes or [""],
+                # ... and the tracker's station switch (empty = none: a fixed base).
+                "station_perception_service": _STATION_PERCEPTION_SERVICE if station else "",
                 # Issue #418 step 1.4: the runner waits for its TARGET queries to ground
                 # and, under grounding_required, refuses the goal. Checked present above
                 # (`_object_tracking`) whenever tracking is on.
@@ -4764,6 +5003,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                                         ]
                                     )
                                 ),
+                                base_dofs=base_dofs,
                                 runtime_period_from_hal=self_filter_period_from_hal,
                             ),
                             "trailing_sweep_s": _self_filter_trailing_sweep_s(hal_mode),
@@ -4910,13 +5150,13 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         # byte-for-byte unchanged. Do NOT hoist this import to the module top.
         import yaml
 
-        # Cross-frame lift: detect on (and stamp the detection with) the robot's first
-        # *liftable* RGB camera — one whose frame_id is a dedicated ``*_optical_frame`` (the
-        # SimSensorBridge broadcasts its live extrinsics, so the world-state lifter can project
-        # the world voxel map into it). The detection's ``sensor_id`` MUST be that camera, not a
-        # depth sensor, so the lifter resolves the right intrinsics/extrinsics. Generic over
-        # robots; prefers an optical-frame RGB camera but falls back to the robot's first RGB
-        # camera so the detector still gets frames. (franka_panda publishes ``top``/``wrist``,
+        # Cross-frame lift: detect on (and stamp the detection with) ``_primary_rgb_camera``:
+        # the depth camera's colour stream, else an RGB camera whose frame_id is a dedicated
+        # ``*_optical_frame`` (the SimSensorBridge broadcasts its live extrinsics, so the
+        # world-state lifter can project the world voxel map into it), else the first RGB
+        # camera so the detector still gets frames. The detection's ``sensor_id`` MUST be
+        # that camera, not a depth sensor, so the lifter resolves the right
+        # intrinsics/extrinsics. (franka_panda publishes ``top``/``wrist``,
         # neither optical-framed; the old hardcoded ``agentview_left`` fallback was a dead
         # topic — no cached frame, every ``locate_in_view`` returned found=False, looping the
         # reasoner.)
@@ -5133,7 +5373,15 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             output="screen",
         )
         extra_nodes.append(segmenter)
-        autostart.append(_poll_autostart("openral_segmenter", 120.0))
+        # Station mode: configured only on a mobile base with tracking on; the runner
+        # activates it per manipulation skill (`station_perception_nodes`).
+        autostart.append(
+            _poll_autostart(
+                "openral_segmenter",
+                120.0,
+                target="inactive" if "openral_segmenter" in station_nodes else "active",
+            )
+        )
 
     instance_cells = LaunchConfiguration("instance_cells").perform(context).lower() in (
         "1",
@@ -5158,6 +5406,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 {
                     "robot_yaml": robot_yaml,
                     "mode": object_tracking,
+                    # Station mode: start with the station perception off (held payloads
+                    # only); the runner switches it on per manipulation skill.
+                    "station_perception_initially_on": not station,
                     "hal_mode": hal_mode,
                     "cameras": list(tracked_cameras),
                     "cell_m": _octomap_resolution(hal_mode),
@@ -5176,6 +5427,10 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     # The station's declared place zones: the region of a place
                     # declaration naming one (`TrackerSession.place_region`).
                     "place_zones_json": place_zones_json,
+                    # ... and the reach a same-slot candidate set is chosen in: the world
+                    # map's coverage ball (tracking always composes the octomap leg).
+                    "zone_reach_center": list(coverage.centre) if coverage else [0.0, 0.0, 0.0],
+                    "zone_reach_radius_m": coverage.radius if coverage else 0.0,
                     "declared_object_catalog_json": declared_object_catalog_json,
                     "object_surface_model_json": object_surface_model_json,
                     # The declared static geometry (the kernel's cells file): a body wholly
@@ -5660,6 +5915,15 @@ def generate_launch_description() -> LaunchDescription:
                 "JSON list of openral_core.ObjectQuery (issue #418) the skill_runner "
                 "attaches to each goal's grasp (TARGET/CONTEXT) and place (DESTINATION) "
                 "declaration when object tracking is on. Empty = none."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "nav_goals_json",
+            default_value="",
+            description=(
+                "JSON list of openral_core.NavGoal (DeployScene.nav_goals, ADR-0133): the "
+                "cell's named navigation goals in the map frame. The reasoner seeds each as a "
+                "spatial-memory place (resolve_place, its context). Empty = none."
             ),
         ),
         DeclareLaunchArgument(

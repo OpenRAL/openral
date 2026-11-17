@@ -44,7 +44,7 @@ from openral_core import (
 )
 from openral_core.geometry import homogeneous_from_quat_xyz
 
-__all__ = ["QueryBook", "QueryEscalation", "StandingQuery"]
+__all__ = ["QueryBook", "QueryEscalation", "StandingQuery", "centre_within", "in_scope"]
 
 log = structlog.get_logger(__name__)
 
@@ -69,6 +69,12 @@ class StandingQuery:
         escalated: The ``unresolved`` escalation was emitted for this search.
         prior: Where a released match was let go (its last box), retired with it; the
             search's seed in place of ``query.seed`` until every raised top in it was tried.
+        within: The grasp declaration's ``search_box`` (grid frame) for a TARGET query of
+            its goal: only a track whose box centre lies in it is an instance, so a
+            same-label object elsewhere (a carton on the shelf while the declared one is in
+            the tote) neither resolves the query nor ends its search. ``None``: label and role.
+            A BOUND or RELEASED track is exempt (``in_scope``): the box says where the
+            object was to be grasped, not where the hand carries or lets it go.
     """
 
     goal_id: str
@@ -82,6 +88,7 @@ class StandingQuery:
     invocation_id: str = ""
     observations: list[ObjectQueryObservation] = field(default_factory=list)
     prior: PlaceRegion | None = None
+    within: PlaceRegion | None = None
 
     @property
     def key(self) -> tuple[str, str]:
@@ -89,8 +96,44 @@ class StandingQuery:
         return self.goal_id, self.query_id
 
     def matches(self, track: TrackedObject) -> bool:
-        """Whether ``track`` is an instance of this query (label and role)."""
-        return track.label == self.query.label and track.role is self.query.role
+        """Whether ``track`` is an instance of this query (label, role, and ``within``)."""
+        return (
+            track.label == self.query.label
+            and track.role is self.query.role
+            and in_scope(track, self.within)
+        )
+
+
+def in_scope(track: TrackedObject, within: PlaceRegion | None) -> bool:
+    """Whether ``track`` passes a goal's ``within`` gate (``StandingQuery.within``).
+
+    A BOUND or RELEASED track always does: once grasped, the declared search box no longer
+    locates it (a lifted carton leaves the tote's box; gating it there would unresolve the
+    query mid-carry and leave its release unrecorded).
+    """
+    return (
+        within is None
+        or track.status in (TrackStatus.BOUND, TrackStatus.RELEASED)
+        or centre_within(track.box, within)
+    )
+
+
+def centre_within(box: PlaceRegion, region: PlaceRegion) -> bool:
+    """Whether ``box``'s centre lies in the oriented ``region`` (same frame; else ``False``).
+
+    Example:
+        >>> from openral_core import Pose6D
+        >>> def at(x: float, h: float) -> PlaceRegion:
+        ...     p = Pose6D(xyz=(x, 0.0, 0.0), quat_xyzw=(0, 0, 0, 1), frame_id="b")
+        ...     return PlaceRegion(frame_id="b", pose=p, half_extents=(h, h, h))
+        >>> centre_within(at(0.05, 0.02), at(0.0, 0.1)), centre_within(at(0.3, 0.02), at(0.0, 0.1))
+        (True, False)
+    """
+    if box.frame_id != region.frame_id:
+        return False
+    t = homogeneous_from_quat_xyz(region.pose.xyz, region.pose.quat_xyzw)
+    local = t[:3, :3].T @ (np.asarray(box.pose.xyz, dtype=np.float64) - t[:3, 3])
+    return bool(np.all(np.abs(local) <= np.asarray(region.half_extents, dtype=np.float64)))
 
 
 @dataclass(frozen=True)
@@ -170,6 +213,7 @@ class QueryBook:
         *,
         stamp_ns: int,
         invocation_id: str = "",
+        within: PlaceRegion | None = None,
     ) -> None:
         """Start a standing query at goal dispatch (source time ``stamp_ns``)."""
         self._queries[(goal_id, query_id)] = StandingQuery(
@@ -180,6 +224,7 @@ class QueryBook:
             ObjectQueryStatus.UNRESOLVED,
             stamp_ns,
             invocation_id=invocation_id,
+            within=within,
         )
         log.info("object_tracker.query_open", goal_id=goal_id, query_id=query_id, label=query.label)
 

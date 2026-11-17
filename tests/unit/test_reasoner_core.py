@@ -554,6 +554,28 @@ def test_tick_selected_log_includes_active_prompt(log_cap: _CaptureProcessor) ->
     assert active.startswith(prompt_text[:30])
 
 
+def test_tick_selected_log_keeps_free_text_on_host_without_consent(
+    log_cap: _CaptureProcessor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The log record is exported like the span: without consent a public collector gets
+    neither the rationale nor the operator's prompt (CLAUDE.md §3)."""
+    from openral_observability import _sdk
+
+    monkeypatch.setattr(_sdk, "_endpoint", "https://otlp.example.com:4318")
+    monkeypatch.delenv("OPENRAL_TELEMETRY_TEXT_CONSENT", raising=False)
+    client = FakeToolUseClient(
+        responses=[
+            EmitPromptTool(target_topic="/openral/prompt", text="ok", rationale="for Alice")
+        ],
+    )
+    core = ReasonerCore(client=client, min_interval_s=0.0)
+    core.tick(
+        world_state=None, renderer=_renderer_with_prompt("bring Alice the mug"), palette=_palette()
+    )
+    (ev,) = [ev for name, ev in log_cap.events if name == "reasoner.tick.selected"]
+    assert "rationale" not in ev and "active_prompt" not in ev
+
+
 def test_search_tools_are_transparent_to_the_retry_cap() -> None:
     """Identical read-only search calls are never capped.
 

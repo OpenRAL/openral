@@ -123,6 +123,87 @@ stayed alive and resumed after a reset. A latched stop outranks a cancel and a c
 a step that completes, or a goal cancelled, while a stop is latched ends `FAILURE_SAFETY_ESTOP`
 ("goal ended (…) while a safety stop was latched"), never as a success.
 
+## Station mode: perception per skill on a mobile base
+
+On a mobile base with object tracking on, `deploy_e2e` launches `openral_segmenter`
+configured but **inactive** (`station_perception_nodes`) and the object tracker ACTIVE with
+its station perception off (`station_perception_service` =
+`/openral/object_tracker/station_perception`); everywhere else (every fixed-base cell,
+tracking off) both parameters are empty and the nodes autostart as before. Per goal the runner
+reads the skill's manifest (`station_perception_wanted`, from `actuators_required`, not an
+LLM decision): a skill that actuates an arm / gripper (pi0.5, MoveIt) gets the segmenter
+activated and the tracker's station perception switched on before its declarations are
+published (the tracker's search timers start when a declaration arrives); a base-only one
+(`body_twist` only: Nav2, a VLN policy) gets them off before its goal is sent; a skill that
+actuates nothing, and the end of a goal, leave them as they are, so a pick and the place
+after it at one station share one segmenter load. Each transition is logged
+(`rskill_runner.station_perception*`); an activation that fails refuses the goal with
+`ROSPerceptionStale` naming the node or service, a deactivation that fails is only logged (a
+crashed segmenter must not stop every Nav2 goal).
+
+Why the tracker is switched, not deactivated: Nav2's `/cmd_vel` reaches the base through the
+HAL's `MobileBaseBridge` (`_send_action_traced`, never `/openral/candidate_action`), so it
+never meets the kernel; but a base *policy*'s `BODY_TWIST` chunk does, and the kernel refuses
+every candidate once the attachment stream goes stale. Off, the tracker keeps that stream fresh
+with the hands' held payloads only (no declaration, no region, no tracked key: nothing the
+kernel can read as an allowance), so the base can drive and a payload in a hand stays known
+(the kernel, and Nav2's payload scan filter, which fails open on a stale set). The reasoner's
+`vram_lifecycle_peers` (detector / locators) is a disjoint set.
+
+**Object grounding is for manipulation goals only.** With `object_tracking` `tracking` or
+`on` (station mode or not) the same manifest predicate decides what a goal declares: a
+base-only skill arms no grasp or place declaration, so no standing `object_queries_json`
+query rides it and there is no grounding wait — it runs as with tracking off
+(`rskill_runner.declarations_skipped why=base_only`). A skill that may grasp (a `vla`, or
+one whose `actuators_required` names a gripper / dex-hand mode; not a MoveIt look-at, joint or
+end-effector-pose motion) whose grasp declaration (the goal's own, else
+`grasp_declaration_json`, else the approach one; plus the standing queries) carries no
+`target_queries`, or that has none in force at all, is refused before any declaration is
+published and before anything moves, with `ROSReasonerInvalidPlan` (`FAILURE_PLANNING_ERROR`): the
+reasoner must re-send the call with `grasp_target` naming the object. Without a query the
+tracker never tracks the object and the kernel checks the held payload as an untracked
+stand-in (Isaac shelf aisle, 2026-11-16). No `place_target` is required: under `tracking`, and under `on`
+when the deploy has no DESTINATION standing query (a reasoner-driven goal; with one, `on`
+places on the tracked destination and names no zone), the runner names the place zone (or
+the station's zone candidates) from the prompt. The tracker resolves a `zone:` target in any
+mode (`TrackerSession.place_region`), and the kernel ingests that place region from the
+attachment snapshot whether or not an exemption provider is loaded (the provider seam has no
+place-region hook). A goal's
+own grasp declaration is completed from the scene's (`merge_grasp_declarations`, logged as
+`rskill_runner.grasp_declaration_merged` with each field's source): the goal keeps its
+`target_id`, queries and any seeded `search_box`; the scene fills `search_box`,
+`workspace_box` and `contact_links` the goal leaves unset, only when the goal names the
+scene's hand (another hand: no scene box or lifetime, a warning, and a `(note: ...)` naming
+both hands appended to that goal's failure reason when the hand can explain it — a safety
+stop, a target not grounded or not found — so the reasoner corrects the hand on its retry;
+the reasoner takes the scene's hand when the LLM names none, `grasp_contact_links`). A scene
+declaration that names its own object (TARGET `target_queries`) lends its boxes only to a
+goal naming that label. The deploy's standing CONTEXT queries ride a goal that names its own
+target.
+A merged non-`sim:` search box seeds the TARGET query, and under `tracking` the tracker counts only a track centred in the
+declared search box as the goal's target (AMR aisle, 2026-11-16: a shelf carton grounded
+"box" while the one to grasp was in the tote). `timeout_s` is the largest of the goal's, the
+scene's and the goal's execution budget + 10 s, capped at 120 s (the reasoner's
+`patience_s=0` declaration got 10 s and ended a 68 s skill 8 s in); the budget counts from
+the run, so a goal declaration the pre-execution waits ate into is republished (same key)
+just before the policy starts. Order per goal: refusals, station perception on, declarations
+armed, grounding wait, skill load, starting pose, policy.
+
+Place zones at several stations: when the prompt matches the same slot declared at several
+map / odom-frame stations (`s<k>_<slot>` sharing an alias), the goal-scope place declaration
+names all of them (`zone_candidates_target_id`, `zone:<a>|<b>|...`) and the tracker keeps the
+one in reach at the base's pose; one match is named as before, and a fixed-base scene is
+unchanged. A zone named by its own name (`s2_lower_slot_1`) wins over the shared alias; a
+prompt naming two slots, or several base-frame zones, names none
+(`place_zones_for_prompt`).
+
+Starting pose on an Isaac twin: the OpenAMRobot 2.0 and OpenArm Isaac scenes run their arms on
+position gains without gravity feed-forward, so joint4 settles ~0.065 rad short of a stocking
+starting pose. `deploy_e2e` sets the runner's `starting_pose_tolerance` to 0.08 rad for those
+two robots on an Isaac Sim deploy only (`_runner_starting_pose_tolerance`); real hardware and
+MuJoCo keep the manifest's 0.05. The param widens the arrival check only: the ramp is skipped
+only when every joint is within the manifest's tolerance.
+
 ## Composition (one shared `WorldStateAggregator`)
 
 Per the single-aggregator contract the world_state node is the **only** subscriber of
@@ -255,9 +336,9 @@ must therefore read `failure_kind == FAILURE_NONE` on a failed result as
 | `FAILURE_NONE` | 0 | Success (also the pre-field default) |
 | `FAILURE_CONFIG_ERROR` | 1 | `ROSConfigError` — bad manifest, non-ACTIVE resolver result, unusable MoveIt approach manifest |
 | `FAILURE_CAPABILITY_MISMATCH` | 2 | `ROSCapabilityMismatch` — a dispatch gate (`check_manifest_gates`): not an ExecuteRskill kind, an actuating skill tagged `any`, embodiment, capability flags, sensors, gripper encoding; or a manifest-less skill not declaring `role: s1` |
-| `FAILURE_RUNTIME_ERROR` | 3 | `ROSRuntimeError` (incl. `ROSQuantizationError` / `ROSGPUMemoryError`), plus a labelled torch OOM / dtype failure |
+| `FAILURE_RUNTIME_ERROR` | 3 | `ROSRuntimeError` (incl. `ROSQuantizationError` / `ROSGPUMemoryError`), plus a labelled torch OOM / dtype failure; `starting_pose not reached within … s: (joint, target - measured, tolerance) [...]` when a fresh joint state measured after the starting-pose move still misses it |
 | `FAILURE_SAFETY_ESTOP` | 4 | `ROSEStopRequested` |
-| `FAILURE_PERCEPTION_STALE` | 5 | `ROSPerceptionStale` |
+| `FAILURE_PERCEPTION_STALE` | 5 | `ROSPerceptionStale`, incl. `no fresh joint state reached starting_pose within … s` (no measured joint state after the move, or the stream stalled) |
 | `FAILURE_PLANNING_ERROR` | 6 | `ROSPlanningError` — the MoveIt starting-pose approach |
 | `FAILURE_DEADLINE_MISSED` | 7 | The execution budget lapsed (`deadline_exceeded: …`) or the graph clock stalled under `use_sim_time` (`clock_stalled: …`); `ROSDeadlineMissed` |
 | `FAILURE_CANCELLED` | 8 | Cancel honoured (no exception) |
@@ -286,7 +367,7 @@ result):
 | `FAILURE_PERCEPTION_STALE` | The kernel's `PerceptionStaleEvidence` (which input, its age, the limit) when a stale input stalled the action |
 | `FAILURE_DEADLINE_MISSED` | `TimeoutEvidence` (`operation="rskill.execute:<deadline_exceeded\|clock_stalled>"`, or `"rskill.execute:grasp_declaration:deadline_exceeded"` when the grasp declaration expires first; budget, elapsed) |
 | `FAILURE_OBJECT_NOT_FOUND` | The tracker's exhausted `ObjectQueryEvidence` |
-| `FAILURE_RUNTIME_ERROR` | `ControllerEvidence` when the cause is known: `state=gpu_out_of_memory` / `quantization_mismatch` (the skill's own typed fault), or the kernel drop that left the action unapplied (`drop_envelope_unconfigured`, `drop_voxel_overflow`, `drop_attached_overflow`). Empty otherwise |
+| `FAILURE_RUNTIME_ERROR` | `ControllerEvidence` when the cause is known: `state=gpu_out_of_memory` / `quantization_mismatch` (the skill's own typed fault), or the kernel drop that left the action unapplied (`drop_envelope_unconfigured`, `drop_voxel_overflow`, `drop_attached_overflow`), or `controller_name=rskill_runner`, `state=starting_pose_not_reached` with `detail` a JSON list of `{joint, residual, tolerance}` for each joint that missed the starting pose. Empty otherwise |
 | anything else | Empty: `failure_reason` says it all |
 
 A safety stop's report and its latch travel on two topics, so the latch can wake the goal first. The failed Result waits up to 1 s (`_SAFETY_EVIDENCE_WAIT_S`) for the report of the kind the latched `SafetyStatus` names, and logs `rskill_runner.safety_evidence_missing` when none arrives. The robot is already stopped; only the Result is delayed. The `/openral/failure/safety` subscription has its own callback group, so it never queues behind the stop's own `/openral/estop` callback.

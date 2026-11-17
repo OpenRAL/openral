@@ -28,13 +28,30 @@
 #       --hal viewer_enabled=false
 #
 # The voxel map is on: octomap maps the head ZED's back-projected depth
-# (/openral/cameras/head_zed/points), so the shelves reach the world model, the
-# safety kernel's voxel check and the robot console's 3D view.
+# (/openral/cameras/head_zed/points) into the world model, the safety kernel's voxel
+# check and the robot console's 3D view. The head ZED looks down (65.6 deg pitch): at
+# lift 0.35 m its view reaches at most ~2.4 m ahead and ~2.2 m to the side, so no shelf
+# is mapped from the spawn; a shelf enters the map only once the robot stands at it.
 
 robot_id: "openamrobot_v2"
 
 runtime:
   enable_octomap: true
+
+# Named navigation goals (DeployScene.nav_goals, ADR-0133), in the map frame Nav2 plans in.
+# With SLAM the map starts at the spawn, facing down the aisle: map +x is world +y, map +y
+# is world -x. `shelf_1_props` stands 0.8 m off Shelf_1, facing the YCB props on it.
+# These poses are relative to the spawn, so they are tied to `base_pose` below: moving or
+# turning the spawn moves every station with it (nothing checks this), so re-derive them
+# whenever `base_pose` changes.
+nav_goals:
+  - name: "aisle_start"
+    pose: {xyz: [0.0, 0.0, 0.0], quat_xyzw: [0.0, 0.0, 0.0, 1.0], frame_id: "map"}
+    description: "the spawn, at the start of the aisle"
+  - name: "shelf_1_props"
+    aliases: ["ycb_shelf"]
+    pose: {xyz: [5.1, -3.0, 0.0], quat_xyzw: [0.0, 0.0, -0.7071068, 0.7071068], frame_id: "map"}
+    description: "in front of Shelf_1, facing the cracker box, sugar box and mustard bottle"
 
 base_pose:
   xyz: [-4.8, 0.0, 0.0]

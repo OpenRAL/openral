@@ -368,3 +368,85 @@ def test_workcell_self_collision_margin_tightens_but_never_loosens(
     # A NaN reads False on ``<``; it (and inf) must not pass as a tightening.
     for bad in (float("nan"), float("inf"), float("-inf")):
         assert effective(description, SafetyEnvelope(self_collision_margin_m=bad)) == robot_margin
+
+
+def test_a_robot_without_hands_sends_no_empty_hand_list(launch_module: ModuleType) -> None:
+    """launch_ros turns an empty list into () and refuses it, killing the whole launch."""
+    pytest.importorskip("openral_safety", reason="the collision lowering lives in openral_safety")
+    from openral_core import RobotDescription
+    from openral_safety.envelope_loader import collision_params_from_description
+
+    description = RobotDescription.from_yaml(str(REPO_ROOT / "robots/ur5e/robot.yaml"))
+    assert not description.hand_links()
+    collision = collision_params_from_description(description)
+    params = launch_module._self_filter_params(collision, description, "/joint_states", 0.02)
+    assert "robot_mask_hand_links" not in params
+
+
+def test_a_mobile_manipulator_filter_poses_the_model_in_its_base_frame(
+    launch_module: ModuleType,
+) -> None:
+    """The filter gets the kernel's base dofs and the manifest base_frame on a mobile base, so it
+    holds the planar joints at zero and needs no `world` in TF; a fixed arm gets neither."""
+    pytest.importorskip("openral_safety", reason="the collision lowering lives in openral_safety")
+    from openral_core import RobotDescription
+    from openral_safety.envelope_loader import collision_params_from_description
+
+    amr = RobotDescription.from_yaml(str(REPO_ROOT / "robots/openamrobot_v2/robot.yaml"))
+    collision = collision_params_from_description(amr)
+    base_dofs = launch_module._collision_base_dofs(amr, collision)
+    params = launch_module._self_filter_params(
+        collision, amr, "/joint_states", 0.02, base_dofs=base_dofs
+    )
+    assert params["collision_base_dofs"] == base_dofs == [0, 1, 2]
+    assert params["base_frame"] == amr.base_frame == "base_footprint"
+    arm = RobotDescription.from_yaml(str(REPO_ROOT / "robots/openarm/robot.yaml"))
+    fixed = launch_module._self_filter_params(
+        collision_params_from_description(arm), arm, "/joint_states", 0.02
+    )
+    assert "collision_base_dofs" not in fixed and "base_frame" not in fixed
+
+
+@pytest.mark.parametrize("robot", ["openamrobot_v2", "panda_mobile", "panda_mobile_vslam"])
+def test_every_mobile_manifest_has_a_base_chain_the_kernel_and_filter_can_pose(
+    launch_module: ModuleType, robot: str
+) -> None:
+    """Root -> base_frame is exactly the planar base, with zero offsets, on each mobile fixture."""
+    pytest.importorskip("openral_safety", reason="the collision lowering lives in openral_safety")
+    from openral_core import RobotDescription
+    from openral_safety.envelope_loader import collision_params_from_description
+
+    d = RobotDescription.from_yaml(str(REPO_ROOT / f"robots/{robot}/robot.yaml"))
+    assert launch_module._collision_base_dofs(d, collision_params_from_description(d)) == [0, 1, 2]
+
+
+def test_a_base_chain_that_is_not_the_base_dofs_is_refused_at_launch(
+    launch_module: ModuleType,
+) -> None:
+    """Posing the model in a base_frame the base dofs do not end at would misplace the filter's
+    blind shell (and the kernel's model), so the launch refuses it for both consumers."""
+    pytest.importorskip("openral_safety", reason="the collision lowering lives in openral_safety")
+    from openral_core import RobotDescription
+    from openral_core.exceptions import ROSConfigError
+    from openral_safety.envelope_loader import collision_params_from_description
+
+    amr = RobotDescription.from_yaml(str(REPO_ROOT / "robots/openamrobot_v2/robot.yaml"))
+    collision = collision_params_from_description(amr)
+    base_joints = list(amr.base_joints or [])
+    refused = [
+        amr.model_copy(update={"base_frame": "world"}),  # the root: no base dof on its chain
+        amr.model_copy(update={"base_frame": "base_link"}),  # 0.098 m above base_footprint
+        amr.model_copy(update={"base_frame": "lift_carriage_link"}),  # under the lift's dof
+        amr.model_copy(update={"base_frame": "no_such_link"}),
+        amr.model_copy(update={"base_joints": [*base_joints, "lift_joint"]}),  # extra dof
+        amr.model_copy(update={"base_joints": base_joints[:2]}),  # yaw left out
+    ]
+    for description in refused:
+        with pytest.raises(ROSConfigError):
+            launch_module._collision_base_dofs(description, collision)
+    offset = dict(collision)
+    origins = list(offset["collision_origin_xyzrpy"])
+    origins[6 * 1] = 0.1  # base_x_link sits 0.1 m off the root
+    offset["collision_origin_xyzrpy"] = origins
+    with pytest.raises(ROSConfigError):
+        launch_module._collision_base_dofs(amr, offset)

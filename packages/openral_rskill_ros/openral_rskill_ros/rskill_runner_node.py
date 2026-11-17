@@ -34,8 +34,10 @@ single-process invocation is a thin wrapper that sends a goal to this server.
 from __future__ import annotations
 
 import contextlib
+import json
 import math
 import os
+import re
 import secrets
 import sys
 import threading
@@ -64,15 +66,87 @@ from openral_rskill.execution_budget import (
 )
 
 if TYPE_CHECKING:
-    from openral_core.schemas import Action, ActionSlot, RobotDescription, RSkillManifest
+    from openral_core.schemas import (
+        Action,
+        ActionSlot,
+        GraspDeclaration,
+        PlaceZone,
+        RobotDescription,
+        RSkillManifest,
+    )
     from openral_rskill._policy_io import PolicyIOCodec
     from openral_rskill.base import rSkillBase
     from openral_rskill.ros_action_rskill import ROSActionRskill
     from openral_world_state import WorldStateAggregator
 
-__all__ = ["RskillRunnerNode", "main"]
+__all__ = [
+    "RskillRunnerNode",
+    "main",
+    "merge_grasp_declarations",
+    "place_zones_for_prompt",
+    "station_perception_wanted",
+]
 
 log = structlog.get_logger(__name__)
+
+
+def station_perception_wanted(manifest: RSkillManifest) -> bool | None:
+    """Whether a skill needs the station's perception (object tracker + segmenter) active.
+
+    Station mode on a mobile manipulator: tracks are in the base frame, valid only while the base
+    stands still, so the perception runs only around skills that actuate an arm, a gripper or a
+    hand, and is off around skills that only drive the base. Decided from the manifest's
+    ``actuators_required`` (the same field ``check_manifest_gates`` matches against the robot),
+    never by the reasoner.
+
+    Args:
+        manifest: The gated manifest of the skill about to run.
+
+    Returns:
+        ``True`` when any actuator is not a base mode (arm / gripper / hand / Cartesian),
+        ``False`` when every actuator is a base mode (``body_twist`` / ``foot_placement``: Nav2,
+        a VLN policy), ``None`` when it actuates nothing (perception left as it is).
+
+    Example:
+        >>> from openral_rskill.loader import parse_rskill_manifest
+        >>> station_perception_wanted(
+        ...     parse_rskill_manifest(Path("rskills/rskill-nav2-navigate-to-pose/rskill.yaml"))
+        ... )
+        False
+        >>> station_perception_wanted(
+        ...     parse_rskill_manifest(Path("rskills/pi05-metal-pick-place/rskill.yaml"))
+        ... )
+        True
+    """
+    return manifest.actuates_manipulator
+
+
+def _grasps(manifest: RSkillManifest | None) -> bool:
+    """Whether a skill may grasp: a learned policy, or ``actuators_required`` naming a gripper.
+
+    Only such a goal must name the object it grasps under object tracking: a wrapped motion
+    (MoveIt look-at, joints, end-effector pose) actuates the arm and grasps nothing. A ``vla``
+    counts whatever it declares: a joint-position policy drives its gripper as a joint (ACT
+    on ALOHA). A manifest that cannot be read here (an opaque resolver) is taken to grasp:
+    refused rather than run untracked.
+
+    Example:
+        >>> from openral_rskill.loader import parse_rskill_manifest
+        >>> _grasps(parse_rskill_manifest(Path("rskills/pi05-metal-pick-place/rskill.yaml")))
+        True
+        >>> _grasps(parse_rskill_manifest(Path("rskills/rskill-moveit-look-at/rskill.yaml")))
+        False
+    """
+    if manifest is None:
+        return True
+    return manifest.kind == "vla" or any(
+        a.kind in _GRASP_MODES for a in manifest.actuators_required
+    )
+
+
+_GRASP_MODES = frozenset(
+    {ControlMode.GRIPPER_BINARY, ControlMode.GRIPPER_POSITION, ControlMode.DEX_HAND_JOINT}
+)
 
 
 def _cuda_allocated_mb() -> float | None:
@@ -116,6 +190,182 @@ _MAX_APPROACH_WAYPOINTS = 100_000
 # max_execution_s``. A VLA policy never self-terminates, so without a bound the
 # goal runs forever and the reasoner can never re-evaluate the attempt.
 _DEFAULT_EXECUTION_DEADLINE_S = 45.0
+
+
+def _resolved_deadline_s(deadline_s: float, *manifests: object) -> tuple[float, bool]:
+    """A goal's execution budget and whether a manifest supplied it.
+
+    ``deadline_s > 0`` is the goal's own; ``<= 0`` (the "use the manifest default" sentinel)
+    resolves to the first of ``manifests`` with a ``latency_budget.max_execution_s``, else
+    ``_DEFAULT_EXECUTION_DEADLINE_S``.
+
+    Example:
+        >>> _resolved_deadline_s(12.0), _resolved_deadline_s(0.0, None)
+        ((12.0, False), (45.0, False))
+    """
+    if deadline_s > 0.0:
+        return deadline_s, False
+    for manifest in manifests:
+        budget = getattr(getattr(manifest, "latency_budget", None), "max_execution_s", None)
+        if budget:
+            return float(budget), True
+    return _DEFAULT_EXECUTION_DEADLINE_S, False
+
+
+def merge_grasp_declarations(
+    goal: GraspDeclaration,
+    scene: GraspDeclaration | None,
+    *,
+    budget_s: float,
+) -> tuple[GraspDeclaration, dict[str, str]]:
+    """The grasp declaration a goal arms: the goal's, completed from the scene's.
+
+    The reasoner names the object (``target_id``, ``object_id``, ``target_queries``, and a
+    ``search_box`` only when it seeded one from a live detection or memory); the deploy scene
+    declares where the work happens (``search_box``, ``workspace_box``) and with which hand
+    (``contact_links``). Scene fields fill only what the goal leaves unset, and only when the
+    goal names the scene's hand: a goal naming another hand keeps its own links and takes
+    nothing from the scene (the exemption never widens to a hand the goal did not name). A
+    scene that names its own object (TARGET ``target_queries``) lends its boxes only to a goal
+    naming that label: a box declared for another object would widen the workspace contact
+    for this one and scope its search to where it is not. The goal's ``target_id`` is kept:
+    the armed declaration is the one source of the ``"<target_id>@<stamp_ns>"`` key the
+    tracker's queries, its tracks and the kernel share. (A goal always names a hand:
+    ``GraspDeclaration`` refuses an active one without ``contact_links``.)
+
+    ``timeout_s`` is the largest of the goal's, the scene's (when merged) and ``budget_s`` +
+    ``GraspDeclaration.TIMEOUT_MARGIN_S``, capped at ``GraspDeclaration.MAX_TIMEOUT_S``: a
+    goal-built declaration (the reasoner's 10 s minimum at ``patience_s=0``) must not expire
+    before the goal's own budget; past the cap the runner still ends the goal before the
+    declaration lapses (``declaration_expiry_miss``).
+
+    When the scene's merged ``search_box`` is not sim ground truth (``evidence_ref``
+    ``sim:``), it also seeds the TARGET queries that carry no seed (``deploy sim``'s rule
+    for standing queries).
+
+    Args:
+        goal: The goal's own declaration.
+        scene: The deploy scene's (``grasp_declaration_json``), or ``None``.
+        budget_s: The goal's resolved execution budget (``_resolved_deadline_s``).
+
+    Returns:
+        The declaration and, per field that was decided, ``"goal"`` / ``"scene"`` /
+        ``"budget"`` (the source logged by the runner), with ``"hand"`` = ``"same"`` /
+        ``"different"`` when a scene was given, and ``"boxes"`` = ``"other_object"`` when
+        the scene's boxes were withheld because it names another object.
+
+    Example:
+        >>> from openral_core import GraspDeclaration, ObjectQuery
+        >>> goal = GraspDeclaration(
+        ...     target_id="obj:box",
+        ...     contact_links=("left",),
+        ...     timeout_s=10.0,
+        ...     stamp_ns=0,
+        ...     target_queries=(ObjectQuery(label="box", count="one", role="target"),),
+        ... )
+        >>> scene = GraspDeclaration(
+        ...     target_id="cell:stock_object", contact_links=("left",), timeout_s=70.0, stamp_ns=0
+        ... )
+        >>> d, src = merge_grasp_declarations(goal, scene, budget_s=0.4)
+        >>> d.target_id, d.timeout_s, src["timeout_s"], src["hand"]
+        ('obj:box', 70.0, 'scene', 'same')
+    """
+    from openral_core import GraspDeclaration as _Grasp
+    from openral_core import ObjectRole
+
+    ceiling = _Grasp.MAX_TIMEOUT_S
+    floor = budget_s + _Grasp.TIMEOUT_MARGIN_S
+    sources: dict[str, str] = {"target_id": "goal", "target_queries": "goal"}
+    timeouts = [("goal", goal.timeout_s), ("budget", floor)]
+    update: dict[str, Any] = {}
+    if scene is not None:
+        same = set(goal.contact_links) == set(scene.contact_links)
+        sources["hand"] = "same" if same else "different"
+        sources["contact_links"] = "goal"
+        if same:
+            timeouts.append(("scene", scene.timeout_s))
+        scene_labels = _target_labels(scene)
+        if scene_labels and not scene_labels & _target_labels(goal):
+            sources["boxes"] = "other_object"
+        elif same:
+            for name in ("search_box", "workspace_box"):
+                if getattr(goal, name) is None and getattr(scene, name) is not None:
+                    update[name] = getattr(scene, name)
+                    sources[name] = "scene"
+                elif getattr(goal, name) is not None:
+                    sources[name] = "goal"
+    source, timeout = max(timeouts, key=lambda t: t[1])
+    update["timeout_s"] = min(timeout, ceiling)
+    sources["timeout_s"] = source if timeout <= ceiling else f"{source}_capped"
+    box = update.get("search_box")
+    if box is not None and not (box.evidence_ref or "").startswith("sim:"):
+        update["target_queries"] = tuple(
+            q.model_copy(update={"seed": box})
+            if q.role is ObjectRole.TARGET and q.seed is None
+            else q
+            for q in goal.target_queries
+        )
+        sources["target_queries"] = "goal+scene_seed"
+    return goal.model_copy(update=update), sources
+
+
+def _target_labels(declaration: GraspDeclaration) -> set[str]:
+    """The case-folded labels of ``declaration``'s TARGET queries."""
+    from openral_core import ObjectRole
+
+    return {
+        q.label.strip().casefold()
+        for q in declaration.target_queries
+        if q.role is ObjectRole.TARGET
+    }
+
+
+def place_zones_for_prompt(
+    prompt: str, zones: Sequence[PlaceZone], *, base_frame: str
+) -> list[PlaceZone]:
+    """The declared zones a goal's prompt names: one zone, one slot's stations, or ``[]``.
+
+    The prompt is read as ``place_zone_for_prompt`` reads it (lower-cased, every
+    non-alphanumeric run as ``_``, names and aliases matched as whole words). In order:
+
+    * Zone names win over aliases: a prompt naming one zone (``s1_lower_slot_1``) gets that
+      zone, though its alias (``lower_slot_1``) also names the slot at every other station;
+      naming several zones is ambiguous (``[]``).
+    * Else the zones an alias names must be one slot: every match named by the same
+      aliases. A prompt naming two slots (``upper slot 2`` and ``lower slot 1``) is
+      ambiguous (``[]``), never both.
+    * Several zones of that slot are a station candidate set only when every one is in a
+      fixed frame (not ``base_frame``, which must be known): a base-frame zone is one place
+      already, so several of them are ambiguous (``[]``).
+
+    Example:
+        >>> from openral_core import PlaceRegion, PlaceZone, Pose6D
+        >>> def zone(name, aliases):
+        ...     pose = Pose6D(xyz=(1.0, 0.0, 0.5), quat_xyzw=(0, 0, 0, 1), frame_id="map")
+        ...     box = PlaceRegion(frame_id="map", pose=pose, half_extents=(0.1, 0.1, 0.1))
+        ...     return PlaceZone(name=name, aliases=aliases, region=box)
+        >>> zs = [zone(f"s{k}_{slot}", (slot,)) for k in (1, 2) for slot in ("lower_1", "upper_2")]
+        >>> [z.name for z in place_zones_for_prompt("into lower 1", zs, base_frame="base")]
+        ['s1_lower_1', 's2_lower_1']
+        >>> [z.name for z in place_zones_for_prompt("into s2 lower 1", zs, base_frame="base")]
+        ['s2_lower_1']
+        >>> place_zones_for_prompt("lower 1 then upper 2", zs, base_frame="base")
+        []
+    """
+    text = "_" + re.sub(r"[^a-z0-9]+", "_", prompt.lower()).strip("_") + "_"
+    by_name = [z for z in zones if f"_{z.name}_" in text]
+    if by_name:
+        return by_name if len(by_name) == 1 else []
+    slots = {z.name: frozenset(a for a in z.aliases if f"_{a}_" in text) for z in zones}
+    matches = [z for z in zones if slots[z.name]]
+    if len({slots[z.name] for z in matches}) != 1:
+        return []
+    if len(matches) > 1 and (
+        not base_frame or any(z.region.frame_id == base_frame for z in matches)
+    ):
+        return []
+    return matches
+
 
 # The tick rate of a robot whose manifest declares no action_spec.control_freq_hz
 # (sim-only manifests today). Logged and recorded on the goal span as
@@ -385,7 +635,10 @@ if _ROS2_AVAILABLE:
             # 0 = the manifest's safety.starting_pose_max_joint_speed_rad_s /
             # starting_pose_tolerance_rad. Prismatic joints always use the manifest's
             # _m_s / _m values, and every joint is capped at its velocity_limit
-            # (see starting_pose_joint_bounds).
+            # (see starting_pose_joint_bounds). The tolerance param widens the arrival check
+            # only: the ramp is skipped only within the manifest's tolerance (the launch sets
+            # it for an Isaac twin whose position-only gains sag the arm,
+            # `_runner_starting_pose_tolerance`).
             self.declare_parameter("starting_pose_max_delta_per_s", 0.0)
             self.declare_parameter("starting_pose_tolerance", 0.0)
             self.declare_parameter("estop_topic", "/openral/estop")
@@ -482,6 +735,21 @@ if _ROS2_AVAILABLE:
             # Spark restock 2026-10-28: a hidden neighbour pinned every episode at the full
             # 20 s (~62 s wall) and the wait grounded one more carton in 1 of 6 episodes.
             self.declare_parameter("grounding_context_wait_s", 2.0)
+            # Station mode (mobile base, object tracking on): the lifecycle nodes the runner
+            # activates around a skill that actuates an arm / gripper and keeps inactive around
+            # a base-only one (`station_perception_wanted`), in activation order (deactivated in
+            # reverse). The launch sets them only on a mobile base with tracking on; empty (the
+            # default, every fixed-base cell) leaves perception exactly as launched. A required
+            # activation that fails refuses the goal (ROSPerceptionStale naming the node).
+            self.declare_parameter("station_perception_nodes", [""])
+            # ... and the object tracker's station switch (std_srvs/SetBool; "" = none). The
+            # tracker stays lifecycle-ACTIVE so its held payloads stay on attachment_state
+            # while the base drives; off, it publishes those only (no declaration, no region).
+            self.declare_parameter("station_perception_service", "")
+            # Bound on one get_state / change_state round trip; the segmenter's first
+            # activation loads and warms its model (the launch's autostart allows 120 s).
+            self.declare_parameter("station_perception_timeout_s", 120.0)
+            self._station_clients: dict[str, Any] = {}
             self._description: RobotDescription | None = robot_description
             self._aggregator: WorldStateAggregator | None = aggregator
             self._skill_resolver: SkillResolver | None = skill_resolver
@@ -547,6 +815,12 @@ if _ROS2_AVAILABLE:
             self._active_place_declaration: Any = None
             # The grasp-phase declaration currently on the wire, or ``None``.
             self._active_grasp_declaration: Any = None
+            # This goal's declaration named another hand than the scene's (appended to the
+            # failure reason, so the reasoner can correct the hand on its retry).
+            self._grasp_hand_note = ""
+            # The goal's manifest as `_goal_manifest` resolved it: `_resolve_and_gate` reuses
+            # it, so a dispatch never resolves (a Hub fetch, with hub_fallback) twice.
+            self._goal_resolved: ResolvedRskill | None = None
             # Issue #418: the newest /openral/tracked_objects set (TrackedObjectSet), or
             # ``None``; read by the grounding wait.
             self._tracked_set: Any = None
@@ -1358,7 +1632,9 @@ if _ROS2_AVAILABLE:
             """
             with self._execute_serial:
                 try:
-                    return self._attach_failure_evidence(self._execute_locked(goal_handle))
+                    return self._attach_failure_evidence(
+                        self._note_grasp_hand(self._execute_locked(goal_handle))
+                    )
                 finally:
                     # HZ-0097-3 — the place declaration dies with the goal on
                     # EVERY exit, including one that never reaches
@@ -1379,6 +1655,7 @@ if _ROS2_AVAILABLE:
                 ROSError,
                 ROSEStopRequested,
                 ROSPerceptionStale,
+                ROSPlanningError,
                 ROSSafetyViolation,
             )
             from openral_msgs.action import ExecuteRskill
@@ -1399,6 +1676,7 @@ if _ROS2_AVAILABLE:
                 self._goal_evidence = None
                 self._explained_drop = None
                 self._goal_outcome_summary = ""
+                self._grasp_hand_note = ""
                 self._goal_started_monotonic = time.monotonic()
             # Reward-gate signal: this instruction is now executing.
             self._publish_active_task(req.prompt)
@@ -1424,18 +1702,57 @@ if _ROS2_AVAILABLE:
                     # `_reset_active_goal`, which retracts it. A supplied declaration
                     # that does not validate refuses the goal (ROSConfigError, below).
                     invocation_id = bytes(goal_handle.goal_id.uuid).hex()
-                    self._arm_place_declaration(
-                        req,
-                        rskill_id=rskill_id,
-                        trace_id=result.trace_id,
-                        invocation_id=invocation_id,
+                    # Object grounding is for manipulation goals only: under object tracking
+                    # (and in station mode) the manifest decides. A base-only skill (Nav2)
+                    # arms no declaration, so no standing query rides it and nothing is
+                    # waited for; a skill that grasps must name what it grasps.
+                    tracking = self._object_tracking_mode() != "off"
+                    goal_grasp = bool(getattr(req, "grasp_declaration_valid", False))
+                    self._goal_resolved = None
+                    manifest = (
+                        self._goal_manifest(rskill_id=rskill_id, revision=revision)
+                        if tracking
+                        or goal_grasp
+                        or self._station_nodes()
+                        or self._station_service()
+                        else None
                     )
-                    self._arm_grasp_declaration(
-                        req,
-                        rskill_id=rskill_id,
-                        trace_id=result.trace_id,
-                        invocation_id=invocation_id,
-                    )
+                    wanted = station_perception_wanted(manifest) if manifest is not None else True
+                    declare = not (tracking and wanted is False)
+                    grasp = None
+                    if not declare:
+                        self.get_logger().info(
+                            f"rskill_runner.declarations_skipped skill={rskill_id} "
+                            "why=base_only: no grasp / place declaration, object query or "
+                            "grounding wait for a skill that only drives the base"
+                        )
+                    else:
+                        # Every refusal before anything is published or switched on.
+                        grasp = self._grasp_declaration_for(
+                            req,
+                            rskill_id=rskill_id,
+                            require_queries=tracking and _grasps(manifest),
+                            budget_s=_resolved_deadline_s(deadline_s, manifest)[0],
+                        )
+                    # Station mode: perception on for an arm / gripper skill, off for a
+                    # base-only one (before its goal is sent). Before the declarations: the
+                    # tracker opens a declaration's queries, and starts their search timers,
+                    # when the latched declaration arrives. A failed activation refuses the
+                    # goal (ROSPerceptionStale).
+                    self._station_perception_for(rskill_id=rskill_id, manifest=manifest)
+                    if declare:
+                        self._arm_place_declaration(
+                            req,
+                            rskill_id=rskill_id,
+                            trace_id=result.trace_id,
+                            invocation_id=invocation_id,
+                        )
+                        self._publish_armed_grasp(
+                            grasp,
+                            rskill_id=rskill_id,
+                            trace_id=result.trace_id,
+                            invocation_id=invocation_id,
+                        )
                     # Issue #418: wait for the armed TARGET queries to ground; refuses the
                     # goal (ROSPerceptionStale) under grounding_required. Before the skill
                     # loads: no motion on a refusal, and the detector is not yet evicted.
@@ -1463,7 +1780,12 @@ if _ROS2_AVAILABLE:
                         with self._goal_lock:
                             self._active_skill_revision = self._resident_key[1]
                     self._check_skill_control_rate(skill, span)
-                except (ROSConfigError, ROSCapabilityMismatch, ROSPerceptionStale) as exc:
+                except (
+                    ROSConfigError,
+                    ROSCapabilityMismatch,
+                    ROSPerceptionStale,
+                    ROSPlanningError,
+                ) as exc:
                     span.record_exception(exc)
                     self.get_logger().error(
                         f"rskill_runner.goal_rejected: kind={type(exc).__name__} reason={exc!s}"
@@ -1484,19 +1806,14 @@ if _ROS2_AVAILABLE:
                 # never self-terminates — is bounded and the reasoner can
                 # re-evaluate the attempt instead of hanging forever.
                 if deadline_s <= 0.0:
-                    _budget = None
-                    for _src in (
+                    deadline_s, _from_manifest = _resolved_deadline_s(
+                        deadline_s,
                         getattr(skill, "manifest", None),
                         getattr(self, "manifest", None),
-                    ):
-                        _lb = getattr(_src, "latency_budget", None)
-                        _budget = getattr(_lb, "max_execution_s", None)
-                        if _budget:
-                            break
-                    deadline_s = float(_budget) if _budget else _DEFAULT_EXECUTION_DEADLINE_S
+                    )
                     self.get_logger().info(
                         f"deadline_s=0 → resolved to {deadline_s:.0f}s "
-                        f"({'manifest max_execution_s' if _budget else 'global default'}); "
+                        f"({'manifest max_execution_s' if _from_manifest else 'global default'}); "
                         "a VLA never self-terminates (CLAUDE.md §3)",
                     )
 
@@ -1530,6 +1847,10 @@ if _ROS2_AVAILABLE:
                 # ``finally`` so every exit path (estop / error / cancel /
                 # success / safety re-raise) closes the episode with the
                 # resolved success flag.
+                # A goal-built declaration's lifetime floor is its budget, which starts now,
+                # after every pre-execution wait (a scene / approach one keeps its own).
+                if goal_grasp:
+                    self._extend_grasp_declaration(deadline_s)
                 episode_task = req.prompt or rskill_id
                 self._publish_episode_start(task_string=episode_task)
                 try:
@@ -1689,7 +2010,9 @@ if _ROS2_AVAILABLE:
             assert resolver is not None  # invariant set in on_configure
             if not isinstance(resolver, TwoPhaseSkillResolver):
                 return None
-            resolved = resolver.resolve(rskill_id=rskill_id, revision=revision)
+            resolved = self._goal_resolved
+            if resolved is None or (resolved.rskill_id, resolved.revision) != (rskill_id, revision):
+                resolved = resolver.resolve(rskill_id=rskill_id, revision=revision)
             self._check_manifest(resolved.manifest)
             return resolved
 
@@ -2304,45 +2627,77 @@ if _ROS2_AVAILABLE:
             goal_handle: Any,
             starting_pose_wall_ns: int,
         ) -> bool:
-            """Require a fresh observed starting pose before policy inference."""
+            """Require a fresh observed starting pose before policy inference.
+
+            Only a measured frame counts: the aggregator's ``fresh_joint_state`` (never the
+            zeros ``snapshot`` substitutes before the first reading, so a near-zero pose is
+            not "verified" by an arm nobody measured). When the newest frame at the timeout
+            is fresh and stamped after the move ended and still misses, the goal fails
+            ``ROSRuntimeError`` naming each joint, its residual and its tolerance
+            (``starting_pose_misses``, also stamped as ``ControllerEvidence``
+            ``state=starting_pose_not_reached``); otherwise (no fresh frame, or the stream
+            stalled) it is ``ROSPerceptionStale``.
+            """
             manifest = getattr(skill, "manifest", None)
             pose = getattr(manifest, "starting_pose", None) if manifest is not None else None
             if not pose:
                 return True
             if self._aggregator is None:
                 return True
-            from openral_core.exceptions import ROSPerceptionStale
+            from openral_core import ControllerEvidence
+            from openral_core.exceptions import ROSPerceptionStale, ROSRuntimeError
+            from openral_msgs.action import ExecuteRskill
 
             assert self._description is not None
             names = [joint.name for joint in self._description.joints]
             bounds = self._starting_pose_bounds()
             description = self._description
-            deadline = time.monotonic() + float(
-                self.get_parameter("action_applied_timeout_s").value
-            )
+            timeout_s = float(self.get_parameter("action_applied_timeout_s").value)
+            # The move has returned: a residual is only the arm's if measured after now.
+            move_ended_ns = time.time_ns()
+            deadline = time.monotonic() + timeout_s
+            last_miss: tuple[list[float], list[float]] | None = None
             while time.monotonic() < deadline:
                 self._raise_if_safety_aborted("waiting for starting_pose verification")
                 if self._cancel_requested or goal_handle.is_cancel_requested:
                     return False
-                js = self._aggregator.snapshot().joint_state
-                measured = (
-                    self._joint_positions_in_manifest_order(js, names)
-                    if js is not None and int(js.stamp_ns) >= starting_pose_wall_ns
-                    else None
-                )
-                # A slot-subset pose holds the other joints at their measured value.
-                if measured is not None and starting_pose_reached(
-                    measured, expand_starting_pose(pose, manifest, description, measured), bounds
-                ):
-                    self.get_logger().info(
-                        "rskill_runner.starting_pose_verified "
-                        f"(age_ms={(time.time_ns() - int(js.stamp_ns)) / 1e6:.1f})"
-                    )
-                    return True
+                # No snapshot(): it opens a span per call, one every 5 ms poll.
+                js = self._aggregator.fresh_joint_state()
+                last_miss = None
+                if js is not None and int(js.stamp_ns) >= starting_pose_wall_ns:
+                    measured = self._joint_positions_in_manifest_order(js, names)
+                    # A slot-subset pose holds the other joints at their measured value.
+                    target = expand_starting_pose(pose, manifest, description, measured)
+                    if starting_pose_reached(measured, target, bounds):
+                        self.get_logger().info(
+                            "rskill_runner.starting_pose_verified "
+                            f"(age_ms={(time.time_ns() - int(js.stamp_ns)) / 1e6:.1f})"
+                        )
+                        return True
+                    if int(js.stamp_ns) >= move_ended_ns:
+                        last_miss = (measured, target)
                 time.sleep(0.005)
-            raise ROSPerceptionStale(
-                "no fresh joint state reached starting_pose within "
-                f"{float(self.get_parameter('action_applied_timeout_s').value):g} s"
+            if last_miss is None:
+                raise ROSPerceptionStale(
+                    f"no fresh joint state reached starting_pose within {timeout_s:g} s"
+                )
+            misses = starting_pose_misses(last_miss[0], last_miss[1], bounds, names)
+            self._goal_evidence = (
+                int(ExecuteRskill.Result.FAILURE_RUNTIME_ERROR),
+                ControllerEvidence(
+                    controller_name="rskill_runner",
+                    state="starting_pose_not_reached",
+                    detail=json.dumps(
+                        [
+                            {"joint": name, "residual": residual, "tolerance": tolerance}
+                            for name, residual, tolerance in misses
+                        ]
+                    ),
+                ).model_dump_json(),
+            )
+            raise ROSRuntimeError(
+                f"starting_pose not reached within {timeout_s:g} s: "
+                f"(joint, target - measured, tolerance) {misses}"
             )
 
         def _apply_starting_pose(self, skill: Any, goal_handle: Any) -> tuple[int, str] | None:
@@ -2544,7 +2899,11 @@ if _ROS2_AVAILABLE:
             current = self._joint_positions_in_manifest_order(self._hal.read_state(), names)
             deltas = [end - start for start, end in zip(current, target, strict=True)]
             rate_hz = self._control_rate_hz()
-            steps = starting_pose_ramp_steps(current, target, self._starting_pose_bounds(), rate_hz)
+            # Skipped only within the manifest's tolerance: a looser `starting_pose_tolerance`
+            # (a sim twin's arrival allowance) must not leave a joint that far off unramped.
+            steps = starting_pose_ramp_steps(
+                current, target, self._starting_pose_bounds(arrival=False), rate_hz
+            )
             if steps == 0:
                 return None
             self.get_logger().info(
@@ -2567,11 +2926,16 @@ if _ROS2_AVAILABLE:
                 next_deadline = _pace_tick(next_deadline, 1.0 / rate_hz)
             return None
 
-        def _starting_pose_bounds(self) -> list[tuple[float, float]]:
-            """Per-joint (max speed, arrival tolerance) for the starting-pose move."""
+        def _starting_pose_bounds(self, *, arrival: bool = True) -> list[tuple[float, float]]:
+            """Per-joint (max speed, tolerance) for the starting-pose move.
+
+            ``arrival``: the tolerance the arrival check accepts (``starting_pose_tolerance``
+            when set); else the manifest's own, which decides whether the ramp is skipped.
+            """
+            tolerance = float(self.get_parameter("starting_pose_tolerance").value)
             return starting_pose_joint_bounds(
                 float(self.get_parameter("starting_pose_max_delta_per_s").value),
-                float(self.get_parameter("starting_pose_tolerance").value),
+                tolerance if arrival else 0.0,
                 self._description,
             )
 
@@ -2775,39 +3139,60 @@ if _ROS2_AVAILABLE:
             Names no target surface, no object and no search box: the HAL's
             place-target leg measures the surface under whichever payload is
             carried and scopes the region to it. Under ``object_tracking: tracking``, when
-            ``prompt`` names exactly one of the station's declared ``place_zones_json`` zones,
-            ``target_id`` is that zone's ``zone:<name>`` instead, and the object tracker
-            publishes its box as the place region (Safety-WG review owed); ``on`` names no
-            zone (it uses the tracked destination); a prompt naming none, or several, keeps
-            ``"surface"`` and is logged. The backstop is the goal
+            ``prompt`` names one of the declared ``place_zones_json`` zones, ``target_id`` is
+            that zone's ``zone:<name>`` instead, and the object tracker publishes its box as
+            the place region (Safety-WG review owed); when it names one slot declared at
+            several stations (map-frame zones sharing the alias), it is the candidate set
+            ``zone:<a>|<b>|...`` and the tracker keeps the one in reach
+            (``place_zones_for_prompt``). ``on`` names one only when the deploy has no
+            DESTINATION standing query (with one it uses the tracked destination, no zone). A
+            prompt naming no zone, or an ambiguous set, keeps ``"surface"`` and is logged.
+            The backstop is the goal
             deadline (120 s when unset), capped at 120 s — the grasp side's
             ``GraspDeclaration.MAX_TIMEOUT_S``, not ``PlaceDeclaration``'s looser
             600 s schema ceiling: a goal-scope declaration names nothing, so it
             gets the tighter bound. The runner retracts it at goal end anyway.
             Mirror of ``_goal_scope_grasp_declaration``.
             """
-            from openral_core import (
-                GraspDeclaration,
-                PlaceDeclaration,
-                PlaceZone,
-                place_zone_for_prompt,
-            )
+            from openral_core import GraspDeclaration, PlaceDeclaration, PlaceZone
             from pydantic import TypeAdapter
 
             target_id = "surface"
             raw = self.get_parameter("place_zones_json").get_parameter_value().string_value
-            mode = self.get_parameter("object_tracking").get_parameter_value().string_value
-            # A zone is the place allowance of `tracking` only: under `on` it would shadow the
-            # tracked destination (`TrackerSession.place_region` resolves a zone first).
-            if raw and mode == "tracking":
+            mode = self._object_tracking_mode()
+            # A zone is the place allowance of `tracking`. Under `on` it would shadow the
+            # tracked destination (`TrackerSession.place_region` resolves a zone first), so it
+            # is named only when no DESTINATION query exists: a reasoner-driven goal with no
+            # place_target and no standing destination query (AMR aisle, 2026-11-16: no place
+            # allowance at all, the kernel stopped the place on the shelf). The goal's own
+            # place declaration never reaches here (`_resolve_place_declaration`).
+            from openral_core import ObjectRole
+
+            destination = any(q.role is ObjectRole.DESTINATION for q in self._tracking_queries())
+            if raw and (mode == "tracking" or (mode == "on" and not destination)):
                 zones = TypeAdapter(list[PlaceZone]).validate_json(raw)
-                zone = place_zone_for_prompt(prompt, zones)
-                if zone is not None:
-                    target_id = zone.target_id
+                base = self._description.base_frame if self._description is not None else ""
+                matches = place_zones_for_prompt(prompt, zones, base_frame=base)
+                if len(matches) == 1:
+                    target_id = matches[0].target_id
+                elif matches:
+                    # Station mode: one slot declared at several stations, all in a fixed
+                    # frame (map / odom). The tracker, which has tf2, keeps the one in reach
+                    # at the base's pose (`zone_candidates_target_id`).
+                    from openral_world_state.object_tracker.session import (
+                        zone_candidates_target_id,
+                    )
+
+                    target_id = zone_candidates_target_id(matches)
+                    self.get_logger().info(
+                        f"rskill_runner.place_zone_candidates: the prompt {prompt!r} names "
+                        f"{sorted(z.name for z in matches)} at several stations; the tracker "
+                        "keeps the one in reach"
+                    )
                 else:
                     self.get_logger().warning(
                         f"rskill_runner.place_zone_unnamed: the prompt {prompt!r} names no "
-                        f"single declared zone of {sorted(z.name for z in zones)}; no zone "
+                        f"single declared slot of {sorted(z.name for z in zones)}; no zone "
                         "is armed for this goal"
                     )
             ceiling = GraspDeclaration.MAX_TIMEOUT_S
@@ -2915,6 +3300,11 @@ if _ROS2_AVAILABLE:
             self._active_place_declaration = declaration if declaration.active else None
             return True
 
+        def _object_tracking_mode(self) -> str:
+            """The deploy's ``object_tracking`` mode (``off`` when unset)."""
+            mode = self.get_parameter("object_tracking").get_parameter_value().string_value
+            return mode or "off"
+
         def _tracking_queries(self) -> tuple[Any, ...]:
             """The standing ``ObjectQuery`` s this deploy tracks, ``()`` with tracking off.
 
@@ -2924,9 +3314,8 @@ if _ROS2_AVAILABLE:
             from openral_core import ObjectQuery
             from pydantic import TypeAdapter
 
-            mode = self.get_parameter("object_tracking").get_parameter_value().string_value
             raw = self.get_parameter("object_queries_json").get_parameter_value().string_value
-            if (mode or "off") == "off" or not raw:
+            if self._object_tracking_mode() == "off" or not raw:
                 return ()
             return tuple(TypeAdapter(list[ObjectQuery]).validate_json(raw))
 
@@ -2988,6 +3377,188 @@ if _ROS2_AVAILABLE:
                 f"rskill_runner.object_not_found goal={evidence.goal_id} "
                 f"label={evidence.label!r}: ending the goal (FAILURE_OBJECT_NOT_FOUND)"
             )
+
+        def _station_nodes(self) -> list[str]:
+            """``station_perception_nodes`` without the declaration placeholder."""
+            raw = self.get_parameter("station_perception_nodes").value or []
+            return [str(n).strip().lstrip("/") for n in raw if str(n).strip()]
+
+        def _goal_manifest(self, *, rskill_id: str, revision: str) -> RSkillManifest | None:
+            """The manifest of the skill a goal names, or ``None`` when it cannot be read here.
+
+            The resident skill's when it is the requested one, else the resolver's (no weights
+            load); ``None`` for an opaque resolver.
+
+            Raises:
+                ROSConfigError: The resolver cannot resolve ``rskill_id``.
+            """
+            resident = self._resident_skill
+            # The resident's revision, or any when the goal pins none (`_acquire_skill`'s rule).
+            if (
+                resident is not None
+                and self._resident_key[:1] == (rskill_id,)
+                and (not revision or self._resident_key[1] == revision)
+            ):
+                manifest = getattr(resident, "manifest", None)
+                if manifest is not None:
+                    return cast("RSkillManifest", manifest)
+            resolver = self._skill_resolver
+            if isinstance(resolver, TwoPhaseSkillResolver):
+                self._goal_resolved = resolver.resolve(rskill_id=rskill_id, revision=revision)
+                return self._goal_resolved.manifest
+            return None
+
+        def _station_perception_for(
+            self, *, rskill_id: str, manifest: RSkillManifest | None
+        ) -> None:
+            """Put the station perception in the state this skill's manifest needs.
+
+            No-op without ``station_perception_nodes`` and ``station_perception_service``.
+            ``manifest`` is the goal's (``_goal_manifest``). An arm / gripper skill activates
+            the nodes (the segmenter) and switches the tracker's station perception on; a
+            base-only skill switches it off and deactivates them, before its goal is sent.
+            A skill that actuates nothing leaves both as they are, and so does the end of a
+            goal: the perception stays on across the goals at one station (pick, then place)
+            instead of reloading the segmenter per goal, and the next base-only goal turns it
+            off. A skill whose manifest cannot be read here (an opaque resolver) is treated as
+            a manipulation skill: perception on, the kernel retiring every allowance once the
+            base moves.
+
+            Raises:
+                ROSPerceptionStale: A node did not become active, or the switch did not turn
+                    on (named in the message). Turning off is best effort (logged): the base
+                    leaving the station retires the tracks' allowances in the kernel anyway,
+                    and a crashed segmenter must not stop every Nav2 goal.
+            """
+            nodes = self._station_nodes()
+            service = self._station_service()
+            if not nodes and not service:
+                return
+            wanted = station_perception_wanted(manifest) if manifest is not None else True
+            why = (
+                "manifest_unavailable"
+                if manifest is None
+                else "no_actuators"
+                if wanted is None
+                else "actuates_arm"
+                if wanted
+                else "base_only"
+            )
+            self.get_logger().info(
+                f"rskill_runner.station_perception skill={rskill_id} wanted={wanted} why={why} "
+                f"nodes={nodes} service={service or '-'}"
+            )
+            if wanted is None:
+                return
+            if wanted:
+                for node in nodes:  # the segmenter before the tracker that calls it
+                    self._station_transition(node, active=True, raise_on_failure=True)
+                self._station_switch(True, raise_on_failure=True)
+            else:
+                self._station_switch(False, raise_on_failure=False)
+                for node in reversed(nodes):
+                    self._station_transition(node, active=False, raise_on_failure=False)
+
+        def _station_service(self) -> str:
+            return str(self.get_parameter("station_perception_service").value or "").strip()
+
+        def _station_switch(self, on: bool, *, raise_on_failure: bool) -> None:
+            """Switch the tracker's station perception (``station_perception_service``)."""
+            from openral_core.exceptions import ROSPerceptionStale
+            from std_srvs.srv import SetBool
+
+            service = self._station_service()
+            if not service:
+                return
+            timeout_s = float(self.get_parameter("station_perception_timeout_s").value)
+            client = self._station_clients.get(service)
+            if client is None:
+                client = self.create_client(SetBool, service, callback_group=self._action_cb_group)
+                self._station_clients[service] = client
+            req = SetBool.Request()
+            req.data = on
+            reply = self._station_call(client, req, timeout_s)
+            if reply is not None and bool(reply.success):
+                self.get_logger().info(
+                    f"rskill_runner.station_perception_switch service={service} on={on}"
+                )
+                return
+            reason = f"station perception switch {service!r} did not turn {'on' if on else 'off'}"
+            self.get_logger().error(f"rskill_runner.station_perception_failed: {reason}")
+            if raise_on_failure:
+                raise ROSPerceptionStale(reason)
+
+        def _station_call(self, client: Any, request: Any, timeout_s: float) -> Any:
+            """One service round trip on the reentrant group; ``None`` when it did not answer.
+
+            ``timeout_s`` bounds the whole round trip, discovery included. An unanswered
+            request is dropped from the client (``remove_pending_request``), so a late reply
+            is not delivered to a future nobody waits on.
+            """
+            deadline = time.monotonic() + timeout_s
+            if not client.wait_for_service(timeout_sec=timeout_s):
+                return None
+            done = threading.Event()
+            future = client.call_async(request)
+            future.add_done_callback(lambda _f: done.set())
+            if not done.wait(max(0.0, deadline - time.monotonic())):
+                client.remove_pending_request(future)
+                future.cancel()
+                return None
+            return future.result()
+
+        def _station_transition(self, node: str, *, active: bool, raise_on_failure: bool) -> None:
+            """Drive ``node`` to ACTIVE (``active``) or INACTIVE; logs every transition."""
+            from lifecycle_msgs.msg import State, Transition
+            from lifecycle_msgs.srv import ChangeState, GetState
+            from openral_core.exceptions import ROSPerceptionStale
+
+            target = "active" if active else "inactive"
+            timeout_s = float(self.get_parameter("station_perception_timeout_s").value)
+            clients = self._station_clients.get(node)
+            if clients is None:
+                clients = (
+                    self.create_client(
+                        GetState, f"/{node}/get_state", callback_group=self._action_cb_group
+                    ),
+                    self.create_client(
+                        ChangeState, f"/{node}/change_state", callback_group=self._action_cb_group
+                    ),
+                )
+                self._station_clients[node] = clients
+            get_client, change_client = clients
+
+            def call(client: Any, request: Any) -> Any:
+                return self._station_call(client, request, timeout_s)
+
+            state = call(get_client, GetState.Request())
+            current = None if state is None else int(state.current_state.id)
+            goal_id = State.PRIMARY_STATE_ACTIVE if active else State.PRIMARY_STATE_INACTIVE
+            if current == goal_id:
+                self.get_logger().info(
+                    f"rskill_runner.station_perception_unchanged node={node} state={target}"
+                )
+                return
+            ok = False
+            if current in (State.PRIMARY_STATE_ACTIVE, State.PRIMARY_STATE_INACTIVE):
+                req = ChangeState.Request()
+                req.transition.id = (
+                    Transition.TRANSITION_ACTIVATE if active else Transition.TRANSITION_DEACTIVATE
+                )
+                reply = call(change_client, req)
+                ok = reply is not None and bool(reply.success)
+            if ok:
+                self.get_logger().info(
+                    f"rskill_runner.station_perception_transition node={node} state={target}"
+                )
+                return
+            reason = (
+                f"station perception node {node!r} did not reach {target} "
+                f"(state_id={current}, timeout_s={timeout_s:g})"
+            )
+            self.get_logger().error(f"rskill_runner.station_perception_failed: {reason}")
+            if raise_on_failure:
+                raise ROSPerceptionStale(reason)
 
         def _await_grounding(self, goal_handle: Any) -> None:
             """Wait for the armed TARGET (``grounding_wait_s``) and CONTEXT queries to ground.
@@ -3078,7 +3649,9 @@ if _ROS2_AVAILABLE:
             A grasp declaration gets the TARGET/CONTEXT queries as ``target_queries`` (each
             hinted with the declared hand's gripper joint when it names one), a place
             declaration the DESTINATION one as ``destination_query``; a declaration that
-            already carries its own (a reasoner's goal) keeps them. With no declaration in
+            already carries its own (a reasoner's goal) keeps them, and still gets the
+            deploy's CONTEXT queries it does not name: the neighbours the hand may brush are
+            the deployment's, not the goal's (Spark R273). With no declaration in
             force the queries cannot ride, and that is logged, never armed implicitly: a
             place declaration lets the sim attest a place witness.
             """
@@ -3103,7 +3676,28 @@ if _ROS2_AVAILABLE:
                 if declaration.destination_query is not None:
                     return declaration
                 return declaration.model_copy(update={"destination_query": queries[0]})
-            if declaration.target_queries:
+            own = tuple(declaration.target_queries)
+            if own:
+                named = {(q.label.strip().casefold(), q.role) for q in own}
+                queries = tuple(
+                    q
+                    for q in queries
+                    if q.role is ObjectRole.CONTEXT
+                    and (q.label.strip().casefold(), q.role) not in named
+                )
+            # The goal's own queries stay whole; the deploy's fill what the ceiling leaves
+            # (model_copy does not re-validate `max_length`, the tracker's decode would).
+            # TARGET queries first (stable), so the cap never drops the object the goal grasps.
+            queries = tuple(sorted(queries, key=lambda q: q.role is not ObjectRole.TARGET))
+            room = max(declaration.MAX_TARGET_QUERIES - len(own), 0)
+            if len(queries) > room:
+                self.get_logger().warning(
+                    f"rskill_runner.grasp_queries_capped: {[q.label for q in queries[room:]]} "
+                    f"dropped, the declaration already names {len(own)} of "
+                    f"{declaration.MAX_TARGET_QUERIES} queries"
+                )
+                queries = queries[:room]
+            if not queries:
                 return declaration
             from openral_core import hand_joint
 
@@ -3114,24 +3708,50 @@ if _ROS2_AVAILABLE:
             )
             return declaration.model_copy(
                 update={
-                    "target_queries": tuple(
+                    "target_queries": own
+                    + tuple(
                         q if q.hand is not None else q.model_copy(update={"hand": hand})
                         for q in queries
                     )
                 }
             )
 
-        def _resolve_grasp_declaration(self, request: Any) -> Any:
+        def _resolve_grasp_declaration(self, request: Any, *, budget_s: float = 0.0) -> Any:
             """The grasp declaration in force for this goal, or ``None``.
 
-            Same precedence as ``_resolve_place_declaration``: the goal's own
-            typed declaration over the ``grasp_declaration_json`` parameter.
+            The goal's own typed declaration, completed from the ``grasp_declaration_json``
+            parameter's (the deploy scene's) by ``merge_grasp_declarations`` (logged as
+            ``rskill_runner.grasp_declaration_merged``, one source per field); else the
+            scene's; else the approach one.
             """
             from openral_core import GraspDeclaration
 
-            if bool(getattr(request, "grasp_declaration_valid", False)):
-                return GraspDeclaration.from_idl(request.grasp_declaration)
             raw = self.get_parameter("grasp_declaration_json").get_parameter_value().string_value
+            if bool(getattr(request, "grasp_declaration_valid", False)):
+                goal = GraspDeclaration.from_idl(request.grasp_declaration)
+                scene = GraspDeclaration.model_validate_json(raw) if raw else None
+                merged, sources = merge_grasp_declarations(goal, scene, budget_s=budget_s)
+                log_fn = self.get_logger().info
+                if sources.get("hand") == "different" and scene is not None:
+                    log_fn = self.get_logger().warning
+                    self._grasp_hand_note = (
+                        f"the goal's grasp_target named the hand {list(goal.contact_links)}, "
+                        f"but this deployment grasps with {list(scene.contact_links)}; "
+                        "leave grasp_target.contact_links unset to use the deployment's hand"
+                    )
+                log_fn(
+                    "rskill_runner.grasp_declaration_merged "
+                    + " ".join(f"{k}={v}" for k, v in sorted(sources.items()))
+                    + f" scene={scene.target_id if scene is not None else '-'}"
+                    + (
+                        f" goal_links={list(goal.contact_links)} scene_links="
+                        f"{list(scene.contact_links)}: the goal names another hand, so no "
+                        "scene box is taken"
+                        if sources.get("hand") == "different" and scene is not None
+                        else ""
+                    )
+                )
+                return merged
             if raw:
                 return GraspDeclaration.model_validate_json(raw)
             if self.get_parameter("grasp_approach_enabled").get_parameter_value().bool_value:
@@ -3167,25 +3787,86 @@ if _ROS2_AVAILABLE:
             )
 
         def _arm_grasp_declaration(
-            self, request: Any, *, rskill_id: str, trace_id: str, invocation_id: str
+            self,
+            request: Any,
+            *,
+            rskill_id: str,
+            trace_id: str,
+            invocation_id: str,
+            require_queries: bool = False,
+            budget_s: float = 0.0,
         ) -> None:
-            """Publish this goal's grasp declaration, stamped and attributable.
+            """Resolve (``_grasp_declaration_for``) and publish (``_publish_armed_grasp``)."""
+            self._publish_armed_grasp(
+                self._grasp_declaration_for(
+                    request, rskill_id=rskill_id, require_queries=require_queries, budget_s=budget_s
+                ),
+                rskill_id=rskill_id,
+                trace_id=trace_id,
+                invocation_id=invocation_id,
+            )
+
+        def _grasp_declaration_for(
+            self,
+            request: Any,
+            *,
+            rskill_id: str,
+            require_queries: bool = False,
+            budget_s: float = 0.0,
+        ) -> Any:
+            """This goal's grasp declaration, or ``None``; nothing is published.
+
+            A malformed declaration is refused and logged; the goal runs with no declaration,
+            i.e. no exemption. ``budget_s`` is the goal's resolved execution budget: the floor
+            of a goal-built declaration's ``timeout_s`` (``merge_grasp_declarations``).
+
+            ``require_queries`` (a grasping goal under object tracking, ``_grasps``): a goal
+            that ends with no ``target_queries`` once the goal's, the scene's and the deploy's
+            standing queries are resolved is refused, whether no declaration was in force, it
+            did not validate, or it named no object. The tracker would open no query, never
+            track the object, and the held payload would be checked as an untracked stand-in
+            (Isaac shelf aisle, 2026-11-16).
+
+            Raises:
+                ROSReasonerInvalidPlan: ``require_queries`` and the goal names no object to
+                    grasp.
+            """
+            from openral_core import ObjectRole
+            from openral_core.exceptions import ROSConfigError, ROSReasonerInvalidPlan
+
+            declaration = None
+            try:
+                declaration = self._with_queries(
+                    self._resolve_grasp_declaration(request, budget_s=budget_s), place=False
+                )
+            except (ValueError, TypeError, ROSConfigError) as exc:
+                self.get_logger().error(f"rskill_runner.grasp_declaration_rejected: {exc!s}")
+            # A TARGET query: the deploy's CONTEXT ones only describe the neighbours.
+            if require_queries and (
+                declaration is None
+                or not any(q.role is ObjectRole.TARGET for q in declaration.target_queries)
+            ):
+                raise ROSReasonerInvalidPlan(
+                    f"object tracking is on, so a manipulation goal must name the object it "
+                    f"will grasp, and this {rskill_id!r} goal names none (no target query from "
+                    "the goal, the scene or the deploy). Re-send the execute_rskill call with "
+                    "grasp_target set: label = the visible object class the policy will grasp, "
+                    "as a detector names it (e.g. 'box'); leave its contact_links unset unless "
+                    "the task fixes the hand (the deployment supplies the grasping hand). The "
+                    "goal was refused before any motion."
+                )
+            return declaration
+
+        def _publish_armed_grasp(
+            self, declaration: Any, *, rskill_id: str, trace_id: str, invocation_id: str
+        ) -> None:
+            """Publish ``declaration`` (``None``: nothing), stamped and attributable.
 
             Clone of ``_arm_place_declaration``: ``rskill_id`` / ``trace_id`` /
             ``stamp_ns`` are overwritten from the live dispatch, and any
             ``region`` is dropped — dispatch names a target, only the evidence
-            producer measures it (HZ-0115-2). A malformed declaration is refused
-            and logged; the goal runs with no declaration, i.e. no exemption.
+            producer measures it (HZ-0115-2).
             """
-            from openral_core.exceptions import ROSConfigError
-
-            try:
-                declaration = self._with_queries(
-                    self._resolve_grasp_declaration(request), place=False
-                )
-            except (ValueError, TypeError, ROSConfigError) as exc:
-                self.get_logger().error(f"rskill_runner.grasp_declaration_rejected: {exc!s}")
-                return
             if declaration is None:
                 return
             declaration = declaration.model_copy(
@@ -3208,6 +3889,37 @@ if _ROS2_AVAILABLE:
                 f"links={','.join(declaration.contact_links)} rskill={rskill_id} "
                 f"trace={trace_id or '<unset>'} timeout_s={declaration.timeout_s:.1f}"
             )
+
+        def _extend_grasp_declaration(self, budget_s: float) -> None:
+            """Keep the goal's armed grasp declaration alive for the run that starts now.
+
+            A goal-built declaration's ``timeout_s`` floor (``merge_grasp_declarations``)
+            counts from arming, but the budget starts only now: after the station transitions,
+            the grounding wait, the skill load and the starting pose. Once those waits ate half
+            of ``GraspDeclaration.TIMEOUT_MARGIN_S``, the declaration is republished under the
+            same key (``target_id`` / ``stamp_ns``: the tracker's goal is unchanged) to lapse
+            ``budget_s`` + the margin from now, capped at ``GraspDeclaration.MAX_TIMEOUT_S``;
+            past the cap the goal still ends before it lapses (``declaration_expiry_miss``).
+            """
+            from openral_core import GraspDeclaration
+
+            decl = self._active_grasp_declaration
+            if decl is None:
+                return
+            margin = GraspDeclaration.TIMEOUT_MARGIN_S
+            elapsed_s = max(0.0, (self.get_clock().now().nanoseconds - int(decl.stamp_ns)) / 1e9)
+            wanted = min(elapsed_s + budget_s + margin, GraspDeclaration.MAX_TIMEOUT_S)
+            # Republished only once the pre-execution waits ate half the margin.
+            if float(decl.timeout_s) - elapsed_s - budget_s >= margin / 2 or wanted <= float(
+                decl.timeout_s
+            ):
+                return
+            if self._publish_grasp_declaration(decl.model_copy(update={"timeout_s": wanted})):
+                self.get_logger().info(
+                    f"rskill_runner.grasp_declaration_extended target={decl.target_id} "
+                    f"timeout_s={decl.timeout_s:.1f}->{wanted:.1f} armed_s_ago={elapsed_s:.1f} "
+                    f"budget_s={budget_s:.1f}"
+                )
 
         def _retract_grasp_declaration(self) -> None:
             """Retract the grasp declaration in force, if any. Idempotent."""
@@ -3456,6 +4168,30 @@ if _ROS2_AVAILABLE:
             else:
                 return None
             return evidence.model_dump_json()
+
+        def _note_grasp_hand(self, result: Any) -> Any:  # reason: ROS message untyped
+            """Append the grasp-hand mismatch (``_grasp_hand_note``) to a failed goal's reason.
+
+            Only to a failure the other hand can explain: a safety stop (the contact
+            exemption names the goal's hand, not the one that grasped), a target that did not
+            ground or was not found (no scene box was taken). A config, capability, runtime or
+            deadline failure says nothing about the hand.
+            """
+            from openral_msgs.action import ExecuteRskill
+
+            kinds = {
+                int(ExecuteRskill.Result.FAILURE_SAFETY_ESTOP),
+                int(ExecuteRskill.Result.FAILURE_PERCEPTION_STALE),
+                int(ExecuteRskill.Result.FAILURE_OBJECT_NOT_FOUND),
+            }
+            if (
+                result is not None
+                and not bool(result.success)
+                and self._grasp_hand_note
+                and int(result.failure_kind) in kinds
+            ):
+                result.failure_reason = f"{result.failure_reason} (note: {self._grasp_hand_note})"
+            return result
 
         def _attach_failure_evidence(self, result: Any) -> Any:  # reason: ROS message untyped
             """Stamp ``result.evidence_json`` on a failed goal; returns ``result``.
@@ -4192,6 +4928,36 @@ def starting_pose_reached(
         abs(end - start) <= tolerance
         for start, end, (_, tolerance) in zip(current, target, bounds, strict=True)
     )
+
+
+def starting_pose_misses(
+    current: Sequence[float],
+    target: Sequence[float],
+    bounds: Sequence[tuple[float, float]],
+    names: Sequence[str],
+) -> list[tuple[str, float, float]]:
+    """``(joint, target - measured, tolerance)`` for every joint outside its tolerance.
+
+    The complement of ``starting_pose_reached``: a non-finite residual is a miss (``nan``).
+    Residuals are rounded to 4 decimals unless that would print a miss as within its
+    tolerance (0.050004 against 0.05 stays unrounded).
+
+    Example:
+        >>> starting_pose_misses(
+        ...     [0.0, 1.73, 0.0], [0.0, 1.797, 0.050004], [(0.5, 0.05)] * 3, ["j1", "j4", "j5"]
+        ... )
+        [('j4', 0.067, 0.05), ('j5', 0.050004, 0.05)]
+        >>> starting_pose_misses([float("nan")], [0.0], [(0.5, 0.05)], ["j1"])
+        [('j1', nan, 0.05)]
+    """
+    misses: list[tuple[str, float, float]] = []
+    for name, start, end, (_, tolerance) in zip(names, current, target, bounds, strict=True):
+        residual = end - start
+        if abs(residual) <= tolerance:
+            continue
+        shown = round(residual, 4)
+        misses.append((name, shown if abs(shown) > tolerance else residual, tolerance))
+    return misses
 
 
 def hold_action(

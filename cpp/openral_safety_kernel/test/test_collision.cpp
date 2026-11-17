@@ -6638,11 +6638,15 @@ TEST(WorkspaceContact, AFastOrUnknownHandSpeedTripsExactlyAsToday) {
     EXPECT_EQ(hit.workspace_pairs, 0) << v;
     EXPECT_EQ(hit.workspace_denied, 2) << "disclosed: the hand is over its speed bound";
   }
-  // A non-positive or non-finite bound exempts nothing either.
-  for (const double bound : {0.0, -1.0, std::numeric_limits<double>::infinity()}) {
+  // A non-positive or non-finite bound exempts nothing either, and the denial names the speed
+  // conjunct (it read 0 or 4 for an unsound bound before it shared `workspace_link_slow`'s rule).
+  for (const double bound : {0.0, -1.0, std::numeric_limits<double>::infinity(),
+                             std::numeric_limits<double>::quiet_NaN()}) {
     grid.workspace_region = workspace(0.10, {kGraspLeftFinger}, 0.0);
     grid.workspace_region.max_speed_mps = bound;
-    expect_same_hit(osk::check_voxel_collision(m, s, grid, kGraspMargin), today);
+    const auto hit = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+    expect_same_hit(hit, today);
+    EXPECT_EQ(hit.workspace_denied, 2) << bound;
   }
 }
 
@@ -6671,7 +6675,9 @@ TEST(WorkspaceContact, ALeadAboveTheBoundTripsEvenWhenTheHandIsStill) {
                              std::numeric_limits<double>::quiet_NaN()}) {
     grid.workspace_region = workspace(0.10, {kGraspLeftFinger}, 0.0, 0.0);
     grid.workspace_region.max_lead_m = bound;
-    expect_same_hit(osk::check_voxel_collision(m, s, grid, kGraspMargin), today);
+    const auto hit = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+    expect_same_hit(hit, today);
+    EXPECT_EQ(hit.workspace_denied, 3) << bound;
   }
 }
 
@@ -6712,6 +6718,37 @@ TEST(WorkspaceContact, AHandLinkOutsideTheWorkspaceStillTrips) {
   EXPECT_EQ(with.link_b, grasp_index(2, 0, 0));
   EXPECT_EQ(with.min_distance, alone.min_distance);
   EXPECT_EQ(with.workspace_denied, 4) << "disclosed: the cell lies outside the box";
+}
+
+TEST(WorkspaceContact, UnderAProviderTheDenialReadsTheProvidersGate) {
+  // ADR-0121 API v5: with the rule handed to a provider the in-tree region is empty, and the
+  // denial read 0 on every provider stop. It now reads the provider's verdict region
+  // (`ProviderGate::workspace`) for each conjunct. Disclosure only: the gate exempts nothing
+  // itself (no provider is asked here), so every check is today's bit for bit.
+  const osk::CollisionModel m = grasp_cell_model();
+  const auto check = [&](int link, const std::vector<std::array<int, 3>>& cells, double half,
+                         std::initializer_list<int> hands, double speed, double lead) -> int {
+    osk::CollisionScratch s = grasp_scratch_all_away();
+    s.link_world[static_cast<std::size_t>(link)] = identity();
+    const auto occ = grasp_occ(cells);
+    auto grid = grasp_grid(occ);
+    const auto today = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+    EXPECT_EQ(today.workspace_denied, 0) << "no gate: not applicable";
+    const osk::WorkspaceContactRegion gate = workspace(half, hands, speed, lead);
+    grid.provider_gate.workspace = &gate;
+    EXPECT_FALSE(grid.workspace_region.valid) << "the in-tree rule is off";
+    const auto hit = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+    expect_same_hit(hit, today);
+    EXPECT_EQ(hit.workspace_pairs, 0) << "the provider's region is never applied by the kernel";
+    return hit.workspace_denied;
+  };
+  const int finger = kGraspLeftFinger;
+  EXPECT_EQ(check(kGraspArm, {{0, 0, 0}}, 0.10, {finger}, 0.0, 0.0), 1) << "not a hand link";
+  EXPECT_EQ(check(finger, {{0, 0, 0}}, 0.10, {finger}, 2.0 * kWsMaxSpeed, 0.0), 2) << "speed";
+  EXPECT_EQ(check(finger, {{0, 0, 0}}, 0.10, {finger}, 0.0, 2.0 * kWsMaxLead), 3) << "lead";
+  EXPECT_EQ(check(finger, {{2, 0, 0}}, 0.015, {finger}, 0.0, 0.0), 4) << "outside the box";
+  EXPECT_EQ(check(kGraspCapFinger, {{0, 0, 0}}, 0.10, {kGraspCapFinger}, 2.0 * kWsMaxSpeed, 0.0), 2)
+      << "the capsule pass reads the same gate";
 }
 
 TEST(WorkspaceContact, TheGraspTargetExemptionKeepsPrecedence) {

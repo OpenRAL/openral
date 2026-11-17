@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -42,6 +42,7 @@ import structlog
 from numpy.typing import NDArray
 from openral_core import (
     AttachedCollisionObject,
+    EmbodimentKind,
     GraspDeclaration,
     ObjectQuery,
     ObjectRole,
@@ -58,6 +59,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import (
     freeze_released_attachment,
     homogeneous_from_quat_xyz,
+    rebase_box,
     rotation_to_quat_wxyz,
 )
 from openral_core.kinematics import Box, box_gap_lower_bound_m
@@ -77,6 +79,7 @@ from openral_world_state.object_tracker.binding import (
 )
 from openral_world_state.object_tracker.cover import Cell, hand_touches
 from openral_world_state.object_tracker.fit import ContainingFit
+from openral_world_state.object_tracker.grounding import in_scope
 from openral_world_state.object_tracker.pinch import HandModel
 from openral_world_state.object_tracker.release import JawReleaseMonitor, release_track
 from openral_world_state.object_tracker.stall import JawStallDetector
@@ -153,6 +156,50 @@ _JOINT_SAMPLE_MAX_AGE_NS = round(_R.joint_sample_max_age_s * _NS)
 #: A source stamp this far behind the newest one is a reset clock, not a late message.
 _CLOCK_RESET_NS = 1_000_000_000
 
+#: Kinds whose base cannot carry a base-frame zone away from the furniture (the deploy's
+#: ``_check_place_zone_frames`` rule, enforced here too: a launch arg bypasses the CLI).
+_FIXED_BASE_KINDS = frozenset({EmbodimentKind.MANIPULATOR, EmbodimentKind.BIMANUAL})
+
+
+def zone_candidates_target_id(zones: Sequence[PlaceZone]) -> str:
+    """The place ``target_id`` naming a candidate set of zones: ``zone:<a>|<b>|...``.
+
+    Station mode: a prompt ("put box x1 into lower slot 1") names the same slot declared
+    at several stations (``s1_lower_slot_1`` ... ``s6_lower_slot_1``, each with the alias
+    ``lower_slot_1``, all in the map frame). The rSkill runner, which has the prompt but no
+    tf2, names every match; the object tracker, which has tf2 (``zone_transform``) and the
+    robot's reach, keeps the one in reach at the base's current pose
+    (``TrackerSession._zone_region``). Sorted, so the same matches always give the same id.
+
+    Example:
+        >>> from openral_core import PlaceRegion, Pose6D
+        >>> box = PlaceRegion(
+        ...     frame_id="map",
+        ...     pose=Pose6D(xyz=(1.0, 0.0, 0.5), quat_xyzw=(0, 0, 0, 1), frame_id="map"),
+        ...     half_extents=(0.1, 0.1, 0.1),
+        ... )
+        >>> zs = [PlaceZone(name=n, region=box) for n in ("s2_lower_slot_1", "s1_lower_slot_1")]
+        >>> zone_candidates_target_id(zs)
+        'zone:s1_lower_slot_1|s2_lower_slot_1'
+        >>> zone_candidate_names(zone_candidates_target_id(zs))
+        ['s1_lower_slot_1', 's2_lower_slot_1']
+        >>> zone_candidate_names("zone:upper_slot_2") is None
+        True
+    """
+    return PlaceZone.TARGET_PREFIX + ZONE_CANDIDATE_SEP.join(sorted(z.name for z in zones))
+
+
+def zone_candidate_names(target_id: str) -> list[str] | None:
+    """The zone names of a candidate-set ``target_id``; ``None`` for anything else."""
+    if not target_id.startswith(PlaceZone.TARGET_PREFIX):
+        return None
+    names = target_id[len(PlaceZone.TARGET_PREFIX) :].split(ZONE_CANDIDATE_SEP)
+    return names if len(names) > 1 else None
+
+
+#: Separates the zone names of a candidate-set place ``target_id`` (a zone name never holds it).
+ZONE_CANDIDATE_SEP = "|"
+
 
 @dataclass(frozen=True)
 class _LateAttachChoice:
@@ -196,6 +243,18 @@ class _Goal:
     invocation_id: str = ""
     ready_logged: bool = False
     incomplete_logged: bool = False
+    #: The grasp declaration's ``search_box`` (grid frame): its TARGET queries' instances
+    #: are the tracks centred in it (``StandingQuery.within``).
+    within: PlaceRegion | None = None
+
+    def owns(self, track: TrackedObject) -> bool:
+        """Whether ``track`` is an instance of one of this goal's queries."""
+        return any(
+            track.label == q.label
+            and track.role is q.role
+            and (q.role is not ObjectRole.TARGET or in_scope(track, self.within))
+            for q in self.queries
+        )
 
 
 def _box(region: PlaceRegion) -> Box:
@@ -337,7 +396,26 @@ class TrackerSession:
         self.grasp_declaration: GraspDeclaration | None = None
         self.place_declaration: PlaceDeclaration | None = None
         # The station's declared place zones by ``PlaceZone.target_id`` (``place_region``).
-        self.place_zones: dict[str, PlaceZone] = {}
+        self._place_zones: dict[str, PlaceZone] = {}
+        # Frames a zone may be declared in (``PlaceZone``): the robot's map / odom frame, and
+        # its base frame on a fixed-base kind only (a moving base carries a base-frame box
+        # away from the furniture). Any other zone is refused (``zone_frame_refusal``).
+        self.zone_frames = frozenset(
+            {description.map_frame, description.odom_frame}
+            | ({self.frame_id} if description.embodiment_kind in _FIXED_BASE_KINDS else set())
+        )
+        # tf2 ``grid <- frame`` at a stamp, or ``None`` (the node's lookup): re-expresses a zone
+        # declared in a fixed frame (``map`` / ``odom``) in the grid frame. Unset: none resolve.
+        self._zone_transform: Callable[[str, int], NDArray[np.float64] | None] | None = None
+        self._zone_state: dict[str, str] = {}  # zone name -> last resolve state (log on change)
+        # ``(target_id, grid_stamp_ns, region)``: ``_zone_region`` once per grid, not per publish.
+        self._zone_cache: tuple[str, int, PlaceRegion] | None = None
+        # Station-scoped zone choice (``zone_candidates_target_id``): the robot's manipulation
+        # reach in the grid frame, ``(centre, radius_m)`` -- the world map's coverage ball the
+        # launch measures from the kernel's collision model (``_coverage_ball``: the moving
+        # links' reach plus a margin). ``None``: no candidate set ever resolves.
+        self.zone_reach: tuple[tuple[float, float, float], float] | None = None
+        self._zone_choice_log: tuple[str, ...] = ()
         self.attachment_changes = 0  # bumped whenever the held set changes
         self._monitors: dict[str, JawReleaseMonitor] = {}
         self._attach_ns: dict[str, int] = {}
@@ -349,6 +427,47 @@ class TrackerSession:
         self._clock_reset = False  # the joint stamps went back at least once (a sim reset)
 
     # -- inputs ------------------------------------------------------------------------
+
+    @property
+    def place_zones(self) -> dict[str, PlaceZone]:
+        """The station's declared place zones by ``PlaceZone.target_id`` (``place_region``)."""
+        return self._place_zones
+
+    @place_zones.setter
+    def place_zones(self, zones: dict[str, PlaceZone]) -> None:
+        self._place_zones = zones
+        self._forget_zones()
+
+    @property
+    def zone_transform(self) -> Callable[[str, int], NDArray[np.float64] | None] | None:
+        """tf2 ``grid <- frame`` at a stamp (the node's lookup); unset: no fixed-frame zone."""
+        return self._zone_transform
+
+    @zone_transform.setter
+    def zone_transform(
+        self, lookup: Callable[[str, int], NDArray[np.float64] | None] | None
+    ) -> None:
+        self._zone_transform = lookup
+        self._zone_cache = None  # a region resolved through the old lookup
+
+    def _forget_zones(self) -> None:
+        """Drop the zone resolve logs and cache: a reload, a new declaration, a reset, a move."""
+        self._zone_state.clear()
+        self._zone_choice_log = ()
+        self._zone_cache = None
+
+    def zone_frame_refusal(self, zone: PlaceZone) -> str | None:
+        """Why ``zone`` is refused for its frame (``zone_frames``), or ``None`` if allowed."""
+        frame = zone.region.frame_id
+        if frame in self.zone_frames:
+            return None
+        if frame == self.frame_id:
+            return (
+                f"base frame {frame!r} of a {self.description.embodiment_kind.value!r} robot: "
+                "a moving base carries the box away from the furniture; declare it in "
+                f"{self.description.map_frame!r}"
+            )
+        return f"frame {frame!r} is neither the map / odom frame nor a fixed base frame"
 
     @property
     def now_ns(self) -> int:
@@ -376,6 +495,7 @@ class TrackerSession:
             # the newest-grid gate would refuse every grid until sim time passed the old one,
             # and a late ATTACH would look up hand poses from the last episode.
             self.grid, self.grid_stamp_ns = None, 0
+            self._forget_zones()
             kept = [h for h in self._joint_history if h[0] <= stamp_ns]
             self._joint_history.clear()
             self._joint_history.extend(kept)
@@ -455,6 +575,42 @@ class TrackerSession:
                 self.attachment_changes += 1
                 why = "hands_clear" if clear else "reacquired" if landed else "window"
                 log.info("object_tracker.released_track_retired", object_id=oid, why=why)
+
+    def leave_station(self) -> tuple[list[str], list[str]]:
+        """Discard what this station measured; keep what the hands still hold.
+
+        Station mode (the node calls it on every activate and deactivate): tracks, released
+        records and the grid are all in the base frame, so they hold only while the base stands
+        where they were measured. A released record frozen at the let-go pose would otherwise
+        ride the driving robot while the object stays put. Held bindings (``BOUND`` tracks and a
+        live hold's candidates) ride the hand, not the base, and are kept: dropping them would
+        publish "nothing carried" for a payload the robot still holds. The queries' release
+        priors (``QueryBook.note_released``) are base-frame columns too and are cleared.
+
+        Returns:
+            The dropped track ids and the released records retired with them.
+        """
+        held = self._held_ids()
+        released = list(self._released)
+        for q in self.tracker.queries.queries:
+            q.prior = None  # a base-frame release column: wrong once the base drives
+        self._released.clear()
+        self._known_at_release.clear()
+        self._off_hand.clear()
+        dropped = [
+            t.object_id
+            for t in self.tracker.store.all()
+            if t.object_id not in held and t.status is not TrackStatus.BOUND
+        ]
+        for oid in dropped:
+            self.tracker.store.drop(oid)
+        self.grid, self.grid_stamp_ns = None, 0
+        self._instance_cells = None
+        self.tracker.drop_requests()  # a late answer is about the last station's frame
+        self._forget_zones()
+        if released:
+            self.attachment_changes += 1
+        return dropped, released
 
     def open_standing_queries(self, queries: Sequence[ObjectQuery]) -> None:
         """The deploy's prompt-time queries (``object_queries_json``), goal ``deploy:deploy@0``.
@@ -563,6 +719,22 @@ class TrackerSession:
         self.grasp_declaration = decl if decl.active else None
         # Locates crop to the declared workspace (issue #418 restock: ~40 px cartons).
         self.tracker.search_region = decl.workspace_box if decl.active else None
+        # `tracking`: the declared search box decides WHICH instance is the goal's target, as
+        # it decides the grasp region (`grasp_region`): a same-label object outside it (a
+        # shelf carton while the declared one is in the tote, AMR aisle 2026-11-16) neither
+        # grounds the query nor is keyed to the declaration. `on` keeps every instance of the
+        # class keyed (its provider exempts the one the policy picks, track ids).
+        tracking = self.mode is TrackingMode.TRACKING
+        within = decl.search_box if decl.active and tracking else None
+        if within is not None and within.frame_id != self.frame_id:
+            log.warning(
+                "object_tracker.search_box_unscoped",
+                target_id=decl.target_id,
+                box_frame=within.frame_id,
+                grid_frame=self.frame_id,
+                why="the search box is not in the grid frame; the target query is not scoped",
+            )
+            within = None
         self._set_goal(
             "grasp",
             decl.target_id,
@@ -570,19 +742,25 @@ class TrackerSession:
             decl.active,
             decl.target_queries,
             invocation_id=decl.invocation_id,
+            within=within,
         )
 
     def on_place_declaration(self, decl: PlaceDeclaration) -> None:
         """A place declaration (or its retraction) from dispatch."""
         self.place_declaration = decl if decl.active else None
+        self._forget_zones()  # a new declaration logs its zone's state afresh
         if decl.active and decl.target_id.startswith(PlaceZone.TARGET_PREFIX):
             # Logged once per declaration: `place_region` itself runs on every publish.
-            zone = self.place_zones.get(decl.target_id)
+            ids = [
+                f"{PlaceZone.TARGET_PREFIX}{n}" for n in zone_candidate_names(decl.target_id) or ()
+            ] or [decl.target_id]
+            zones = [self.place_zones.get(i) for i in ids]
             log.info(
                 "object_tracker.place_zone_declared",
                 target_id=decl.target_id,
-                known=zone is not None,
-                frame_ok=zone is not None and zone.region.frame_id == self.frame_id,
+                known=all(z is not None for z in zones),
+                zone_frame=sorted({z.region.frame_id for z in zones if z is not None}),
+                grid_frame=self.frame_id,
             )
         queries = () if decl.destination_query is None else (decl.destination_query,)
         self._set_goal(
@@ -885,8 +1063,16 @@ class TrackerSession:
 
     def attachments(self) -> list[AttachedCollisionObject]:
         """Every hand's held payload (joint order), then the released ones still on the wire."""
-        held = [b.held.attachment for b in self.binders.values() if b.held is not None]
-        return held + [record for record, _ in self._released.values()]
+        return self.held_attachments() + [record for record, _ in self._released.values()]
+
+    def held_attachments(self) -> list[AttachedCollisionObject]:
+        """Every hand's held payload (joint order), without the released records.
+
+        What the node publishes while the station's perception is off (the base drives): a
+        payload in a hand rides it wherever the base goes; a released record is frozen in the
+        base frame and is wrong once it moves.
+        """
+        return [b.held.attachment for b in self.binders.values() if b.held is not None]
 
     def workspace_region(self) -> PlaceRegion | None:
         """The live grasp declaration's ``workspace_box``, map-confirmed, or ``None``.
@@ -916,7 +1102,10 @@ class TrackerSession:
 
         A declaration whose ``target_id`` names a declared zone (``zone:<name>``, a shelf slot
         no detector grounds) gets that ``PlaceZone``'s box, stamped with the newest grid's
-        ``source_stamp``; an unknown zone or one in another frame than the grid is ``None``.
+        ``source_stamp``; a zone declared in a fixed frame (``map`` / ``odom``, a docked
+        mobile manipulator) is re-expressed in the grid frame through tf2 at that stamp
+        (``rebase_box``). An unknown zone, or one with no tf2 at the grid's stamp or tilted past
+        the bound, is ``None`` (fail closed, logged once per change).
         A declared, not measured, region: Safety-WG review, a hazard-log row and an ADR-0097
         amendment owed. This is the only place region in ``tracking``.
 
@@ -958,13 +1147,102 @@ class TrackerSession:
         )
 
     def _zone_region(self, target_id: str, grid_frame: str) -> PlaceRegion | None:
-        """The declared zone ``target_id`` names, stamped with the newest grid, or ``None``."""
-        zone = self.place_zones.get(target_id)
-        if zone is None or zone.region.frame_id != grid_frame:
+        """The declared zone ``target_id`` names, in the grid frame, stamped with the newest grid.
+
+        A zone in another frame is re-expressed through ``zone_transform`` at the grid's
+        ``source_stamp`` (where the base was when the map was built). ``None`` for an unknown
+        zone, no transform at that stamp, or a tilted one: no region, no allowance.
+
+        A candidate set (``zone_candidates_target_id``: the prompt named the same slot at
+        several stations) resolves to the one candidate whose box centre, in the grid frame,
+        lies inside ``zone_reach``; none or several, or any candidate unresolved (it may be
+        the one in reach), and it is ``None`` (fail closed, retried on the next call). Which
+        candidates were considered and why each was dropped is logged on every change.
+        """
+        cached = self._zone_cache
+        if cached is not None and cached[:2] == (target_id, self.grid_stamp_ns):
+            return cached[2]  # tf2 is looked up once per grid, not on every publish
+        names = zone_candidate_names(target_id)
+        if names is not None:
+            region = self._zone_choice(names, grid_frame)
+        elif (zone := self.place_zones.get(target_id)) is not None:
+            region = self._resolve_zone(zone, grid_frame)
+        else:
+            region = None
+        # Only a resolved region is kept: tf2 may still bring the transform at this stamp.
+        self._zone_cache = None if region is None else (target_id, self.grid_stamp_ns, region)
+        return region
+
+    def _zone_choice(self, names: Sequence[str], grid_frame: str) -> PlaceRegion | None:
+        """The one in-reach zone of a candidate set (``_zone_region``), or ``None``."""
+        kept: list[PlaceRegion] = []
+        why: list[str] = []
+        unresolved = False
+        for name in names:
+            zone = self.place_zones.get(f"{PlaceZone.TARGET_PREFIX}{name}")
+            region = None if zone is None else self._resolve_zone(zone, grid_frame)
+            if region is None:
+                why.append(f"{name}:unresolved")
+                unresolved = True
+                continue
+            if self.zone_reach is None:
+                why.append(f"{name}:no_reach")
+                continue
+            (cx, cy, cz), radius = self.zone_reach
+            x, y, z = region.pose.xyz
+            dist = math.dist((x, y, z), (cx, cy, cz))
+            if dist > radius:
+                why.append(f"{name}:out_of_reach({dist:.2f}>{radius:.2f})")
+                continue
+            why.append(f"{name}:in_reach({dist:.2f}<={radius:.2f})")
+            kept.append(region)
+        # An unresolved candidate is not proven out of reach: uniqueness is not established.
+        chosen = kept[0] if len(kept) == 1 and not unresolved else None
+        # Keyed on each candidate's verdict, not its distance: jitter never re-logs.
+        record = (*(w.split("(")[0] for w in why), "chosen" if chosen is not None else "none")
+        if record != self._zone_choice_log:
+            self._zone_choice_log = record
+            event = "object_tracker.place_zone_chosen"
+            if chosen is None:
+                log.warning("object_tracker.place_zone_unchosen", candidates=why)
+            else:
+                log.info(event, zone=chosen.evidence_ref, candidates=why)
+        return chosen
+
+    def _resolve_zone(self, zone: PlaceZone, grid_frame: str) -> PlaceRegion | None:
+        """``zone``'s box in ``grid_frame``, stamped with the newest grid (``_zone_region``)."""
+        region = zone.region
+        refusal = self.zone_frame_refusal(zone)
+        if refusal is not None:
+            self._zone_log(zone, "refused", grid_frame=grid_frame, why=refusal)
             return None
-        return zone.region.model_copy(
+        if region.frame_id != grid_frame:
+            t = None
+            if self.zone_transform is not None:
+                t = self.zone_transform(region.frame_id, self.grid_stamp_ns)
+            if t is None:
+                self._zone_log(zone, "no_tf", grid_frame=grid_frame)
+                return None
+            try:
+                region = rebase_box(region, t, grid_frame)
+            except ROSConfigError as exc:
+                self._zone_log(zone, "rejected", grid_frame=grid_frame, error=str(exc))
+                return None
+            self._zone_log(zone, "resolved", grid_frame=grid_frame)
+        return region.model_copy(
             update={"stamp_ns": self.grid_stamp_ns, "evidence_ref": f"declared:{zone.name}"}
         )
+
+    def _zone_log(self, zone: PlaceZone, state: str, **kv: object) -> None:
+        """Log a fixed-frame zone's resolve ``state`` once per change (``place_region`` is hot)."""
+        if self._zone_state.get(zone.name) == state:
+            return
+        self._zone_state[zone.name] = state
+        event = f"object_tracker.place_zone_{state}"
+        if state == "resolved":
+            log.info(event, zone=zone.name, zone_frame=zone.region.frame_id, **kv)
+        else:
+            log.warning(event, zone=zone.name, zone_frame=zone.region.frame_id, **kv)
 
     def grasp_region(self) -> PlaceRegion | None:
         """The one target's box while it lies wholly inside the declared ``search_box``.
@@ -1061,13 +1339,19 @@ class TrackerSession:
         queries: Sequence[ObjectQuery],
         *,
         invocation_id: str = "",
+        within: PlaceRegion | None = None,
     ) -> None:
         key = declaration_key(target_id, stamp_ns)
         scope = f"#{invocation_id}" if invocation_id else ""
         goal_id = f"{kind}:{key}{scope}"
         query_tuple = tuple(queries)
         old = self._goals[kind]
-        if old is not None and (old.goal_id != goal_id or old.queries != query_tuple or not active):
+        if old is not None and (
+            old.goal_id != goal_id
+            or old.queries != query_tuple
+            or old.within != within
+            or not active
+        ):
             self.tracker.close_goal(old.goal_id)
             self._goals[kind] = None
             self._clear_declaration_scope(old.key)
@@ -1076,7 +1360,7 @@ class TrackerSession:
             self._rekey_live_tracks()
             return
         goal = self._goals[kind] = _Goal(
-            goal_id, key, None, query_tuple, invocation_id=invocation_id
+            goal_id, key, None, query_tuple, invocation_id=invocation_id, within=within
         )
         self._rekey_live_tracks()
         if self._now_ns > 0:
@@ -1096,6 +1380,7 @@ class TrackerSession:
                 goal.key,
                 stamp_ns=stamp_ns,
                 invocation_id=goal.invocation_id,
+                within=goal.within if query.role is ObjectRole.TARGET else None,
             )
         goal.start_ns = stamp_ns
 
@@ -1121,12 +1406,7 @@ class TrackerSession:
             declaration_goals = {
                 goal.goal_id: goal
                 for kind, goal in self._goals.items()
-                if kind != "deploy"
-                and goal is not None
-                and any(
-                    track.label == query.label and track.role is query.role
-                    for query in goal.queries
-                )
+                if kind != "deploy" and goal is not None and goal.owns(track)
             }
             if len(declaration_goals) > 1:
                 key = ""
@@ -1194,7 +1474,8 @@ class TrackerSession:
             track = self.tracker.store.get(oid)
             # The hand where it let go, not where the (late) decision finds it: a jaw-open
             # release is decided a dwell after the opening, the retreat may have begun.
-            q_let_go = self._positions_at(stamp_ns if let_go_ns is None else let_go_ns)
+            let_go_at = stamp_ns if let_go_ns is None else let_go_ns
+            q_let_go = self._positions_at(let_go_at)
             pose = binder.object_pose(q_let_go)
             if track is not None:
                 support = self._support_under(pose, track.box.half_extents, track.support_z)
@@ -1216,7 +1497,10 @@ class TrackerSession:
                     if self.mode is TrackingMode.TRACKING:
                         t_hand = binder.hand.t_frame_from_attach(self.frame_id, q_let_go)
                         record = freeze_released_attachment(
-                            record, base_link=self.frame_id, t_base_from_link=t_hand
+                            record,
+                            base_link=self.frame_id,
+                            t_base_from_link=t_hand,
+                            stamp_ns=let_go_at,  # where the pose was taken
                         )
                     self._released[oid] = (record, stamp_ns)
                     self._known_at_release[oid] = frozenset(

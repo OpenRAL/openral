@@ -21,12 +21,13 @@ from openral_core import (
     ObjectQueryStatus,
     ObjectRole,
     PlaceRegion,
+    PlaceZone,
     Pose6D,
     RobotDescription,
     TrackStatus,
 )
 from openral_world_state.object_tracker import CameraFrame, TrackerParams
-from openral_world_state.object_tracker.binding import BindOutcome
+from openral_world_state.object_tracker.binding import Binding, BindOutcome
 from openral_world_state.object_tracker.session import (
     GraspEventKind,
     TrackerSession,
@@ -212,9 +213,16 @@ def test_grounding_incomplete_is_logged_once_after_the_wait(cap: Any) -> None:
     assert event["grounding_required"] is False
 
 
-def _mint(s: TrackerSession, xyz: NDArray[np.float64], oid_label: str = "orange") -> str:
+def _mint(
+    s: TrackerSession,
+    xyz: NDArray[np.float64],
+    oid_label: str = "orange",
+    *,
+    half: tuple[float, float, float] = (0.024, 0.024, 0.024),
+    provisional: bool = False,
+    fit_ns: int = 1,
+) -> str:
     frame = s.frame_id
-    half = (0.024, 0.024, 0.024)
     pose = Pose6D(xyz=tuple(float(v) for v in xyz), quat_xyzw=(0, 0, 0, 1), frame_id=frame)
     t = s.tracker.store.mint(
         label=oid_label,
@@ -223,13 +231,14 @@ def _mint(s: TrackerSession, xyz: NDArray[np.float64], oid_label: str = "orange"
         box=PlaceRegion(frame_id=frame, pose=pose, half_extents=half),
         tight=(),
         fit_kind=FitKind.SILHOUETTE_CONE,
-        support_z=float(xyz[2]) - 0.025,
+        support_z=float(xyz[2]) - half[2] - 0.001,
         support_ref="map",
-        floor_z=float(xyz[2]) - 0.024,
+        floor_z=float(xyz[2]) - half[2],
         visible_cells=6,
         occupied_cells=5,
-        last_fit_stamp_ns=1,
-        last_confirmed_stamp_ns=1,
+        last_fit_stamp_ns=fit_ns,
+        last_confirmed_stamp_ns=fit_ns,
+        provisional=provisional,
     )
     s.tracker.store.replace(t.model_copy(update={"status": TrackStatus.CONFIRMED}))
     return t.object_id
@@ -279,6 +288,50 @@ def test_a_released_binding_stays_on_the_wire_until_its_window_runs_out() -> Non
     assert s.attachments() == [att]
     s.on_joint_state({}, t0 + 3 * _S)  # released_clear_timeout_s (3.0 s): dropped
     assert s.attachments() == [] and s.attachment_changes == changes + 1
+
+
+def test_leaving_the_station_retires_released_records_and_world_tracks() -> None:
+    """Station mode: a frozen released record and the world tracks are base-frame state; once
+    the base drives they describe the wrong place. ``leave_station`` drops them at once (no
+    3 s window) and records the change so the next ``attachment_state`` carries it."""
+    s = _session("so101_follower")
+    _, oid, _ = _released(s)
+    other = _mint(s, np.array([0.3, 0.1, 0.05]))
+    assert s.attachments() and s.tracker.store.get(other) is not None
+    changes = s.attachment_changes
+    dropped, released = s.leave_station()
+    assert released == [oid] and set(dropped) == {oid, other}
+    assert s.attachments() == [] and s.tracker.store.all() == []
+    assert s.grid is None and s.attachment_changes == changes + 1
+
+
+def test_leaving_the_station_forgets_where_targets_were_placed() -> None:
+    """A placed record is a base-frame box: at the next station it would excuse a foreign
+    body inside it from splitting that station's destination."""
+    s = _session("so101_follower")
+    pose = Pose6D(xyz=(0.3, 0.1, 0.05), quat_xyzw=(0, 0, 0, 1), frame_id="base_link")
+    s.tracker._placed["placed"] = PlaceRegion(
+        frame_id="base_link", pose=pose, half_extents=(0.02, 0.02, 0.02)
+    )
+    s.leave_station()
+    assert s.tracker._placed == {}
+
+
+def test_leaving_the_station_keeps_the_payload_the_hand_still_holds() -> None:
+    """A held payload rides the hand, not the base: dropping it would publish "nothing carried"
+    for a payload the robot still holds (the unsafe direction)."""
+    _, q, centre = arm_at_hold("so101_follower")
+    joint, _, jaw = ROBOTS["so101_follower"]
+    s = _session("so101_follower")
+    oid = _mint(s, centre)
+    s.on_joint_state(q, 10)
+    s.on_grasp_event(GraspEventKind.ATTACH, joint, jaw=jaw, hold=jaw, stamp_ns=20)
+    [held] = s.attachments()
+    _mint(s, np.array([0.3, 0.1, 0.05]), "apple")
+    dropped, released = s.leave_station()
+    assert released == [] and oid not in dropped and len(dropped) == 1
+    assert s.attachments() == [held] and s.binders[joint].held is not None
+    assert s.tracker.store.get(oid).status is TrackStatus.BOUND  # type: ignore[union-attr]
 
 
 def test_a_released_payload_is_frozen_where_it_was_let_go() -> None:
@@ -450,6 +503,22 @@ def test_a_retired_release_leaves_its_box_as_the_querys_prior() -> None:
         q.prior.pose.xyz, q.prior.half_extents, box.pose.xyz, box.half_extents, strict=True
     ):
         assert c - h <= bc - bh + 1e-9 and bc + bh <= c + h + 1e-9  # the column holds the box
+
+
+def test_leaving_the_station_clears_the_queries_release_priors() -> None:
+    """A release prior is a base-frame column: at the next station it would aim the search at
+    where the object lay relative to the old base pose. Neither a prior already retired at this
+    station nor a still-frozen released record survives ``leave_station``."""
+    for retired in (True, False):
+        s = _session("so101_follower")
+        s.open_standing_queries([ObjectQuery(label="orange", count="one", role=ObjectRole.TARGET)])
+        _, _, t0 = _released(s)
+        [q] = s.tracker.queries.queries
+        if retired:
+            s.on_joint_state({}, t0 + 3 * _S)  # retired at this station: the prior is seeded
+            assert q.prior is not None
+        s.leave_station()
+        assert q.prior is None, retired
 
 
 def test_deploy_queries_ground_without_any_declaration(cap: Any) -> None:
@@ -682,12 +751,14 @@ def test_the_grasp_region_rides_through_the_hold_for_the_kernels_latch() -> None
 
 
 def test_several_targets_are_narrowed_to_the_one_in_the_search_box() -> None:
-    """A ``count="all"`` query keys every orange to the declaration; the declaration's own
-    ``search_box`` picks the declared one. Two inside it stays fail-closed."""
+    """`tracking`: the declaration's own ``search_box`` picks the declared orange; one
+    outside it is not the declaration's (AMR aisle, 2026-11-16). Two inside stays
+    fail-closed."""
     s, oid, _, centre = _grasp_region_rig()
     other = _mint(s, centre + np.array([0.12, 0.0, 0.0]))
-    s.on_grasp_declaration(s.grasp_declaration)  # type: ignore[arg-type]  # rekeys `other` too
-    assert s.tracker.store.get(other).declaration_key == "orange@1"  # type: ignore[union-attr]
+    s.on_grasp_declaration(s.grasp_declaration)  # type: ignore[arg-type]  # rekeys
+    assert s.tracker.store.get(other).declaration_key == ""  # type: ignore[union-attr]
+    assert s.tracker.store.get(oid).declaration_key == "orange@1"  # type: ignore[union-attr]
     region = s.grasp_region()
     assert region is not None and f"tracked:{oid}|" in region.evidence_ref
     decl = s.grasp_declaration
@@ -914,3 +985,208 @@ def test_instance_cells_are_applied_only_on_an_axis_aligned_lattice(
         s.on_instance_cells(1, grid.frame_id, grid.origin, grid.resolution, {})
         s._apply_instance_cells(())
         assert ("object_tracker.instance_cells_lattice_rotated" in events) is refused, events
+
+
+def test_held_attachments_are_the_hands_payloads_without_released_records() -> None:
+    """Station perception off publishes ``held_attachments``: a released record (frozen in the
+    base frame) is not among them; a payload still in a hand is."""
+    s = _session("so101_follower")
+    _released(s)
+    assert s.attachments() and s.held_attachments() == []
+    _, q, centre = arm_at_hold("so101_follower")
+    joint, _, jaw = ROBOTS["so101_follower"]
+    _mint(s, centre, "apple")
+    s.on_joint_state(q, 2 * _S)
+    s.on_grasp_event(GraspEventKind.ATTACH, joint, jaw=jaw, hold=jaw, stamp_ns=2 * _S + 10)
+    held = s.held_attachments()
+    assert len(held) == 1 and held[0] in s.attachments()
+    assert held[0].released_by_link is None
+
+
+_SHELF_CARTON = np.array([0.801, 0.199, 0.809])  # object_tracker.mint, AMR aisle 2026-11-16
+_TOTE_CARTON = np.array([0.504, 0.085, 0.457])  # the scene's search_box centre (the tote)
+
+
+@pytest.mark.parametrize("mode", [TrackingMode.TRACKING, TrackingMode.ON])
+def test_only_the_carton_in_the_search_box_grounds_the_goals_target_query(
+    mode: TrackingMode,
+) -> None:
+    """The runner's merged declaration (the reasoner's ``box`` query, the scene's tote box):
+    under `tracking` a same-label carton on the shelf neither resolves the query nor is keyed
+    to the declaration; the one in the tote does both, and is the grasp region. `on` keeps
+    every carton of the class keyed (its provider exempts the one the policy picks)."""
+    s = TrackerSession(
+        RobotDescription.from_yaml("robots/openamrobot_v2/robot.yaml"),
+        cell_m=RES,
+        grounding_wait_s=3.0,
+        params=TrackerParams(),
+        mode=mode,
+    )
+    assert s.frame_id == "base_footprint"
+    s.on_joint_state({}, 1)  # a source stamp: the goal's queries open at it
+    shelf = _mint(s, _SHELF_CARTON, "box")
+    decl = GraspDeclaration(
+        target_id="obj:box",
+        contact_links=("openarm_left_ee_link1",),
+        timeout_s=70.0,
+        stamp_ns=5,
+        search_box=_search_box(s.frame_id, _TOTE_CARTON, half=0.08),
+        target_queries=(ObjectQuery(label="box", count="one", role=ObjectRole.TARGET),),
+    )
+    s.on_grasp_declaration(decl)
+    book, store = s.tracker.queries, s.tracker.store
+    [query] = book.queries
+    book.update(store.all(), now_ns=6)
+    if mode is TrackingMode.ON:
+        assert store.get(shelf).declaration_key == "obj:box@5"  # type: ignore[union-attr]
+        assert query.status is ObjectQueryStatus.RESOLVED
+        return
+    assert store.get(shelf).declaration_key == ""  # type: ignore[union-attr]
+    assert query.status is ObjectQueryStatus.UNRESOLVED, "the shelf carton ended the search"
+    tote = _mint(s, _TOTE_CARTON, "box")
+    s.on_grasp_declaration(decl)  # rekeys, as every fed frame does
+    book.update(store.all(), now_ns=7)
+    assert store.get(tote).declaration_key == "obj:box@5"  # type: ignore[union-attr]
+    assert store.get(shelf).declaration_key == ""  # type: ignore[union-attr]
+    assert book.ready(query.goal_id), "the tote carton resolves the query"
+
+
+# AMR aisle 2026-11-16 (`on`, Pro provider): the scene's initial pose, the left jaw at the logged
+# hold (`object_tracker.bound ... hand=left_gripper jaw=0.110`), the base docked (base joints 0).
+_AMR_JAW = 0.110
+_AMR_HOLD = {
+    "base_x": 0.0, "base_y": 0.0, "base_yaw": 0.0, "lift_joint": 0.0,
+    "left_joint1": 0.53, "left_joint2": -0.122, "left_joint3": -0.13, "left_joint4": 1.797,
+    "left_joint5": -0.13, "left_joint6": -0.127, "left_joint7": -0.574, "left_gripper": _AMR_JAW,
+    "right_joint1": -0.661, "right_joint2": 0.2, "right_joint3": 0.159, "right_joint4": 1.917,
+    "right_joint5": 0.074, "right_joint6": 0.089, "right_joint7": 0.642, "right_gripper": -0.768,
+}  # fmt: skip
+_CARTON_HALF = (0.03, 0.03, 0.04)
+
+
+def _amr_tote_grasp(
+    mode: TrackingMode, *, provisional: bool
+) -> tuple[TrackerSession, str, Binding | None]:
+    """The AMR case: station perception switched on (the runner's SetBool edge), one carton in
+    the left pinch, the HAL's ATTACH at the logged jaw. ``(session, track id, binding)``."""
+    s = TrackerSession(
+        RobotDescription.from_yaml("robots/openamrobot_v2/robot.yaml"),
+        cell_m=RES,
+        grounding_wait_s=20.0,
+        params=TrackerParams(),
+        require_hands=True,
+        mode=mode,
+    )
+    s.leave_station()  # `_on_station_perception(True)`: the previous station is discarded
+    s.on_joint_state(_AMR_HOLD, _S)
+    binder = s.binders["left_gripper"]
+    centre = binder.pinch_in_frame(_AMR_HOLD)[0]
+    oid = _mint(s, centre, "box", half=_CARTON_HALF, provisional=provisional, fit_ns=_S)
+    binding = s.on_grasp_event(
+        GraspEventKind.ATTACH, "left_gripper", jaw=_AMR_JAW, hold=_AMR_JAW, stamp_ns=_S + 10
+    )
+    return s, oid, binding
+
+
+def test_amr_provisional_sole_candidate_binds_the_pinch_stand_in_in_either_mode() -> None:
+    """AMR aisle 2026-11-16: ``candidates=('trk:1',) ... outcome=provisional`` under `on`. The
+    outcome is the candidate's own flag (``GraspBinder.on_attach``), never the mode: `tracking`
+    binds the same carton the same way, the same record. A provisional box may under-contain
+    what the robot hid (A4), so it is never the payload alone: the record is the pinch stand-in
+    unioned with the carton's box (``geometry_source="measured"``, one sole candidate)."""
+    records = []
+    for mode in (TrackingMode.ON, TrackingMode.TRACKING):
+        s, oid, binding = _amr_tote_grasp(mode, provisional=True)
+        assert binding is not None and binding.outcome is BindOutcome.PROVISIONAL
+        assert binding.candidates == (oid,) and binding.reground
+        [att] = s.attachments()
+        assert att.object_id.startswith("pinch:left_gripper@")
+        assert att.evidence_kind is AttachmentEvidenceKind.PINCH_FALLBACK
+        assert att.evidence_ref == f"provisional:{oid}"
+        assert [p.geometry_source for p in att.primitives][:1] == ["fallback"]
+        assert "measured" in [p.geometry_source for p in att.primitives[1:]]
+        # Never BOUND: the store keeps the carton free, a held candidate (never aged).
+        assert s.tracker.store.get(oid).status is TrackStatus.CONFIRMED  # type: ignore[union-attr]
+        records.append(att.model_dump(exclude={"object_id"}))
+    assert records[0] == records[1], "the bind is mode-independent"
+
+
+def test_amr_provisional_hold_is_never_promoted_after_the_bind() -> None:
+    """No post-bind confirmation exists: a clear fit of the candidate after the ATTACH (in the
+    hand every fit sees the gripper past the occluder band, so A4 keeps it provisional anyway)
+    leaves the hold PROVISIONAL until release. The station-off edge (the runner's goal end)
+    keeps the held stand-in and its candidate."""
+    s, oid, _ = _amr_tote_grasp(TrackingMode.ON, provisional=True)
+    [held] = s.attachments()
+    store = s.tracker.store
+    store.replace(store.get(oid).model_copy(update={"provisional": False}))  # type: ignore[union-attr]
+    s.on_joint_state(_AMR_HOLD, 2 * _S)
+    assert s.binders["left_gripper"].held.outcome is BindOutcome.PROVISIONAL  # type: ignore[union-attr]
+    assert s.attachments() == [held]
+    dropped, _ = s.leave_station()  # `_on_station_perception(False)`
+    assert oid not in dropped and s.held_attachments() == [held]
+
+
+def test_amr_clear_carton_binds_its_measured_box_under_on() -> None:
+    """The same grasp with the carton's last accepted fit clear of the robot (the earlier AMR
+    `tracking` run: ``outcome=tracked object_id=trk:3``) binds the track itself under `on`: the
+    record the kernel sees is the carton's measured box, no pinch stand-in."""
+    s, oid, binding = _amr_tote_grasp(TrackingMode.ON, provisional=False)
+    assert binding is not None and binding.outcome is BindOutcome.TRACKED
+    [att] = s.attachments()
+    assert att.object_id == oid
+    assert att.evidence_kind is AttachmentEvidenceKind.TRACKED_OBJECT
+    assert {p.geometry_source for p in att.primitives} == {"measured"}
+    assert s.tracker.store.get(oid).status is TrackStatus.BOUND  # type: ignore[union-attr]
+
+
+def _zone(frame: str, name: str = "slot") -> PlaceZone:
+    pose = Pose6D(xyz=(0.5, 0.0, 0.4), quat_xyzw=(0, 0, 0, 1), frame_id=frame)
+    box = PlaceRegion(frame_id=frame, pose=pose, half_extents=(0.1, 0.1, 0.1))
+    return PlaceZone(name=name, region=box)
+
+
+def test_place_zones_resolve_only_in_the_robots_fixed_frames() -> None:
+    """Review of #617: the tracker, not only the CLI, whitelists a zone's frame (a launch arg
+    bypasses the CLI): map / odom on any robot, the base frame on a fixed base only."""
+    amr = TrackerSession(
+        RobotDescription.from_yaml("robots/openamrobot_v2/robot.yaml"),
+        cell_m=RES,
+        grounding_wait_s=1.0,
+    )
+    arm = TrackerSession(
+        RobotDescription.from_yaml("robots/so101_follower/robot.yaml"),
+        cell_m=RES,
+        grounding_wait_s=1.0,
+    )
+    d = amr.description
+    assert amr.zone_frame_refusal(_zone(d.map_frame)) is None
+    assert amr.zone_frame_refusal(_zone(d.odom_frame)) is None
+    assert amr.zone_frame_refusal(_zone(d.base_frame)) is not None, "rides the moving base"
+    assert amr.zone_frame_refusal(_zone("camera_link")) is not None
+    assert arm.zone_frame_refusal(_zone(arm.frame_id)) is None
+    amr.zone_transform = lambda frame, stamp_ns: np.eye(4)  # any tf2 at all
+    amr.grid_stamp_ns = 1
+    amr.place_zones = {z.target_id: z for z in (_zone(d.base_frame), _zone("camera_link", "c"))}
+    assert amr._zone_region("zone:slot", amr.frame_id) is None
+    assert amr._zone_region("zone:c", amr.frame_id) is None
+
+
+def test_a_zone_resolve_state_logs_again_after_the_base_leaves_the_station() -> None:
+    """Review of #617: ``no_tf`` logged at one station is logged again at the next."""
+    from structlog.testing import capture_logs
+
+    s = TrackerSession(
+        RobotDescription.from_yaml("robots/openamrobot_v2/robot.yaml"),
+        cell_m=RES,
+        grounding_wait_s=1.0,
+    )
+    s.zone_transform = lambda frame, stamp_ns: None
+    s.place_zones = {"zone:slot": _zone(s.description.map_frame)}
+    with capture_logs() as logs:
+        for _ in range(2):
+            s.grid_stamp_ns = 1
+            assert s._zone_region("zone:slot", s.frame_id) is None
+            assert s._zone_region("zone:slot", s.frame_id) is None
+            s.leave_station()
+    assert [e["event"] for e in logs].count("object_tracker.place_zone_no_tf") == 2

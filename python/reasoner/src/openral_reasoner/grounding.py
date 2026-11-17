@@ -27,6 +27,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 
+import structlog
 from openral_core import (
     DetectedObject,
     GraspDeclaration,
@@ -54,8 +55,11 @@ __all__ = [
 ]
 
 #: Seconds a declaration outlives its goal's own patience ceiling before the
-#: backstop expires it; the runner retracts it at goal end anyway.
-DECLARATION_TIMEOUT_MARGIN_S = 10.0
+#: backstop expires it; the runner retracts it at goal end anyway. The runner floors a
+#: goal's grasp declaration with the same margin over its execution budget.
+DECLARATION_TIMEOUT_MARGIN_S = GraspDeclaration.TIMEOUT_MARGIN_S
+
+log = structlog.get_logger(__name__)
 
 #: A scene object's instance suffix (``orange_1``): instances of one class share a label.
 _INSTANCE_SUFFIX = re.compile(r"_\d+$")
@@ -121,15 +125,38 @@ def _locate(
     detection whose label equals ``label`` (case-insensitive). ``field`` names the
     tool-call field in refusals. With ``several_ok`` (object tracking) several matches —
     or none — ground with no search box: the tracker grounds every instance by its query,
-    and keeps looking for a label no camera sees yet (#418 Addendum G).
+    and keeps looking for a label no camera sees yet (#418 Addendum G); and a box in
+    another frame than ``base_frame`` (the lift's ``map``), or no box at all, is dropped
+    with a ``reasoner.grounding_seed_dropped`` warning instead of refusing.
 
     Raises:
         ROSReasonerInvalidPlan: Nothing grounds (unless ``several_ok``), several instances
             match with no node id (unless ``several_ok``), an unknown node id, or the box
-            is missing / in another frame.
+            is missing / in another frame (unless ``several_ok``).
     """
     if pad_m <= 0.0:
         raise ValueError(f"pad_m must be > 0; got {pad_m!r}")
+
+    def seed(
+        bbox: tuple[float, float, float, float, float, float] | None, frame_id: str, what: str
+    ) -> PlaceRegion | None:
+        if several_ok and (bbox is None or frame_id != base_frame):
+            # Object tracking: the declaration carries the query, the tracker grounds the
+            # object in its own grid, and the runner merges the scene's base-frame boxes. A
+            # box the reasoner cannot re-express (no tf2 here; the lift publishes `map`), or
+            # a detection / memory node with no 3D box, is dropped, never a refusal (AMR
+            # aisle, 2026-11-16: every stocking task refused).
+            log.warning(
+                "reasoner.grounding_seed_dropped",
+                field=field,
+                what=what,
+                frame_id=frame_id,
+                base_frame=base_frame,
+                why="object tracking grounds the query; no base-frame 3D box to seed it",
+            )
+            return None
+        return _box(bbox, frame_id, what=what, base_frame=base_frame, pad_m=pad_m)
+
     if node_id is not None:
         nodes = [n for n in (scene_graph.nodes if scene_graph else []) if n.node_id == node_id]
         if not nodes:
@@ -138,8 +165,7 @@ def _locate(
                 "recall_object first and pass a returned node_id."
             )
         node = nodes[0]
-        what = f"memory node {node_id!r}"
-        box = _box(node.bbox_3d, node.pose.frame_id, what=what, base_frame=base_frame, pad_m=pad_m)
+        box = seed(node.bbox_3d, node.pose.frame_id, f"memory node {node_id!r}")
         return node_id, box, 1
     key = label.strip().casefold()
     matches = [o for o in live_objects if o.label.strip().casefold() == key]
@@ -160,13 +186,7 @@ def _locate(
             f"{field} {label!r} is ambiguous: {len(matches)} live detections carry "
             "that label. recall_object it and pass the instance's node_id as object_id."
         )
-    box = _box(
-        matches[0].bbox_3d,
-        matches[0].pose.frame_id,
-        what=f"detection {label!r}",
-        base_frame=base_frame,
-        pad_m=pad_m,
-    )
+    box = seed(matches[0].bbox_3d, matches[0].pose.frame_id, f"detection {label!r}")
     return key, box, 1
 
 
@@ -181,6 +201,7 @@ def ground_grasp_target(
     pad_m: float,
     object_tracking: bool = False,
     hand: str | None = None,
+    declared_hand: Sequence[str] = (),
 ) -> GraspDeclaration:
     """Resolve a named grasp target to a seed-only ``GraspDeclaration``.
 
@@ -210,11 +231,17 @@ def ground_grasp_target(
             live detection carries grounds too (``count="one"``, no ``search_box``): the
             tracker's standing query keeps looking and escalates itself (Addendum G).
         hand: The grasping hand's gripper joint (``hand_joint``), a hint on the query.
+        declared_hand: The deployment's declared grasping hand (the deploy scene's grasp
+            declaration ``contact_links``, the reasoner's ``grasp_contact_links``): used when
+            ``ref`` names no ``contact_links``, so the LLM never guesses which hand a learned
+            policy grasps with; the same one-whole-hand rule applies. Empty (no scene hand):
+            a multi-hand robot still refuses a call naming none.
 
     Raises:
         ROSReasonerInvalidPlan: Nothing grounds, several instances match with no
             ``object_id`` (without ``object_tracking``), the box is missing / in another
-            frame, no contact link is
+            frame (only without ``object_tracking``: with it the seed is dropped and
+            logged, ``reasoner.grounding_seed_dropped``), no contact link is
             known, none is named on a robot with more than one hand, or the named
             links are not gripper child links of one hand, or are only part of one.
 
@@ -252,18 +279,24 @@ def ground_grasp_target(
     )
     hands = [(h,) if isinstance(h, str) else tuple(h) for h in default_contact_links]
     listing = "; ".join(f"[{', '.join(h)}]" for h in hands) or "none"
-    links = tuple(ref.contact_links)
+    # The call's own hand, else the deployment's declared one: the same one-whole-hand rule.
+    links = tuple(ref.contact_links) or tuple(declared_hand)
+    named = (
+        "grasp_target contact_links"
+        if ref.contact_links
+        else "the deployment's declared grasping hand (grasp_contact_links)"
+    )
     if links:
         owners = [h for h in hands if set(links) & set(h)]
         if len(owners) != 1 or not set(links) <= set(owners[0]):
             raise ROSReasonerInvalidPlan(
-                f"grasp_target contact_links {list(links)} are not gripper child links of "
+                f"{named} {list(links)} are not gripper child links of "
                 f"one hand; name links of exactly one hand (hands: {listing})."
             )
         # A partial hand would exempt one finger only and the kernel would stop the grasp.
         if set(links) != set(owners[0]):
             raise ROSReasonerInvalidPlan(
-                f"grasp_target contact_links {list(links)} name part of a hand; name all of "
+                f"{named} {list(links)} name part of a hand; name all of "
                 f"its links: [{', '.join(owners[0])}]."
             )
         links = owners[0]
@@ -341,8 +374,9 @@ def ground_place_target(
             label (including no detector at all) or several do and no node id is given
             (both only without ``object_tracking``), the
             node is not in spatial memory (including no memory at all), or the box is
-            missing / in another frame. The message says the hint could not be grounded
-            and that omitting ``place_target`` lets the policy place on the measured surface.
+            missing / in another frame (another frame only without ``object_tracking``).
+            The message says the hint could not be grounded and that omitting
+            ``place_target`` lets the policy place on the measured surface.
 
     Example:
         >>> from openral_core import DetectedObject, Pose6D

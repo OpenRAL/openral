@@ -232,7 +232,7 @@ def _ground(tr: ObjectTracker, depth: NDArray[np.float64], labels: NDArray[np.in
     return wall
 
 
-def test_a_fit_through_the_robot_is_provisional_until_a_clear_refit() -> None:
+def test_a_fit_through_the_robot_is_provisional_until_a_clear_refit(cap: Any) -> None:
     """#418 decision (2026-10-17): an arm hiding more than the occluder band makes the fit
     PROVISIONAL, yet the track confirms (K2 may exempt over it); a provisional refit never
     overwrites a clear one, and a clear refit clears the flag."""
@@ -247,6 +247,10 @@ def test_a_fit_through_the_robot_is_provisional_until_a_clear_refit() -> None:
     wall = _ground(tr, depth, labels, np.zeros_like(robot), stamp=2, wall=wall + 1.0)
     (track,) = tr.store.all()
     assert not track.provisional and track.last_fit_stamp_ns == 2  # the clear refit clears it
+    [mint] = cap.named("object_tracker.mint")
+    [flip] = cap.named("object_tracker.provisional_changed")  # logged: it decides a grasp
+    assert mint["provisional"] is True and flip["provisional"] is False
+    assert (flip["object_id"], flip["robot_beyond_band_px"]) == (track.object_id, 0.0)
     (clear,) = tr.store.all()
     _ground(tr, hidden, labels, robot, stamp=3, wall=wall + 1.0)
     (track,) = tr.store.all()

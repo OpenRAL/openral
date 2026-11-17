@@ -528,3 +528,75 @@ def test_a_declared_place_zone_is_the_place_region_only_while_a_payload_is_held(
     assert s.place_region() is not None
     s._release(joint, 12 * _S)
     assert binder.held is None and s.place_region() is None, "no payload, no place"
+
+
+def test_a_map_frame_place_zone_is_re_expressed_in_the_grid_frame_at_the_grids_stamp() -> None:
+    """Station mode: a shelf slot declared in ``map`` stays on the shelf while the base moves.
+
+    The tracker re-expresses it through ``grid <- map`` at the newest grid's ``source_stamp``
+    (``rebase_box``): two different base poses (translation + yaw) put the same map box at
+    two different grid-frame poses, each the exact inverse-pose image. No transform at that
+    stamp, or a tilted one, is no region (fail closed).
+    """
+    import math
+
+    from openral_core import PlaceDeclaration, Pose6D
+    from openral_core.geometry import homogeneous_from_quat_xyz
+
+    s, binder, _, _ = _run("so101_follower", lift_m=0.05, follows=True)
+    zone = _restock_zones()[0]
+    slot_xyz, slot_yaw = (4.2, -1.5, 0.62), 0.4
+    shelf = zone.model_copy(
+        update={
+            "region": zone.region.model_copy(
+                update={
+                    "frame_id": "map",
+                    "pose": Pose6D(
+                        xyz=slot_xyz,
+                        quat_xyzw=(0.0, 0.0, math.sin(slot_yaw / 2), math.cos(slot_yaw / 2)),
+                        frame_id="map",
+                    ),
+                }
+            )
+        }
+    )
+    s.place_zones = {shelf.target_id: shelf}
+    s.on_place_declaration(
+        PlaceDeclaration(target_id=shelf.target_id, timeout_s=60.0, stamp_ns=10 * _S)
+    )
+    assert binder.held is not None
+    assert s.place_region() is None, "no tf2 lookup wired: never applied in another frame"
+
+    asked: list[tuple[str, int]] = []
+    base_in_map: NDArray[np.float64] = np.eye(4)
+
+    def grid_from(frame: str, stamp_ns: int) -> NDArray[np.float64] | None:
+        asked.append((frame, stamp_ns))
+        return np.asarray(np.linalg.inv(base_in_map), dtype=np.float64)
+
+    s.zone_transform = grid_from
+    for xy, yaw in (((1.0, -0.5), 0.0), ((3.7, -0.9), math.pi / 2 + 0.2)):
+        base_in_map = homogeneous_from_quat_xyz(
+            (xy[0], xy[1], 0.0), (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2))
+        )
+        s.grid_stamp_ns += 1  # the base moved: a new grid (one region per grid stamp)
+        region = s.place_region()
+        assert region is not None
+        assert asked[-1] == ("map", s.grid_stamp_ns), "tf2 at the grid's source stamp"
+        assert region.frame_id == region.pose.frame_id == s.frame_id
+        assert region.stamp_ns == s.grid_stamp_ns
+        assert region.half_extents == shelf.region.half_extents
+        expected = np.linalg.inv(base_in_map) @ np.array([*slot_xyz, 1.0])
+        assert region.pose.xyz == pytest.approx(tuple(expected[:3]), abs=1e-9)
+        qz, qw = region.pose.quat_xyzw[2], region.pose.quat_xyzw[3]
+        got = 2 * math.atan2(qz, qw)
+        assert math.remainder(got - (slot_yaw - yaw), 2 * math.pi) == pytest.approx(0, abs=1e-9)
+
+    s.zone_transform = lambda frame, stamp_ns: None  # tf2 has nothing at the grid's stamp
+    s.grid_stamp_ns += 1
+    assert s.place_region() is None, "no transform: no region"
+    tilt = 0.02  # ~1.1 deg, past the 0.5 deg bound
+    s.zone_transform = lambda frame, stamp_ns: homogeneous_from_quat_xyz(
+        (0.0, 0.0, 0.0), (math.sin(tilt / 2), 0.0, 0.0, math.cos(tilt / 2))
+    )
+    assert s.place_region() is None, "a tilted base: no region"

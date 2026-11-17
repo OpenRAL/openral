@@ -148,7 +148,10 @@ scene. A value the scene already declares wins unless `--replace`, which prints 
   prims of non-robot, non-dynamic fixtures (`static_colliders`); MuJoCo, every world-welded
   collision geom except the robot's own bodies (`openral_sim.backends.mujoco_geometry`). Each is
   a superset of its collider. Fixed-base robots only: on a mobile base, base-frame fixtures are
-  true only at the reset pose, so none are declared.
+  true only at the reset pose, so none are declared. (Declared place zones, `PlaceZone`, are
+  the exception that can follow a mobile base: a zone declared in the robot's `map` / `odom`
+  frame is re-expressed in the base frame through tf2 at the grid's stamp each publish, and
+  yields no region without that transform; a base-frame zone on a mobile robot is refused.)
 - **`search_box`** — the reasoner's own grounding (`ground_grasp_target`), fed the sim's object
   boxes as detections instead of perception's: the target's bound padded on every side.
 - **`workspace_box`** — `openral_reasoner.grounding.ground_workspace`: the hull of the source
@@ -309,11 +312,14 @@ speed_source= max_mps= lead_m= lead_allow_m= max_lead_m= pairs= step= target=` W
 `safety.workspace_contact_summary` (pairs, max depth, max speed tolerated and its
 `max_speed_source`, max lead, both bounds) when the workspace drops; span attributes
 `safety.workspace_contact_active` / `_pairs` / `_max_depth_m` / `safety.workspace_hand_speed_mps` /
-`safety.workspace_hand_speed_source` / `safety.workspace_hand_lead_m`; and the `safety.collision`
-stop line carries `workspace_contact_active=<0|1> hand_speed_mps=<v> hand_lead_m=<d>
-workspace_denied=<0..4> hand_speed_source=<measured|commanded>` (`workspace_denied`, from
+`safety.workspace_hand_speed_source` / `safety.workspace_hand_lead_m` / `safety.workspace_gate`; and the
+`safety.collision` stop line carries `workspace_gate_active=<0|1> hand_speed_mps=<v>
+hand_lead_m=<d> workspace_denied=<0..4> hand_speed_source=<measured|commanded>
+workspace_gate=<in_tree|provider|none>` (`workspace_denied`, from
 `CollisionHit::workspace_denied`, says why the live workspace did not tolerate the reported
-pair: 1 not a hand link, 2 over speed, 3 over lead, 4 cell outside the box). The configure WARN
+pair: 1 not a hand link, 2 over speed, 3 over lead, 4 cell outside the box). With the rule handed
+to an exemption provider (ADR-0121) the gate reported is the provider's verdict region
+(`workspace_gate=provider`), so a provider stop names its failing conjunct too; disclosure only. The configure WARN
 states both bounds and the freshness window.
 
 **Deviations from the plan above, and why.**

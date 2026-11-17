@@ -262,6 +262,24 @@ fresh track or the pinch fallback.
 | Pub | `/openral/tracked_objects` | RELIABLE / VOLATILE / KEEP_LAST=1 | `openral_msgs/TrackedObjectSet` |
 | Pub | `/openral/attachment_state` | RELIABLE / TRANSIENT_LOCAL / KEEP_LAST=1 | `openral_msgs/AttachmentState` |
 | Client | `DEFAULT_SEGMENT_SERVICE`, `locate_service` | | `SegmentInView`, `LocateInView` |
+| Service | `/openral/object_tracker/station_perception` | | `std_srvs/SetBool` |
+
+**Station mode** (mobile base, tracking on). The node stays lifecycle-ACTIVE; the skill
+runner switches its *station perception* on for a skill that actuates an arm / gripper and off
+for a base-only one (`station_perception_initially_on: false` from the launch). Off, it
+consumes no frame and runs no query, and `/openral/attachment_state` keeps its heartbeat with
+the hands' held payloads only (`TrackerSession.held_attachments`): no released record, no
+grasp / place declaration, so no region and no tracked key reach the kernel, while a payload
+in a hand stays checked and the kernel's attachment stream stays fresh (a stale one refuses
+every candidate, a base twist included). Either edge discards the previous station
+(`TrackerSession.leave_station`), including any segmenter / locator answer still in flight.
+The switch replies `success=False` while the node is not ACTIVE. A place declaration naming a
+candidate set of same-slot map-frame zones (`zone_candidates_target_id`) resolves to the one
+whose box centre lies in the robot's reach (`zone_reach_center` / `zone_reach_radius_m`: the
+launch's world-map coverage ball); none or several, and no region (logged with every
+candidate's reason). A zone is accepted only in the robot's `map_frame` / `odom_frame`, or its
+base frame on a fixed-base robot; any other is refused and logged
+(`object_tracker.place_zones_refused`), even when `place_zones_json` bypassed the deploy CLI.
 
 Clocks: every lifetime runs on source stamps (depth, grid `source_stamp`, joint states,
 grasp events); the segmenter rate and budget on wall time. Revisions are seeded from wall

@@ -29,6 +29,7 @@ from openral_core.exceptions import (
     ROSReasonerInvalidPlan,
 )
 from openral_observability import semconv, start_reasoner_span
+from openral_observability.compliance import free_text_may_leave_host
 from openral_observability.propagation import current_traceparent
 from opentelemetry.trace import Span, use_span
 
@@ -60,6 +61,18 @@ def _stamp_mission(span: Span, renderer: ContextRenderer) -> None:
     mission = renderer.mission
     if mission is not None and not mission.is_empty():
         span.set_attribute(semconv.REASONER_MISSION_JSON, json.dumps(mission.to_summary()))
+
+
+def _stamp_rationale(span: Span, call: ReasonerToolCall) -> None:
+    """Stamp the call's rationale (capped) so the dashboard trace can say why it chose it.
+
+    Free model text that can paraphrase the operator's prompt: stamped only where it may
+    leave the host (a local collector, or the deployer's consent; CLAUDE.md §3).
+    """
+    if call.rationale and free_text_may_leave_host():
+        span.set_attribute(
+            semconv.REASONER_RATIONALE, call.rationale[: semconv.REASONER_RATIONALE_MAX]
+        )
 
 
 # Read-only search tools (recall_object/resolve_place/locate_in_view) are
@@ -691,6 +704,10 @@ class ReasonerCore:
             force=force,
         )
         span.set_attribute(semconv.REASONER_TIER, tier)
+        inflight = renderer.inflight_skill
+        if inflight:
+            span.set_attribute(semconv.REASONER_INFLIGHT_SKILL, inflight)
+            span.set_attribute(semconv.REASONER_INFLIGHT_STATE, renderer.inflight_state or "")
         span.set_attribute(semconv.REASONER_TRIGGER, trigger)
         if coalesced:
             span.set_attribute(semconv.REASONER_COALESCED_TRIGGERS, list(coalesced))
@@ -810,7 +827,12 @@ class ReasonerCore:
             self._last_seen_seq = seq
 
     def _arm_after_call(self, call: ReasonerToolCall, span: Span) -> None:
-        """A good call ends an LLM-error run; a ``wait`` arms its hold, any other call ends it."""
+        """Book a good call: rationale on the span, LLM-error run over, wait hold set.
+
+        Runs before the retry-cap branch, so a capped tick says why too. A ``wait``
+        arms its hold; any other call ends one.
+        """
+        _stamp_rationale(span, call)
         self._llm_errors = 0
         self._llm_retry_at = None
         if isinstance(call, WaitTool):
@@ -929,12 +951,13 @@ class ReasonerCore:
                 _log_kwargs["prompt_tokens"] = prep.prompt_tokens
             if rskill_id:
                 _log_kwargs["rskill_id"] = rskill_id
+            # Free text rides the OTLP log export too: the span's consent rule applies.
             rationale = getattr(call, "rationale", None)
-            if rationale:
+            if rationale and free_text_may_leave_host():
                 _log_kwargs["rationale"] = rationale
             # Surface the active prompt so the caller can correlate which
             # operator goal drove this tool selection (multi-task tracing).
-            if prep.prompts:
+            if prep.prompts and free_text_may_leave_host():
                 _log_kwargs["active_prompt"] = prep.prompts[0].text[:200]
             log.info("reasoner.tick.selected", **_log_kwargs)
             # Capture the active traceparent WHILE the span is still in

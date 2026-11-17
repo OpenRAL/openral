@@ -12,6 +12,7 @@ Run with:
 from __future__ import annotations
 
 import json
+import math
 from typing import get_args
 
 import jsonschema
@@ -60,6 +61,7 @@ from openral_core.schemas import (
     LinkCollisionGeometry,
     LinkInertial,
     MimicJoint,
+    NavGoal,
     ObjectQuery,
     ObjectQueryEvidence,
     ObjectRole,
@@ -396,14 +398,34 @@ _place_declaration_st = st.builds(
 )
 
 _zone_name = st.from_regex(r"[a-z0-9]{1,6}(_[a-z0-9]{1,6}){0,3}", fullmatch=True)
+# A zone's name and aliases never repeat (PlaceZone refuses it): draw them as one unique list.
+_zone_names = st.lists(_zone_name, min_size=1, max_size=4, unique=True)
 _place_zone_st = st.builds(
-    PlaceZone,
-    name=_zone_name,
-    aliases=st.lists(_zone_name, max_size=3).map(tuple),
+    lambda names, region: PlaceZone(name=names[0], aliases=tuple(names[1:]), region=region),
+    names=_zone_names,
     # A zone's pose is in its region's frame (PlaceZone refuses a mismatch).
     region=_grasp_region_st.map(
         lambda r: r.model_copy(update={"pose": r.pose.model_copy(update={"frame_id": r.frame_id})})
     ),
+)
+
+_nav_goal_st = st.builds(
+    NavGoal,
+    name=_zone_name,
+    aliases=st.lists(_zone_name, max_size=3).map(tuple),
+    # Planar: z = 0 and a unit yaw-only quaternion (NavGoal refuses anything else).
+    pose=st.builds(
+        lambda x, y, yaw, frame: Pose6D(
+            xyz=(x, y, 0.0),
+            quat_xyzw=(0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)),
+            frame_id=frame,
+        ),
+        _safe_float,
+        _safe_float,
+        st.floats(min_value=-math.pi, max_value=math.pi),
+        _name,
+    ),
+    description=st.none() | _name,
 )
 
 _grasp_target_ref_st = st.builds(
@@ -815,6 +837,13 @@ def test_fuzz_place_declaration(instance: PlaceDeclaration) -> None:
 def test_fuzz_place_zone(instance: PlaceZone) -> None:
     """PlaceZone round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(PlaceZone, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_nav_goal_st)
+def test_fuzz_nav_goal(instance: NavGoal) -> None:
+    """NavGoal round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(NavGoal, instance)
 
 
 @_FUZZ_SETTINGS

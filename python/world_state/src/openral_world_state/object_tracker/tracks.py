@@ -156,7 +156,8 @@ class TrackStore:
         self._revision += 1
         log.info("object_tracker.mint", object_id=obj.object_id, label=obj.label,
                  centre=[round(c, 3) for c in obj.box.pose.xyz],
-                 half_extents=[round(h, 3) for h in obj.box.half_extents])  # fmt: skip
+                 half_extents=[round(h, 3) for h in obj.box.half_extents],
+                 provisional=obj.provisional)  # fmt: skip
         return obj
 
     def drop(self, object_id: str) -> None:

@@ -30,10 +30,13 @@ owns the wire:
   ``workspace_box`` as ``workspace_region`` while the tracker's own grid confirms it
   (``TrackerSession.workspace_region``, the producer's rule), the place declaration's
   ``region`` (``TrackerSession.place_region``: a declared ``place_zones_json`` zone the
-  declaration names; in ``on`` also a tracked destination) and, in ``tracking`` only, the
-  grasp declaration's ``region`` (``TrackerSession.grasp_region``: the DECLARED
-  ``search_box`` while one target track sits in it, never a track's box; ``on``'s exemption
-  provider keys on track ids instead and gets none). Heartbeated only while joint states are fresh.
+  declaration names, a fixed-frame (``map`` / ``odom``) one re-expressed in the grid frame
+  through tf2 at the grid's stamp; in ``on`` also a tracked destination) and, in
+  ``tracking`` only, the grasp declaration's ``region`` (``TrackerSession.grasp_region``:
+  the one target track's box while it lies wholly inside the declared ``search_box`` and
+  within the declaration's size caps, never the ``search_box`` itself; ``on``'s exemption
+  provider keys on track ids instead and gets none). Heartbeated only
+  while joint states are fresh.
 * **Revisions** are seeded from wall time (ns) at every activate plus the store's own
   counter, so they never regress across a node restart or re-activation (the kernel
   refuses a regressing ``tracked_objects`` revision, and the aggregator a regressing
@@ -741,6 +744,13 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             # The station's declared place zones (DeployScene.place_zones, a JSON list of
             # core.PlaceZone): a place declaration naming one gets its box as the region.
             self.declare_parameter("place_zones_json", "")
+            # Station-scoped zone choice: the robot's manipulation reach in the base / grid
+            # frame, the world map's coverage ball (the launch's ``_coverage_ball``: the
+            # kernel collision model's moving-link reach plus its margin). A candidate set of
+            # same-slot zones resolves to the one whose box centre lies inside it. Radius 0 =
+            # unknown: no candidate set ever resolves (fail closed).
+            self.declare_parameter("zone_reach_center", [0.0, 0.0, 0.0])
+            self.declare_parameter("zone_reach_radius_m", 0.0)
             self.declare_parameter("declared_object_catalog_json", "")
             self.declare_parameter("object_surface_model_json", "")
             self.declare_parameter("locate_service", "")
@@ -753,6 +763,17 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             # escalates after search_start_s, is EXHAUSTED after search_max_s.
             self.declare_parameter("search_start_s", TrackerParams().search_start_s)
             self.declare_parameter("search_max_s", TrackerParams().search_max_s)
+            # Station mode (mobile base): whether the station's perception starts ON. Off, the
+            # node stays ACTIVE but consumes no frames and publishes the hands' held payloads
+            # only (no tracks but held ones, no released records, no grasp / place
+            # declaration, so no region and no tracked key reach the kernel), so the kernel's
+            # attachment stream stays fresh and a held payload stays known while the base
+            # drives. The skill runner switches it per skill on
+            # ``/openral/object_tracker/station_perception`` (std_srvs/SetBool). ``True`` (a
+            # fixed-base cell) is today's behaviour exactly.
+            self.declare_parameter("station_perception_initially_on", True)
+            self._station_on = True
+            self._station_srv: Any = None
             self._failure_bus: Any = None
             self._attempts: dict[tuple[str, str], int] = {}
             self.session: TrackerSession | None = None
@@ -769,13 +790,15 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             self._locate: Any = None
             # The one service call in flight: (client, future), see `_drop_abandoned`.
             self._pending_call: tuple[Any, Any] | None = None
+            # The frame of the last issued request: an answer about any other is stale.
+            self._issued_frame: CameraFrame | None = None
             self._tf_buffer: Any = None
             self._tf_listener: Any = None
             self._aliases: dict[str, str] = {}
             self._active = False
             self._rev_base = 0
             self._last_tracked_rev = -1
-            self._attach_key: tuple[int, int, int] | None = None
+            self._attach_key: tuple[int, int, int, int] | None = None
             self._attach_rev = 0
             self._joint_rx_ns = 0
             self._source_clock = SourceClock()
@@ -879,11 +902,30 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             if zones_json:
                 zones = TypeAdapter(list[PlaceZone]).validate_json(zones_json)
                 self.session.place_zones = {z.target_id: z for z in zones}
+                # The deploy CLI checks zone frames, a launch arg does not: the session
+                # refuses any zone outside the robot's fixed frames (`zone_frame_refusal`).
+                refused = {
+                    z.name: why
+                    for z in zones
+                    if (why := self.session.zone_frame_refusal(z)) is not None
+                }
+                if refused:
+                    slog.error("object_tracker.place_zones_refused", zones=refused)
+                # A zone in a fixed frame (map / odom: a docked mobile manipulator) is
+                # re-expressed in the grid frame through tf2 at the grid's stamp; no tf2
+                # there and the zone yields no region (`TrackerSession._zone_region`).
+                self.session.zone_transform = self._zone_lookup
+                radius = float(self._p("zone_reach_radius_m"))
+                if radius > 0.0:
+                    cx, cy, cz = (float(v) for v in self._p("zone_reach_center"))
+                    self.session.zone_reach = ((cx, cy, cz), radius)
                 slog.info(
                     "loaded declared place zones",
                     zones=sorted(z.name for z in zones),
-                    off_frame=sorted(
-                        z.name for z in zones if z.region.frame_id != self.session.frame_id
+                    fixed_frame=sorted(
+                        f"{z.name}@{z.region.frame_id}"
+                        for z in zones
+                        if z.region.frame_id != self.session.frame_id and z.name not in refused
                     ),
                 )
             raw = str(self._p("object_queries_json"))
@@ -993,6 +1035,12 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             # Addendum G escalations reach the reasoner on the failure bus.
             self._failure_bus = FailureBusPublisher(self, FailureSource.WORLD_STATE)
             self._failure_bus.create_publisher()
+            from std_srvs.srv import SetBool
+
+            self._station_on = bool(self._p("station_perception_initially_on"))
+            self._station_srv = self.create_service(
+                SetBool, "/openral/object_tracker/station_perception", self._on_station_perception
+            )
             self._segment = self.create_client(SegmentInView, DEFAULT_SEGMENT_SERVICE)
             if self._p("locate_service"):
                 self._locate = self.create_client(LocateInView, str(self._p("locate_service")))
@@ -1007,6 +1055,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             self._fill_group = MutuallyExclusiveCallbackGroup()
             self._answers.clear()
             self._attach_key = None
+            self._leave_station("activate")
             self._active = True
             self._timers = [
                 self.create_timer(1.0 / _PROCESS_HZ, self._process),
@@ -1025,12 +1074,62 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
 
         def on_deactivate(self, state: object) -> TransitionCallbackReturn:
             self._active = False
+            self._leave_station("deactivate")
             if self._failure_bus is not None:
                 self._failure_bus.stop()
             for t in self._timers:
                 self.destroy_timer(t)
             self._timers = []
             return TransitionCallbackReturn.SUCCESS
+
+        def _leave_station(self, transition: str) -> None:
+            """Station mode: discard the previous station's tracks and released records.
+
+            Tracks and frozen released records live in the base frame; on a mobile base they
+            are wrong once it drives, and the skill runner toggles this node per skill
+            (``station_perception_nodes``). Held payloads stay (``TrackerSession.leave_station``).
+            Logged on every transition, empty or not (CLAUDE.md §1.4).
+            """
+            if self.session is None:
+                return
+            # The last station's in-flight call: its answer (and the frame it carries) is
+            # never fed (`_answer`); the session frees its scheduler slot.
+            self._issued_frame = None
+            self._drop_abandoned()
+            dropped, released = self.session.leave_station()
+            self.get_logger().info(
+                f"object_tracker.station_reset transition={transition} "
+                f"dropped_tracks={len(dropped)} released_records={len(released)} "
+                f"kept_tracks={len(self.session.tracker.store.all())}"
+            )
+
+        def _on_station_perception(self, request: Any, response: Any) -> Any:
+            """``std_srvs/SetBool``: switch the station's perception on (``data``) or off.
+
+            Either edge discards the previous station (``_leave_station``); off, ``_process``
+            consumes nothing and ``_publish_attachment`` carries held payloads only.
+            """
+            on = bool(request.data)
+            if not self._active or self.session is None:
+                # Not ACTIVE: nothing would consume frames or publish; the caller must not
+                # take the switch as done.
+                response.success = False
+                response.message = "object tracker is not active"
+                self.get_logger().warning(f"object_tracker.station_perception refused on={on}")
+                return response
+            if on != self._station_on:
+                self._leave_station("station_on" if on else "station_off")
+                self._station_on = on
+                for cam in self._cams.values():
+                    cam.pending.clear()
+                self._answers.clear()
+                self._attach_key = None  # republish at once, in the new state
+                self._publish_tracked(force=True)
+                self._publish_attachment()
+            self.get_logger().info(f"object_tracker.station_perception on={on}")
+            response.success = True
+            response.message = f"station_perception={'on' if on else 'off'}"
+            return response
 
         def on_cleanup(self, state: object) -> TransitionCallbackReturn:
             for s in self._subs:
@@ -1045,6 +1144,9 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 if cli is not None:
                     self.destroy_client(cli)
             self._pub_tracked = self._pub_attach = self._segment = self._locate = None
+            if self._station_srv is not None:
+                self.destroy_service(self._station_srv)
+                self._station_srv = None
             if self._failure_bus is not None:
                 self._failure_bus.destroy()
                 self._failure_bus = None
@@ -1166,15 +1268,30 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             t, q = tf.translation, tf.rotation
             return homogeneous_from_quat_xyz((t.x, t.y, t.z), (q.x, q.y, q.z, q.w))
 
+        def _zone_lookup(self, frame: str, stamp_ns: int) -> NDArray[np.float64] | None:
+            """tf2 ``grid <- frame`` at ``stamp_ns`` for a fixed-frame place zone, or ``None``."""
+            return None if self._tf_buffer is None else self._lookup(frame, stamp_ns)
+
         # -- the frame loop --------------------------------------------------------------
 
         def _process(self) -> None:
             if self.session is None or not self._active:
                 return
             self._fill.touch(time.monotonic())
-            # Service answers, one at a time, on this timer's (the node's default) group.
+            if not self._station_on:
+                # Station perception off (the base drives): no frame is consumed, no query runs.
+                for cam in self._cams.values():
+                    cam.pending.clear()
+                self._answers.clear()
+                return
+            # Service answers, one at a time, on this timer's (the node's default) group. The
+            # frame is checked again here: a done callback that passed `_answer`'s check can
+            # append after a station off/on cycle cleared the queue, and its frame (the last
+            # station's) must not reach the tracker.
             while self._answers:
-                self._feed(*self._answers.popleft())
+                answer = self._answers.popleft()
+                if answer[0] is self._issued_frame:
+                    self._feed(*answer)
             for cam in self._cams.values():
                 if not cam.pending or cam.info is None:
                     continue
@@ -1242,7 +1359,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             # (single-threaded) tracker concurrently on both executor threads (Spark R49/R62
             # stack dumps), leaving none for the heartbeat or `_fill_tick`: the set went stale
             # for 1.6 s of sim time and the kernel lost every tracked object mid-contact.
-            if self._active and self.session is not None:
+            if self._active and self.session is not None and frame is self._issued_frame:
                 self._answers.append((frame, optical_frame, stamp_msg, (result,)))
 
         def _escalate(self, e: QueryEscalation) -> None:
@@ -1310,6 +1427,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             stamp_msg: Any,
         ) -> None:
             self._drop_abandoned()
+            self._issued_frame = frame  # only this frame's answers are fed (`_answer`)
             if frame.stamp_ns <= 0 and req.service in _STAMP_MISSING:
                 self._refuse_request(
                     req, frame, optical_frame, stamp_msg, _STAMP_MISSING[req.service]
@@ -1339,7 +1457,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             ``segment_budget_wall_s``. An abandoned call's future still sits in its client's
             pending table, holding its done callback and the ``CameraFrame`` it closes over,
             and a late reply would feed a request the scheduler already dropped; removing it
-            frees both. Called before every issue and at cleanup.
+            frees both. Called before every issue, on a station switch and at cleanup.
             """
             pending, self._pending_call = self._pending_call, None
             if pending is None or pending[1].done():
@@ -1541,7 +1659,21 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             s = self.session
             if s is None or self._pub_attach is None or not self._active:
                 return
-            key = (s.attachment_changes, id(s.grasp_declaration), id(s.place_declaration))
+            place_decl = s.place_declaration
+            # A zone's grid-frame box is re-expressed through tf2 at each grid's stamp (a fixed-
+            # frame zone moves in the grid frame as the base settles): refreshed every grid.
+            zone_stamp = (
+                s.grid_stamp_ns
+                if place_decl is not None
+                and place_decl.target_id.startswith(PlaceZone.TARGET_PREFIX)
+                else 0
+            )
+            key = (
+                s.attachment_changes,
+                id(s.grasp_declaration),
+                id(place_decl),
+                zone_stamp,
+            )
             if key != self._attach_key:
                 self._attach_key = key
                 self._attach_rev += 1
@@ -1552,11 +1684,15 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             msg.header.stamp = now.to_msg()
             msg.header.frame_id = s.frame_id
             msg.revision = self._rev_base + self._attach_rev
-            for obj in s.attachments():
+            # Station perception off: the hands' held payloads only. No released record, and no
+            # declaration (so no grasp / place / workspace region and no tracked key): nothing
+            # the kernel could read as an allowance while the base drives.
+            on = self._station_on
+            for obj in s.attachments() if on else s.held_attachments():
                 item = AttachedMsg()
                 obj.fill_idl(item, primitive_factory=PrimitiveMsg)
                 msg.objects.append(item)
-            grasp, place = s.grasp_declaration, s.place_declaration
+            grasp, place = (s.grasp_declaration, s.place_declaration) if on else (None, None)
             msg.grasp_declaration_valid = grasp is not None
             if grasp is not None:
                 # The producer's workspace confirmation, redone on the tracker's grid; the
@@ -1637,7 +1773,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
         def _heartbeat(self) -> None:
             self._fill.touch(time.monotonic())
             self._publish_tracked(force=True)
-            if self.session is not None and self._active:
+            if self.session is not None and self._active and self._station_on:
                 self._pub_clear.publish(BoolMsg(data=self.session.hands_clear_of_targets()))
             self._publish_refusals()
             now = int(self.get_clock().now().nanoseconds)

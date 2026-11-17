@@ -727,3 +727,160 @@ def test_a_restock_prim_name_that_is_no_class_takes_the_placement_label() -> Non
     )
     with pytest.raises(ValueError, match="at least 1 character"):
         IsaacPlacement(object="stock_object", target="upper_slot_6", label="")
+
+
+# ── The deployment's declared grasping hand (AMR aisle sim, 2026-11-16) ──
+
+_AMR = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / "openamrobot_v2" / "robot.yaml"))
+_AMR_LEFT, _AMR_RIGHT = gripper_hands(_AMR)
+
+
+def _ground_amr(
+    ref: GraspTargetRef,
+    declared_hand: tuple[str, ...] = (),
+    *,
+    live: list[DetectedObject] | None = None,
+    graph: SceneGraph | None = None,
+    tracking: bool = True,
+) -> GraspDeclaration:
+    """The reasoner's grasp_target on the AMR (by default no live detection, tracking on)."""
+    return ground_grasp_target(
+        ref,
+        live_objects=live or [],
+        scene_graph=graph,
+        base_frame=_AMR.base_frame,
+        default_contact_links=gripper_hands(_AMR),
+        patience_s=0.0,
+        pad_m=_PAD,
+        object_tracking=tracking,
+        declared_hand=declared_hand,
+    )
+
+
+def test_a_label_only_target_takes_the_deployments_declared_hand() -> None:
+    """The LLM cannot know which hand a learned policy grasps with; the scene declares it."""
+    assert _AMR_LEFT == ("openarm_left_ee_link1",) and _AMR_RIGHT == ("openarm_right_ee_link1",)
+    decl = _ground_amr(GraspTargetRef(label="box"), declared_hand=_AMR_LEFT)
+    assert decl.contact_links == _AMR_LEFT
+    assert [q.label for q in decl.target_queries] == ["box"]
+
+
+def test_no_declared_hand_on_a_two_hand_robot_still_refuses_as_before() -> None:
+    with pytest.raises(
+        ROSReasonerInvalidPlan,
+        match=(
+            r"^grasp_target names no contact_links and this robot has 2 hands; name the one "
+            r"hand that grasps as contact_links \(hands: \[openarm_left_ee_link1\]; "
+            r"\[openarm_right_ee_link1\]\)\.$"
+        ),
+    ):
+        _ground_amr(GraspTargetRef(label="box"))
+
+
+def test_a_named_whole_hand_wins_over_the_declared_one() -> None:
+    ref = GraspTargetRef(label="box", contact_links=list(_AMR_RIGHT))
+    assert _ground_amr(ref, declared_hand=_AMR_LEFT).contact_links == _AMR_RIGHT
+    assert _ground_amr(ref).contact_links == _AMR_RIGHT
+
+
+def test_a_declared_hand_that_is_no_whole_hand_refuses() -> None:
+    with pytest.raises(ROSReasonerInvalidPlan, match=r"declared grasping hand.*one hand"):
+        _ground_amr(GraspTargetRef(label="box"), declared_hand=(*_AMR_LEFT, *_AMR_RIGHT))
+
+
+# ── A map-frame lift under object tracking (AMR aisle, 2026-11-16: every stocking task refused) ──
+
+#: A head-camera 'box' as the world-state lift publishes it: in `map`, not base_footprint.
+_MAP_BOX = DetectedObject(
+    label="box",
+    confidence=0.8,
+    pose=Pose6D(xyz=(4.2, 1.1, 0.9), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="map"),
+    bbox_3d=(4.15, 1.05, 0.85, 4.25, 1.15, 0.95),
+)
+
+
+def _home_graph() -> SceneGraph:
+    """A real map-frame scene graph (its ``wine_bottle`` node is in ``map``)."""
+    return SceneGraph.model_validate(
+        json.loads((_REPO_ROOT / "tests/unit/fixtures/home_scene_graph.json").read_text())
+    )
+
+
+def test_tracking_grounds_a_map_frame_detection_as_a_query_without_a_seed() -> None:
+    decl = _ground_amr(GraspTargetRef(label="box"), _AMR_LEFT, live=[_MAP_BOX])
+    assert decl.search_box is None, "a map-frame box is never a base-frame seed"
+    assert decl.contact_links == _AMR_LEFT
+    assert decl.target_id == "obj:box"
+    assert [(q.label, q.count) for q in decl.target_queries] == [("box", "one")]
+
+
+def test_tracking_grounds_a_map_frame_memory_node_as_a_query_without_a_seed() -> None:
+    node = next(n for n in _home_graph().nodes if n.node_id == "wine_bottle")
+    assert node.pose.frame_id != _AMR.base_frame
+    decl = _ground_amr(
+        GraspTargetRef(label="bottle of wine", object_id="wine_bottle"),
+        _AMR_LEFT,
+        graph=_home_graph(),
+    )
+    assert decl.search_box is None and decl.target_id == "obj:wine_bottle"
+    assert [q.label for q in decl.target_queries] == ["bottle of wine"]
+
+
+def test_without_tracking_a_map_frame_box_still_refuses() -> None:
+    """Off: the search box seeds the HAL's grasp-target leg, kernel geometry's input."""
+    with pytest.raises(ROSReasonerInvalidPlan, match=r"is in frame 'map', not the robot base"):
+        _ground_amr(GraspTargetRef(label="box"), _AMR_LEFT, live=[_MAP_BOX], tracking=False)
+    with pytest.raises(ROSReasonerInvalidPlan, match=r"memory node 'wine_bottle' is in frame"):
+        _ground_amr(
+            GraspTargetRef(label="bottle of wine", object_id="wine_bottle"),
+            _AMR_LEFT,
+            graph=_home_graph(),
+            tracking=False,
+        )
+
+
+def test_a_map_frame_place_surface_grounds_its_destination_query_under_tracking() -> None:
+    shelf = _MAP_BOX.model_copy(update={"label": "shelf"})
+    decl = ground_place_target(
+        PlaceTargetRef(label="shelf"),
+        live_objects=[shelf],
+        scene_graph=None,
+        base_frame=_AMR.base_frame,
+        patience_s=0.0,
+        pad_m=_PAD,
+        object_tracking=True,
+    )
+    assert decl.search_box is None and decl.destination_query is not None
+    with pytest.raises(ROSReasonerInvalidPlan, match=r"place hint could not be grounded"):
+        ground_place_target(
+            PlaceTargetRef(label="shelf"),
+            live_objects=[shelf],
+            scene_graph=None,
+            base_frame=_AMR.base_frame,
+            patience_s=0.0,
+            pad_m=_PAD,
+            object_tracking=False,
+        )
+
+
+def test_tracking_grounds_a_detection_without_a_3d_box_with_no_search_box() -> None:
+    """Review of #621: under tracking a detection with no ``bbox_3d`` grounds unseeded
+    (the tracker's query finds it), as a map-frame box does; tracking off still refuses."""
+    [plate] = [
+        o.model_copy(update={"bbox_3d": None}) for o in _lift(_ORANGES) if o.label == "plate"
+    ]
+    ref = GraspTargetRef(label="plate", contact_links=["openarm_right_finger_pair"])
+    with pytest.raises(ROSReasonerInvalidPlan):
+        _ground(ref, [plate])
+    decl = ground_grasp_target(
+        ref,
+        live_objects=[plate],
+        scene_graph=None,
+        base_frame=_BASE,
+        default_contact_links=gripper_hands(_OPENARM),
+        patience_s=60.0,
+        pad_m=_PAD,
+        object_tracking=True,
+    )
+    assert decl.search_box is None
+    assert decl.target_queries[0].label == "plate"

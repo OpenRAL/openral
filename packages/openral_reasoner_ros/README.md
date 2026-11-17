@@ -192,8 +192,29 @@ not refused: it grounds as one `count="all"` query with no search box, and the
 tracker grounds every instance (the policy's choice is resolved at binding).
 Limits: the label path reads the continuous lift (`locate_in_view`'s one-shot
 2D answer is not lifted), and the lift must run in the robot base frame
-(`object_lift_map_frame`) for the seed to be usable; a map-frame box is refused,
-not transformed.
+(`object_lift_map_frame`) for the seed to be usable. A box in another frame (the
+lift's `map` on a mobile base) is not transformed (the reasoner has no tf2): with object
+tracking on it is dropped (`reasoner.grounding_seed_dropped`) and the declaration grounds
+as a query only, the tracker grounds the object in its own grid and the runner merges the
+scene's base-frame boxes; with tracking off it is refused, as the seed feeds the HAL's
+grasp-target leg.
+
+Under object tracking `grasp_target` is required for a skill that actuates an arm, gripper or
+hand: the runner refuses such a goal with no target query (`ROSReasonerInvalidPlan`,
+`FAILURE_PLANNING_ERROR`, replanned on, the skill stays in the palette). So the palette is
+built with `object_tracking` (`build_tool_palette(object_tracking=...)`), and each skill tool's
+description says it: a manipulation skill's that `grasp_target` is REQUIRED, labelled with the
+visible object class the policy grasps as a detector names it (e.g. `box`), with its
+`contact_links` left unset: the deployment supplies the grasping hand; a base-only
+skill's (Nav2) that neither target applies. The hand: `deploy_e2e` passes the deploy scene's
+grasp declaration `contact_links` as `grasp_contact_links` (checked at `on_configure` to be
+one whole hand of the robot, else `ROSConfigError`), and a `grasp_target` naming no
+`contact_links` grounds to that hand, so the LLM never guesses which hand a learned policy
+grasps with. With no scene hand on a multi-hand robot an unnamed hand is refused as before,
+and the tool text then asks for the hand (`build_tool_palette(grasp_hand_required=True)`). The decision is the manifest's
+(`RSkillManifest.actuates_manipulator`), never a skill name. A label no live detection carries
+yet still grounds (`count="one"`, no search box): the tracker searches for it once the runner
+switches the station perception on, so a new station needs no detection first.
 
 **Crash-safe ladder resume:** set the `ladder_state_path` ROS parameter to a
 writable JSON path and the mission ledger + every replanning-ladder bound
@@ -672,3 +693,8 @@ vectors remain available in the original ROS message for replay. The robot
 context lists configured joint names, simulator aliases and parent/child links
 without inventing anatomical labels. A predicted collision is not a measurement
 of physical contact, and voxel IDs do not establish an obstacle's identity.
+A world voxel's coordinates render as `cell_center_m[<base_frame>]` and
+`grid_origin_m[<base_frame>]`, labelled with the robot manifest's `base_frame`
+(the kernel's voxel grid frame, never the map). The schema and the ROS message
+keep their `world_cell_center_m` / `world_grid_origin_m` wire names; only the
+prompt renames them.

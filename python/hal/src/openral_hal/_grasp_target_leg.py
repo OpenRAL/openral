@@ -268,7 +268,7 @@ from openral_core import (
     gripper_hands,
 )
 from openral_core.exceptions import ROSConfigError, ROSSafetyViolation
-from openral_core.geometry import homogeneous_from_quat_xyz
+from openral_core.geometry import homogeneous_from_quat_xyz, rebase_box
 from openral_core.object_primitives import (
     ObjectPrimitive,
     PrimitiveFit,
@@ -761,6 +761,25 @@ class GraspTargetTracker:
                 self._away.add(links)
 
     @_locked
+    def on_base_moved(self, *, now_ns: int) -> None:
+        """A mobile base moved: a held region not yet handed over is retracted.
+
+        The region was measured in the voxel grid's frame, which rides the base, so after
+        the base moves it no longer bounds the target; the next tick re-measures. A
+        measurement still in flight saw the old pose too: its reply is dropped (the
+        generation advances) whether or not a region is held. A handed-over region is the
+        hand's payload now and moves with it.
+        """
+        if self._handed_over is not None:
+            return
+        if self._region is not None:
+            self._retract(
+                "base_moved", "the mobile base moved since it was measured", now_ns=now_ns
+            )
+        else:
+            self._generation += 1
+
+    @_locked
     def presence_unknown(self) -> None:
         """A tick that could not sample the hands: every away window restarts.
 
@@ -1098,57 +1117,6 @@ class GraspTargetTracker:
         target = self.target
         assert target is not None
         return target.model_copy(update={"region": self._region})
-
-
-#: The most a fixed frame's ``frame <- box frame`` rotation may tilt off vertical for a
-#: declared box to be re-expressed yaw-only (``rebase_box``): a mobile base on a level
-#: floor. Beyond it the box's footprint is not a column in the grid frame.
-_REBASE_MAX_TILT_RAD = math.radians(0.5)
-
-
-def rebase_box(box: PlaceRegion, t_frame_from_box: NDArray[np.float64], frame: str) -> PlaceRegion:
-    """A gravity-aligned declared ``box`` re-expressed in ``frame``, still gravity-aligned.
-
-    A scene may declare ``search_box`` / ``workspace_box`` in a fixed frame (``odom``,
-    ``map``) so it stays put while a mobile base moves; the leg re-expresses it in the
-    voxel grid's frame every tick through ``t_frame_from_box`` (tf2 ``frame <- box``).
-    The centre is transformed and the box's yaw composed with the transform's; the
-    transform's own tilt (at most ``_REBASE_MAX_TILT_RAD``) is dropped, so the result
-    is yaw-only like the box.
-
-    Raises:
-        ROSConfigError: The box or the transform is tilted past the bound.
-
-    Example:
-        >>> from openral_core import PlaceRegion, Pose6D
-        >>> box = PlaceRegion(
-        ...     frame_id="odom",
-        ...     half_extents=(0.1, 0.2, 0.3),
-        ...     pose=Pose6D(xyz=(1.0, 0.0, 0.0), quat_xyzw=(0, 0, 0, 1), frame_id="odom"),
-        ... )
-        >>> yaw90 = np.array([[0, -1, 0, 1], [1, 0, 0, 2], [0, 0, 1, 0.5], [0, 0, 0, 1.0]])
-        >>> r = rebase_box(box, yaw90, "base_link")
-        >>> r.frame_id, [round(v, 3) for v in r.pose.xyz], [round(v, 3) for v in r.pose.quat_xyzw]
-        ('base_link', [1.0, 3.0, 0.5], [0.0, 0.0, 0.707, 0.707])
-    """
-    rot = np.asarray(t_frame_from_box, dtype=np.float64)[:3, :3]
-    box_rot = homogeneous_from_quat_xyz((0.0, 0.0, 0.0), box.pose.quat_xyzw)[:3, :3]
-    if abs(box_rot[2, 2] - 1.0) > _GRAVITY_TOL:
-        raise ROSConfigError(f"declared box in {box.frame_id!r} must be gravity-aligned.")
-    tilt = math.acos(min(1.0, max(-1.0, float(rot[2, 2]))))
-    if tilt > _REBASE_MAX_TILT_RAD:
-        raise ROSConfigError(
-            f"{frame} <- {box.frame_id} is tilted {math.degrees(tilt):.2f} deg; a declared "
-            f"box re-expresses only under {math.degrees(_REBASE_MAX_TILT_RAD):.2f} deg."
-        )
-    xyz = rot @ np.asarray(box.pose.xyz, dtype=np.float64) + np.asarray(t_frame_from_box)[:3, 3]
-    composed = rot @ box_rot
-    yaw = math.atan2(float(composed[1, 0]), float(composed[0, 0]))
-    quat = (0.0, 0.0, math.sin(yaw / 2.0), math.cos(yaw / 2.0))
-    pose = box.pose.model_copy(
-        update={"xyz": tuple(float(v) for v in xyz), "quat_xyzw": quat, "frame_id": frame}
-    )
-    return box.model_copy(update={"frame_id": frame, "pose": pose})
 
 
 def search_column(search_box: PlaceRegion, *, below_m: float) -> PlaceRegion:
@@ -2615,6 +2583,10 @@ class GraspTargetLeg:
             for leg in self._bridge._legs
             if leg.jaw_link in links
         )
+
+    def on_base_moved(self) -> None:
+        """The bridge saw the mobile base move: ``GraspTargetTracker.on_base_moved``."""
+        self.tracker.on_base_moved(now_ns=self._now_ns())
 
     def on_hand_settled(self, jaw_link: str) -> None:
         """``jaw_link``'s leg settled: complete the pick if its hand holds nothing.
