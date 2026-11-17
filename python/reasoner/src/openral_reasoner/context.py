@@ -747,8 +747,10 @@ class ContextRenderer:
         self._now_ns = now_ns
         # Latest /openral/safety_status; None until one arrives (no section).
         self._safety: SafetyStateRecord | None = None
-        # Whether that status was within SAFETY_STATUS_LIVENESS_S when ``seq`` was
-        # last read; crossing the boundary either way is an event (see ``seq``).
+        # Whether that status was within SAFETY_STATUS_LIVENESS_S at the last
+        # ``refresh_clock_state`` (or its arrival). ``## SAFETY`` renders from this
+        # stored value, so what the model is shown and what ``seq`` tracks come
+        # from one evaluation; crossing the boundary either way is an event.
         self._safety_was_fresh: bool | None = None
         # Latest ExecuteRskill feedback of the in-flight goal, rendered on the
         # in_flight line. Not an event: it never bumps ``seq``.
@@ -950,14 +952,22 @@ class ContextRenderer:
         if not self._note_safety_freshness(self._safety_fresh()) and changed:
             self._seq += 1
 
+    def refresh_clock_state(self) -> None:
+        """Fold time-dependent context into ``seq``: a safety status going stale.
+
+        No message announces that nothing arrived, so ``ReasonerCore.prepare_tick``
+        calls this once per tick, before its gates read ``seq`` and before the
+        render. ``## SAFETY`` then renders the freshness evaluated here, and
+        reading ``seq`` or rendering never changes the renderer.
+        """
+        if self._safety is not None:
+            self._note_safety_freshness(self._safety_fresh())
+
     def _note_safety_freshness(self, fresh: bool) -> bool:
         """Record the safety status's freshness; bump ``seq`` when it changed.
 
-        The one place freshness is tracked: receiving a status, reading ``seq``
-        and rendering ``## SAFETY`` all report what they saw here, so the state
-        the model was last shown and the state ``seq`` tracks cannot disagree
-        (a status expiring mid-render, then refreshed, must still wake the next
-        beat). Returns whether it bumped.
+        Called on a status's arrival and from ``refresh_clock_state``. Returns
+        whether it bumped.
         """
         if fresh == self._safety_was_fresh:
             return False
@@ -1288,11 +1298,9 @@ class ContextRenderer:
         """One line: latched / dropping / clear, or UNKNOWN when the topic went quiet."""
         st = self._safety
         assert st is not None  # render() guards `is not None` before calling
-        fresh = self._safety_fresh()
-        # What is rendered here is what the model is shown: record it, so a
-        # crossing seen only by the render still wakes the next beat.
-        self._note_safety_freshness(fresh)
-        if not fresh:
+        # The freshness ``seq`` tracks (last arrival / ``refresh_clock_state``),
+        # not a fresh evaluation: what the model is shown matches what was seen.
+        if not self._safety_was_fresh:
             quiet = (
                 "no clock to tell whether the last safety status is current"
                 if self._now_ns is None
@@ -1586,13 +1594,9 @@ class ContextRenderer:
         Not reset by ``drain_prompts`` — the buffer is empty
         afterwards but the renderer has still "seen" the prompt.
 
-        Reading it also checks the safety status against its liveness window:
-        a status that went stale (``## SAFETY`` turns UNKNOWN) bumps ``seq``
-        here, since no message arrives to announce that nothing arrived — so
-        the change reaches the model instead of being held as ``heartbeat_idle``.
+        A safety status going stale bumps it via ``refresh_clock_state``, not
+        here: reading ``seq`` never changes the renderer.
         """
-        if self._safety is not None:
-            self._note_safety_freshness(self._safety_fresh())
         return self._seq
 
     def drain_prompts(

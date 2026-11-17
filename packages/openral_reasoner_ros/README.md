@@ -60,7 +60,9 @@ unless a reward monitor (`query_task_progress`) is wired; its terminal result, p
 and safety events still wake the next tick. The model's own
 `wait(until=…, timeout_s=…)` holds the beat until that event or the timeout
 (`wait_hold`). With no mission, no prompt and nothing in flight the beat never calls
-the LLM (`no_goal`); nor while `/openral/safety_status` is latched (`safety_latched`).
+the LLM (`no_goal`); nor while `/openral/safety_status` is latched and nothing new arrived
+(`safety_latched`). A latch forces its own Tier-A tick, unless a safety FailureTrigger already
+forced one in the last 2 s (the same kernel stop).
 A transport failure of the LLM call is retried after 5, 10 and 20 s
 (`llm_error_backoff` / `llm_error_retry`); after the last the reasoner tells the
 operator on `/openral/prompt` and stops retrying until the next event.

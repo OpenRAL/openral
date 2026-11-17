@@ -85,6 +85,7 @@ from openral_core import (
 from openral_core.depth_extrinsic import MAX_PLANAR_ERR_M
 from openral_core.exceptions import ROSConfigError, ROSGPUMemoryError, ROSReasonerInvalidPlan
 from openral_observability import log_lifecycle_errors
+from openral_observability.failure_bus import drop_reason_label
 from openral_reasoner.active_search import (
     SearchBudget,
     SearchProgress,
@@ -130,6 +131,7 @@ from openral_reasoner.context import (
 )
 from openral_reasoner.core import (
     LLM_ERROR_BACKOFF_S,
+    QUIET_SUPPRESSIONS,
     PreparedTick,
     ReasonerCore,
     ReasonerTickResult,
@@ -175,6 +177,7 @@ from openral_reasoner.tool_use import (
     resolve_reasoner_system_prompt,
 )
 from pydantic import ValidationError
+from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.executors import ExternalShutdownException
 from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
 from rclpy.qos import (
@@ -279,21 +282,9 @@ _QOS_REGISTRY_CHANGED = QoSProfile(
 # /openral/safety_status is latched: the "description/static" profile its
 # publishers use (SafetyStatus.msg), so a late-starting reasoner still gets the
 # current state.
-# Timer-beat suppressions that are the steady state, not news (issue #620): logged at
-# DEBUG, and they leave the one-shot retry_cap warn latch alone (no LLM call ran).
-_QUIET_SUPPRESSIONS = frozenset(
-    {
-        "min_interval",
-        "heartbeat_idle",
-        "retry_cap_hold",
-        "backstop_not_due",
-        "wait_hold",
-        "no_goal",
-        "safety_latched",
-        "llm_error_backoff",
-        "mission_finished",
-    }
-)
+# A SafetyStatus latch within this long of a safety FailureTrigger's forced tick is
+# the same stop: it does not force a second LLM call (``_on_safety_status``).
+_SAFETY_TICK_DEDUP_S: float = 2.0
 
 _QOS_SAFETY_STATUS = QoSProfile(
     history=QoSHistoryPolicy.KEEP_LAST,
@@ -943,7 +934,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # moved with nothing in flight, in-flight backstop due, a wait lapsed, an
         # LLM retry due) — every event forces its own tick — so it sets how soon
         # those are noticed, not how often the LLM is called.
-        self.declare_parameter("tick_hz", tick_hz)
+        # dynamic_typing: a YAML / launch override written as an integer (`tick_hz: 1`)
+        # must not fail the node's construction on rclpy's strict DOUBLE type.
+        self.declare_parameter("tick_hz", tick_hz, ParameterDescriptor(dynamic_typing=True))
         # Bound on waiting for /openral/execute_rskill to appear before a
         # dispatch fails with KIND_CONTROLLER (see _EXECUTE_SKILL_SERVER_PROBE_S).
         # 0 = fail on the first missed probe.
@@ -1178,6 +1171,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         self._verify_queries: int = 0
         # One operator hand-off per run of LLM failures (cleared on the next good call).
         self._llm_handoff_sent: bool = False
+        # Monotonic time of the last Tier-A tick a safety FailureTrigger forced
+        # (pairs a kernel stop with its SafetyStatus latch, ``_on_safety_status``).
+        self._last_safety_failure_tick_s: float = -float("inf")
         # Consecutive queued-tick replays (backstop counter for the
         # trampoline; reset whenever a tick finishes with nothing queued).
         self._tick_replays: int = 0
@@ -1740,7 +1736,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
     def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
         """Arm the periodic tick timer."""
         del state
-        tick_hz = self.get_parameter("tick_hz").get_parameter_value().double_value
+        tick_hz = float(self.get_parameter("tick_hz").value)
         if tick_hz <= 0:
             self.get_logger().error(f"on_activate: tick_hz must be > 0; got {tick_hz!r}")
             return TransitionCallbackReturn.FAILURE
@@ -2108,6 +2104,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             return
         preempt_threshold = _SEVERITY_WARN if source == "safety" else _SEVERITY_FAIL
         if record.severity >= preempt_threshold:
+            if source == "safety":
+                self._last_safety_failure_tick_s = time.monotonic()
             self._on_tick(
                 force=True,
                 tier=_FAILURE_TIER_FOR_SOURCE.get(source, "B"),
@@ -2396,14 +2394,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         code = int(msg.drop_reason)
         reason = ""
         if code != int(IDLSafetyStatus.DROP_NONE):
-            reason = next(
-                (
-                    n.removeprefix("KIND_")
-                    for n in dir(IDLSafetyStatus)
-                    if n.startswith(("KIND_", "DROP_")) and getattr(IDLSafetyStatus, n) == code
-                ),
-                f"DROP_{code}",
-            )
+            reason = drop_reason_label(code, IDLSafetyStatus)
             if msg.detail:
                 reason += f" ({str(msg.detail)[:160]})"
         was_latched = self._renderer.safety_latched
@@ -2416,7 +2407,16 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 stamp_ns=self._now_ns(),
             )
         )
-        if msg.latched and not was_latched:
+        # A kernel stop also publishes a FailureTrigger on /openral/failure/safety,
+        # which already forced a Tier-A tick: skip a second full call for the same
+        # stop. The latch still moved ``seq``, and ``ReasonerCore``'s
+        # ``safety_latched`` gate lets one beat through to show it if that tick
+        # rendered before the status landed.
+        # ponytail: time window, not a stop id; SafetyStatus carries no id to pair on.
+        recent_safety_tick = (
+            time.monotonic() - self._last_safety_failure_tick_s < _SAFETY_TICK_DEDUP_S
+        )
+        if msg.latched and not was_latched and not recent_safety_tick:
             self._on_tick(force=True, tier="A", trigger="safety_latched")
 
     def _on_estop_cleared(self, _msg: Any) -> None:
@@ -3255,13 +3255,13 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
     def _handle_suppressed_tick(self, result: Any) -> None:
         """Log a suppressed tick and reflect on an exhausted retry streak.
 
-        The timer-beat gates (``_QUIET_SUPPRESSIONS``: `min_interval`,
+        The timer-beat gates (``openral_reasoner.core.QUIET_SUPPRESSIONS``: `min_interval`,
         `heartbeat_idle`, `backstop_not_due`, `wait_hold`, …) fire on most beats
         of a healthy run and stay at DEBUG. Everything else is rare and
         operationally important — `retry_cap` in particular used to be silent
         and left operators wondering why their prompt did nothing.
         """
-        if result.suppressed_reason in _QUIET_SUPPRESSIONS:
+        if result.suppressed_reason in QUIET_SUPPRESSIONS:
             # retry_cap_hold is the steady-state after a capped streak whose
             # context has not moved (the LLM call is skipped entirely) —
             # debug-level like the other quiet suppressions. None of these
@@ -6081,7 +6081,14 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         has every chunk).
         """
         fb = feedback_msg.feedback
-        if self._renderer.inflight_skill == rskill_id:
+        active = self._active_rskill_goal
+        # Match on the goal, not the skill id: a late message from the previous
+        # goal of the same skill must not show its progress on the new attempt.
+        if (
+            active is not None
+            and self._renderer.inflight_skill == rskill_id
+            and bytes(feedback_msg.goal_id.uuid) == bytes(active[0].goal_id.uuid)
+        ):
             chunks = f" chunk={fb.chunk_index}" + (
                 f"/{fb.chunks_total}" if int(fb.chunks_total) > 0 else ""
             )
@@ -6560,6 +6567,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 elapsed_s=elapsed,
             ),
             traceparent=traceparent,
+            # The cancel result records why the attempt stopped and forces the
+            # tick; ticking now would show the model nothing new.
+            tick=False,
         )
 
     def _handle_object_query_result(
@@ -6762,8 +6772,13 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         evidence: Any,
         traceparent: str | None,
         trace_id: str | None = None,
+        tick: bool = True,
     ) -> None:
         """Publish a ``FailureTrigger`` on ``/openral/failure/rskill``.
+
+        ``tick=False`` publishes without waking the reasoner, for a caller whose
+        own follow-up carries the news (the patience deadline: its cancel result
+        records why the attempt stopped and forces that tick).
 
         ``trace_id`` (when supplied — e.g. propagated by the action
         server's result) takes precedence; otherwise the reasoner's
@@ -6806,8 +6821,20 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # OTLP, not ROS topics); this event is the only thing that reaches it.
         self._emit_skill_failure_event(kind=kind, rskill_id=rskill_id, evidence=evidence)
         # The tick its echo on /openral/failure/rskill used to force (now dropped
-        # in ``_on_failure``).
-        self._on_tick(force=True, tier="B", trigger="skill_failure")
+        # in ``_on_failure``) — after the calling handler returns, like the echo
+        # did, so the context includes everything that handler records (the
+        # failure counted, the task abandoned, the dispatch released).
+        if tick:
+            self._tick_after_handler(tier="B", trigger="skill_failure")
+
+    def _tick_after_handler(self, *, tier: str, trigger: str) -> None:
+        """Force a tick once the current executor callback has returned.
+
+        Counted as a tick request now, so ``_on_execute_rskill_result`` does not
+        add a second one for the same result.
+        """
+        self._tick_requests += 1
+        self._post_to_executor(lambda: self._on_tick(force=True, tier=tier, trigger=trigger))
 
     def _emit_skill_failure_event(self, *, kind: int, rskill_id: str, evidence: Any) -> None:
         """Stamp an ``EVENT_SKILL_FAILURE`` span event for the live dashboard.

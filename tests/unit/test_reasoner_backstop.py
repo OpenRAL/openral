@@ -267,3 +267,18 @@ def test_trigger_and_wait_land_on_the_tick_span(exporter: InMemorySpanExporter) 
     assert attrs[semconv.REASONER_SKIPPED_SINCE_LAST] == 0
     assert attrs[semconv.REASONER_WAIT_UNTIL] == "skill_result"
     assert attrs[semconv.REASONER_WAIT_TIMEOUT_S] == 45.0
+
+
+def test_event_ticks_failing_during_the_backoff_do_not_spend_the_retry_budget() -> None:
+    """A burst of events in a short outage must not exhaust the 5/10/20 s retries."""
+    rig = _Rig(*[ROSPlanningError("503") for _ in range(6)], _emit("back"))
+    rig.renderer.set_mission(MissionState.from_prompt("pick the cube"))
+    assert rig.tick(force=True, trigger="prompt").error is not None
+    for event in ("failure:safety", "skill_failure", "prompt", "failure:hal"):
+        rig.now += 0.5
+        assert rig.tick(force=True, trigger=event).error is not None
+    assert not rig.core.llm_gave_up
+    rig.now += LLM_ERROR_BACKOFF_S[0]
+    retried = rig.tick()
+    assert retried.trigger == "llm_error_retry"
+    assert not rig.core.llm_gave_up

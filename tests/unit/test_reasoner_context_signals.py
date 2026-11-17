@@ -5,6 +5,8 @@ Real ``ContextRenderer`` + real Pydantic ``WorldState``; the clock is injected.
 
 from __future__ import annotations
 
+from typing import Any
+
 from openral_core import (
     AttachedCollisionObject,
     AttachmentEvidenceKind,
@@ -91,6 +93,7 @@ def test_quiet_safety_status_reads_unknown_never_clear() -> None:
     r.set_safety_status(SafetyStateRecord(latched=False, reason="", stamp_ns=0))
     assert "## SAFETY\nclear" in r.render(world_state=None)
     now[0] = SAFETY_STATUS_LIVENESS_S + 1.0
+    r.refresh_clock_state()
     out = r.render(world_state=None)
     assert "## SAFETY\nUNKNOWN" in out
     assert "## SAFETY\nclear" not in out
@@ -102,10 +105,14 @@ def test_safety_status_going_stale_and_coming_back_bumps_seq() -> None:
     r = _renderer(now)
     r.set_safety_status(SafetyStateRecord(latched=False, reason="", stamp_ns=int(10 * _S)))
     live = r.seq
-    assert r.seq == live  # reading again with nothing new is not an event
     now[0] = 10.0 + SAFETY_STATUS_LIVENESS_S + 0.5
+    assert r.seq == live  # reading never changes the renderer
+    assert "## SAFETY\nclear" in r.render(world_state=None)  # nor does rendering
+    r.refresh_clock_state()
     stale = r.seq
     assert stale == live + 1
+    assert "## SAFETY\nUNKNOWN" in r.render(world_state=None)
+    r.refresh_clock_state()
     assert r.seq == stale
     r.set_safety_status(SafetyStateRecord(latched=False, reason="", stamp_ns=int(now[0] * _S)))
     assert r.seq == stale + 1
@@ -192,86 +199,64 @@ def test_an_age_from_another_clock_base_is_omitted() -> None:
     assert "[motion] arm moved" in r.render(world_state=None)
 
 
-def test_a_status_expiring_during_the_render_is_not_marked_seen() -> None:
-    """``prepare_tick`` snapshots ``seq`` before rendering: a mid-render crossing stays unseen."""
+def _core_rig(now: list[float]) -> tuple[ContextRenderer, Any, list[str]]:
+    """A real core + renderer sharing one injected clock; the LLM records each context."""
     from openral_core import EmitPromptTool
     from openral_reasoner import MissionState, ReasonerCore, ToolPalette
 
     from tests.integration.fakes.fake_llm import FakeToolUseClient
 
-    now = [10.0]
     renderer = ContextRenderer(now_ns=lambda: int(now[0] * _S))
     renderer.set_mission(MissionState.from_prompt("pick the cube"))
-    renderer.set_safety_status(
-        SafetyStateRecord(latched=False, reason="", stamp_ns=int(now[0] * _S))
-    )
-    render = renderer.render
-
-    def render_then_expire(**kwargs: object) -> str:
-        text = render(**kwargs)  # type: ignore[arg-type]  # reason: pass-through
-        now[0] += SAFETY_STATUS_LIVENESS_S + 1.0  # the status expires right after
-        return text
-
-    renderer.render = render_then_expire  # type: ignore[method-assign]  # reason: inject the race
-    core = ReasonerCore(
-        client=FakeToolUseClient(
-            responses=[
-                EmitPromptTool(target_topic="/openral/prompt", text=str(i)) for i in range(2)
-            ]
-        ),
-        min_interval_s=0.0,
-    )
-    palette = ToolPalette(execute_rskill_ids=frozenset({"openral/rskill-pick"}))
-    first = core.tick(world_state=None, renderer=renderer, palette=palette, force=True)
-    assert first.tool_call is not None
-    renderer.render = render  # type: ignore[method-assign]  # reason: restore
-    # The model was shown "clear"; the next beat must show it UNKNOWN, not idle.
-    second = core.tick(world_state=None, renderer=renderer, palette=palette)
-    assert second.suppressed_reason != "heartbeat_idle"
-    assert second.tool_call is not None
-
-
-def test_a_status_expiring_mid_render_then_refreshed_wakes_the_next_beat() -> None:
-    """Reverse race: the model is shown UNKNOWN, then a live status returns before ``seq``
-    is read again. It must not stay on UNKNOWN behind ``heartbeat_idle``."""
-    from openral_core import EmitPromptTool
-    from openral_reasoner import MissionState, ReasonerCore, ToolPalette
-
-    from tests.integration.fakes.fake_llm import FakeToolUseClient
-
-    now = [10.0]
-    renderer = ContextRenderer(now_ns=lambda: int(now[0] * _S))
-    renderer.set_mission(MissionState.from_prompt("pick the cube"))
-    renderer.set_safety_status(
-        SafetyStateRecord(latched=False, reason="", stamp_ns=int(now[0] * _S))
-    )
-
-    class _ExpireAfterSnapshot(ContextRenderer):
-        expire_next_read = True
-
-        @property
-        def seq(self) -> int:
-            value = super().seq
-            if self.expire_next_read:  # the status expires right after the snapshot
-                self.expire_next_read = False
-                now[0] += SAFETY_STATUS_LIVENESS_S + 1.0
-            return value
-
-    renderer.__class__ = _ExpireAfterSnapshot
     contexts: list[str] = []
 
     def select(context: str, _palette: ToolPalette) -> EmitPromptTool:
         contexts.append(context)
         return EmitPromptTool(target_topic="/openral/prompt", text=str(len(contexts)))
 
-    core = ReasonerCore(client=FakeToolUseClient(selector=select), min_interval_s=0.0)
+    core = ReasonerCore(
+        client=FakeToolUseClient(selector=select), min_interval_s=0.0, clock=lambda: now[0]
+    )
     palette = ToolPalette(execute_rskill_ids=frozenset({"openral/rskill-pick"}))
-    core.tick(world_state=None, renderer=renderer, palette=palette, force=True)
+
+    def tick(force: bool = False) -> Any:
+        return core.tick(world_state=None, renderer=renderer, palette=palette, force=force)
+
+    return renderer, tick, contexts
+
+
+def test_the_model_is_shown_every_safety_liveness_change_without_an_event() -> None:
+    """Live -> UNKNOWN -> live, with only timer beats: each change reaches the LLM once."""
+    now = [10.0]
+    renderer, tick, contexts = _core_rig(now)
+    renderer.set_safety_status(SafetyStateRecord(latched=False, reason="", stamp_ns=int(10 * _S)))
+    tick(force=True)
+    assert "## SAFETY\nclear" in contexts[-1]
+    now[0] += 1.0
+    assert tick().suppressed_reason == "heartbeat_idle"
+    now[0] += SAFETY_STATUS_LIVENESS_S  # the status goes quiet
+    assert tick().tool_call is not None
     assert "## SAFETY\nUNKNOWN" in contexts[-1]
-    # An unchanged live status arrives before seq is read again.
-    renderer.set_safety_status(
+    now[0] += 1.0
+    assert tick().suppressed_reason == "heartbeat_idle"
+    renderer.set_safety_status(  # an unchanged, live status returns
         SafetyStateRecord(latched=False, reason="", stamp_ns=int(now[0] * _S))
     )
-    second = core.tick(world_state=None, renderer=renderer, palette=palette)
-    assert second.suppressed_reason != "heartbeat_idle"
+    assert tick().tool_call is not None
     assert "## SAFETY\nclear" in contexts[-1]
+
+
+def test_a_latch_reaches_the_model_once_then_beats_hold() -> None:
+    """A latch that landed after the event tick rendered gets one beat; then the gate holds."""
+    now = [10.0]
+    renderer, tick, contexts = _core_rig(now)
+    renderer.set_safety_status(SafetyStateRecord(latched=False, reason="", stamp_ns=int(10 * _S)))
+    tick(force=True)  # e.g. the kernel's FailureTrigger tick, before the status latched
+    renderer.set_safety_status(
+        SafetyStateRecord(latched=True, reason="kind_collision", stamp_ns=int(now[0] * _S))
+    )
+    now[0] += 1.0
+    assert tick().tool_call is not None
+    assert "LATCHED reason=kind_collision" in contexts[-1]
+    now[0] += 1.0
+    assert tick().suppressed_reason == "safety_latched"

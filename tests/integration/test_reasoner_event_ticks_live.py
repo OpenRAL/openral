@@ -102,7 +102,7 @@ def test_a_safety_latch_with_no_failure_trigger_reaches_the_llm() -> None:
 
     assert client.calls == 1, f"expected exactly one tick for one latch, got {client.calls}"
     context = client.traces[0].context_text
-    assert "## SAFETY\nLATCHED reason=DROP_EXTERNAL_ESTOP (dashboard E-STOP)" in context, context
+    assert "## SAFETY\nLATCHED reason=drop_external_estop (dashboard E-STOP)" in context, context
 
 
 def _run_one_goal(*, succeed: bool, responses: list[Any]) -> tuple[Any, list[Any]]:

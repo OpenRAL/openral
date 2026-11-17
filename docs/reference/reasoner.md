@@ -25,7 +25,8 @@ The reasoner calls the LLM when something happens, never on a fixed timer
 - **Events** force a tick at once (table below), plus the reasoner's own: an
   `execute_rskill` result (`skill_result`), a tool result republished as a
   cascade prompt (`tool_result:<source>`), a task verdict or mission advance, and
-  a new latch on `/openral/safety_status` (`safety_latched`, Tier A). Requests
+  a new latch on `/openral/safety_status` (`safety_latched`, Tier A; skipped when a
+  safety FailureTrigger forced a tick in the last 2 s, the same kernel stop). Requests
   that arrive while a tick is in flight coalesce into one replay; their names
   ride on it as `reasoner.tick.coalesced_triggers`. Forced ticks are not subject
   to the 100 ms `min_interval_s` (it only spaces timer beats).

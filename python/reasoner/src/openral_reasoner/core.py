@@ -41,6 +41,7 @@ __all__ = [
     "BACKSTOP_MAX_S",
     "BACKSTOP_MIN_S",
     "LLM_ERROR_BACKOFF_S",
+    "QUIET_SUPPRESSIONS",
     "PreparedTick",
     "ReasonerCore",
     "ReasonerTickResult",
@@ -89,6 +90,23 @@ BACKSTOP_MAX_S: float = 30.0
 #: refusal to answer). One entry per retry; after the last the context is marked
 #: seen and ``ReasonerCore.llm_gave_up`` turns true so the node hands off.
 LLM_ERROR_BACKOFF_S: tuple[float, ...] = (5.0, 10.0, 20.0)
+
+#: Suppression reasons that are a timer beat's steady state, not news: a node logs
+#: them at DEBUG and keeps its one-shot retry-cap warning latched across them (no
+#: LLM call ran). Every gate in ``ReasonerCore._timer_gate`` returns one of these.
+QUIET_SUPPRESSIONS: frozenset[str] = frozenset(
+    {
+        "min_interval",
+        "safety_latched",
+        "llm_error_backoff",
+        "retry_cap_hold",
+        "mission_finished",
+        "wait_hold",
+        "backstop_not_due",
+        "heartbeat_idle",
+        "no_goal",
+    }
+)
 
 
 def inflight_backstop_s(max_execution_s: float | None) -> float:
@@ -527,9 +545,11 @@ class ReasonerCore:
 
     def _held_reason(self, renderer: ContextRenderer, started: float) -> str | None:
         """Why a timer beat must not call the LLM regardless of the context, or ``None``."""
-        if renderer.safety_latched:
+        if renderer.safety_latched and renderer.seq == self._last_seen_seq:
             # A latched stop refuses every motion until the operator resets it:
-            # only events (the latch itself, a prompt, a failure) are worth a call.
+            # nothing new to show the model means nothing to decide. A context
+            # that moved (the latch itself arriving after the kernel's failure
+            # tick, an operator note) still gets through once.
             return "safety_latched"
         if self._llm_retry_at is not None:
             return "llm_error_backoff" if started < self._llm_retry_at else None
@@ -635,6 +655,10 @@ class ReasonerCore:
         merged into this tick while the previous one was in flight.
         """
         started = self._clock()
+        # Fold time-dependent context (a safety status going stale) into ``seq``
+        # once per tick, before any gate reads it and before the snapshot below,
+        # so what the gates track and what is rendered come from one evaluation.
+        renderer.refresh_clock_state()
         if force:
             # An event the model has not seen yet ends any wait it chose.
             self._wait = None
@@ -694,11 +718,8 @@ class ReasonerCore:
         offered = self.offered_palette(palette, renderer)
         if self._max_skill_tools is not None:
             span.set_attribute(semconv.REASONER_OFFERED_SKILLS, sorted(offered.execute_rskill_ids))
-        # Snapshot seq BEFORE rendering: reading it can bump it (a safety status
-        # crossing its liveness window), and a crossing during the render must
-        # stay unseen so the next beat shows the model the new state. Taken
-        # after, a status expiring mid-render would be marked seen while the
-        # model was shown the old one.
+        # ``seq`` and the render both reflect the ``refresh_clock_state`` above;
+        # neither reading changes the renderer.
         seq = renderer.seq
         context_text = renderer.render(world_state=world_state)
         # Snapshot the rendered prompt records NOW too: anything appended
@@ -763,6 +784,11 @@ class ReasonerCore:
         # Transport failure: the model never saw this context, so it stays unseen
         # and a timer beat retries it after a backoff. Out of retries -> mark it
         # seen (``llm_gave_up``); the next event still reaches the model.
+        if self._llm_retry_at is not None:
+            # An event tick failed while a retry is already scheduled: the
+            # backoff stands. Only scheduled retries spend the budget, so a burst
+            # of events during a short outage cannot exhaust it in seconds.
+            return
         self._llm_errors += 1
         if self._llm_errors <= len(LLM_ERROR_BACKOFF_S):
             self._llm_retry_at = self._clock() + LLM_ERROR_BACKOFF_S[self._llm_errors - 1]
