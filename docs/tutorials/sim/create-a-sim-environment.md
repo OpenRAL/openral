@@ -282,6 +282,14 @@ scene:
 [Static vs movable](https://github.com/OpenRAL/openral/blob/master/scenes/README.md) in
 `scenes/README.md` for the full rule and how to author fixtures in an environment USD.
 
+Under `openral deploy sim`, the robot console's 3D view draws the static part as its
+**Sim scene** layer, translucent, in the odometry frame. Give a movable object inside the
+environment USD a rigid body and list it in `stage_objects`: that also keeps it out of the
+layer, which would otherwise draw it where it started. Scenes built on NVIDIA's Isaac assets
+(`isaac:` paths) show the layer greyed out, since those assets may not be converted.
+
+![The Sim scene layer: the AMR shelf aisle's racks drawn translucent around the robot, with the lidar map and depth clouds on top](images/sim-scene-layer.webp)
+
 It prints a per-episode summary line and exits `0`. The same pattern drives
 `openral benchmark run`. `openral deploy run`, the hardware sibling, consumes a
 `DeployScene` workcell YAML and lets the reasoner select the policy at runtime.

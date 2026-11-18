@@ -2333,6 +2333,9 @@ if _ROS2_AVAILABLE:
         into (issue #191).
         """
 
+        #: ``/openral/viz/sim_scene``'s latched publisher while active (Isaac sims only).
+        _sim_scene_pub: Any = None
+
         def __init__(
             self,
             node_name: str,
@@ -2983,9 +2986,40 @@ if _ROS2_AVAILABLE:
             self._bridge.setup()
 
             self._attach_mobile_base_bridge()
+            self._publish_sim_scene()
 
             self._setup_vision_attachment()
             return TransitionCallbackReturn.SUCCESS
+
+        def _publish_sim_scene(self) -> None:
+            """Latch ``/openral/viz/sim_scene`` when the HAL exported a static scene (platform#133).
+
+            ``std_msgs/String`` JSON: ``{"uri", "bytes", "triangles", "frame_id"}`` or
+            ``{"note"}``. The frame is the odometry frame (a fixed arm's: its base frame),
+            which starts at the spawned base, where the export is baked. Only the Isaac
+            sidecar exports one, so real robots and MuJoCo never advertise the topic.
+            """
+            assert self._hal is not None
+            scene = getattr(self._hal, "sim_scene", None)
+            if scene is None:
+                return
+            import json
+
+            from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+            from std_msgs.msg import String
+
+            desc = self._hal.description
+            frame = desc.odom_frame if describes_mobile_base(desc) else desc.base_frame
+            qos = QoSProfile(
+                depth=1,
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            )
+            if self._sim_scene_pub is None:  # torn down on deactivate / cleanup
+                self._sim_scene_pub = self.create_publisher(String, "/openral/viz/sim_scene", qos)
+            payload = {**scene, "frame_id": frame} if "uri" in scene else dict(scene)
+            self._sim_scene_pub.publish(String(data=json.dumps(payload)))
+            self.get_logger().info(f"sim scene layer: {payload}")
 
         def _attach_mobile_base_bridge(self) -> None:
             """Attach ``MobileBaseBridge`` when OpenRAL owns this deploy's base navigation.
@@ -3223,6 +3257,9 @@ if _ROS2_AVAILABLE:
             if self._vision_attachment is not None:
                 self._vision_attachment.teardown()
                 self._vision_attachment = None
+            if self._sim_scene_pub is not None:
+                self.destroy_publisher(self._sim_scene_pub)
+                self._sim_scene_pub = None
 
         def on_cleanup_pre_disconnect(self) -> None:
             """Idempotent teardown of the sensor + mobile-base bridges + ResetToPose."""
@@ -3237,6 +3274,9 @@ if _ROS2_AVAILABLE:
             if self._vision_attachment is not None:
                 self._vision_attachment.teardown()
                 self._vision_attachment = None
+            if self._sim_scene_pub is not None:
+                self.destroy_publisher(self._sim_scene_pub)
+                self._sim_scene_pub = None
             if self._reset_to_pose_srv is not None:
                 self.destroy_service(self._reset_to_pose_srv)
                 self._reset_to_pose_srv = None

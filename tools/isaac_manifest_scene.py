@@ -931,7 +931,8 @@ def recolor_robot_materials(
     """
     import fnmatch
 
-    from pxr import Gf, Sdf, Usd, UsdShade
+    from pxr import Gf, Usd, UsdShade
+    from scene_glb import diffuse_attrs
 
     def match(name: str) -> list[float] | None:
         return next((c for pat, c in colors.items() if fnmatch.fnmatch(name, pat)), None)
@@ -960,35 +961,13 @@ def recolor_robot_materials(
         rgb = match(mat.GetPrim().GetName())
         if rgb is None:
             continue
-        # The importer's materials expose the colour as a Material interface input that
-        # their UsdPreviewSurface reads; set it there when present.
-        iface = mat.GetInput("diffuseColor")
-        if iface:
-            iface.Set(Gf.Vec3f(*rgb))
+        # The interface input and every shader input, a connected one through its
+        # source: setting a connected input's own value would be silently ignored.
+        attrs = diffuse_attrs(mat, create=True)
+        for attr in attrs:
+            attr.Set(Gf.Vec3f(*rgb))
+        if attrs:
             changed[str(path)] = list(rgb)
-        for child in Usd.PrimRange(mat.GetPrim()):
-            shader = UsdShade.Shader(child)
-            if not shader:
-                continue
-            for input_name in ("diffuseColor", "diffuse_color_constant"):
-                inp = shader.GetInput(input_name) or (
-                    shader.CreateInput(input_name, Sdf.ValueTypeNames.Color3f)
-                    if shader.GetIdAttr().Get() == "UsdPreviewSurface"
-                    and input_name == "diffuseColor"
-                    else None
-                )
-                if not inp:
-                    continue
-                # A connected input reads its source (Isaac's URDF importer exposes the
-                # colour as a Material interface input): setting the shader's own value
-                # would be silently ignored, so write the source instead.
-                for source in inp.GetConnectedSources()[0] if inp.HasConnectedSource() else []:
-                    UsdShade.ConnectableAPI(source.source.GetPrim()).GetInput(
-                        source.sourceName
-                    ).Set(Gf.Vec3f(*rgb))
-                if not inp.HasConnectedSource():
-                    inp.Set(Gf.Vec3f(*rgb))
-                changed[str(path)] = list(rgb)
     return changed
 
 
@@ -4058,6 +4037,55 @@ class IsaacManifestScene(IsaacSceneBase):
                 )
             boxes.append(entry)
         return {"frame": "base_frame", "boxes": boxes}
+
+    def scene_mesh(self, limit_bytes: int) -> dict[str, Any]:
+        """The stage's static part as GLB bytes in the odometry frame, for the console (platform#133).
+
+        ``scene_glb.static_scene_glb`` walks ``/World`` minus the robot, ``/World/objects/**``,
+        every declared object and every ``link_attachments`` prim, in the odometry frame:
+        it starts at the spawned ``base_frame`` (``_base_pose`` is the base's pose in it), so
+        a fixed arm's export is in ``base_frame``. NVIDIA's asset root (no reachability probe)
+        is passed so a stage whose exported prims come from it is refused (licence).
+        Returns ``{"glb": bytes, "triangles"}``, or ``{"note": reason}`` (NVIDIA assets,
+        nothing static, or a GLB over ``limit_bytes``). The bytes travel in the reply, so the
+        sidecar need not share a filesystem with the HAL.
+        """
+        from isaacsim.core.utils.stage import get_current_stage
+        from scene_glb import static_scene_glb
+
+        x, y, yaw = (float(v) for v in self._base_pose)
+        odom_from_base = pose_matrix((x, y, 0.0), _yaw_quat(yaw))
+        odom_from_world = odom_from_base @ np.linalg.inv(self._world_from_base())
+        skip = [self._robot_prim.rstrip("/"), "/World/objects"]
+        skip += [str(p.prim_path).rstrip("/") for p in self._object_prims.values()]
+        skip += [
+            f"/World/environment/{a['prim']}" for a in self._spec.get("link_attachments") or []
+        ]
+        out = static_scene_glb(
+            get_current_stage(), odom_from_world, skip, self._nvidia_asset_root(), limit_bytes
+        )
+        print(f"[isaac_manifest_scene] scene_mesh: {out.get('log')}", flush=True)
+        glb = out.get("glb")
+        if isinstance(glb, bytes) and len(glb) > limit_bytes:
+            mb = f"scene is {len(glb) / 1e6:.1f} MB, over the {limit_bytes / 1e6:.0f} MB limit"
+            return {"note": mb, "log": out.get("log")}
+        return out
+
+    @staticmethod
+    def _nvidia_asset_root() -> str:
+        """NVIDIA's configured Isaac asset root, without the reachability probe; "" if unset.
+
+        ``skip_check=True``: the licence guard needs the prefix, not a reachable server, and
+        must not turn off when a probe times out.
+        """
+        try:
+            from isaacsim.storage.native import get_assets_root_path
+        except ImportError:  # Isaac Sim < 5.0
+            from isaacsim.core.utils.nucleus import get_assets_root_path
+        try:
+            return str(get_assets_root_path(skip_check=True) or "").rstrip("/")
+        except RuntimeError:  # the setting is unset: no NVIDIA root on this install
+            return ""
 
     def scene_ground_truth(self) -> dict[str, Any]:
         """The declared objects and the active prompt's destinations as base-frame boxes.

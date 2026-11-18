@@ -82,6 +82,8 @@ BUCKET2_TOPICS: list[str] = [
     r"/openral/viz/attachments",
     # visualization_msgs/MarkerArray — declared static geometry (always-occupied fixtures)
     r"/openral/viz/static_geometry",
+    # The static Isaac scene as a GLB URI, latched (platform#133).
+    r"/openral/viz/sim_scene",
     # visualization_msgs/MarkerArray — where each kernel stop happened (red)
     r"/openral/viz/collisions",
     # sensor_msgs/PointCloud2 — each depth camera's cloud thinned for viewers

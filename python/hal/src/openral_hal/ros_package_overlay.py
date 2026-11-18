@@ -27,7 +27,21 @@ from openral_hal._makermods_metal_assets import ensure_metal_description
 from openral_hal._openamrobot_platform_assets import ensure_openamrobot_description
 from openral_hal._openarm_description_assets import ensure_openarm_description
 
-__all__ = ["PUBLIC_ROS_PACKAGES", "fetch_public_package", "public_package_overlay"]
+__all__ = [
+    "PUBLIC_ROS_PACKAGES",
+    "SIM_SCENE_LIMIT_BYTES",
+    "SIM_SCENE_PACKAGE",
+    "fetch_public_package",
+    "public_package_overlay",
+    "sim_scene_package_root",
+]
+
+#: The package the Isaac sidecar writes the console's Sim scene GLB into (platform#133),
+#: registered in foxglove_bridge's overlay so a viewer fetches it as ``package://``.
+SIM_SCENE_PACKAGE = "openral_sim_scene"
+#: A Sim scene GLB larger than this is not served (the console greys the layer out).
+#: ponytail: a guess the tunnel takes it; tune once large assets are measured through it.
+SIM_SCENE_LIMIT_BYTES = 10_000_000
 
 #: Public description packages fetched on demand: ``{package: fetcher}``, each
 #: fetcher returning the package root (the directory holding ``package.xml``).
@@ -38,6 +52,25 @@ PUBLIC_ROS_PACKAGES: dict[str, Callable[[], Path]] = {
 }
 
 _INDEX = Path("share") / "ament_index" / "resource_index" / "packages"
+
+
+def _cache_dir() -> Path:
+    """``$OPENRAL_CACHE_DIR`` (else ``~/.cache/openral``), made absolute.
+
+    An overlay link to a relative path would resolve against the overlay's own directory.
+    """
+    base = Path(os.environ.get("OPENRAL_CACHE_DIR") or Path.home() / ".cache" / "openral")
+    try:
+        return base.expanduser().absolute()
+    except RuntimeError as exc:  # "~nosuchuser/…": callers treat OSError as "no overlay"
+        raise OSError(f"OPENRAL_CACHE_DIR={base}: {exc}") from exc
+
+
+def sim_scene_package_root() -> Path:
+    """``$OPENRAL_CACHE_DIR/sim_scene``, created: the root of ``SIM_SCENE_PACKAGE``."""
+    root = _cache_dir() / "sim_scene"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
 
 
 def fetch_public_package(pkg: str) -> Path | None:
@@ -67,7 +100,9 @@ def public_package_overlay(urdf_xml: str, local: dict[str, Path] | None = None) 
 
     Covers every ``package://<pkg>/`` the URDF names that is in
     ``PUBLIC_ROS_PACKAGES`` and on no ``AMENT_PREFIX_PATH`` entry (a sourced
-    workspace always wins). The prefix lives at ``$OPENRAL_CACHE_DIR/ament_overlay``:
+    workspace always wins); a ``local`` package is always registered, since it is this
+    run's own (its root may differ from one an older overlay indexed). The prefix lives
+    at ``$OPENRAL_CACHE_DIR/ament_overlay``:
     ``share/<pkg>`` links to the fetched clone and the ament index marks it, which
     is all ``ament_index`` lookups (and so ``package://`` resolution) read.
     Idempotent. Prepend the result to a process's ``AMENT_PREFIX_PATH``.
@@ -85,11 +120,12 @@ def public_package_overlay(urdf_xml: str, local: dict[str, Path] | None = None) 
         p: PUBLIC_ROS_PACKAGES[p] for p in pkgs if p in PUBLIC_ROS_PACKAGES
     }
     roots.update({p: partial(Path, r) for p, r in (local or {}).items()})
-    missing = [p for p in sorted(roots) if not _on_ament_index(p)]
+    # A ``local`` package is this run's own (the robot's meshes, the sim scene): register it
+    # even when an older overlay on the index names it, so the bridge reads this run's root.
+    missing = [p for p in sorted(roots) if p in (local or {}) or not _on_ament_index(p)]
     if not missing:
         return None
-    base = Path(os.environ.get("OPENRAL_CACHE_DIR") or Path.home() / ".cache" / "openral")
-    prefix = base / "ament_overlay"
+    prefix = _cache_dir() / "ament_overlay"
     (prefix / _INDEX).mkdir(parents=True, exist_ok=True)
     for pkg in missing:
         root = roots[pkg]()

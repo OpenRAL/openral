@@ -324,6 +324,10 @@ def main(argv: list[str]) -> int:
         sim_app.close()
 
 
+#: The largest Sim scene GLB the ``scene_mesh`` endpoint sends (platform#133).
+_SCENE_MESH_MAX_BYTES = 10_000_000
+
+
 def _serve(
     scene: Any,
     *,
@@ -397,6 +401,11 @@ def _serve(
                 reply = scene.contact_ground_truth()
             elif endpoint == "static_colliders":
                 reply = scene.static_collider_boxes()
+            elif endpoint == "scene_mesh":
+                # The client may ask for less, never more: the GLB rides the same
+                # REQ/REP connection as the steps.
+                limit = min(int(data["limit_bytes"]), _SCENE_MESH_MAX_BYTES)
+                reply = scene.scene_mesh(limit)
             elif endpoint == "scene_ground_truth":
                 reply = scene.scene_ground_truth()
             elif endpoint == "link_poses":

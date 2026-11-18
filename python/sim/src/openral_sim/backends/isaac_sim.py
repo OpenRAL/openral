@@ -558,6 +558,16 @@ class _IsaacSimSidecar(SidecarSimRollout):
         """
         return self._client.call("static_colliders")
 
+    def scene_mesh(self, limit_bytes: int) -> dict[str, Any]:
+        """The stage's static part as a GLB the console's Sim scene layer draws (platform#133).
+
+        The sidecar ``scene_mesh`` endpoint (``IsaacManifestScene.scene_mesh``):
+        ``{"glb": bytes, "triangles"}`` (odometry frame, Z-up), or ``{"note": reason}`` (an
+        NVIDIA-asset stage, nothing static, or a GLB over ``limit_bytes``). The bytes come
+        back in the reply, so a sidecar on another host works too.
+        """
+        return self._client.call("scene_mesh", {"limit_bytes": limit_bytes})
+
     def scene_ground_truth(self) -> dict[str, Any]:
         """The declared objects and the active prompt's destinations as base-frame boxes.
 
