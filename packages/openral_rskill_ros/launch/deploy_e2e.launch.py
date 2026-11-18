@@ -2283,6 +2283,7 @@ def _write_robot_manifest(
         REMOTE_CONTROL_ENV,
         WRITE_CONTROLS_ENV,
         RSkillManifest,
+        allowed_rskills_from_env,
         build_robot_manifest,
     )
     from openral_rskill.loader import manifest_paths_by_name
@@ -2301,6 +2302,8 @@ def _write_robot_manifest(
         write_controls=os.environ.get(WRITE_CONTROLS_ENV) == "1",
         remote_control=os.environ.get(REMOTE_CONTROL_ENV) == "1",
         unit_serial=unit_serial,
+        # The robot's rSkill list: the console offers what the reasoner may use, nothing else.
+        allowed_rskill_ids=allowed_rskills_from_env(),
     )
     fd, path = tempfile.mkstemp(prefix=f"openral_manifest_{description.name}_", suffix=".json")
     with os.fdopen(fd, "w", encoding="utf-8") as fh:

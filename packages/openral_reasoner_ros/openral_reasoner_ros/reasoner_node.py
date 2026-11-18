@@ -80,6 +80,7 @@ from openral_core import (
     SpatialNodeKind,
     TimeoutEvidence,
     WaitTool,
+    allowed_rskills_from_env,
     assert_vla_reward_fits,
     control_modes_for_representation,
     detect_gpu_vram_gb,
@@ -1376,6 +1377,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # the in-flight skill (reactivated on its result).
         self._vram_lifecycle_peers: list[str] = []
         self._vram_refused_rskill_ids: frozenset[str] = frozenset()
+        # The robot's curated rSkill list (OPENRAL_RSKILLS, an openral.com account setting):
+        # every palette build admits only these actuating skills. None: no restriction.
+        self._allowed_rskill_ids: frozenset[str] | None = allowed_rskills_from_env()
         self._deactivated_vram_peers: list[str] = []
         # Pending skill-goal deadline timers, keyed by goal-uuid bytes so
         # the result callback can cancel the deadline timer when the
@@ -2643,6 +2647,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             sensor_ids=self._palette.sensor_ids,
             node_ids=self._palette.node_ids,
             commercial_deployment=self._commercial_deployment,
+            allowed_rskill_ids=self._allowed_rskill_ids,
             spatial_memory_available=self._spatial_memory is not None,
             places_only=self._spatial_places_only,
             detector_available=self._detector_available,
@@ -3140,6 +3145,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             sensor_ids=self._palette.sensor_ids,
             node_ids=merged_node_ids,
             commercial_deployment=self._commercial_deployment,
+            allowed_rskill_ids=self._allowed_rskill_ids,
         )
         capability_matched_ids = capability_palette.execute_rskill_ids
         capability_matched = [m for m in manifests if m.name in capability_matched_ids]
@@ -3367,6 +3373,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             sensor_ids=self._palette.sensor_ids,
             node_ids=merged_node_ids,
             commercial_deployment=self._commercial_deployment,
+            allowed_rskill_ids=self._allowed_rskill_ids,
             # Active object search — preserve the read-only query tools when a spatial-memory
             # backend is wired; `_maybe_load_spatial_memory` runs before this seed
             # and a rebuild without the flag would silently drop recall_object /
@@ -3410,6 +3417,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # The dashboard offers the skills the palette admits, after every filter above
         # (servers up, state contract, action mode, import deps), never more.
         self._emit_robot_manifest(description, importable)
+        self._log_allowed_rskills(manifests, new_palette)
         self.get_logger().info(
             f"palette seeded from {len(manifest_paths)} manifest(s) "
             f"across {len(search_paths)} path(s): "
@@ -3420,6 +3428,41 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 else ""
             ),
         )
+
+    def _log_allowed_rskills(self, manifests: list[Any], palette: ToolPalette) -> None:
+        """Say what the robot's curated rSkill list (``OPENRAL_RSKILLS``) left out, once at seed.
+
+        A listed rSkill that isn't installed is named with the command that installs it; a
+        list that admits none of the installed skills leaves the reasoner with no skill to
+        run, which is said plainly (never widened back to every installed skill).
+        """
+        if self._allowed_rskill_ids is None:
+            return
+        installed = {m.name for m in manifests}
+        for rskill_id in sorted(self._allowed_rskill_ids - installed):
+            self.get_logger().warning(
+                f"rSkill list: {rskill_id} is not installed on this robot; "
+                f"install it with: openral rskill install {rskill_id}",
+            )
+        playbooks = {m.name for m in manifests if m.kind == "playbook"}
+        for rskill_id in sorted(
+            (self._allowed_rskill_ids & installed) - playbooks - palette.execute_rskill_ids
+        ):
+            self.get_logger().warning(
+                f"rSkill list: {rskill_id} is installed but can't run on this robot now "
+                "(its embodiment or capabilities, its ROS server, or its import dependencies; "
+                "see the warnings above)",
+            )
+        self.get_logger().info(
+            f"rSkill list: {len(palette.execute_rskill_ids)} of "
+            f"{len(self._allowed_rskill_ids)} listed rSkill(s) in the palette",
+        )
+        if not palette.execute_rskill_ids:
+            self.get_logger().error(
+                "rSkill list: none of the listed rSkills can run on this robot, so the "
+                "reasoner has no skill to dispatch. Change the list on the robot's settings "
+                "page on openral.com, or install the listed rSkills.",
+            )
 
     # ── tick + dispatch ─────────────────────────────────────────────────────
 
