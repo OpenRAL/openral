@@ -1,10 +1,14 @@
 """A plain GLB writer and Gprim tessellation for the console's Sim scene layer (platform#133).
 
 Pure numpy + ``struct``: the Isaac sidecar has no trimesh, and ``omni.kit.asset_converter``
-writes 5-18x bigger files (it embeds textures) and drops Gprims. The output is what the
-robot console can load under its CSP: one mesh, one primitive per base colour, POSITION
-and indices only (no normals, textures, Draco or meshopt). Positions stay in the caller's
-frame (ROS, Z-up): no glTF Y-up conversion, the console parents the scene under that frame.
+writes 5-18x bigger files (it embeds full-size textures) and drops Gprims. The output is
+what the robot console can load under its CSP: one mesh, one primitive per base colour or
+per base-colour texture (embedded, downscaled to ``TEXTURE_MAX_PX``), POSITION, indices and
+TEXCOORD_0 only (no normals, Draco or meshopt). Positions stay in the caller's frame (ROS,
+Z-up): no glTF Y-up conversion, the console parents the scene under that frame.
+
+Two exporters: ``static_scene_glb`` (an Isaac USD stage, platform#133 / #137) and
+``mujoco_static_scene_glb`` (a live MuJoCo model, platform#139).
 """
 
 from __future__ import annotations
@@ -19,9 +23,13 @@ from numpy.typing import NDArray
 __all__ = [
     "diffuse_attrs",
     "diffuse_color",
+    "encode_texture",
+    "face_uvs",
     "fan_triangles",
     "gprim_mesh",
+    "mujoco_static_scene_glb",
     "static_scene_glb",
+    "texture_path",
     "write_glb",
 ]
 
@@ -30,6 +38,8 @@ _JSON_CHUNK = 0x4E4F534A
 _BIN_CHUNK = 0x004E4942
 _FLOAT, _UINT32 = 5126, 5125
 _ARRAY_BUFFER, _ELEMENT_ARRAY_BUFFER = 34962, 34963
+#: The longest side an embedded texture keeps: 512 px adds ~0.4 MB to the shelf aisle.
+TEXTURE_MAX_PX = 512
 
 
 def fan_triangles(counts: Any, indices: Any, holes: Any = ()) -> NDArray[np.uint32]:
@@ -154,11 +164,14 @@ def gprim_mesh(
     return None
 
 
-def write_glb(primitives: list[tuple[tuple[float, float, float, float], Any, Any]]) -> bytes:
+def write_glb(primitives: list[tuple[Any, ...]]) -> bytes:
     """One GLB holding one mesh with a primitive per ``(rgba, positions (n, 3), triangles (m, 3))``.
 
     Each primitive gets its own unlit-looking PBR material (``baseColorFactor`` = ``rgba``,
-    metallic 0, roughness 1). Empty primitives are dropped.
+    metallic 0, roughness 1). A textured primitive carries two more items,
+    ``uvs (n, 2)`` (glTF convention: v down) and ``(image bytes, mime type)``: its image is
+    embedded and becomes the material's ``baseColorTexture`` (repeat wrap). Empty
+    primitives are dropped.
 
     Example:
         >>> v, t = gprim_mesh("Cube")
@@ -172,20 +185,36 @@ def write_glb(primitives: list[tuple[tuple[float, float, float, float], Any, Any
     accessors: list[dict[str, Any]] = []
     prims: list[dict[str, Any]] = []
     materials: list[dict[str, Any]] = []
+    images: list[dict[str, Any]] = []
 
-    def add(data: bytes, target: int) -> int:
+    def add(data: bytes, target: int | None) -> int:
         nonlocal offset
-        views.append({"buffer": 0, "byteOffset": offset, "byteLength": len(data), "target": target})
+        view = {"buffer": 0, "byteOffset": offset, "byteLength": len(data)}
+        views.append(view if target is None else view | {"target": target})
         pad = (-len(data)) % 4
         bin_parts.append(data + b"\0" * pad)
         offset += len(data) + pad
         return len(views) - 1
 
-    for rgba, positions, triangles in primitives:
+    for rgba, positions, triangles, *textured in primitives:
         pos = np.ascontiguousarray(positions, dtype=np.float32).reshape(-1, 3)
         tri = np.ascontiguousarray(triangles, dtype=np.uint32).reshape(-1)
         if not len(pos) or not len(tri):
             continue
+        attributes: dict[str, int] = {}
+        pbr: dict[str, Any] = {}
+        if textured:
+            uvs, (data, mime) = textured
+            uv = np.ascontiguousarray(uvs, dtype=np.float32).reshape(-1, 2)
+            if len(uv) != len(pos):
+                raise ValueError(f"{len(uv)} uvs for {len(pos)} positions")
+            accessors.append({
+                "bufferView": add(uv.tobytes(), _ARRAY_BUFFER), "componentType": _FLOAT,
+                "count": len(uv), "type": "VEC2",
+            })  # fmt: skip
+            attributes["TEXCOORD_0"] = len(accessors) - 1
+            images.append({"bufferView": add(data, None), "mimeType": mime})
+            pbr["baseColorTexture"] = {"index": len(images) - 1}
         accessors.append({
             "bufferView": add(pos.tobytes(), _ARRAY_BUFFER), "componentType": _FLOAT,
             "count": len(pos), "type": "VEC3",
@@ -196,15 +225,15 @@ def write_glb(primitives: list[tuple[tuple[float, float, float, float], Any, Any
             "count": len(tri), "type": "SCALAR",
         })  # fmt: skip
         materials.append({
-            "pbrMetallicRoughness": {
+            "pbrMetallicRoughness": pbr | {
                 "baseColorFactor": [float(c) for c in rgba], "metallicFactor": 0.0,
                 "roughnessFactor": 1.0,
             },
             "doubleSided": True,
         })  # fmt: skip
         prims.append({
-            "attributes": {"POSITION": len(accessors) - 2}, "indices": len(accessors) - 1,
-            "material": len(materials) - 1,
+            "attributes": attributes | {"POSITION": len(accessors) - 2},
+            "indices": len(accessors) - 1, "material": len(materials) - 1,
         })  # fmt: skip
 
     doc: dict[str, Any] = {"asset": {"version": "2.0", "generator": "openral scene_glb"}}
@@ -219,6 +248,8 @@ def write_glb(primitives: list[tuple[tuple[float, float, float, float], Any, Any
             "bufferViews": views,
             "buffers": [{"byteLength": offset}],
         }
+        if images:  # one texture per image, the default (repeat) sampler
+            doc |= {"images": images, "textures": [{"source": i} for i in range(len(images))]}
     js = json.dumps(doc, separators=(",", ":")).encode()
     js += b" " * ((-len(js)) % 4)
     blob = b"".join(bin_parts)
@@ -300,6 +331,86 @@ def _under(path: str, root: str) -> bool:
     return bool(root) and (path == root or path.startswith(root + "/"))
 
 
+def texture_path(prim: Any) -> str | None:
+    """The resolved file of a prim's bound base-colour texture, or ``None``.
+
+    A ``UsdUVTexture`` wired to a UsdPreviewSurface's ``diffuseColor``, a MaterialX
+    ``ND_tiledimage_color3`` ``file``, or an OmniPBR (MDL) ``diffuse_texture``. Only a file
+    on disk counts (a texture packed in a ``.usdz`` is skipped).
+    """
+    import os
+
+    from pxr import Usd, UsdShade
+
+    mat, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
+    for child in Usd.PrimRange(mat.GetPrim()) if mat else []:
+        shader = UsdShade.Shader(child)
+        if not shader:
+            continue
+        sid = shader.GetIdAttr().Get()
+        file_input = None
+        if sid == "UsdPreviewSurface":
+            diffuse = shader.GetInput("diffuseColor")
+            if diffuse and diffuse.HasConnectedSource():
+                file_input = UsdShade.Shader(diffuse.GetConnectedSource()[0].GetPrim()).GetInput(
+                    "file"
+                )
+        elif sid == "ND_tiledimage_color3":
+            file_input = shader.GetInput("file")
+        else:
+            file_input = shader.GetInput("diffuse_texture")
+        asset = file_input.Get() if file_input else None
+        path = str(getattr(asset, "resolvedPath", "") or "")
+        if path and os.path.isfile(path):
+            return path
+    return None
+
+
+def face_uvs(prim: Any, indices: Any, n_points: int) -> NDArray[np.float64] | None:
+    """A mesh's texture coordinates per face-vertex, flipped to glTF's v-down, or ``None``.
+
+    The ``st`` / ``st0`` / ``UVMap`` primvar, else the first ``texCoord2f[]`` one;
+    ``faceVarying`` is used as is, ``vertex`` / ``varying`` is gathered through
+    ``indices`` (``faceVertexIndices``). Any other interpolation, or a count that does not
+    match, is ``None``.
+    """
+    from pxr import Sdf, UsdGeom
+
+    api = UsdGeom.PrimvarsAPI(prim)
+    named = [api.GetPrimvar(n) for n in ("st", "st0", "UVMap")]
+    typed = [p for p in api.GetPrimvars() if p.GetTypeName() == Sdf.ValueTypeNames.TexCoord2fArray]
+    pv = next((p for p in [*named, *typed] if p and p.HasValue()), None)
+    if pv is None:
+        return None
+    st: NDArray[np.float64] = np.asarray(pv.ComputeFlattened(), dtype=np.float64).reshape(-1, 2)
+    idx = np.asarray(indices, dtype=np.int64)
+    interp = pv.GetInterpolation()
+    if interp == UsdGeom.Tokens.faceVarying and len(st) == len(idx):
+        fv = st
+    elif interp in (UsdGeom.Tokens.vertex, UsdGeom.Tokens.varying) and len(st) == n_points:
+        fv = st[idx]
+    else:
+        return None
+    return np.stack([fv[:, 0], 1.0 - fv[:, 1]], axis=1)
+
+
+def encode_texture(path: str, max_px: int = TEXTURE_MAX_PX) -> tuple[bytes, str]:
+    """An image file shrunk to ``max_px`` on its longer side: JPEG, or PNG when it has alpha."""
+    import io
+
+    from PIL import Image
+
+    with Image.open(path) as im:
+        im.thumbnail((max_px, max_px))
+        rgba = im.convert("RGBA")
+    buf = io.BytesIO()
+    if np.asarray(rgba.getchannel("A")).min() < 255:  # 8-bit alpha
+        rgba.save(buf, "PNG", optimize=True)
+        return buf.getvalue(), "image/png"
+    rgba.convert("RGB").save(buf, "JPEG", quality=85)
+    return buf.getvalue(), "image/jpeg"
+
+
 def static_scene_glb(
     stage: Any,
     frame_from_world: Any,
@@ -313,6 +424,10 @@ def static_scene_glb(
     non-kinematic rigid body (it can move; ``scenes/README.md``), invisible prims and
     guide/proxy purposes. ``UsdGeom.Mesh`` is fan-triangulated, Gprims tessellated
     (``gprim_mesh``); one primitive per base colour (``diffuse_color``, quantised to 1/16).
+    A mesh with a base-colour texture (``texture_path``) and UVs (``face_uvs``) goes in one
+    primitive per texture file instead, the image embedded at ``TEXTURE_MAX_PX``
+    (``encode_texture``). Without Pillow, or for a texture under ``nvidia_root``, it keeps
+    its base colour.
 
     Licence: when any exported prim takes an opinion from a layer under ``nvidia_root``
     (NVIDIA's Isaac asset root), nothing is converted. Only exported prims count, so an
@@ -349,7 +464,15 @@ def static_scene_glb(
         v = a.Get() if a else None
         return default if v is None else v
 
+    try:
+        import PIL  # noqa: F401  # reason: textures are optional
+    except ImportError:
+        textures_on = False
+    else:
+        textures_on = True
     groups: dict[tuple[float, ...], tuple[list[Any], list[Any], list[int]]] = {}
+    textured: dict[str, tuple[list[Any], list[Any], list[Any], list[int]]] = {}
+    nvidia_textures = unreadable = 0
     layers: set[str] = set()
     unsupported: dict[str, int] = {}
     triangles = 0
@@ -370,16 +493,25 @@ def static_scene_glb(
         if img and img.ComputePurpose() not in purposes:
             continue  # a child may author its own purpose (render under a proxy Xform)
         kind = str(prim.GetTypeName())
+        uv: NDArray[np.float64] | None = None
+        tex = None
         if kind == "Mesh":
             mesh = UsdGeom.Mesh(prim)
             pts: NDArray[np.float64] = np.asarray(
                 mesh.GetPointsAttr().Get() or [], dtype=np.float64
             ).reshape(-1, 3)
-            tri = fan_triangles(
-                mesh.GetFaceVertexCountsAttr().Get() or [],
-                mesh.GetFaceVertexIndicesAttr().Get() or [],
-                mesh.GetHoleIndicesAttr().Get() or [],
-            )
+            counts = mesh.GetFaceVertexCountsAttr().Get() or []
+            idx = np.asarray(mesh.GetFaceVertexIndicesAttr().Get() or [], dtype=np.int64)
+            holes = mesh.GetHoleIndicesAttr().Get() or []
+            tex = texture_path(prim) if textures_on else None
+            if tex is not None and _under(tex, root_dir):
+                nvidia_textures += 1  # an NVIDIA texture is not embedded (licence)
+                tex = None
+            uv = face_uvs(prim, idx, len(pts)) if tex is not None and len(pts) else None
+            if uv is not None:  # unshared vertices: a UV per face corner
+                pts, tri = pts[idx], fan_triangles(counts, np.arange(len(idx)), holes)
+            else:
+                tri = fan_triangles(counts, idx, holes)
         elif prim.IsA(UsdGeom.Gprim):
             capsule = kind.startswith("Capsule")
             got = gprim_mesh(
@@ -418,9 +550,14 @@ def static_scene_glb(
         ):
             colour = GREY  # an NVIDIA material's colour is not baked in (licence)
             nvidia_colours += 1
-        rgb = tuple(round(min(max(c, 0.0), 1.0) * 16) / 16 for c in colour)
-        verts, tris, base = groups.setdefault(rgb, ([], [], [0]))
-        verts.append(pts @ m[:3, :3].T + m[:3, 3])
+        world = pts @ m[:3, :3].T + m[:3, 3]
+        if uv is not None and tex is not None:
+            verts, uvs, tris, base = textured.setdefault(tex, ([], [], [], [0]))
+            uvs.append(uv)
+        else:
+            rgb = tuple(round(min(max(c, 0.0), 1.0) * 16) / 16 for c in colour)
+            verts, tris, base = groups.setdefault(rgb, ([], [], [0]))
+        verts.append(world)
         tris.append(tri + base[0])
         base[0] += len(pts)
         triangles += len(tri)
@@ -435,6 +572,10 @@ def static_scene_glb(
     skipped = f", unsupported {unsupported}" if unsupported else ""
     if nvidia_colours:
         skipped += f", {nvidia_colours} NVIDIA material colours drawn grey"
+    if nvidia_textures:
+        skipped += f", {nvidia_textures} NVIDIA textures left out"
+    if not textures_on:
+        skipped += ", no Pillow: textures left out"
     nvidia = sorted(lay for lay in layers if _under(lay, root_dir))
     if nvidia:
         return {
@@ -443,12 +584,151 @@ def static_scene_glb(
         }
     if not triangles:
         return {"note": "the scene has no static geometry", "log": f"0 triangles{skipped}"}
+    prims: list[tuple[Any, ...]] = [
+        ((rgb[0], rgb[1], rgb[2], 1.0), np.vstack(v), np.vstack(t))
+        for rgb, (v, t, _) in groups.items()
+    ]
+    for path, (v, u, t, _) in textured.items():
+        try:
+            image = encode_texture(path)
+        except OSError:  # unreadable or not an image: the geometry still draws, grey
+            unreadable += 1
+            prims.append(((*GREY, 1.0), np.vstack(v), np.vstack(t)))
+        else:
+            prims.append(((1.0, 1.0, 1.0, 1.0), np.vstack(v), np.vstack(t), np.vstack(u), image))
+    if unreadable:
+        skipped += f", {unreadable} unreadable textures drawn grey"
+    glb = write_glb(prims)
+    return {
+        "glb": glb,
+        "triangles": triangles,
+        "log": (
+            f"{triangles} triangles, {len(groups)} colours, {len(textured) - unreadable} textures, "
+            f"{len(glb) / 1e6:.1f} MB{skipped}"
+        ),
+    }
+
+
+def _mujoco_geom_mesh(
+    model: Any, geom: int
+) -> tuple[NDArray[np.float64], NDArray[np.uint32]] | None:
+    """A MuJoCo geom's triangles in its own frame, or ``None`` (height field, SDF).
+
+    MuJoCo sizes are half-extents; a plane of size 0 (infinite) is drawn 10 m square.
+    """
+    import mujoco
+
+    g = mujoco.mjtGeom
+    kind, size = int(model.geom_type[geom]), np.asarray(model.geom_size[geom], dtype=np.float64)
+    if kind == g.mjGEOM_BOX:
+        v, t = gprim_mesh("Cube", size=2.0)  # type: ignore[misc]  # reason: Cube is never None
+        return v * size, t
+    if kind in (g.mjGEOM_SPHERE, g.mjGEOM_ELLIPSOID):
+        v, t = gprim_mesh("Sphere", radius=1.0)  # type: ignore[misc]  # reason: never None
+        return v * (size if kind == g.mjGEOM_ELLIPSOID else size[0]), t
+    if kind in (g.mjGEOM_CYLINDER, g.mjGEOM_CAPSULE):
+        name = "Cylinder" if kind == g.mjGEOM_CYLINDER else "Capsule"
+        return gprim_mesh(name, radius=float(size[0]), height=2 * float(size[1]))
+    if kind == g.mjGEOM_PLANE:
+        half = [float(s) or 5.0 for s in size[:2]]
+        return gprim_mesh("Plane", width=2 * half[0], length=2 * half[1])
+    if kind == g.mjGEOM_MESH:
+        mesh = int(model.geom_dataid[geom])
+        va, vn = int(model.mesh_vertadr[mesh]), int(model.mesh_vertnum[mesh])
+        fa, fn = int(model.mesh_faceadr[mesh]), int(model.mesh_facenum[mesh])
+        return (
+            np.asarray(model.mesh_vert[va : va + vn], dtype=np.float64),
+            np.asarray(model.mesh_face[fa : fa + fn], dtype=np.uint32),
+        )
+    return None
+
+
+def mujoco_static_scene_glb(
+    model: Any, data: Any, frame_from_world: Any, limit_bytes: int | None = None
+) -> dict[str, Any]:
+    """The static part of a live MuJoCo scene as one GLB in ``frame_from_world``'s frame.
+
+    Static: a geom on a body welded to the world (``body_weldid == 0``: no joint between it
+    and the world), at ``data``'s pose. Left out: the robot (every top-level body, a child
+    of the world, whose subtree holds an actuated joint, base and mount included) and
+    mocap bodies with what hangs off them (they are driven). A
+    top-level body with visual-only geoms (``contype == conaffinity == 0``) draws only those,
+    so collision proxies do not double its surfaces. Transparent geoms, height fields and
+    SDFs are skipped.
+
+    Colour: the material's ``rgba`` (else the geom's), times its RGB texture's mean colour,
+    quantised to 1/16: RoboCasa and LIBERO texture ~98 % of their geoms on a white material,
+    and MuJoCo's cube and procedural textures have no UVs to embed (ponytail: the mean, not
+    the image; embed 2D textures on meshes with UVs if the flat view is not enough).
+
+    ``limit_bytes`` as in ``static_scene_glb``, and the exact GLB size is checked here.
+    Returns ``{"glb": bytes, "triangles", "log"}`` or ``{"note", "log"}``.
+    """
+    import mujoco
+
+    m_frame = np.asarray(frame_from_world, dtype=np.float64)
+    root = np.asarray(model.body_rootid, dtype=np.int64)  # the top-level body above each body
+    joint_kinds = (mujoco.mjtTrn.mjTRN_JOINT, mujoco.mjtTrn.mjTRN_JOINTINPARENT)
+    robot = {
+        int(root[int(model.jnt_bodyid[int(model.actuator_trnid[a, 0])])])
+        for a in range(model.nu)
+        if int(model.actuator_trntype[a]) in joint_kinds
+    }
+    mocap = {b for b in range(model.nbody) if int(model.body_mocapid[b]) >= 0}  # driven
+    by_top: dict[int, list[int]] = {}
+    for geom in range(model.ngeom):
+        body = int(model.geom_bodyid[geom])
+        if not model.body_weldid[body] and int(root[body]) not in robot | mocap:
+            by_top.setdefault(int(root[body]), []).append(geom)
+
+    mean_rgb: dict[int, NDArray[np.float64]] = {}
+    groups: dict[tuple[float, ...], tuple[list[Any], list[Any], list[int]]] = {}
+    triangles = vertices = 0
+    rgb_role = int(mujoco.mjtTextureRole.mjTEXROLE_RGB)
+    for geoms in by_top.values():
+        visual = [g for g in geoms if not model.geom_contype[g] and not model.geom_conaffinity[g]]
+        for geom in visual or geoms:
+            mat = int(model.geom_matid[geom])
+            rgba = np.array(model.mat_rgba[mat] if mat >= 0 else model.geom_rgba[geom], float)
+            if rgba[3] <= 0.01:  # an invisible (site-like) geom
+                continue
+            tex = int(model.mat_texid[mat, rgb_role]) if mat >= 0 else -1
+            if tex >= 0:
+                if tex not in mean_rgb:
+                    adr, nch = int(model.tex_adr[tex]), int(model.tex_nchannel[tex])
+                    n = int(model.tex_width[tex]) * int(model.tex_height[tex]) * nch
+                    px = np.asarray(model.tex_data[adr : adr + n]).reshape(-1, nch)
+                    mean_rgb[tex] = px[:, :3].mean(axis=0) / 255.0  # a grey texture: 1 channel
+                rgba[:3] *= mean_rgb[tex]
+            got = _mujoco_geom_mesh(model, geom)
+            if got is None:
+                continue
+            pts, tri = got
+            world_from_geom = np.eye(4)
+            world_from_geom[:3, :3] = np.asarray(data.geom_xmat[geom]).reshape(3, 3)
+            world_from_geom[:3, 3] = data.geom_xpos[geom]
+            m = m_frame @ world_from_geom
+            rgb = tuple(round(min(max(float(c), 0.0), 1.0) * 16) / 16 for c in rgba[:3])
+            verts, tris, base = groups.setdefault(rgb, ([], [], [0]))
+            verts.append(pts @ m[:3, :3].T + m[:3, 3])
+            tris.append(tri + base[0])
+            base[0] += len(pts)
+            triangles += len(tri)
+            vertices += len(pts)
+            if limit_bytes is not None and 12 * (vertices + triangles) > limit_bytes:
+                mb = 12 * (vertices + triangles) / 1e6
+                return {
+                    "note": f"scene is over the {limit_bytes / 1e6:.0f} MB limit",
+                    "log": f"stopped at {mb:.1f} MB of geometry, over {limit_bytes / 1e6:.0f} MB",
+                }
+    if not triangles:
+        return {"note": "the scene has no static geometry", "log": "0 triangles"}
     glb = write_glb([
         ((rgb[0], rgb[1], rgb[2], 1.0), np.vstack(v), np.vstack(t))
         for rgb, (v, t, _) in groups.items()
     ])  # fmt: skip
-    return {
-        "glb": glb,
-        "triangles": triangles,
-        "log": f"{triangles} triangles, {len(groups)} colours, {len(glb) / 1e6:.1f} MB{skipped}",
-    }
+    log = f"{triangles} triangles, {len(groups)} colours, {len(glb) / 1e6:.1f} MB"
+    if limit_bytes is not None and len(glb) > limit_bytes:
+        over = f"scene is {len(glb) / 1e6:.1f} MB, over the {limit_bytes / 1e6:.0f} MB limit"
+        return {"note": over, "log": log}
+    return {"glb": glb, "triangles": triangles, "log": log}

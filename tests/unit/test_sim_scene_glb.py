@@ -15,7 +15,7 @@ from openral_hal.sim_attached import SimAttachedHAL
 from openral_sim.sidecar import SidecarClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
-from scene_glb import gprim_mesh, static_scene_glb, write_glb
+from scene_glb import gprim_mesh, mujoco_static_scene_glb, static_scene_glb, write_glb
 
 
 def _hal(**kw: object) -> SimAttachedHAL:
@@ -339,3 +339,147 @@ def test_overlay_registers_this_runs_local_package_with_an_absolute_root(
     prefix = rpo.public_package_overlay("", {rpo.SIM_SCENE_PACKAGE: root})
     assert prefix is not None
     assert (prefix / "share" / "openral_sim_scene").resolve() == root
+
+
+def _image(doc: dict[str, Any], glb: bytes, index: int) -> bytes:
+    view = doc["bufferViews"][doc["images"][index]["bufferView"]]
+    start = 20 + struct.unpack_from("<I", glb, 12)[0] + 8 + view.get("byteOffset", 0)
+    return glb[start : start + view["byteLength"]]
+
+
+def test_a_textured_primitive_embeds_its_image_and_uvs() -> None:
+    cube = gprim_mesh("Cube")
+    assert cube is not None
+    uv = np.zeros((len(cube[0]), 2))
+    glb = write_glb([((1, 1, 1, 1), *cube, uv, (b"\xff\xd8jpeg", "image/jpeg"))])
+    doc = _doc(glb)
+    prim = doc["meshes"][0]["primitives"][0]
+    assert doc["accessors"][prim["attributes"]["TEXCOORD_0"]]["type"] == "VEC2"
+    tex = doc["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]["index"]
+    assert doc["textures"][tex] == {"source": 0}
+    assert doc["images"][0]["mimeType"] == "image/jpeg"
+    assert "target" not in doc["bufferViews"][doc["images"][0]["bufferView"]]  # glTF: images
+    assert _image(doc, glb, 0) == b"\xff\xd8jpeg"
+    with pytest.raises(ValueError, match="uvs for"):
+        write_glb([((1, 1, 1, 1), *cube, uv[:3], (b"x", "image/png"))])
+
+
+def test_a_textured_mesh_embeds_its_shrunk_texture(tmp_path: Path) -> None:
+    usd = pytest.importorskip("pxr.Usd")
+    image_mod = pytest.importorskip("PIL.Image")
+    from pxr import Sdf, UsdGeom, UsdShade
+
+    def textured_quad(s: Any, path: str, png: Path) -> None:
+        image_mod.new("RGB", (2048, 1024), (200, 40, 40)).save(png)
+        quad = UsdGeom.Mesh.Define(s, path)
+        quad.CreatePointsAttr([(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)])
+        quad.CreateFaceVertexCountsAttr([4])
+        quad.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+        UsdGeom.PrimvarsAPI(quad).CreatePrimvar(
+            "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
+        ).Set([(0, 0), (1, 0), (1, 1), (0, 1)])
+        mat = UsdShade.Material.Define(s, f"{path}_mat")
+        tex = UsdShade.Shader.Define(s, f"{path}_mat/Tex")
+        tex.CreateIdAttr("UsdUVTexture")
+        tex.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(str(png))
+        rgb = tex.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+        sh = UsdShade.Shader.Define(s, f"{path}_mat/S")
+        sh.CreateIdAttr("UsdPreviewSurface")
+        sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(rgb)
+        UsdShade.MaterialBindingAPI.Apply(quad.GetPrim()).Bind(mat)
+
+    s = usd.Stage.CreateInMemory()
+    textured_quad(s, "/World/env/poster", tmp_path / "poster.png")
+    (tmp_path / "nvidia").mkdir()
+    textured_quad(s, "/World/env/decal", tmp_path / "nvidia" / "decal.png")
+    UsdGeom.Cube.Define(s, "/World/env/wall")
+    out = static_scene_glb(s, np.eye(4), [], str(tmp_path / "nvidia"))
+    assert out["triangles"] == 2 + 2 + 12, out["log"]
+    assert "1 textures" in out["log"] and "1 NVIDIA textures left out" in out["log"]
+    doc = _doc(out["glb"])
+    assert len(doc["images"]) == 1  # the NVIDIA decal keeps its plain colour
+    textured = [p for p in doc["meshes"][0]["primitives"] if "TEXCOORD_0" in p["attributes"]]
+    assert len(textured) == 1
+    uv = doc["accessors"][textured[0]["attributes"]["TEXCOORD_0"]]
+    assert uv["count"] == 4  # one per face corner
+    import io
+
+    with image_mod.open(io.BytesIO(_image(doc, out["glb"], 0))) as im:
+        assert im.format == "JPEG" and im.size == (512, 256)
+
+    (tmp_path / "poster.png").write_bytes(b"not an image")
+    grey = static_scene_glb(s, np.eye(4), [], str(tmp_path / "nvidia"))
+    assert "1 unreadable textures drawn grey" in grey["log"] and "images" not in _doc(grey["glb"])
+
+
+_MJCF = """
+<mujoco>
+  <asset>
+    <texture name="wood" type="2d" builtin="flat" rgb1="0.5 0.25 0" width="8" height="8"/>
+    <material name="wood" texture="wood"/>
+  </asset>
+  <worldbody>
+    <geom name="floor" type="plane" size="0 0 0.1" rgba="0.5 0.5 0.5 1"/>
+    <body name="counter" pos="1 0 0.5">
+      <geom type="box" size="0.5 0.3 0.5" material="wood"/>
+      <geom type="box" size="0.5 0.3 0.5" contype="0" conaffinity="0" material="wood"/>
+      <geom type="sphere" size="0.05" rgba="1 1 1 0"/>
+    </body>
+    <body name="cup" pos="1 0 1.1"><freejoint/><geom type="cylinder" size="0.04 0.05"/></body>
+    <body name="target" mocap="true" pos="0 1 1"><geom type="box" size="0.1 0.1 0.1"/></body>
+    <body name="robot_mount" pos="-1 0 0">
+      <geom type="box" size="0.2 0.2 0.2" rgba="0 0 1 1"/>
+      <body name="link1" pos="0 0 0.3">
+        <joint name="j1" type="hinge"/>
+        <geom type="capsule" size="0.05 0.2" rgba="0 0 1 1"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator><position joint="j1"/></actuator>
+</mujoco>
+"""
+
+
+def test_mujoco_static_scene_keeps_world_welded_geoms_minus_robot_and_mocap() -> None:
+    mujoco = pytest.importorskip("mujoco")
+    model = mujoco.MjModel.from_xml_string(_MJCF)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    shift = np.eye(4)
+    shift[:3, 3] = [0.0, 0.0, -1.0]
+    out = mujoco_static_scene_glb(model, data, shift)
+    assert out["triangles"] == 2 + 12, out["log"]  # floor + the counter's visual box only
+    doc = _doc(out["glb"])
+    colours = {tuple(m["pbrMetallicRoughness"]["baseColorFactor"]) for m in doc["materials"]}
+    assert colours == {(0.5, 0.5, 0.5, 1.0), (0.5, 0.25, 0.0, 1.0)}  # wood: its mean colour
+    zs = [doc["accessors"][p["attributes"]["POSITION"]] for p in doc["meshes"][0]["primitives"]]
+    assert min(a["min"][2] for a in zs) == pytest.approx(-1.0)  # the floor, in the frame
+    assert max(a["max"][2] for a in zs) == pytest.approx(0.0)  # the counter's top
+
+    over = mujoco_static_scene_glb(model, data, np.eye(4), limit_bytes=100)
+    assert over["note"] == "scene is over the 0 MB limit"
+
+
+def test_hal_exports_a_mujoco_scene_in_the_arm_base_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mujoco = pytest.importorskip("mujoco")
+    monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path))
+    model = mujoco.MjModel.from_xml_string(_MJCF)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    desc = SimpleNamespace(base_frame="not_in_the_mjcf", base_joints=None)
+    hal = SimpleNamespace(_env=object(), _mujoco_handles=lambda: (model, data), description=desc)
+    hal._mujoco_scene_mesh = lambda limit: SimAttachedHAL._mujoco_scene_mesh(
+        cast("SimAttachedHAL", hal), limit
+    )
+    got = SimAttachedHAL._export_sim_scene(cast("SimAttachedHAL", hal))
+    assert got["triangles"] == 14, got
+    glb = (tmp_path / "sim_scene" / str(got["uri"]).rsplit("/", 1)[1]).read_bytes()
+    doc = _doc(glb)
+    wood = next(
+        p for p in doc["meshes"][0]["primitives"]
+        if doc["materials"][p["material"]]["pbrMetallicRoughness"]["baseColorFactor"][1] == 0.25
+    )  # fmt: skip
+    # The robot's root body (robot_mount, at x = -1) is the frame: the counter is at x 1.5..2.5.
+    assert doc["accessors"][wood["attributes"]["POSITION"]]["max"][0] == pytest.approx(2.5)

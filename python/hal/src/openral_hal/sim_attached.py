@@ -503,7 +503,7 @@ class SimAttachedHAL:
     # defaults; instances rebind them.
     _held_twist: tuple[float, float, float] | None = None
     _held_twist_until_ns: int = 0
-    #: ``/openral/viz/sim_scene``'s payload once connect exported it (Isaac only).
+    #: ``/openral/viz/sim_scene``'s payload once connect exported it (Isaac and MuJoCo sims).
     sim_scene: dict[str, object] | None = None
 
     def __init__(
@@ -696,14 +696,16 @@ class SimAttachedHAL:
             self._env_action_dim = self._probe_env_action_dim()
         self._check_time_base()
         failed = str((self.sim_scene or {}).get("note", "")).startswith("export failed")
-        if (self.sim_scene is None or failed) and hasattr(self._env, "scene_mesh"):
+        exports = hasattr(self._env, "scene_mesh") or self._mujoco_handles() is not None
+        if (self.sim_scene is None or failed) and exports:
             self.sim_scene = self._export_sim_scene()  # a failed export retries next connect
 
     def _export_sim_scene(self) -> dict[str, object]:
         """What ``/openral/viz/sim_scene`` carries: the static scene GLB's URI, or why not.
 
-        Asks the env (the Isaac sidecar, at its reset pose) for the GLB and, once the reply
-        checks out, writes it as ``<sha12>.glb`` into ``SIM_SCENE_PACKAGE`` (registered with
+        Asks the env for the GLB at its reset pose (the Isaac sidecar's ``scene_mesh``, else
+        ``_mujoco_scene_mesh`` on the live MuJoCo model) and, once the reply checks out,
+        writes it as ``<sha12>.glb`` into ``SIM_SCENE_PACKAGE`` (registered with
         foxglove_bridge by deploy_e2e). GLBs no deploy has written for a week are removed;
         a running deploy's file is never touched, since deploys may share the cache.
         ``{"uri", "bytes", "triangles"}`` or ``{"note"}``; an export failure is a note,
@@ -721,7 +723,8 @@ class SimAttachedHAL:
 
         week_s = 7 * 24 * 3600.0
         try:
-            out = self._env.scene_mesh(SIM_SCENE_LIMIT_BYTES)  # type: ignore[attr-defined]  # reason: Isaac only, hasattr-gated in connect
+            scene_mesh = getattr(self._env, "scene_mesh", None) or self._mujoco_scene_mesh
+            out = scene_mesh(SIM_SCENE_LIMIT_BYTES)
             structlog.get_logger(__name__).info("sim.scene_export", detail=out.get("log"))
             glb, triangles = out.get("glb"), out.get("triangles")
             if glb is None:
@@ -749,6 +752,53 @@ class SimAttachedHAL:
             "bytes": len(glb),
             "triangles": triangles,
         }
+
+    def _mujoco_scene_mesh(self, limit_bytes: int) -> dict[str, Any]:
+        """``scene_mesh`` for a MuJoCo env (platform#139), in ``/openral/viz/sim_scene``'s frame.
+
+        ``tools/scene_glb.py``'s ``mujoco_static_scene_glb`` on the live model. A mobile
+        base's frame is its odometry frame, the MuJoCo world (``base_pose_6dof`` publishes
+        the base's world pose as ``odom → base_link``); a fixed arm's is its base frame, the
+        MJCF body of that name, else the root body of the robot's actuated joints, else the
+        world.
+        """
+        import importlib.util  # noqa: PLC0415  # reason: sim only
+        from pathlib import Path  # noqa: PLC0415  # reason: sim only
+
+        import mujoco  # noqa: PLC0415  # reason: sim only
+
+        from openral_hal.mobile_base_bridge import (  # noqa: PLC0415  # reason: sim only
+            describes_mobile_base,
+        )
+
+        here = Path(__file__).resolve()
+        path = next((p / "tools" / "scene_glb.py" for p in here.parents
+                     if (p / "tools" / "scene_glb.py").is_file()), None)  # fmt: skip
+        spec = importlib.util.spec_from_file_location("scene_glb", path) if path else None
+        if spec is None or spec.loader is None:
+            raise FileNotFoundError(f"no tools/scene_glb.py above {here}")
+        scene_glb = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(scene_glb)
+
+        model, data = self._mujoco_handles()  # type: ignore[misc]  # reason: gated in connect
+        frame_from_world = np.eye(4)
+        if not describes_mobile_base(self.description):
+            body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, self.description.base_frame)
+            if body < 0:
+                roots = {
+                    int(model.body_rootid[int(model.jnt_bodyid[int(model.actuator_trnid[a, 0])])])
+                    for a in range(model.nu)
+                    if int(model.actuator_trntype[a]) in (0, 1)  # joint, joint in parent
+                }
+                body = roots.pop() if len(roots) == 1 else 0
+            world_from_base = np.eye(4)
+            world_from_base[:3, :3] = np.asarray(data.xmat[body]).reshape(3, 3)
+            world_from_base[:3, 3] = data.xpos[body]
+            frame_from_world = np.asarray(np.linalg.inv(world_from_base), dtype=np.float64)
+        out: dict[str, Any] = scene_glb.mujoco_static_scene_glb(
+            model, data, frame_from_world, limit_bytes
+        )
+        return out
 
     def _check_time_base(self) -> None:
         """Refuse an env whose step is not one control period of the robot.

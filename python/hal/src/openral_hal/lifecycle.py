@@ -2333,7 +2333,7 @@ if _ROS2_AVAILABLE:
         into (issue #191).
         """
 
-        #: ``/openral/viz/sim_scene``'s latched publisher while active (Isaac sims only).
+        #: ``/openral/viz/sim_scene``'s latched publisher while active (sims only).
         _sim_scene_pub: Any = None
 
         def __init__(
@@ -2996,8 +2996,8 @@ if _ROS2_AVAILABLE:
 
             ``std_msgs/String`` JSON: ``{"uri", "bytes", "triangles", "frame_id"}`` or
             ``{"note"}``. The frame is the odometry frame (a fixed arm's: its base frame),
-            which starts at the spawned base, where the export is baked. Only the Isaac
-            sidecar exports one, so real robots and MuJoCo never advertise the topic.
+            which starts at the spawned base, where the export is baked. Only sim HALs
+            (the Isaac sidecar, a MuJoCo env) export one: real robots never advertise it.
             """
             assert self._hal is not None
             scene = getattr(self._hal, "sim_scene", None)
