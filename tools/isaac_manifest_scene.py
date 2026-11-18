@@ -931,7 +931,8 @@ def recolor_robot_materials(
     """
     import fnmatch
 
-    from pxr import Gf, Sdf, Usd, UsdShade
+    from pxr import Gf, Usd, UsdShade
+    from scene_glb import diffuse_attrs
 
     def match(name: str) -> list[float] | None:
         return next((c for pat, c in colors.items() if fnmatch.fnmatch(name, pat)), None)
@@ -960,35 +961,13 @@ def recolor_robot_materials(
         rgb = match(mat.GetPrim().GetName())
         if rgb is None:
             continue
-        # The importer's materials expose the colour as a Material interface input that
-        # their UsdPreviewSurface reads; set it there when present.
-        iface = mat.GetInput("diffuseColor")
-        if iface:
-            iface.Set(Gf.Vec3f(*rgb))
+        # The interface input and every shader input, a connected one through its
+        # source: setting a connected input's own value would be silently ignored.
+        attrs = diffuse_attrs(mat, create=True)
+        for attr in attrs:
+            attr.Set(Gf.Vec3f(*rgb))
+        if attrs:
             changed[str(path)] = list(rgb)
-        for child in Usd.PrimRange(mat.GetPrim()):
-            shader = UsdShade.Shader(child)
-            if not shader:
-                continue
-            for input_name in ("diffuseColor", "diffuse_color_constant"):
-                inp = shader.GetInput(input_name) or (
-                    shader.CreateInput(input_name, Sdf.ValueTypeNames.Color3f)
-                    if shader.GetIdAttr().Get() == "UsdPreviewSurface"
-                    and input_name == "diffuseColor"
-                    else None
-                )
-                if not inp:
-                    continue
-                # A connected input reads its source (Isaac's URDF importer exposes the
-                # colour as a Material interface input): setting the shader's own value
-                # would be silently ignored, so write the source instead.
-                for source in inp.GetConnectedSources()[0] if inp.HasConnectedSource() else []:
-                    UsdShade.ConnectableAPI(source.source.GetPrim()).GetInput(
-                        source.sourceName
-                    ).Set(Gf.Vec3f(*rgb))
-                if not inp.HasConnectedSource():
-                    inp.Set(Gf.Vec3f(*rgb))
-                changed[str(path)] = list(rgb)
     return changed
 
 

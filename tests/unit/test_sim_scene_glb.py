@@ -109,6 +109,24 @@ def test_static_scene_keeps_fixtures_and_drops_what_moves_or_is_skipped(tmp_path
     assert empty["note"] == "the scene has no static geometry"
 
 
+def test_a_mesh_colour_is_read_through_its_connected_material_input() -> None:
+    usd = pytest.importorskip("pxr.Usd")
+    from pxr import Gf, Sdf, UsdGeom, UsdShade
+    from scene_glb import diffuse_color
+
+    s = usd.Stage.CreateInMemory()
+    mat = UsdShade.Material.Define(s, "/World/Looks/red")
+    iface = mat.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f)
+    iface.Set(Gf.Vec3f(0.8, 0.1, 0.1))
+    sh = UsdShade.Shader.Define(s, "/World/Looks/red/S")
+    sh.CreateIdAttr("UsdPreviewSurface")
+    sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(iface)
+    mesh = UsdGeom.Cube.Define(s, "/World/box").GetPrim()
+    UsdShade.MaterialBindingAPI.Apply(mesh).Bind(mat)
+    assert diffuse_color(mesh) == pytest.approx((0.8, 0.1, 0.1))
+    assert diffuse_color(UsdGeom.Cube.Define(s, "/World/bare").GetPrim()) == (0.7, 0.7, 0.7)
+
+
 def test_hal_writes_the_glb_into_the_package_and_drops_older_scenes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

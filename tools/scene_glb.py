@@ -16,7 +16,14 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-__all__ = ["diffuse_color", "fan_triangles", "gprim_mesh", "static_scene_glb", "write_glb"]
+__all__ = [
+    "diffuse_attrs",
+    "diffuse_color",
+    "fan_triangles",
+    "gprim_mesh",
+    "static_scene_glb",
+    "write_glb",
+]
 
 _GLB_MAGIC = 0x46546C67  # "glTF"
 _JSON_CHUNK = 0x4E4F534A
@@ -216,28 +223,55 @@ def write_glb(primitives: list[tuple[tuple[float, float, float, float], Any, Any
     ])  # fmt: skip
 
 
-def diffuse_color(prim: Any) -> tuple[float, float, float]:
-    """A prim's base colour: ``displayColor``, else its bound material's constant diffuse.
+def diffuse_attrs(material: Any, *, create: bool = False) -> list[Any]:
+    """The attributes that hold a ``UsdShade.Material``'s constant diffuse colour.
 
-    The material's ``diffuseColor`` (UsdPreviewSurface) or ``diffuse_color_constant``
-    (OmniPBR) input is read through its connections (``GetValueProducingAttributes``), so a
-    colour exposed as a Material interface input counts. Neutral grey when there is none.
+    The Material's own ``diffuseColor`` interface input, then each shader's
+    ``diffuseColor`` (UsdPreviewSurface) or ``diffuse_color_constant`` (OmniPBR): the
+    attribute its connection resolves to (Isaac's URDF importer wires the shader to the
+    interface input), else the input's own. ``create`` adds a ``diffuseColor`` input to a
+    UsdPreviewSurface that has none, for a caller that writes the colour. Read with
+    ``diffuse_color``, written by ``recolor_robot_materials``; one attribute per path.
     """
-    from pxr import Usd, UsdGeom, UsdShade
+    from pxr import Sdf, Usd, UsdShade
+
+    out: dict[str, Any] = {}
+    iface = material.GetInput("diffuseColor")
+    if iface:
+        out[str(iface.GetAttr().GetPath())] = iface.GetAttr()
+    for child in Usd.PrimRange(material.GetPrim()):
+        shader = UsdShade.Shader(child)
+        if not shader:
+            continue
+        for name in ("diffuseColor", "diffuse_color_constant"):
+            inp = shader.GetInput(name)
+            preview = shader.GetIdAttr().Get() == "UsdPreviewSurface"
+            if not inp and create and name == "diffuseColor" and preview:
+                inp = shader.CreateInput(name, Sdf.ValueTypeNames.Color3f)
+            if not inp:
+                continue
+            attrs = (
+                inp.GetValueProducingAttributes() if inp.HasConnectedSource() else [inp.GetAttr()]
+            )
+            out.update((str(a.GetPath()), a) for a in attrs)
+    return list(out.values())
+
+
+def diffuse_color(prim: Any) -> tuple[float, float, float]:
+    """A prim's base colour: ``displayColor``, else its bound material's (``diffuse_attrs``).
+
+    Neutral grey when neither holds a value.
+    """
+    from pxr import UsdGeom, UsdShade
 
     dc = UsdGeom.Gprim(prim).GetDisplayColorAttr().Get() if UsdGeom.Gprim(prim) else None
     if dc is not None and len(dc):
         return (float(dc[0][0]), float(dc[0][1]), float(dc[0][2]))
     mat, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
-    if mat:
-        for child in Usd.PrimRange(mat.GetPrim()):
-            shader = UsdShade.Shader(child)
-            for name in ("diffuseColor", "diffuse_color_constant") if shader else ():
-                inp = shader.GetInput(name)
-                attrs = inp.GetValueProducingAttributes() if inp else []
-                val = attrs[0].Get() if attrs else None
-                if val is not None:
-                    return (float(val[0]), float(val[1]), float(val[2]))
+    for attr in diffuse_attrs(mat) if mat else []:
+        val = attr.Get()
+        if val is not None:
+            return (float(val[0]), float(val[1]), float(val[2]))
     return (0.7, 0.7, 0.7)
 
 
