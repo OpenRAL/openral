@@ -53,6 +53,7 @@ import rclpy
 import structlog
 from openral_core import (
     EMIT_PROMPT_TOPICS,
+    EXECUTE_RSKILL_KINDS,
     POLICY_KINDS,
     ROS_WRAPPER_KINDS,
     SIM_EXECUTABLE_CONTROL_MODES,
@@ -2641,7 +2642,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                     f"skipping unloadable rSkill {entry.repo_id!r}: {exc}",
                 )
         assert self._robot_capabilities is not None  # caller-guarded
-        return build_tool_palette(
+        palette = build_tool_palette(
             installed_skills=manifests,
             robot_capabilities=self._robot_capabilities,
             sensor_ids=self._palette.sensor_ids,
@@ -2660,6 +2661,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             object_tracking=self._object_tracking_on(),
             grasp_hand_required=self._grasp_hand_required(),
         )
+        self._log_allowed_rskills(manifests, palette)
+        return palette
 
     def _declared_grasp_hand(self) -> tuple[str, ...]:
         """The deployment's declared grasping hand (``grasp_contact_links``), ``()`` unset."""
@@ -3430,32 +3433,40 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         )
 
     def _log_allowed_rskills(self, manifests: list[Any], palette: ToolPalette) -> None:
-        """Say what the robot's curated rSkill list (``OPENRAL_RSKILLS``) left out, once at seed.
+        """Say what the robot's curated rSkill list (``OPENRAL_RSKILLS``) left out.
 
-        A listed rSkill that isn't installed is named with the command that installs it; a
-        list that admits none of the installed skills leaves the reasoner with no skill to
-        run, which is said plainly (never widened back to every installed skill).
+        At seed and after every registry refresh. A listed rSkill that isn't installed is
+        named with the command that installs it; a listed actuating rSkill that is installed
+        but out of the palette is named; a list that admits none of them leaves the reasoner
+        with no skill to run, which is said plainly (never widened back to every installed
+        skill). Listed detectors, playbooks and other non-actuating rSkills aren't tools, so
+        they are neither counted nor warned about.
         """
-        if self._allowed_rskill_ids is None:
+        allowed = self._allowed_rskill_ids
+        if allowed is None:
             return
-        installed = {m.name for m in manifests}
-        for rskill_id in sorted(self._allowed_rskill_ids - installed):
-            self.get_logger().warning(
-                f"rSkill list: {rskill_id} is not installed on this robot; "
-                f"install it with: openral rskill install {rskill_id}",
-            )
-        playbooks = {m.name for m in manifests if m.kind == "playbook"}
-        for rskill_id in sorted(
-            (self._allowed_rskill_ids & installed) - playbooks - palette.execute_rskill_ids
-        ):
-            self.get_logger().warning(
-                f"rSkill list: {rskill_id} is installed but can't run on this robot now "
-                "(its embodiment or capabilities, its ROS server, or its import dependencies; "
-                "see the warnings above)",
-            )
+        installed = {m.name.casefold(): m for m in manifests}
+        in_palette = {i.casefold() for i in palette.execute_rskill_ids}
+        actuating = [
+            i
+            for i in sorted(allowed)
+            if i not in installed or installed[i].kind in EXECUTE_RSKILL_KINDS
+        ]
+        for rskill_id in actuating:
+            if rskill_id not in installed:
+                self.get_logger().warning(
+                    f"rSkill list: {rskill_id} is not installed on this robot; "
+                    f"install it with: openral rskill install {rskill_id}",
+                )
+            elif rskill_id not in in_palette:
+                self.get_logger().warning(
+                    f"rSkill list: {installed[rskill_id].name} is installed but can't run on "
+                    "this robot now (its embodiment or capabilities, its ROS server, or its "
+                    "import dependencies; see the warnings above)",
+                )
         self.get_logger().info(
             f"rSkill list: {len(palette.execute_rskill_ids)} of "
-            f"{len(self._allowed_rskill_ids)} listed rSkill(s) in the palette",
+            f"{len(actuating)} listed rSkill(s) in the palette",
         )
         if not palette.execute_rskill_ids:
             self.get_logger().error(

@@ -32,6 +32,8 @@ from openral_core import (
     RSkillAction,
     RSkillManifest,
     TaskSpace,
+    casefold_rskills,
+    rskill_listed,
     rskill_matches_robot,
     task_space_compatible,
 )
@@ -558,6 +560,7 @@ def build_tool_palette(
         >>> palette.skills
         ()
     """
+    allowed = casefold_rskills(allowed_rskill_ids)
     entries: list[RSkillToolEntry] = []
     continuous_detectors: list[ContinuousDetectorEntry] = []
     on_demand_detectors: list[OnDemandDetectorEntry] = []
@@ -609,7 +612,7 @@ def build_tool_palette(
             skill, robot_capabilities, commercial_deployment=commercial_deployment
         ):
             continue
-        if allowed_rskill_ids is not None and skill.name not in allowed_rskill_ids:
+        if not rskill_listed(skill.name, allowed):
             continue
         ros = skill.ros_integration
         entries.append(

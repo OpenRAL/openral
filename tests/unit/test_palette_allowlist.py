@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from openral_core import (
     DeployRuntime,
     RobotCapabilities,
@@ -17,6 +18,7 @@ from openral_core import (
     RSkillManifest,
     allowed_rskills_from_env,
     build_robot_manifest,
+    rskill_listed,
 )
 from openral_reasoner.palette import build_tool_palette
 
@@ -77,7 +79,13 @@ def test_env_list_parses_and_empty_means_no_restriction() -> None:
     assert allowed_rskills_from_env({"OPENRAL_RSKILLS": ""}) is None
     assert allowed_rskills_from_env({"OPENRAL_RSKILLS": " , "}) is None
     listed = allowed_rskills_from_env({"OPENRAL_RSKILLS": "OpenRAL/rskill-a, OpenRAL/rskill-b,"})
-    assert listed == frozenset({"OpenRAL/rskill-a", "OpenRAL/rskill-b"})
+    assert listed == frozenset({"openral/rskill-a", "openral/rskill-b"})
+    # Hugging Face repo ids are case-insensitive: so is the list.
+    assert rskill_listed(
+        "OpenRAL/rskill-A", allowed_rskills_from_env({"OPENRAL_RSKILLS": "openral/RSKILL-a"})
+    )
+    assert not rskill_listed("OpenRAL/rskill-c", listed)
+    assert rskill_listed("OpenRAL/rskill-b", None)
 
 
 def test_manifest_skill_buttons_follow_the_list() -> None:
@@ -101,3 +109,28 @@ def test_manifest_skill_buttons_follow_the_list() -> None:
     assert len(every) > 2
     one = sorted(every)[0]
     assert skills(frozenset({one, "OpenRAL/rskill-not-installed"})) == {one}
+
+
+def test_list_matches_ids_whatever_their_case() -> None:
+    full = build_tool_palette(installed_skills=_load_intree(), robot_capabilities=_franka())
+    one = sorted(full.execute_rskill_ids)[0]
+    palette = build_tool_palette(
+        installed_skills=_load_intree(),
+        robot_capabilities=_franka(),
+        allowed_rskill_ids=allowed_rskills_from_env({"OPENRAL_RSKILLS": one.upper()}),
+    )
+    assert palette.execute_rskill_ids == frozenset({one})
+
+
+def test_the_deploys_pre_launch_checks_follow_the_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The reward pairing, the VRAM preflight and the missing-extras prompt reason over the
+    rSkills the reasoner will get (deploy_sim._capability_matched_manifests), never more."""
+    from openral_cli.deploy_sim import _capability_matched_manifests
+
+    root = _RSKILLS_DIR.parent
+    robot = RobotDescription.from_yaml(str(root / "robots" / "franka_panda" / "robot.yaml"))
+    monkeypatch.delenv("OPENRAL_RSKILLS", raising=False)
+    every = [m.name for m in _capability_matched_manifests(root, robot)]
+    assert len(every) > 2
+    monkeypatch.setenv("OPENRAL_RSKILLS", f"{every[0]},OpenRAL/rskill-not-installed")
+    assert [m.name for m in _capability_matched_manifests(root, robot)] == [every[0]]

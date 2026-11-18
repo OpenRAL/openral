@@ -274,6 +274,9 @@ def _skill_label(rskill_id: str) -> str:
 def allowed_rskills_from_env(environ: Mapping[str, str] | None = None) -> frozenset[str] | None:
     """The rSkill list in ``OPENRAL_RSKILLS``, or ``None`` when it sets none (no restriction).
 
+    Ids are casefolded, as Hugging Face repo ids are case-insensitive: compare with
+    :func:`rskill_listed`, never with ``in``.
+
     Args:
         environ: The environment to read; ``os.environ`` when ``None``.
 
@@ -286,13 +289,30 @@ def allowed_rskills_from_env(environ: Mapping[str, str] | None = None) -> frozen
         ...         {"OPENRAL_RSKILLS": " OpenRAL/rskill-a, ,OpenRAL/rskill-b"}
         ...     )
         ... )
-        ['OpenRAL/rskill-a', 'OpenRAL/rskill-b']
+        ['openral/rskill-a', 'openral/rskill-b']
         >>> allowed_rskills_from_env({"OPENRAL_RSKILLS": " , "}) is None
         True
     """
     raw = (os.environ if environ is None else environ).get(RSKILLS_ENV, "")
-    ids = frozenset(x.strip() for x in raw.split(",") if x.strip())
+    ids = frozenset(x.strip().casefold() for x in raw.split(",") if x.strip())
     return ids or None
+
+
+def rskill_listed(rskill_id: str, allowed: frozenset[str] | None) -> bool:
+    """Whether the robot's rSkill list (:func:`allowed_rskills_from_env`) admits ``rskill_id``.
+
+    Example:
+        >>> rskill_listed("OpenRAL/rskill-A", frozenset({"openral/rskill-a"}))
+        True
+        >>> rskill_listed("OpenRAL/rskill-b", None)  # no list: every rSkill
+        True
+    """
+    return allowed is None or rskill_id.casefold() in allowed
+
+
+def casefold_rskills(ids: frozenset[str] | None) -> frozenset[str] | None:
+    """A caller's rSkill list as :func:`rskill_listed` compares it (casefolded); ``None`` kept."""
+    return None if ids is None else frozenset(i.casefold() for i in ids)
 
 
 def build_robot_manifest(
@@ -387,7 +407,7 @@ def build_robot_manifest(
             if rskill_matches_robot(
                 s, robot.capabilities, commercial_deployment=commercial_deployment
             )
-            and (allowed_rskill_ids is None or s.name in allowed_rskill_ids)
+            and rskill_listed(s.name, casefold_rskills(allowed_rskill_ids))
         }
         actions += [
             ManifestAction(

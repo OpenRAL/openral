@@ -357,7 +357,7 @@ ACCOUNT_SETTINGS = frozenset(
 
 SKILL_SETTINGS = frozenset({"OPENRAL_RSKILLS"})
 """The robot's curated rSkill list openral.com may set (OpenRAL/platform#147): which installed
-rSkills its reasoner may use (``openral_reasoner.palette.RSKILLS_ENV``). It carries no key or URL,
+rSkills its reasoner may use (``openral_core.RSKILLS_ENV``). It carries no key or URL,
 so it applies whether or not the robot's console chooses the reasoner."""
 
 CONTROL_SETTINGS = frozenset({REMOTE_CONTROL_ENV, WRITE_CONTROLS_ENV})

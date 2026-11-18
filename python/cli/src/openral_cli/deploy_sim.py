@@ -938,7 +938,7 @@ def _capability_matched_manifests(
     preflight both reason over it (the "VLA known at launch" is the *palette*, not a
     single policy). Unloadable manifests are skipped (the reasoner skips them too).
     """
-    from openral_core import RSkillManifest
+    from openral_core import RSkillManifest, allowed_rskills_from_env
     from openral_reasoner.palette import build_tool_palette
 
     manifests: list[RSkillManifest] = []
@@ -953,6 +953,8 @@ def _capability_matched_manifests(
         installed_skills=manifests,
         robot_capabilities=description.capabilities,
         commercial_deployment=commercial_deployment,
+        # The robot's rSkill list: the reasoner gets only these, so launch reasons over them.
+        allowed_rskill_ids=allowed_rskills_from_env(),
     )
     matched = set(palette.execute_rskill_ids)
     return [m for m in manifests if m.name in matched]
@@ -3756,7 +3758,7 @@ def _preflight_palette_deps(  # noqa: PLR0912, PLR0915  # reason: linear flow â€
       ``typer.Exit(1)`` instead, since the graph could dispatch nothing.
     * No capability-matching skills are blocked â†’ silent return.
     """
-    from openral_core import RobotDescription, RSkillManifest
+    from openral_core import RobotDescription, RSkillManifest, allowed_rskills_from_env
     from openral_reasoner.palette import build_tool_palette
     from openral_sim.policy_deps import (
         can_import_policy_manifest,
@@ -3787,6 +3789,7 @@ def _preflight_palette_deps(  # noqa: PLR0912, PLR0915  # reason: linear flow â€
         installed_skills=manifests,
         robot_capabilities=description.capabilities,
         commercial_deployment=commercial_deployment,
+        allowed_rskill_ids=allowed_rskills_from_env(),
     )
     matching_ids = matching.execute_rskill_ids
     if not matching_ids:
