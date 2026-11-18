@@ -502,6 +502,8 @@ class SimAttachedHAL:
     # defaults; instances rebind them.
     _held_twist: tuple[float, float, float] | None = None
     _held_twist_until_ns: int = 0
+    #: ``/openral/viz/sim_scene``'s payload once connect exported it (Isaac only).
+    sim_scene: dict[str, object] | None = None
 
     def __init__(
         self,
@@ -692,6 +694,36 @@ class SimAttachedHAL:
         if self._env_action_dim is None:
             self._env_action_dim = self._probe_env_action_dim()
         self._check_time_base()
+        if self.sim_scene is None and hasattr(self._env, "scene_mesh"):
+            self.sim_scene = self._export_sim_scene()
+
+    def _export_sim_scene(self) -> dict[str, object]:
+        """What ``/openral/viz/sim_scene`` carries: the static scene GLB's URI, or why not.
+
+        Asks the env (the Isaac sidecar, at its reset pose) to write the GLB into
+        ``SIM_SCENE_PACKAGE``, which deploy_e2e registered with foxglove_bridge.
+        ``{"uri", "bytes", "triangles"}`` or ``{"note"}``; an export failure is a note,
+        never a failed connect: the layer is a viewer convenience (platform#133).
+        """
+        from openral_hal.ros_package_overlay import (  # noqa: PLC0415  # reason: sim only
+            SIM_SCENE_LIMIT_BYTES,
+            SIM_SCENE_PACKAGE,
+            sim_scene_package_root,
+        )
+
+        try:
+            out = self._env.scene_mesh(  # type: ignore[attr-defined]  # reason: Isaac only, hasattr-gated in connect
+                str(sim_scene_package_root()), SIM_SCENE_LIMIT_BYTES
+            )
+        except Exception as exc:  # reason: viz only, see docstring
+            out = {"note": f"export failed: {type(exc).__name__}: {exc}"}
+        if out.get("file"):
+            return {
+                "uri": f"package://{SIM_SCENE_PACKAGE}/{out['file']}",
+                "bytes": int(out.get("bytes", 0)),
+                "triangles": int(out.get("triangles", 0)),
+            }
+        return {"note": str(out.get("note") or out.get("error") or "no static scene")}
 
     def _check_time_base(self) -> None:
         """Refuse an env whose step is not one control period of the robot.

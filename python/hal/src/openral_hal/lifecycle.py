@@ -2983,9 +2983,39 @@ if _ROS2_AVAILABLE:
             self._bridge.setup()
 
             self._attach_mobile_base_bridge()
+            self._publish_sim_scene()
 
             self._setup_vision_attachment()
             return TransitionCallbackReturn.SUCCESS
+
+        def _publish_sim_scene(self) -> None:
+            """Latch ``/openral/viz/sim_scene`` when the HAL exported a static scene (platform#133).
+
+            ``std_msgs/String`` JSON: ``{"uri", "bytes", "triangles", "frame_id"}`` or
+            ``{"note"}``. The frame is the odometry frame (a fixed arm's: its base frame),
+            which starts at the spawned base, where the export is baked. Only the Isaac
+            sidecar exports one, so real robots and MuJoCo never advertise the topic.
+            """
+            assert self._hal is not None
+            scene = getattr(self._hal, "sim_scene", None)
+            if scene is None:
+                return
+            import json
+
+            from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+            from std_msgs.msg import String
+
+            desc = self._hal.description
+            frame = desc.odom_frame if describes_mobile_base(desc) else desc.base_frame
+            qos = QoSProfile(
+                depth=1,
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            )
+            self._sim_scene_pub = self.create_publisher(String, "/openral/viz/sim_scene", qos)
+            payload = {**scene, "frame_id": frame} if "uri" in scene else dict(scene)
+            self._sim_scene_pub.publish(String(data=json.dumps(payload)))
+            self.get_logger().info(f"sim scene layer: {payload}")
 
         def _attach_mobile_base_bridge(self) -> None:
             """Attach ``MobileBaseBridge`` when OpenRAL owns this deploy's base navigation.

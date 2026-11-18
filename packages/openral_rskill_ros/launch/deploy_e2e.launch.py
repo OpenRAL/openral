@@ -2380,6 +2380,19 @@ def _foxglove_asset_env(
     }
 
 
+def _sim_scene_package(hal_mode: str) -> dict[str, pathlib.Path]:
+    """The Sim scene GLB package for the bridge's overlay on a sim deploy, else nothing.
+
+    The HAL's Isaac sidecar writes the console's static-scene GLB there after the
+    bridge has started (platform#133), so the package is registered up front.
+    """
+    if hal_mode != "sim":
+        return {}
+    from openral_hal.ros_package_overlay import SIM_SCENE_PACKAGE, sim_scene_package_root
+
+    return {SIM_SCENE_PACKAGE: sim_scene_package_root()}
+
+
 _RELATIVE_MESH = re.compile(r'(filename=")(?![A-Za-z][\w+.-]*:|/)([^"]+)(")')
 
 
@@ -5762,7 +5775,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     "use_sim_time": use_sim_time,
                 }
             ],
-            additional_env=_foxglove_asset_env(robot_description_xml, robot_mesh_packages),
+            additional_env=_foxglove_asset_env(
+                robot_description_xml, {**robot_mesh_packages, **_sim_scene_package(hal_mode)}
+            ),
         )
         nodes.append(TimerAction(period=5.0, actions=[foxglove_bridge_node]))
 

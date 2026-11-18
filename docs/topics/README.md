@@ -17,7 +17,7 @@ and every non-literal `failure_bus.topic_for(<source>)` is `{source}`, a `Failur
 Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 `just lint` and pre-commit fail when this page is stale.
 
-## Topics (58)
+## Topics (59)
 
 | Name | Type | Publishers | Subscribers |
 |---|---|---|---|
@@ -67,6 +67,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/visual_slam/odometry` | `nav_msgs/Odometry` | packages/openral_slam_bringup/openral_slam_bringup/pycuvslam_node.py (main.PyCuVSLAMNode.__init__) [param `odometry_topic`] | — |
 | `/openral/viz/attachments` | `visualization_msgs/MarkerArray` | packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py (Bucket2MarkersNode.__init__) | — |
 | `/openral/viz/collisions` | `visualization_msgs/MarkerArray` | packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py (Bucket2MarkersNode.__init__) | — |
+| `/openral/viz/sim_scene` | `std_msgs/String` | python/hal/src/openral_hal/lifecycle.py (ManifestHALLifecycleNode._publish_sim_scene) | — |
 | `/openral/viz/static_geometry` | `visualization_msgs/MarkerArray` | packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py (Bucket2MarkersNode.__init__) | — |
 | `/openral/world_state_fast` | `openral_msgs/WorldStateStamped` | packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_nav2_bringup/openral_nav2_bringup/payload_scan_filter_node.py (main.PayloadScanFilterNode.__init__) [param `world_state_topic`]<br>packages/openral_octomap_bridge/src/octomap_voxel_bridge.hpp [param `world_state_topic`]<br>packages/openral_octomap_bridge/src/robot_self_filter.hpp [param `world_state_topic`]<br>tools/_nav2_costmap_silhouette_probe.py (SilhouetteProbe.__init__)<br>tools/_validation_matrix_monitor.py (Monitor.__init__) |
 | `/openral/world_state_slow` | `openral_msgs/WorldStateStamped` | packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) |

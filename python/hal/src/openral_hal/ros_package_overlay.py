@@ -27,7 +27,21 @@ from openral_hal._makermods_metal_assets import ensure_metal_description
 from openral_hal._openamrobot_platform_assets import ensure_openamrobot_description
 from openral_hal._openarm_description_assets import ensure_openarm_description
 
-__all__ = ["PUBLIC_ROS_PACKAGES", "fetch_public_package", "public_package_overlay"]
+__all__ = [
+    "PUBLIC_ROS_PACKAGES",
+    "SIM_SCENE_LIMIT_BYTES",
+    "SIM_SCENE_PACKAGE",
+    "fetch_public_package",
+    "public_package_overlay",
+    "sim_scene_package_root",
+]
+
+#: The package the Isaac sidecar writes the console's Sim scene GLB into (platform#133),
+#: registered in foxglove_bridge's overlay so a viewer fetches it as ``package://``.
+SIM_SCENE_PACKAGE = "openral_sim_scene"
+#: A Sim scene GLB larger than this is not served (the console greys the layer out).
+#: ponytail: a guess the tunnel takes it; tune once large assets are measured through it.
+SIM_SCENE_LIMIT_BYTES = 10_000_000
 
 #: Public description packages fetched on demand: ``{package: fetcher}``, each
 #: fetcher returning the package root (the directory holding ``package.xml``).
@@ -38,6 +52,17 @@ PUBLIC_ROS_PACKAGES: dict[str, Callable[[], Path]] = {
 }
 
 _INDEX = Path("share") / "ament_index" / "resource_index" / "packages"
+
+
+def _cache_dir() -> Path:
+    return Path(os.environ.get("OPENRAL_CACHE_DIR") or Path.home() / ".cache" / "openral")
+
+
+def sim_scene_package_root() -> Path:
+    """``$OPENRAL_CACHE_DIR/sim_scene``, created: the root of ``SIM_SCENE_PACKAGE``."""
+    root = _cache_dir() / "sim_scene"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
 
 
 def fetch_public_package(pkg: str) -> Path | None:
@@ -88,8 +113,7 @@ def public_package_overlay(urdf_xml: str, local: dict[str, Path] | None = None) 
     missing = [p for p in sorted(roots) if not _on_ament_index(p)]
     if not missing:
         return None
-    base = Path(os.environ.get("OPENRAL_CACHE_DIR") or Path.home() / ".cache" / "openral")
-    prefix = base / "ament_overlay"
+    prefix = _cache_dir() / "ament_overlay"
     (prefix / _INDEX).mkdir(parents=True, exist_ok=True)
     for pkg in missing:
         root = roots[pkg]()
