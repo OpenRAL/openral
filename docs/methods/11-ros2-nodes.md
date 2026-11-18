@@ -428,7 +428,8 @@ _Read-only Foxglove live-scene surface, hybrid with the OTel dashboard which kee
 - `outside_boxes(centers, boxes, pad_m) -> NDArray[np.bool_]` (bucket2_markers.py L229) — Mask of voxel centres outside every `(base_from_box, half_extents)` box grown by `pad_m`; the viewer's static-voxel filter.
 - `static_boxes(path) -> list[tuple[NDArray, NDArray]]` (bucket2_markers.py L251) — The declared box fixtures of a `StaticGeometry` YAML as `(base_from_box 4x4, half_extents)`.
 - `VIZ_CLOUD_MAX_POINTS: int` (bucket2_markers.py L68) — `40_000`; points a viewer's copy of a depth cloud keeps.
-- `VIZ_CLOUD_MAX_HZ: float` (bucket2_markers.py) — `2.0`; viewer copies of one cloud a second, at most (`viz_cloud_due`).
+- `VIZ_CLOUD_MAX_HZ: float` (bucket2_markers.py L73) — `2.0`; viewer copies of one cloud a second, at most (`viz_cloud_due`).
+- `viz_cloud_due(last_s, now_s, max_hz) -> bool` (bucket2_markers.py L76) — Pure: whether a viewer copy may go out at `now_s`, the last having gone at `last_s` (`None` = never); at most `max_hz` a second, `max_hz <= 0` lets every cloud through. The converter's `viz_cloud_max_hz` parameter (default `VIZ_CLOUD_MAX_HZ`) feeds it per viewer publisher.
 - `viz_cloud_topic(topic) -> str` (bucket2_markers.py L94) — the thinned viewer copy's topic: `/openral/<path>` → `/openral/viz/<path>` (`/openral/viz/cameras/<name>/points`, `/openral/viz/world_cloud/self_filtered_rgb`); any other topic (a pinned driver cloud) → `/openral/viz/cameras/<path with / as _>/points`.
 - `decimate_cloud(data, point_step, x_offset, max_points, width=0, row_step=0) -> tuple[bytes, int]` (bucket2_markers.py L114) — Pure: keeps at most `max_points` evenly spaced points with a finite x, every field byte for byte, skipping row padding; the converter's `camera_cloud_topics` → viewer clouds.
 - `COLLISION_MARKERS_TOPIC: str` (bucket2_markers.py L276) — `"/openral/viz/collisions"`; where each kernel stop is drawn (latched `MarkerArray`).
