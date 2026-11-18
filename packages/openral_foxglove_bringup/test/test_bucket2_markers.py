@@ -13,6 +13,7 @@ real numeric values; all assertions are on real numeric outputs.
 from __future__ import annotations
 
 import importlib.util
+import itertools
 import math
 import re
 from pathlib import Path
@@ -645,6 +646,19 @@ def test_padded_cloud_rows_are_skipped_when_thinning() -> None:
     assert count == width * height
     xs = np.frombuffer(data, dtype=np.float32).reshape(-1, 4)[:, 0].tolist()
     assert xs == list(range(0, 24, 4))
+
+
+def test_viewer_clouds_are_capped_to_a_rate_a_slow_link_carries() -> None:
+    """At 15 Hz in, 2 Hz out; the cap measures from the last cloud sent, not received."""
+    last, sent = None, []
+    for i in range(30):  # 2 s of a 15 Hz camera
+        now = i / 15
+        if _b2.viz_cloud_due(last, now, _b2.VIZ_CLOUD_MAX_HZ):
+            last = now
+            sent.append(now)
+    assert len(sent) == 4
+    assert all(b - a >= 0.5 for a, b in itertools.pairwise(sent))
+    assert _b2.viz_cloud_due(0.0, 0.01, 0.0)  # 0 turns the cap off
 
 
 def test_the_viewer_copy_of_a_camera_cloud_has_its_own_topic() -> None:

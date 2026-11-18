@@ -24,7 +24,8 @@
   ``/openral/cameras/<name>/points``, the deploy's own cloud, and the self-filtered
   colour cloud) → its :func:`viz_cloud_topic` (``/openral/viz/cameras/<name>/points``,
   ``/openral/viz/world_cloud/self_filtered_rgb``): the same cloud, every field kept,
-  thinned to ``viz_cloud_max_points`` finite points (:func:`decimate_cloud`). A
+  thinned to ``viz_cloud_max_points`` finite points (:func:`decimate_cloud`), at
+  most ``viz_cloud_max_hz`` a second (:func:`viz_cloud_due`). A
   full-resolution depth cloud (2 M points, 33 MB from a 1080p ZED) is octomap's input;
   viewers (the robot console over a tunnel, Foxglove) read this one. A source is
   subscribed only while its viewer copy has a subscriber.
@@ -59,11 +60,35 @@ __all__ = [
     "occupied_voxel_centers",
     "parse_attach_link_tf_frames",
     "static_geometry_markers",
+    "viz_cloud_due",
     "viz_cloud_topic",
 ]
 
 #: Points a viewer's copy of a depth cloud keeps (~0.6 MB at 16 bytes a point).
 VIZ_CLOUD_MAX_POINTS = 40_000
+
+#: Viewer copies of one cloud a second, at most. At camera rate (15-30 Hz) a single
+#: camera's copy is ~10-20 MB/s, more than a tunnel or Wi-Fi carries: the frames
+#: queue in socket buffers and a viewer sees the world seconds late. 2 Hz is ~1.3 MB/s.
+VIZ_CLOUD_MAX_HZ = 2.0
+
+
+def viz_cloud_due(last_s: float | None, now_s: float, max_hz: float) -> bool:
+    """Whether a viewer copy may go out at ``now_s``, the last one having gone at ``last_s``.
+
+    At most ``max_hz`` a second; ``max_hz <= 0`` lets every cloud through.
+
+    Example:
+        >>> (
+        ...     viz_cloud_due(None, 5.0, 2.0),
+        ...     viz_cloud_due(5.0, 5.3, 2.0),
+        ...     viz_cloud_due(5.0, 5.5, 2.0),
+        ... )
+        (True, False, True)
+        >>> viz_cloud_due(5.0, 5.01, 0.0)
+        True
+    """
+    return max_hz <= 0 or last_s is None or now_s - last_s >= 1.0 / max_hz
 
 
 def viz_cloud_topic(topic: str) -> str:
@@ -781,6 +806,12 @@ class Bucket2MarkersNode:
         self._viz_max = int(
             self._node.declare_parameter("viz_cloud_max_points", VIZ_CLOUD_MAX_POINTS).value
         )
+        self._viz_max_hz = float(
+            self._node.declare_parameter("viz_cloud_max_hz", VIZ_CLOUD_MAX_HZ).value
+        )
+        self._viz_last: dict[
+            int, float
+        ] = {}  # id(viewer publisher) -> monotonic s of its last cloud
         self._viz_qos = sensor_qos
         # [source topic, viewer publisher, source subscription or None]
         self._viz_clouds: list[list[Any]] = []
@@ -821,8 +852,14 @@ class Bucket2MarkersNode:
 
     def _on_camera_cloud(self, msg: Any, pub: Any) -> None:  # reason: rclpy types are untyped
         """Publish ``msg`` thinned to ``viz_cloud_max_points`` (see :func:`decimate_cloud`)."""
+        import time
+
         from sensor_msgs.msg import PointCloud2, PointField
 
+        # Steady time, like the viewer timer: a paused sim clock must not stall viewers.
+        now = time.monotonic()
+        if not viz_cloud_due(self._viz_last.get(id(pub)), now, self._viz_max_hz):
+            return  # dropped before thinning: a skipped frame costs nothing
         x = next((f for f in msg.fields if f.name == "x"), None)
         if x is None or x.datatype != PointField.FLOAT32 or msg.is_bigendian:
             return  # not a float32 little-endian xyz cloud: nothing a viewer reads
@@ -845,6 +882,7 @@ class Bucket2MarkersNode:
         out.data = data
         out.is_dense = True
         pub.publish(out)
+        self._viz_last[id(pub)] = now
 
     def _on_world_voxels(self, msg: OccupancyVoxels) -> None:
         """Convert OccupancyVoxels → PointCloud2 and publish."""
