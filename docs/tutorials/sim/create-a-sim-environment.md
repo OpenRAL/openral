@@ -288,6 +288,8 @@ environment USD a rigid body and list it in `stage_objects`: that also keeps it 
 layer, which would otherwise draw it where it started. Scenes built on NVIDIA's Isaac assets
 (`isaac:` paths) show the layer greyed out, since those assets may not be converted.
 
+![The Sim scene layer: the AMR shelf aisle's racks drawn translucent around the robot, with the lidar map and depth clouds on top](images/sim-scene-layer.webp)
+
 It prints a per-episode summary line and exits `0`. The same pattern drives
 `openral benchmark run`. `openral deploy run`, the hardware sibling, consumes a
 `DeployScene` workcell YAML and lets the reasoner select the policy at runtime.
