@@ -700,11 +700,15 @@ class SimAttachedHAL:
     def _export_sim_scene(self) -> dict[str, object]:
         """What ``/openral/viz/sim_scene`` carries: the static scene GLB's URI, or why not.
 
-        Asks the env (the Isaac sidecar, at its reset pose) to write the GLB into
-        ``SIM_SCENE_PACKAGE``, which deploy_e2e registered with foxglove_bridge.
-        ``{"uri", "bytes", "triangles"}`` or ``{"note"}``; an export failure is a note,
-        never a failed connect: the layer is a viewer convenience (platform#133).
+        Asks the env (the Isaac sidecar, at its reset pose) for the GLB and writes it as
+        ``<sha12>.glb`` into ``SIM_SCENE_PACKAGE`` (registered with foxglove_bridge by
+        deploy_e2e), replacing any GLB an earlier scene left there: the package holds only
+        what this deploy's viewers may fetch. ``{"uri", "bytes", "triangles"}`` or
+        ``{"note"}``; an export failure is a note, never a failed connect: the layer is a
+        viewer convenience (platform#133).
         """
+        import hashlib  # noqa: PLC0415  # reason: sim only
+
         from openral_hal.ros_package_overlay import (  # noqa: PLC0415  # reason: sim only
             SIM_SCENE_LIMIT_BYTES,
             SIM_SCENE_PACKAGE,
@@ -712,18 +716,25 @@ class SimAttachedHAL:
         )
 
         try:
-            out = self._env.scene_mesh(  # type: ignore[attr-defined]  # reason: Isaac only, hasattr-gated in connect
-                str(sim_scene_package_root()), SIM_SCENE_LIMIT_BYTES
-            )
+            out = self._env.scene_mesh(SIM_SCENE_LIMIT_BYTES)  # type: ignore[attr-defined]  # reason: Isaac only, hasattr-gated in connect
+            glb = out.get("glb")
+            if not isinstance(glb, bytes):
+                return {"note": str(out.get("note") or "no static scene")}
+            name = f"{hashlib.sha256(glb).hexdigest()[:12]}.glb"
+            root = sim_scene_package_root()
+            for old in root.glob("*.glb"):
+                if old.name != name:
+                    old.unlink(missing_ok=True)
+            tmp = root / f".{name}.tmp"
+            tmp.write_bytes(glb)
+            tmp.replace(root / name)
         except Exception as exc:  # reason: viz only, see docstring
-            out = {"note": f"export failed: {type(exc).__name__}: {exc}"}
-        if out.get("file"):
-            return {
-                "uri": f"package://{SIM_SCENE_PACKAGE}/{out['file']}",
-                "bytes": int(out.get("bytes", 0)),
-                "triangles": int(out.get("triangles", 0)),
-            }
-        return {"note": str(out.get("note") or out.get("error") or "no static scene")}
+            return {"note": f"export failed: {type(exc).__name__}: {exc}"}
+        return {
+            "uri": f"package://{SIM_SCENE_PACKAGE}/{name}",
+            "bytes": len(glb),
+            "triangles": int(out.get("triangles", 0)),
+        }
 
     def _check_time_base(self) -> None:
         """Refuse an env whose step is not one control period of the robot.

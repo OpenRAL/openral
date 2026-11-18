@@ -349,10 +349,17 @@ class SidecarClient:
     def call(self, endpoint: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
         """One REQ/REP round trip; raise on a sidecar-side or transport fault."""
         import msgpack  # type: ignore[import-not-found,import-untyped,unused-ignore]  # reason: opt-in sidecar group
+        import zmq  # type: ignore[import-not-found,import-untyped,unused-ignore]  # reason: opt-in sidecar group
 
         msg = {"endpoint": endpoint, "data": data or {}}
         self._socket.send(msgpack.packb(msg, default=encode_ndarray, use_bin_type=True))
-        raw = self._socket.recv()
+        try:
+            raw = self._socket.recv()
+        except zmq.Again:
+            # A REQ socket whose recv timed out refuses every later send (EFSM):
+            # reopen it so one slow call does not wedge the rest of the session.
+            self._init_socket()
+            raise
         reply = msgpack.unpackb(raw, object_hook=decode_ndarray, raw=False)
         # A sidecar-side endpoint exception (GPU fault, IK error, …) is a RUNTIME
         # fault, not a config error — type it so callers can tell it apart from

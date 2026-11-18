@@ -398,7 +398,7 @@ def _serve(
             elif endpoint == "static_colliders":
                 reply = scene.static_collider_boxes()
             elif endpoint == "scene_mesh":
-                reply = scene.scene_mesh(str(data["out_dir"]), int(data["limit_bytes"]))
+                reply = scene.scene_mesh(int(data["limit_bytes"]))
             elif endpoint == "scene_ground_truth":
                 reply = scene.scene_ground_truth()
             elif endpoint == "link_poses":

@@ -4059,37 +4059,20 @@ class IsaacManifestScene(IsaacSceneBase):
             boxes.append(entry)
         return {"frame": "base_frame", "boxes": boxes}
 
-    def scene_mesh(self, out_dir: str, limit_bytes: int) -> dict[str, Any]:
-        """Write the stage's static part as a GLB in the odometry frame, for the console (platform#133).
+    def scene_mesh(self, limit_bytes: int) -> dict[str, Any]:
+        """The stage's static part as GLB bytes in the odometry frame, for the console (platform#133).
 
-        Static = not the robot, not ``/World/objects/**`` or any declared object, not a
-        ``link_attachments`` prim (it rides a link), and not under an enabled,
-        non-kinematic rigid body (it can move; ``scenes/README.md``). Invisible and
-        guide/proxy-purpose prims are skipped. ``UsdGeom.Mesh`` is fan-triangulated and
-        Gprims tessellated (``scene_glb.gprim_mesh``); one primitive per base colour
-        (``displayColor``, else the bound material's constant diffuse, else neutral grey).
-        Vertices are in the odometry frame, which starts at the spawned ``base_frame``
-        (``_base_pose`` is the base's pose in it), so a fixed arm's export is in ``base_frame``.
-
-        A stage that loads any layer from NVIDIA's Isaac asset root is not exported: its
-        licence bars converting those assets (platform#133 spike). Returns
-        ``{"file": "<sha12>.glb", "bytes", "triangles"}`` (written into ``out_dir``),
-        or ``{"note": reason}`` for an NVIDIA stage or a GLB over ``limit_bytes``.
+        ``scene_glb.static_scene_glb`` walks ``/World`` minus the robot, ``/World/objects/**``,
+        every declared object and every ``link_attachments`` prim, in the odometry frame:
+        it starts at the spawned ``base_frame`` (``_base_pose`` is the base's pose in it), so
+        a fixed arm's export is in ``base_frame``. NVIDIA's asset root (no reachability probe)
+        is passed so a stage whose exported prims come from it is refused (licence).
+        Returns ``{"glb": bytes, "triangles"}``, or ``{"note": reason}`` (NVIDIA assets,
+        nothing static, or a GLB over ``limit_bytes``). The bytes travel in the reply, so the
+        sidecar need not share a filesystem with the HAL.
         """
-        import hashlib
-        import os
-
         from isaacsim.core.utils.stage import get_current_stage
-        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
-        from scene_glb import fan_triangles, gprim_mesh, write_glb
-
-        stage = get_current_stage()
-        nvidia = self._nvidia_asset_layers(stage)
-        if nvidia:
-            print(
-                f"[isaac_manifest_scene] scene_mesh: NVIDIA asset layers {nvidia[:3]}", flush=True
-            )
-            return {"note": "uses NVIDIA Isaac Sim assets, which may not be converted"}
+        from scene_glb import static_scene_glb
 
         x, y, yaw = (float(v) for v in self._base_pose)
         odom_from_base = pose_matrix((x, y, 0.0), _yaw_quat(yaw))
@@ -4099,133 +4082,33 @@ class IsaacManifestScene(IsaacSceneBase):
         skip += [
             f"/World/environment/{a['prim']}" for a in self._spec.get("link_attachments") or []
         ]
-        purposes = {UsdGeom.Tokens.default_, UsdGeom.Tokens.render}
-        moving: dict[str, bool] = {}
-
-        def moves(prim: Any) -> bool:
-            key = str(prim.GetPath())
-            if key not in moving:
-                own = False
-                if prim.HasAPI(UsdPhysics.RigidBodyAPI):
-                    api = UsdPhysics.RigidBodyAPI(prim)
-                    own = api.GetRigidBodyEnabledAttr().Get() is not False and not bool(
-                        api.GetKinematicEnabledAttr().Get()
-                    )
-                parent = prim.GetParent()
-                moving[key] = own or (
-                    bool(parent) and str(parent.GetPath()) != "/" and moves(parent)
-                )
-            return moving[key]
-
-        def colour(prim: Any) -> tuple[float, float, float]:
-            dc = UsdGeom.Gprim(prim).GetDisplayColorAttr().Get()
-            if dc is not None and len(dc):
-                return tuple(float(c) for c in dc[0])  # type: ignore[return-value]
-            mat, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
-            if mat:
-                for child in Usd.PrimRange(mat.GetPrim()):
-                    shader = UsdShade.Shader(child)
-                    for name in ("diffuseColor", "diffuse_color_constant"):
-                        inp = shader.GetInput(name) if shader else None
-                        val = inp.Get() if inp and not inp.HasConnectedSource() else None
-                        if val is not None:
-                            return tuple(float(c) for c in val)  # type: ignore[return-value]
-            return (0.7, 0.7, 0.7)
-
-        groups: dict[tuple[float, ...], tuple[list[Any], list[Any], list[int]]] = {}
-        triangles = 0
-        it = iter(Usd.PrimRange(stage.GetPrimAtPath("/World"), Usd.TraverseInstanceProxies()))
-        for prim in it:
-            path = str(prim.GetPath())
-            if any(path == s or path.startswith(s + "/") for s in skip) or moves(prim):
-                it.PruneChildren()
-                continue
-            img = UsdGeom.Imageable(prim)
-            if img and (
-                img.ComputeVisibility() == UsdGeom.Tokens.invisible
-                or img.ComputePurpose() not in purposes
-            ):
-                it.PruneChildren()
-                continue
-            kind = str(prim.GetTypeName())
-            if kind == "Mesh":
-                mesh = UsdGeom.Mesh(prim)
-                pts = np.asarray(mesh.GetPointsAttr().Get() or [], dtype=np.float64).reshape(-1, 3)
-                tri = fan_triangles(
-                    mesh.GetFaceVertexCountsAttr().Get() or [],
-                    mesh.GetFaceVertexIndicesAttr().Get() or [],
-                )
-            else:
-
-                def attr(n: str, d: Any, prim: Any = prim) -> Any:
-                    a = prim.GetAttribute(n)
-                    v = a.Get() if a else None
-                    return d if v is None else v
-
-                capsule = kind == "Capsule"
-                got = gprim_mesh(
-                    kind,
-                    size=float(attr("size", 2.0)),
-                    radius=float(attr("radius", 0.5 if capsule else 1.0)),
-                    height=float(attr("height", 1.0 if capsule else 2.0)),
-                    axis=str(attr("axis", "Z")),
-                )
-                if got is None:
-                    continue
-                pts, tri = got
-            if not len(pts) or not len(tri):
-                continue
-            world_from_local = np.asarray(
-                UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default()),
-                dtype=np.float64,
-            ).T  # USD rows
-            m = odom_from_world @ world_from_local
-            rgb = tuple(round(c * 16) / 16 for c in colour(prim))
-            verts, tris, base = groups.setdefault(rgb, ([], [], [0]))
-            verts.append(pts @ m[:3, :3].T + m[:3, 3])
-            tris.append(tri + base[0])
-            base[0] += len(pts)
-            triangles += len(tri)
-
-        glb = write_glb([
-            ((*rgb, 1.0), np.vstack(v), np.vstack(t)) for rgb, (v, t, _) in groups.items()
-        ])  # fmt: skip
-        print(
-            f"[isaac_manifest_scene] scene_mesh: {triangles} triangles, {len(groups)} colours, "
-            f"{len(glb) / 1e6:.1f} MB",
-            flush=True,
+        out = static_scene_glb(
+            get_current_stage(), odom_from_world, skip, self._nvidia_asset_root()
         )
-        if len(glb) > limit_bytes:
+        print(f"[isaac_manifest_scene] scene_mesh: {out.get('log')}", flush=True)
+        out.pop("log", None)
+        glb = out.get("glb")
+        if isinstance(glb, bytes) and len(glb) > limit_bytes:
             return {
                 "note": f"scene is {len(glb) / 1e6:.1f} MB, over the {limit_bytes / 1e6:.0f} MB limit"
             }
-        name = f"{hashlib.sha256(glb).hexdigest()[:12]}.glb"
-        os.makedirs(out_dir, exist_ok=True)
-        tmp = os.path.join(out_dir, f".{name}.tmp")
-        with open(tmp, "wb") as fh:
-            fh.write(glb)
-        os.replace(tmp, os.path.join(out_dir, name))
-        return {"file": name, "bytes": len(glb), "triangles": triangles}
+        return out
 
     @staticmethod
-    def _nvidia_asset_layers(stage: Any) -> list[str]:
-        """The stage's used layers that come from NVIDIA's Isaac asset root, if it has one."""
+    def _nvidia_asset_root() -> str:
+        """NVIDIA's configured Isaac asset root, without the reachability probe; "" if unset.
+
+        ``skip_check=True``: the licence guard needs the prefix, not a reachable server, and
+        must not turn off when a probe times out.
+        """
         try:
-            try:
-                from isaacsim.storage.native import get_assets_root_path
-            except ImportError:  # Isaac Sim < 5.0
-                from isaacsim.core.utils.nucleus import get_assets_root_path
-            root = str(get_assets_root_path() or "").rstrip("/")
-        except Exception:  # reason: offline host, no asset root to match
-            root = ""
-        if not root:
-            return []
-        return [
-            str(layer.identifier)
-            for layer in stage.GetUsedLayers()
-            if str(layer.identifier).startswith(root)
-            or str(getattr(layer, "realPath", "") or "").startswith(root)
-        ]
+            from isaacsim.storage.native import get_assets_root_path
+        except ImportError:  # Isaac Sim < 5.0
+            from isaacsim.core.utils.nucleus import get_assets_root_path
+        try:
+            return str(get_assets_root_path(skip_check=True) or "").rstrip("/")
+        except RuntimeError:  # the setting is unset: no NVIDIA root on this install
+            return ""
 
     def scene_ground_truth(self) -> dict[str, Any]:
         """The declared objects and the active prompt's destinations as base-frame boxes.

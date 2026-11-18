@@ -2333,6 +2333,9 @@ if _ROS2_AVAILABLE:
         into (issue #191).
         """
 
+        #: ``/openral/viz/sim_scene``'s latched publisher while active (Isaac sims only).
+        _sim_scene_pub: Any = None
+
         def __init__(
             self,
             node_name: str,
@@ -3012,7 +3015,8 @@ if _ROS2_AVAILABLE:
                 reliability=QoSReliabilityPolicy.RELIABLE,
                 durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
             )
-            self._sim_scene_pub = self.create_publisher(String, "/openral/viz/sim_scene", qos)
+            if self._sim_scene_pub is None:  # torn down on deactivate / cleanup
+                self._sim_scene_pub = self.create_publisher(String, "/openral/viz/sim_scene", qos)
             payload = {**scene, "frame_id": frame} if "uri" in scene else dict(scene)
             self._sim_scene_pub.publish(String(data=json.dumps(payload)))
             self.get_logger().info(f"sim scene layer: {payload}")
@@ -3253,6 +3257,9 @@ if _ROS2_AVAILABLE:
             if self._vision_attachment is not None:
                 self._vision_attachment.teardown()
                 self._vision_attachment = None
+            if self._sim_scene_pub is not None:
+                self.destroy_publisher(self._sim_scene_pub)
+                self._sim_scene_pub = None
 
         def on_cleanup_pre_disconnect(self) -> None:
             """Idempotent teardown of the sensor + mobile-base bridges + ResetToPose."""
@@ -3267,6 +3274,9 @@ if _ROS2_AVAILABLE:
             if self._vision_attachment is not None:
                 self._vision_attachment.teardown()
                 self._vision_attachment = None
+            if self._sim_scene_pub is not None:
+                self.destroy_publisher(self._sim_scene_pub)
+                self._sim_scene_pub = None
             if self._reset_to_pose_srv is not None:
                 self.destroy_service(self._reset_to_pose_srv)
                 self._reset_to_pose_srv = None
