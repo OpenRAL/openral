@@ -64,6 +64,7 @@ scene:
         dynamic: false
       - name: cube  # resting on the desk: half edge 0.0125
         usd: "scenes/sim/assets/makermods_metal_pick_place/cube.usda"
+        dynamic: true
         xyz: [0.267, -0.069, 0.0155]
     # The MuJoCo twin's start pose (dataset median first state, deg -> rad; stroke 2.5).
     # joint2 / joint3 sit < 1 mrad past their 0 limits in the data: clamped to 0.

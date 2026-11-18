@@ -289,6 +289,7 @@ def test_objects_resolve_their_usd_and_key_the_sidecar() -> None:
         usd="isaac:Isaac/Props/YCB/Axis_Aligned_Physics/003_cracker_box.usd",
         name="cracker_box",
         xyz=(-0.45, 4.8, 0.4),
+        dynamic=True,
     )
     payload = json.loads(_objects_json([box]))
     assert payload == [
@@ -310,7 +311,9 @@ def test_objects_resolve_their_usd_and_key_the_sidecar() -> None:
     )
     assert a != b
     with pytest.raises(ROSConfigError, match=r"objects\[mesh\]\.usd"):
-        _objects_json([IsaacSceneObject(usd="props/mesh.obj", name="mesh", xyz=(0, 0, 0))])
+        _objects_json(
+            [IsaacSceneObject(usd="props/mesh.obj", name="mesh", xyz=(0, 0, 0), dynamic=True)]
+        )
 
 
 def test_a_normalised_gripper_spans_the_whole_urdf_travel() -> None:
@@ -344,7 +347,7 @@ def test_spawn_args_never_look_like_option_flags() -> None:
 def test_object_names_must_be_unique_and_not_reserved() -> None:
     from openral_sim import SCENES
 
-    box = {"usd": "isaac:Isaac/Props/x.usd", "xyz": [0, 0, 0]}
+    box = {"usd": "isaac:Isaac/Props/x.usd", "xyz": [0, 0, 0], "dynamic": True}
     for names, match in ((["box", "box"], "duplicate"), (["robot"], "reserved")):
         with pytest.raises(ROSConfigError, match=match):
             SCENES.validate_options("isaac_sim", {"objects": [{**box, "name": n} for n in names]})

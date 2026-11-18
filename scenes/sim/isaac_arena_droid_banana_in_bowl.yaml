@@ -97,9 +97,11 @@ scene:
         dynamic: false
       - name: banana
         usd: "isaac:Isaac/IsaacLab/Arena/assets/object_library/srl_robolab_assets/objects/ycb/banana.usd"
+        dynamic: true
         xyz: [0.50973, -0.11581, 0.02118]
       - name: bowl
         usd: "isaac:Isaac/IsaacLab/Arena/assets/object_library/srl_robolab_assets/objects/ycb/bowl.usd"
+        dynamic: true
         xyz: [0.56110, 0.15261, 0.03035]
     initial_joint_positions:
       panda_joint1: 0.0

@@ -373,7 +373,7 @@ checkout. The first run without the flag ends it. For several seeds of one scene
         usd: "isaac:Isaac/Props/YCB/Axis_Aligned_Physics/003_cracker_box.usd"
         xyz: [-0.45, 4.80, 0.40]   # world frame; dropped a few cm, it settles
         yaw: 0.0                   # rad, optional
-        dynamic: true              # graspable rigid body (default) vs static prop
+        dynamic: true              # required: graspable rigid body (true) or fixed prop (false)
 ```
 
 A local USD works as the environment too: the MakerMods Metal examples
@@ -412,6 +412,24 @@ may follow one: `relative_to: plate` makes `min_xyz` / `max_xyz` a box in the
 plate's frame at each graded step: centred on the plate, on the world axes turned
 by the plate's declared yaw when it rests at its declared pose, and turning and
 tilting with the plate from there (a pen holder the arm turns turns its box).
+
+**Static vs movable.** One rule, read from the USD physics, decides what can move:
+
+| | Movable (`dynamic`) | Static |
+|---|---|---|
+| In the USD | an enabled, non-kinematic `UsdPhysics.RigidBodyAPI` on the prim or an ancestor | no rigid body, or one with `physics:kinematicEnabled = true` or `physics:rigidBodyEnabled = false` |
+| Spawned from `objects` | `dynamic: true` (gets a rigid body and convex hulls if the asset has none) | `dynamic: false` (a fixed prop, such as the DROID stand) |
+| Already in the environment USD | named in `stage_objects` (must carry a rigid body) | everything else in the stage |
+
+Every `objects` entry states `dynamic`: it has no default, so a scene that omits it fails at
+load, and the YAML alone tells a reader which objects move. The rule is what
+`static_colliders` uses to flag a collider `dynamic`, and what the robot console's planned
+Sim scene layer ([OpenRAL/platform#133](https://github.com/OpenRAL/platform/issues/133))
+will use to draw only the static scene. When authoring an environment USD, give a fixture
+that never moves (a table, a shelf, a wall) no rigid body, or a kinematic one; a dynamic body
+counts as movable even if the task never touches it. A third-party stage may not follow
+this: Arena's maple table is a dynamic body, and the LeIsaac kitchen's drawers and props are
+movable, so they are left out of static geometry.
 
 **Stages from older Isaac releases or other tools** may need two opt-in load
 fixes, both logged at boot: `strip_xform_colliders: true` removes

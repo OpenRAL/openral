@@ -926,6 +926,7 @@ class IsaacSceneObject(BaseModel):
         ...     usd="isaac:Isaac/Props/YCB/Axis_Aligned_Physics/003_cracker_box.usd",
         ...     name="cracker_box",
         ...     xyz=(-0.4, 5.0, 0.35),
+        ...     dynamic=True,
         ... ).dynamic
         True
     """
@@ -938,7 +939,7 @@ class IsaacSceneObject(BaseModel):
     roll: float = 0.0
     pitch: float = 0.0
     yaw: float = 0.0
-    dynamic: bool = True
+    dynamic: bool
     pose_noise: IsaacObjectPoseNoise | None = None
 
 

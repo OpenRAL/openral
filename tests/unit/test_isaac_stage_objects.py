@@ -153,7 +153,9 @@ def test_stage_objects_are_graded_like_scene_objects() -> None:
 
 def test_a_stage_object_name_may_not_repeat_an_object_name() -> None:
     opts = _options()
-    opts["objects"] = [{"name": "plate", "usd": "isaac:Isaac/Props/plate.usd", "xyz": [0, 0, 0]}]
+    opts["objects"] = [
+        {"name": "plate", "usd": "isaac:Isaac/Props/plate.usd", "xyz": [0, 0, 0], "dynamic": True}
+    ]
     with pytest.raises(ValidationError, match="duplicate names"):
         IsaacSimOptions.model_validate(opts)
 
@@ -448,6 +450,7 @@ def test_an_attachment_carries_only_dynamic_scene_objects_once() -> None:
         "name": "carton",
         "usd": "isaac:Isaac/Props/YCB/Axis_Aligned_Physics/003_cracker_box.usd",
         "xyz": [0.0, 0.0, 0.5],
+        "dynamic": True,
     }
     tote = {"prim": "Tote", "link": "lift_carriage_link", "carries": ["carton"]}
     opts = IsaacSimOptions.model_validate({"objects": [carton], "link_attachments": [tote]})
@@ -461,3 +464,15 @@ def test_an_attachment_carries_only_dynamic_scene_objects_once() -> None:
     lid = {"prim": "Lid", "link": "lift_carriage_link", "carries": ["carton"]}
     with pytest.raises(ValidationError, match="carried twice"):
         IsaacSimOptions.model_validate({"objects": [carton], "link_attachments": [tote, lid]})
+
+
+def test_a_scene_object_must_say_whether_it_is_dynamic() -> None:
+    """``dynamic`` has no default: every spawned object is declared movable or static."""
+    obj = {"name": "box", "usd": "isaac:Isaac/Props/box.usd", "xyz": [0.0, 0.0, 0.1]}
+    with pytest.raises(ValidationError, match="dynamic"):
+        IsaacSimOptions.model_validate({"objects": [obj]})
+    assert (
+        not IsaacSimOptions.model_validate({"objects": [{**obj, "dynamic": False}]})
+        .objects[0]
+        .dynamic
+    )

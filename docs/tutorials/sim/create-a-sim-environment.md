@@ -254,6 +254,34 @@ The registries reject unknown ids with a list of valid ones. Run it:
 openral sim run --config my_config.yaml --rskill rskills/<your_skill>
 ```
 
+### Isaac Sim scenes: static vs movable objects
+
+An Isaac Sim scene (`backend: isaacsim`) separates what can move from what can't. Movable
+objects carry an enabled, non-kinematic USD rigid body; everything else is static. In the
+YAML:
+
+```yaml
+scene:
+  backend: isaacsim
+  assets_uri: "path/to/environment.usd"  # static fixtures: no rigid body (or kinematic)
+  backend_options:
+    objects:
+      - name: cube                       # spawned, graspable
+        usd: "path/to/cube.usda"
+        dynamic: true                    # required on every entry
+        xyz: [0.4, 0.0, 0.8]
+      - name: marker                     # spawned, fixed prop
+        usd: "path/to/marker.usda"
+        dynamic: false
+        xyz: [0.5, 0.1, 0.75]
+    stage_objects:                       # rigid bodies already inside the environment USD
+      - {name: plate, prim: Plate/Plate}
+```
+
+`dynamic` has no default: leaving it out fails at load. See
+[Static vs movable](https://github.com/OpenRAL/openral/blob/master/scenes/README.md) in
+`scenes/README.md` for the full rule and how to author fixtures in an environment USD.
+
 It prints a per-episode summary line and exits `0`. The same pattern drives
 `openral benchmark run`. `openral deploy run`, the hardware sibling, consumes a
 `DeployScene` workcell YAML and lets the reasoner select the policy at runtime.

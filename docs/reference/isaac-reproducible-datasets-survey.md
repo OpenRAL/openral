@@ -315,6 +315,7 @@ scene:
     objects:
       - name: banana
         usd: "isaac:Isaac/IsaacLab/Arena/assets/object_library/srl_robolab_assets/objects/ycb/banana.usd"
+        dynamic: true
         xyz: [0.45, -0.15, 0.05]   # TBD: table-top height and reachable layout to be measured
       - name: bowl
         usd: "isaac:Isaac/IsaacLab/Arena/assets/object_library/srl_robolab_assets/objects/ycb/bowl.usd"
