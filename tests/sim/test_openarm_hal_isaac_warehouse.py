@@ -357,8 +357,14 @@ def test_each_image_carries_the_sim_time_it_shows(env: Any) -> None:
     for sim_ns, times, _ in rows:
         assert all(t <= sim_ns for t in times.values()), "a frame claims a time not yet simulated"
     for cam in cams:
+        # Right after the reset the pipeline has nothing newer to show than the reset state,
+        # so its first frames are re-renders of that state, stamped with its time. A temporal
+        # upscaler may shade a re-render differently (DLSS on an aarch64 GB10: mean |diff|
+        # ~1/255), so those frames share a time but not their pixels; past them, one time is
+        # one delivered frame.
+        reset_time = rows[0][1][cam]
         for (_, t0, img0), (_, t1, img1) in itertools.pairwise(rows):
-            if t1[cam] == t0[cam]:
+            if t1[cam] == t0[cam] != reset_time:
                 assert np.array_equal(img1[cam], img0[cam]), f"{cam}: one frame time, two images"
     diff = [0.0] + [
         float(np.mean(np.abs(rows[i][2][mover] - rows[i - 1][2][mover])))
