@@ -60,7 +60,10 @@ def _cache_dir() -> Path:
     An overlay link to a relative path would resolve against the overlay's own directory.
     """
     base = Path(os.environ.get("OPENRAL_CACHE_DIR") or Path.home() / ".cache" / "openral")
-    return base.expanduser().absolute()
+    try:
+        return base.expanduser().absolute()
+    except RuntimeError as exc:  # "~nosuchuser/…": callers treat OSError as "no overlay"
+        raise OSError(f"OPENRAL_CACHE_DIR={base}: {exc}") from exc
 
 
 def sim_scene_package_root() -> Path:

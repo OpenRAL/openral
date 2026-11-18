@@ -4065,12 +4065,10 @@ class IsaacManifestScene(IsaacSceneBase):
             get_current_stage(), odom_from_world, skip, self._nvidia_asset_root(), limit_bytes
         )
         print(f"[isaac_manifest_scene] scene_mesh: {out.get('log')}", flush=True)
-        out.pop("log", None)
         glb = out.get("glb")
         if isinstance(glb, bytes) and len(glb) > limit_bytes:
-            return {
-                "note": f"scene is {len(glb) / 1e6:.1f} MB, over the {limit_bytes / 1e6:.0f} MB limit"
-            }
+            mb = f"scene is {len(glb) / 1e6:.1f} MB, over the {limit_bytes / 1e6:.0f} MB limit"
+            return {"note": mb, "log": out.get("log")}
         return out
 
     @staticmethod

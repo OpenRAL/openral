@@ -234,19 +234,17 @@ def write_glb(primitives: list[tuple[tuple[float, float, float, float], Any, Any
 def diffuse_attrs(material: Any, *, create: bool = False) -> list[Any]:
     """The attributes that hold a ``UsdShade.Material``'s constant diffuse colour.
 
-    The Material's own ``diffuseColor`` interface input, then each shader's
-    ``diffuseColor`` (UsdPreviewSurface) or ``diffuse_color_constant`` (OmniPBR): the
-    attribute its connection resolves to (Isaac's URDF importer wires the shader to the
-    interface input), else the input's own. ``create`` adds a ``diffuseColor`` input to a
-    UsdPreviewSurface that has none, for a caller that writes the colour. Read with
-    ``diffuse_color``, written by ``recolor_robot_materials``; one attribute per path.
+    Each shader's ``diffuseColor`` (UsdPreviewSurface) or ``diffuse_color_constant``
+    (OmniPBR) first: the input its connection resolves to (Isaac's URDF importer wires the
+    shader to a Material interface input), else the input's own; then the Material's own
+    ``diffuseColor`` interface input. Only writable inputs: a connection that resolves to
+    a computed output (a texture's ``rgb``) contributes nothing. ``create`` adds a
+    ``diffuseColor`` input to a UsdPreviewSurface that has none, for a caller that writes
+    the colour. Read with ``diffuse_source``, written by ``recolor_robot_materials``.
     """
     from pxr import Sdf, Usd, UsdShade
 
     out: dict[str, Any] = {}
-    iface = material.GetInput("diffuseColor")
-    if iface:
-        out[str(iface.GetAttr().GetPath())] = iface.GetAttr()
     for child in Usd.PrimRange(material.GetPrim()):
         shader = UsdShade.Shader(child)
         if not shader:
@@ -261,27 +259,45 @@ def diffuse_attrs(material: Any, *, create: bool = False) -> list[Any]:
             attrs = (
                 inp.GetValueProducingAttributes() if inp.HasConnectedSource() else [inp.GetAttr()]
             )
-            out.update((str(a.GetPath()), a) for a in attrs)
+            out.update((str(a.GetPath()), a) for a in attrs if UsdShade.Input.IsInput(a))
+    iface = material.GetInput("diffuseColor")
+    if iface:
+        out.setdefault(str(iface.GetAttr().GetPath()), iface.GetAttr())
     return list(out.values())
 
 
-def diffuse_color(prim: Any) -> tuple[float, float, float]:
-    """A prim's base colour: ``displayColor``, else its bound material's (``diffuse_attrs``).
+GREY = (0.7, 0.7, 0.7)
 
-    Neutral grey when neither holds a value.
+
+def diffuse_source(prim: Any) -> tuple[tuple[float, float, float], Any]:
+    """A prim's base colour and the material attribute it came from.
+
+    ``displayColor`` (flattened, so an indexed primvar resolves) with ``None``; else the
+    first value among its bound material's ``diffuse_attrs``, with that attribute; else
+    ``GREY`` with ``None``.
     """
     from pxr import UsdGeom, UsdShade
 
     pv = UsdGeom.PrimvarsAPI(prim).GetPrimvar("displayColor")
-    dc = pv.ComputeFlattened() if pv and pv.HasValue() else None  # indexed primvars resolved
+    dc = pv.ComputeFlattened() if pv and pv.HasValue() else None
     if dc is not None and len(dc):
-        return (float(dc[0][0]), float(dc[0][1]), float(dc[0][2]))
+        return (float(dc[0][0]), float(dc[0][1]), float(dc[0][2])), None
     mat, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
     for attr in diffuse_attrs(mat) if mat else []:
         val = attr.Get()
         if val is not None:
-            return (float(val[0]), float(val[1]), float(val[2]))
-    return (0.7, 0.7, 0.7)
+            return (float(val[0]), float(val[1]), float(val[2])), attr
+    return GREY, None
+
+
+def diffuse_color(prim: Any) -> tuple[float, float, float]:
+    """A prim's base colour (``diffuse_source`` without the attribute)."""
+    return diffuse_source(prim)[0]
+
+
+def _under(path: str, root: str) -> bool:
+    """``path`` is ``root`` or below it (at a ``/`` boundary); never for an empty root."""
+    return bool(root) and (path == root or path.startswith(root + "/"))
 
 
 def static_scene_glb(
@@ -338,6 +354,8 @@ def static_scene_glb(
     unsupported: dict[str, int] = {}
     triangles = 0
     vertices = 0
+    nvidia_colours = 0
+    root_dir = nvidia_root.rstrip("/")
     root = stage.GetPrimAtPath("/World")
     it = iter(Usd.PrimRange(root, Usd.TraverseInstanceProxies())) if root else iter(())
     for prim in it:
@@ -391,7 +409,16 @@ def static_scene_glb(
             dtype=np.float64,
         ).T  # USD rows
         m = m_frame @ world_from_local
-        rgb = tuple(round(min(max(c, 0.0), 1.0) * 16) / 16 for c in diffuse_color(prim))
+        colour, source = diffuse_source(prim)
+        if source is not None and any(
+            _under(p, root_dir)
+            for spec in source.GetPropertyStack()
+            for p in (spec.layer.identifier, spec.layer.realPath)
+            if p
+        ):
+            colour = GREY  # an NVIDIA material's colour is not baked in (licence)
+            nvidia_colours += 1
+        rgb = tuple(round(min(max(c, 0.0), 1.0) * 16) / 16 for c in colour)
         verts, tris, base = groups.setdefault(rgb, ([], [], [0]))
         verts.append(pts @ m[:3, :3].T + m[:3, 3])
         tris.append(tri + base[0])
@@ -406,10 +433,9 @@ def static_scene_glb(
             }
 
     skipped = f", unsupported {unsupported}" if unsupported else ""
-    root_dir = nvidia_root.rstrip("/")
-    nvidia = sorted(
-        lay for lay in layers if root_dir and (lay == root_dir or lay.startswith(root_dir + "/"))
-    )
+    if nvidia_colours:
+        skipped += f", {nvidia_colours} NVIDIA material colours drawn grey"
+    nvidia = sorted(lay for lay in layers if _under(lay, root_dir))
     if nvidia:
         return {
             "note": "uses NVIDIA Isaac Sim assets, which may not be converted",

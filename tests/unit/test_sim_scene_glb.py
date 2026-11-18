@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import struct
 import sys
-import types
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -122,6 +121,33 @@ def test_static_scene_keeps_fixtures_and_drops_what_moves_or_is_skipped(tmp_path
     # A layer beside the root, not under it, is not NVIDIA's.
     near = static_scene_glb(stage(True), np.eye(4), skip, str(tmp_path / "nvidia"))
     assert "glb" in near, near["log"]
+    # A local box bound to an NVIDIA material keeps its geometry but not that colour.
+    mat_layer = Sdf.Layer.CreateNew(str(tmp_path / "nvidia_root" / "paint.usda"))
+    m = Sdf.CreatePrimInLayer(mat_layer, "/Paint")
+    m.specifier, m.typeName = Sdf.SpecifierDef, "Material"
+    sh = Sdf.CreatePrimInLayer(mat_layer, "/Paint/S")
+    sh.specifier, sh.typeName = Sdf.SpecifierDef, "Shader"
+    Sdf.AttributeSpec(sh, "info:id", Sdf.ValueTypeNames.Token).default = "UsdPreviewSurface"
+    Sdf.AttributeSpec(sh, "inputs:diffuseColor", Sdf.ValueTypeNames.Color3f).default = Gf.Vec3f(
+        0.0, 0.0, 1.0
+    )
+    mat_layer.defaultPrim = "Paint"
+    mat_layer.Save()
+    painted = stage(False)
+    painted.DefinePrim("/World/Looks/paint").GetReferences().AddReference(mat_layer.identifier)
+    from pxr import UsdShade
+
+    UsdShade.MaterialBindingAPI.Apply(painted.GetPrimAtPath("/World/env/door")).Bind(
+        UsdShade.Material(painted.GetPrimAtPath("/World/Looks/paint"))
+    )
+    grey = static_scene_glb(painted, np.eye(4), skip, root)
+    assert "glb" in grey and "1 NVIDIA material colours drawn grey" in grey["log"]
+    blues = [
+        m for m in _doc(grey["glb"])["materials"]
+        if m["pbrMetallicRoughness"]["baseColorFactor"][:3] == [0.0, 0.0, 1.0]
+    ]  # fmt: skip
+    assert not blues
+
     over = static_scene_glb(stage(False), np.eye(4), skip, root, limit_bytes=100)
     assert over["note"] == "scene is over the 0 MB limit"
 
@@ -136,67 +162,164 @@ def test_a_mesh_colour_is_read_through_its_connected_material_input() -> None:
 
     s = usd.Stage.CreateInMemory()
     mat = UsdShade.Material.Define(s, "/World/Looks/red")
-    iface = mat.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f)
-    iface.Set(Gf.Vec3f(0.8, 0.1, 0.1))
+    tint = mat.CreateInput("tint", Sdf.ValueTypeNames.Color3f)  # not "diffuseColor": the
+    tint.Set(Gf.Vec3f(0.8, 0.1, 0.1))  # red is reachable only through the connection
     sh = UsdShade.Shader.Define(s, "/World/Looks/red/S")
     sh.CreateIdAttr("UsdPreviewSurface")
-    sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(iface)
+    sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(tint)
     mesh = UsdGeom.Cube.Define(s, "/World/box").GetPrim()
     UsdShade.MaterialBindingAPI.Apply(mesh).Bind(mat)
     assert diffuse_color(mesh) == pytest.approx((0.8, 0.1, 0.1))
     assert diffuse_color(UsdGeom.Cube.Define(s, "/World/bare").GetPrim()) == (0.7, 0.7, 0.7)
 
+    # The shader's own constant wins over an unrelated interface diffuseColor.
+    blue = UsdShade.Material.Define(s, "/World/Looks/blue")
+    blue.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(1, 0, 0))
+    bsh = UsdShade.Shader.Define(s, "/World/Looks/blue/S")
+    bsh.CreateIdAttr("UsdPreviewSurface")
+    bsh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0, 0, 1))
+    boxb = UsdGeom.Cube.Define(s, "/World/boxb").GetPrim()
+    UsdShade.MaterialBindingAPI.Apply(boxb).Bind(blue)
+    assert diffuse_color(boxb) == pytest.approx((0.0, 0.0, 1.0))
 
-def test_hal_writes_the_glb_into_the_package_and_drops_older_scenes(
+
+def test_recolouring_a_textured_diffuse_reports_nothing() -> None:
+    usd = pytest.importorskip("pxr.Usd")
+    from isaac_manifest_scene import recolor_robot_materials
+    from pxr import Sdf, UsdGeom, UsdShade
+
+    s = usd.Stage.CreateInMemory()
+    mat = UsdShade.Material.Define(s, "/World/robot/Looks/matte_black")
+    tex = UsdShade.Shader.Define(s, "/World/robot/Looks/matte_black/Tex")
+    tex.CreateIdAttr("UsdUVTexture")
+    rgb = tex.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+    sh = UsdShade.Shader.Define(s, "/World/robot/Looks/matte_black/S")
+    sh.CreateIdAttr("UsdPreviewSurface")
+    sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(rgb)
+    mesh = UsdGeom.Mesh.Define(s, "/World/robot/link/visual").GetPrim()
+    UsdShade.MaterialBindingAPI.Apply(mesh).Bind(mat)
+    # The texture's computed output cannot be overwritten: nothing to report.
+    assert recolor_robot_materials(s, "/World/robot", {"*matte_black*": [0.0, 0.0, 0.0]}) == {}
+
+
+class _UsdSceneEnv:
+    """The sidecar's ``scene_mesh`` contract over a real pxr stage.
+
+    ``IsaacManifestScene.scene_mesh`` needs a running Isaac Sim; this runs the same
+    exporter (``static_scene_glb``) and the same exact-size check on an in-memory stage.
+    """
+
+    def __init__(self, stage: Any, nvidia_root: str = "") -> None:
+        self.stage, self.nvidia_root, self.limits = stage, nvidia_root, cast("list[int]", [])
+
+    def scene_mesh(self, limit_bytes: int) -> dict[str, Any]:
+        self.limits.append(limit_bytes)
+        out: dict[str, Any] = static_scene_glb(
+            self.stage, np.eye(4), [], self.nvidia_root, limit_bytes
+        )
+        glb = out.get("glb")
+        if isinstance(glb, bytes) and len(glb) > limit_bytes:
+            return {"note": "over the limit", "log": out["log"]}
+        return out
+
+
+def test_hal_writes_the_exported_glb_and_sweeps_only_week_old_scenes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path))
-    pkg = tmp_path / "sim_scene"
-    pkg.mkdir()
-    (pkg / "0123456789ab.glb").write_bytes(b"an earlier scene")
-    seen: dict[str, object] = {}
+    usd = pytest.importorskip("pxr.Usd")
+    import os
+    import time
 
-    def ok(limit: int) -> dict[str, object]:
-        seen["limit"] = limit
-        return {"glb": b"glTF-bytes", "triangles": 2}
+    from pxr import Sdf, UsdGeom
 
-    got = SimAttachedHAL._export_sim_scene(_hal(_env=SimpleNamespace(scene_mesh=ok)))
+    monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path / "cache"))
+    pkg = tmp_path / "cache" / "sim_scene"
+    pkg.mkdir(parents=True)
+    stale, live = pkg / "0123456789ab.glb", pkg / "ba9876543210.glb"
+    stale.write_bytes(b"a scene no deploy wrote for 8 days")
+    os.utime(stale, (time.time() - 8 * 86400,) * 2)
+    live.write_bytes(b"another deploy's current scene")
+
+    stage = usd.Stage.CreateInMemory()
+    UsdGeom.Cube.Define(stage, "/World/wall")
+    env = _UsdSceneEnv(stage)
+    got = SimAttachedHAL._export_sim_scene(_hal(_env=env))
     name = str(got["uri"]).removeprefix("package://openral_sim_scene/")
-    assert got == {"uri": f"package://openral_sim_scene/{name}", "bytes": 10, "triangles": 2}
-    assert [p.name for p in pkg.iterdir()] == [name]
-    assert (pkg / name).read_bytes() == b"glTF-bytes"
-    assert seen == {"limit": 10_000_000}
+    assert got == {
+        "uri": f"package://openral_sim_scene/{name}",
+        "bytes": got["bytes"],
+        "triangles": 12,
+    }
+    assert _doc((pkg / name).read_bytes())["meshes"]  # the real exporter's GLB
+    assert sorted(p.name for p in pkg.iterdir()) == sorted([name, live.name])  # stale swept
+    assert env.limits == [10_000_000]
 
-    def boom(limit: int) -> dict[str, object]:
-        raise RuntimeError("sidecar gone")
-
-    for env, note in [
-        (SimpleNamespace(scene_mesh=lambda _: {"note": "uses NVIDIA"}), "uses NVIDIA"),
-        (SimpleNamespace(scene_mesh=boom), "export failed: RuntimeError: sidecar gone"),
-    ]:
-        assert SimAttachedHAL._export_sim_scene(_hal(_env=env)) == {"note": note}
-
-
-def test_a_timed_out_sidecar_call_reopens_the_req_socket(monkeypatch: pytest.MonkeyPatch) -> None:
-    class Again(Exception):  # noqa: N818  # reason: mirrors zmq.Again
-        pass
-
-    monkeypatch.setitem(sys.modules, "zmq", types.SimpleNamespace(Again=Again))
-    reopened: list[bool] = []
-
-    class Sock:
-        def send(self, _: bytes) -> None:
-            pass
-
-        def recv(self) -> bytes:
-            raise Again
-
-    client = SimpleNamespace(
-        name="isaac", _socket=Sock(), _init_socket=lambda: reopened.append(True)
+    nvidia = Sdf.Layer.CreateNew(str(tmp_path / "nvidia" / "rack.usda"))
+    Sdf.CreatePrimInLayer(nvidia, "/Rack").typeName = "Cube"
+    nvidia.defaultPrim = "Rack"
+    nvidia.Save()
+    stage.DefinePrim("/World/rack").GetReferences().AddReference(nvidia.identifier)
+    refused = SimAttachedHAL._export_sim_scene(
+        _hal(_env=_UsdSceneEnv(stage, str(tmp_path / "nvidia")))
     )
-    with pytest.raises(Again):
-        SidecarClient.call(cast("SidecarClient", client), "scene_mesh")
-    assert reopened == [True]
+    assert refused == {"note": "uses NVIDIA Isaac Sim assets, which may not be converted"}
+
+    broken = SimAttachedHAL._export_sim_scene(_hal(_env=_UsdSceneEnv(None)))
+    assert str(broken["note"]).startswith("export failed: AttributeError")
+    # A reply that passes as a GLB but carries no triangle count writes nothing.
+    before = sorted(pkg.iterdir())
+    bad = SimpleNamespace(scene_mesh=lambda _: {"glb": b"glTF", "triangles": None})
+    assert SimAttachedHAL._export_sim_scene(_hal(_env=bad)) == {
+        "note": "export failed: the sidecar sent a malformed scene"
+    }
+    assert sorted(pkg.iterdir()) == before
+
+
+def test_a_timed_out_sidecar_call_reopens_the_req_socket() -> None:
+    zmq = pytest.importorskip("zmq")
+    import threading
+
+    import msgpack
+
+    ctx = zmq.Context.instance()
+    rep = ctx.socket(zmq.REP)
+    port = rep.bind_to_random_port("tcp://127.0.0.1")
+    slow_done = threading.Event()
+
+    def serve() -> None:
+        for delay in (0.6, 0.0):  # the first reply comes after the client gave up
+            msg = msgpack.unpackb(rep.recv())
+            threading.Event().wait(delay)
+            rep.send(msgpack.packb({"ok": True, "endpoint": msg["endpoint"]}))
+            slow_done.set()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    client = SidecarClient(
+        name="probe", host="127.0.0.1", port=port, timeout_ms=200, boot_timeout_s=1.0,
+        launch_argv=[], auto_spawn=False,
+    )  # fmt: skip
+    client._ctx = ctx
+    client._init_socket()
+    try:
+        with pytest.raises(zmq.Again):
+            client.call("slow")
+        # The sidecar is single-threaded: it answers the next call once the slow one is
+        # done. Without the reopen, this send would raise (REQ stuck in EFSM).
+        assert slow_done.wait(2)
+        assert client.call("next") == {"ok": True, "endpoint": "next"}  # the same client
+    finally:
+        client.close()
+        thread.join(timeout=2)
+        rep.close(linger=0)
+
+
+def test_an_unknown_cache_home_is_an_os_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openral_hal import ros_package_overlay as rpo
+
+    monkeypatch.setenv("OPENRAL_CACHE_DIR", "~no_such_user_openral_test/cache")
+    with pytest.raises(OSError, match="OPENRAL_CACHE_DIR"):
+        rpo.sim_scene_package_root()
 
 
 def test_overlay_registers_this_runs_local_package_with_an_absolute_root(
