@@ -253,6 +253,46 @@ def test_a_map_frame_memory_node_scopes_the_tracked_query_to_its_instance() -> N
         assert seed.half_extents[i] == pytest.approx((hi[i] - lo[i]) / 2.0 + _PAD)
 
 
+def test_a_memory_node_too_large_to_scope_refuses_the_grasp_and_place_never_scopes() -> None:
+    """Review of #638: a tracked grasp naming a node whose padded box exceeds a region's bound
+    refuses typed (``ROSReasonerInvalidPlan``, which dispatch catches), not a pydantic
+    ``ValidationError``. A place target never builds the scope, so the same node grounds."""
+    graph = SceneGraph.model_validate(
+        json.loads((_REPO_ROOT / "tests/unit/fixtures/home_scene_graph.json").read_text())
+    )
+    node = next(n for n in graph.nodes if n.node_id == "wine_bottle")
+    x, y, z = node.pose.xyz
+    big = node.model_copy(
+        update={"bbox_3d": (x - 1.6, y - 0.1, z - 0.1, x + 1.6, y + 0.1, z + 0.1)}
+    )
+    graph = SceneGraph(nodes=[big])
+    with pytest.raises(ROSReasonerInvalidPlan, match="cannot scope the grasp_target"):
+        ground_grasp_target(
+            GraspTargetRef(
+                label="bottle of wine",
+                object_id="wine_bottle",
+                contact_links=["openarm_left_finger_pair"],
+            ),
+            live_objects=[],
+            scene_graph=graph,
+            base_frame=_BASE,
+            default_contact_links=gripper_hands(_OPENARM),
+            patience_s=60.0,
+            pad_m=_PAD,
+            object_tracking=True,
+        )
+    place = ground_place_target(
+        PlaceTargetRef(label="bottle of wine", object_id="wine_bottle"),
+        live_objects=[],
+        scene_graph=graph,
+        base_frame=_BASE,
+        patience_s=60.0,
+        pad_m=_PAD,
+        object_tracking=True,
+    )
+    assert place.search_box is None  # the map-frame box is dropped, as before #638
+
+
 def test_the_reasoner_supplied_contact_links_win() -> None:
     live = _lift({"a": ("box", (0.40, -0.15, -0.10))})
     decl = _ground(GraspTargetRef(label="box", contact_links=["openarm_left_finger_pair"]), live)

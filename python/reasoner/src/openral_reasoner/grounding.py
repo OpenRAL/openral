@@ -43,6 +43,7 @@ from openral_core import (
     hand_joint,
 )
 from openral_core.exceptions import ROSConfigError, ROSReasonerInvalidPlan
+from pydantic import ValidationError
 
 __all__ = [
     "DECLARATION_TIMEOUT_MARGIN_S",
@@ -118,6 +119,7 @@ def _locate(
     base_frame: str,
     pad_m: float,
     several_ok: bool = False,
+    scope_instance: bool = False,
 ) -> tuple[str, PlaceRegion | None, int, PlaceRegion | None]:
     """``(target id stem, padded search box, live matches, instance scope)`` for a named object.
 
@@ -129,23 +131,31 @@ def _locate(
     another frame than ``base_frame`` (the lift's ``map``), or no box at all, is dropped
     with a ``reasoner.grounding_seed_dropped`` warning instead of refusing.
 
-    The instance scope (object tracking with ``node_id`` only, else ``None``) is the node's
+    The instance scope (``scope_instance`` with ``node_id`` only, else ``None``) is the node's
     padded box in the node's own frame (``map`` for a lifted node; around its pose when it has
     no box): the TARGET query's ``seed``, which the tracker re-expresses through tf2 and gates
     the query's matches on, so a same-label neighbour never binds in its place (issue #631).
 
     Raises:
         ROSReasonerInvalidPlan: Nothing grounds (unless ``several_ok``), several instances
-            match with no node id (unless ``several_ok``), an unknown node id, or the box
-            is missing / in another frame (unless ``several_ok``).
+            match with no node id (unless ``several_ok``), an unknown node id, the box
+            is missing / in another frame (unless ``several_ok``), or the node's box is too
+            large to scope an instance.
     """
     if pad_m <= 0.0:
         raise ValueError(f"pad_m must be > 0; got {pad_m!r}")
 
     def seed(
-        bbox: tuple[float, float, float, float, float, float] | None, frame_id: str, what: str
+        bbox: tuple[float, float, float, float, float, float] | None,
+        frame_id: str,
+        what: str,
+        *,
+        scoped: bool = False,
     ) -> PlaceRegion | None:
         if several_ok and (bbox is None or frame_id != base_frame):
+            if scoped:
+                # The node's box rides the query as its instance scope (#631): not dropped.
+                return None
             # Object tracking: the declaration carries the query, the tracker grounds the
             # object in its own grid, and the runner merges the scene's base-frame boxes. A
             # box the reasoner cannot re-express (no tf2 here; the lift publishes `map`), or
@@ -171,14 +181,20 @@ def _locate(
             )
         node = nodes[0]
         what = f"memory node {node_id!r}"
-        box = seed(node.bbox_3d, node.pose.frame_id, what)
+        frame = node.pose.frame_id
         scope = None
-        if several_ok:
+        if scope_instance:
             x, y, z = node.pose.xyz
-            frame = node.pose.frame_id
             bbox = node.bbox_3d or (x, y, z, x, y, z)
-            scope = _box(bbox, frame, what=what, base_frame=frame, pad_m=pad_m)
-        return node_id, box, 1, scope
+            try:
+                scope = _box(bbox, frame, what=what, base_frame=frame, pad_m=pad_m)
+            except ValidationError as exc:
+                raise ROSReasonerInvalidPlan(
+                    f"{what} cannot scope the {field} to one instance: {exc.errors()[0]['msg']}"
+                ) from exc
+        if scope is not None and node.bbox_3d is not None and frame == base_frame:
+            return node_id, scope, 1, scope  # the same padded box
+        return node_id, seed(node.bbox_3d, frame, what, scoped=scope is not None), 1, scope
     key = label.strip().casefold()
     matches = [o for o in live_objects if o.label.strip().casefold() == key]
     if not matches and several_ok:
@@ -290,6 +306,7 @@ def ground_grasp_target(
         base_frame=base_frame,
         pad_m=pad_m,
         several_ok=object_tracking,
+        scope_instance=object_tracking,
     )
     hands = [(h,) if isinstance(h, str) else tuple(h) for h in default_contact_links]
     listing = "; ".join(f"[{', '.join(h)}]" for h in hands) or "none"

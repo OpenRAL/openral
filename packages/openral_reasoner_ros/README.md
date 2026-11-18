@@ -200,7 +200,8 @@ scene's base-frame boxes; with tracking off it is refused, as the seed feeds the
 grasp-target leg. A named memory node (`object_id`) is not lost there: its padded box, in
 the node's own frame, rides the TARGET query's `seed`, and the tracker re-expresses it in its
 grid through tf2 and matches only a track centred in it, so a same-label neighbour never
-binds in its place (no tf2: none does; issue #631).
+binds in its place (no tf2 yet: none does; a later missed lookup keeps the last resolved
+box; issue #631).
 
 Under object tracking `grasp_target` is required for a skill that actuates an arm, gripper or
 hand: the runner refuses such a goal with no target query (`ROSReasonerInvalidPlan`,
