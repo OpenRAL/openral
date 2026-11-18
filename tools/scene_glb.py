@@ -32,19 +32,25 @@ _FLOAT, _UINT32 = 5126, 5125
 _ARRAY_BUFFER, _ELEMENT_ARRAY_BUFFER = 34962, 34963
 
 
-def fan_triangles(counts: Any, indices: Any) -> NDArray[np.uint32]:
+def fan_triangles(counts: Any, indices: Any, holes: Any = ()) -> NDArray[np.uint32]:
     """Fan-triangulate USD faces (``faceVertexCounts`` / ``faceVertexIndices``) into ``(n, 3)``.
 
+    Faces listed in ``holes`` (``holeIndices``) are left out. A fan is exact for convex
+    faces; a concave one may draw across its notch (ponytail: stage meshes are triangles
+    and quads; ear-clip n-gons if a translucent overview ever shows the difference).
+
     Example:
-        >>> fan_triangles([4], [0, 1, 2, 3]).tolist()
+        >>> fan_triangles([4, 3], [0, 1, 2, 3, 0, 2, 4], holes=[1]).tolist()
         [[0, 1, 2], [0, 2, 3]]
     """
     tris: list[tuple[int, int, int]] = []
     at = 0
     idx = [int(i) for i in indices]
-    for n in (int(c) for c in counts):
+    skip = {int(h) for h in holes}
+    for f, n in enumerate(int(c) for c in counts):
         face = idx[at : at + n]
-        tris.extend((face[0], face[i], face[i + 1]) for i in range(1, n - 1))
+        if f not in skip:
+            tris.extend((face[0], face[i], face[i + 1]) for i in range(1, n - 1))
         at += n
     return np.asarray(tris, dtype=np.uint32).reshape(-1, 3)
 
@@ -72,7 +78,7 @@ def _axis_to(axis: str) -> NDArray[np.float64]:
     if axis == "X":
         return np.array([[0, 0, 1], [0, 1, 0], [-1, 0, 0]], dtype=np.float64)
     if axis == "Y":
-        return np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=np.float64)
+        return np.array([[1, 0, 0], [0, 0, 1], [0, -1, 0]], dtype=np.float64)
     return np.eye(3)
 
 
@@ -201,25 +207,27 @@ def write_glb(primitives: list[tuple[tuple[float, float, float, float], Any, Any
             "material": len(materials) - 1,
         })  # fmt: skip
 
-    doc: dict[str, Any] = {
-        "asset": {"version": "2.0", "generator": "openral scene_glb"},
-        "scene": 0,
-        "scenes": [{"nodes": [0] if prims else []}],
-        "nodes": [{"mesh": 0}] if prims else [],
-        "meshes": [{"primitives": prims}] if prims else [],
-        "materials": materials,
-        "accessors": accessors,
-        "bufferViews": views,
-        "buffers": [{"byteLength": offset}] if offset else [],
-    }
+    doc: dict[str, Any] = {"asset": {"version": "2.0", "generator": "openral scene_glb"}}
+    if prims:  # glTF arrays are minItems 1: an empty scene is the asset object alone
+        doc |= {
+            "scene": 0,
+            "scenes": [{"nodes": [0]}],
+            "nodes": [{"mesh": 0}],
+            "meshes": [{"primitives": prims}],
+            "materials": materials,
+            "accessors": accessors,
+            "bufferViews": views,
+            "buffers": [{"byteLength": offset}],
+        }
     js = json.dumps(doc, separators=(",", ":")).encode()
     js += b" " * ((-len(js)) % 4)
     blob = b"".join(bin_parts)
-    total = 12 + 8 + len(js) + 8 + len(blob)
+    bin_chunk = struct.pack("<II", len(blob), _BIN_CHUNK) + blob if blob else b""  # no empty BIN
+    total = 12 + 8 + len(js) + len(bin_chunk)
     return b"".join([
         struct.pack("<III", _GLB_MAGIC, 2, total),
         struct.pack("<II", len(js), _JSON_CHUNK), js,
-        struct.pack("<II", len(blob), _BIN_CHUNK), blob,
+        bin_chunk,
     ])  # fmt: skip
 
 
@@ -264,7 +272,8 @@ def diffuse_color(prim: Any) -> tuple[float, float, float]:
     """
     from pxr import UsdGeom, UsdShade
 
-    dc = UsdGeom.Gprim(prim).GetDisplayColorAttr().Get() if UsdGeom.Gprim(prim) else None
+    pv = UsdGeom.PrimvarsAPI(prim).GetPrimvar("displayColor")
+    dc = pv.ComputeFlattened() if pv and pv.HasValue() else None  # indexed primvars resolved
     if dc is not None and len(dc):
         return (float(dc[0][0]), float(dc[0][1]), float(dc[0][2]))
     mat, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
@@ -276,7 +285,11 @@ def diffuse_color(prim: Any) -> tuple[float, float, float]:
 
 
 def static_scene_glb(
-    stage: Any, frame_from_world: Any, skip: list[str], nvidia_root: str = ""
+    stage: Any,
+    frame_from_world: Any,
+    skip: list[str],
+    nvidia_root: str = "",
+    limit_bytes: int | None = None,
 ) -> dict[str, Any]:
     """The static part of ``stage``'s ``/World`` as one GLB in ``frame_from_world``'s frame.
 
@@ -289,8 +302,12 @@ def static_scene_glb(
     (NVIDIA's Isaac asset root), nothing is converted. Only exported prims count, so an
     ``isaac:`` robot or task object (never exported) does not refuse a custom environment.
 
+    ``limit_bytes`` stops the walk as soon as the geometry alone (12 bytes a vertex and a
+    triangle) passes it, before a huge stage is stacked and serialised; the caller still
+    checks the exact GLB size.
+
     Returns ``{"glb": bytes, "triangles", "log"}``, or ``{"note", "log"}`` (NVIDIA
-    assets, or no static geometry). ``log`` is one human summary line.
+    assets, no static geometry, or over ``limit_bytes``). ``log`` is one summary line.
     """
     from pxr import Usd, UsdGeom, UsdPhysics
 
@@ -320,6 +337,7 @@ def static_scene_glb(
     layers: set[str] = set()
     unsupported: dict[str, int] = {}
     triangles = 0
+    vertices = 0
     root = stage.GetPrimAtPath("/World")
     it = iter(Usd.PrimRange(root, Usd.TraverseInstanceProxies())) if root else iter(())
     for prim in it:
@@ -328,12 +346,11 @@ def static_scene_glb(
             it.PruneChildren()
             continue
         img = UsdGeom.Imageable(prim)
-        if img and (
-            img.ComputeVisibility() == UsdGeom.Tokens.invisible
-            or img.ComputePurpose() not in purposes
-        ):
-            it.PruneChildren()
+        if img and img.ComputeVisibility() == UsdGeom.Tokens.invisible:
+            it.PruneChildren()  # visibility is inherited: nothing below shows
             continue
+        if img and img.ComputePurpose() not in purposes:
+            continue  # a child may author its own purpose (render under a proxy Xform)
         kind = str(prim.GetTypeName())
         if kind == "Mesh":
             mesh = UsdGeom.Mesh(prim)
@@ -343,6 +360,7 @@ def static_scene_glb(
             tri = fan_triangles(
                 mesh.GetFaceVertexCountsAttr().Get() or [],
                 mesh.GetFaceVertexIndicesAttr().Get() or [],
+                mesh.GetHoleIndicesAttr().Get() or [],
             )
         elif prim.IsA(UsdGeom.Gprim):
             capsule = kind.startswith("Capsule")
@@ -366,7 +384,8 @@ def static_scene_glb(
         if not len(pts) or not len(tri):
             continue
         src = prim.GetPrimInPrototype() if prim.IsInstanceProxy() else prim
-        layers.update(str(spec.layer.identifier) for spec in src.GetPrimStack())
+        for spec in src.GetPrimStack():
+            layers.update(p for p in (spec.layer.identifier, spec.layer.realPath) if p)
         world_from_local = np.asarray(
             UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default()),
             dtype=np.float64,
@@ -378,9 +397,19 @@ def static_scene_glb(
         tris.append(tri + base[0])
         base[0] += len(pts)
         triangles += len(tri)
+        vertices += len(pts)
+        if limit_bytes is not None and 12 * (vertices + triangles) > limit_bytes:
+            mb = 12 * (vertices + triangles) / 1e6
+            return {
+                "note": f"scene is over the {limit_bytes / 1e6:.0f} MB limit",
+                "log": f"stopped at {mb:.1f} MB of geometry, over {limit_bytes / 1e6:.0f} MB",
+            }
 
     skipped = f", unsupported {unsupported}" if unsupported else ""
-    nvidia = sorted(lay for lay in layers if nvidia_root and lay.startswith(nvidia_root))
+    root_dir = nvidia_root.rstrip("/")
+    nvidia = sorted(
+        lay for lay in layers if root_dir and (lay == root_dir or lay.startswith(root_dir + "/"))
+    )
     if nvidia:
         return {
             "note": "uses NVIDIA Isaac Sim assets, which may not be converted",

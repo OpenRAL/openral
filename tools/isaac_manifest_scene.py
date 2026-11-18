@@ -4062,7 +4062,7 @@ class IsaacManifestScene(IsaacSceneBase):
             f"/World/environment/{a['prim']}" for a in self._spec.get("link_attachments") or []
         ]
         out = static_scene_glb(
-            get_current_stage(), odom_from_world, skip, self._nvidia_asset_root()
+            get_current_stage(), odom_from_world, skip, self._nvidia_asset_root(), limit_bytes
         )
         print(f"[isaac_manifest_scene] scene_mesh: {out.get('log')}", flush=True)
         out.pop("log", None)

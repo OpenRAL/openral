@@ -694,8 +694,9 @@ class SimAttachedHAL:
         if self._env_action_dim is None:
             self._env_action_dim = self._probe_env_action_dim()
         self._check_time_base()
-        if self.sim_scene is None and hasattr(self._env, "scene_mesh"):
-            self.sim_scene = self._export_sim_scene()
+        failed = str((self.sim_scene or {}).get("note", "")).startswith("export failed")
+        if (self.sim_scene is None or failed) and hasattr(self._env, "scene_mesh"):
+            self.sim_scene = self._export_sim_scene()  # a failed export retries next connect
 
     def _export_sim_scene(self) -> dict[str, object]:
         """What ``/openral/viz/sim_scene`` carries: the static scene GLB's URI, or why not.

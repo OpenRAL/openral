@@ -2361,7 +2361,7 @@ def _foxglove_asset_env(
     must never take the graph down, so that failure is printed, not raised.
     """
     if robot_description_xml is None:
-        return {}
+        robot_description_xml = ""  # no URDF: the local packages (the sim scene) still need it
     from openral_core.exceptions import ROSConfigError
     from openral_hal.ros_package_overlay import public_package_overlay
 
@@ -2390,7 +2390,12 @@ def _sim_scene_package(hal_mode: str) -> dict[str, pathlib.Path]:
         return {}
     from openral_hal.ros_package_overlay import SIM_SCENE_PACKAGE, sim_scene_package_root
 
-    return {SIM_SCENE_PACKAGE: sim_scene_package_root()}
+    try:
+        root = sim_scene_package_root()
+    except OSError as exc:  # a viz convenience must never take the graph down
+        print(f"[deploy_e2e] sim scene layer is not served: {exc!r}", flush=True)
+        return {}
+    return {SIM_SCENE_PACKAGE: root}
 
 
 _RELATIVE_MESH = re.compile(r'(filename=")(?![A-Za-z][\w+.-]*:|/)([^"]+)(")')

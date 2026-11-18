@@ -50,7 +50,9 @@ def test_glb_holds_one_primitive_per_colour_with_bounds_and_triangles() -> None:
         sum(v["byteLength"] + (-v["byteLength"]) % 4 for v in doc["bufferViews"])
         == (doc["buffers"][0]["byteLength"])
     )
-    assert _doc(write_glb([]))["buffers"] == []  # glTF needs byteLength >= 1: no buffer at all
+    empty = write_glb([])  # glTF arrays are minItems 1: the asset object alone, no BIN chunk
+    assert _doc(empty) == {"asset": {"version": "2.0", "generator": "openral scene_glb"}}
+    assert len(empty) == 12 + 8 + struct.unpack_from("<I", empty, 12)[0]
 
 
 def test_plane_and_the_newer_gprim_schemas_are_drawn() -> None:
@@ -61,6 +63,10 @@ def test_plane_and_the_newer_gprim_schemas_are_drawn() -> None:
     assert cyl is not None and np.isclose(cyl[0][:, 0].max(), 0.3)
     assert gprim_mesh("Capsule_1", radius_top=0.2, radius_bottom=0.2, height=1.0) is not None
     assert gprim_mesh("HermiteCurves") is None
+    for axis, tip in (("X", [1, 0, 0]), ("Y", [0, 1, 0]), ("Z", [0, 0, 1])):  # USD: tip at +axis
+        cone = gprim_mesh("Cone", axis=axis)
+        assert cone is not None
+        assert any(np.allclose(v, tip) for v in cone[0]), axis
 
 
 def test_static_scene_keeps_fixtures_and_drops_what_moves_or_is_skipped(tmp_path: Path) -> None:
@@ -88,15 +94,23 @@ def test_static_scene_keeps_fixtures_and_drops_what_moves_or_is_skipped(tmp_path
         s.DefinePrim("/World/objects/banana").GetReferences().AddReference(nvidia.identifier)
         if with_nvidia:
             s.DefinePrim("/World/env/rack").GetReferences().AddReference(nvidia.identifier)
-        UsdGeom.Cube(s.GetPrimAtPath("/World/env/wall")).CreateDisplayColorAttr(
-            [Gf.Vec3f(1.0, 0.0, 0.0)]
+        # An indexed displayColor: [green, red] at index [1] is red.
+        pv = UsdGeom.PrimvarsAPI(s.GetPrimAtPath("/World/env/wall")).CreatePrimvar(
+            "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.constant
         )
+        pv.Set([Gf.Vec3f(0.0, 1.0, 0.0), Gf.Vec3f(1.0, 0.0, 0.0)])
+        pv.SetIndices([1])
+        # A render mesh under a proxy-purpose Xform still draws.
+        UsdGeom.Xform.Define(s, "/World/env/detail").CreatePurposeAttr(UsdGeom.Tokens.proxy)
+        detail = UsdGeom.Cube.Define(s, "/World/env/detail/render")
+        detail.CreatePurposeAttr(UsdGeom.Tokens.render)
+        UsdGeom.Cube.Define(s, "/World/env/detail/proxy_only")  # inherits proxy: dropped
         return s
 
     skip = ["/World/robot", "/World/objects", "/World/env/tote"]
     root = str(tmp_path / "nvidia_root")
     out = static_scene_glb(stage(False), np.eye(4), skip, root)
-    assert out["triangles"] == 2 * 12, out["log"]  # wall + kinematic door
+    assert out["triangles"] == 3 * 12, out["log"]  # wall, kinematic door, render-purpose child
     doc = _doc(out["glb"])
     colours = {tuple(m["pbrMetallicRoughness"]["baseColorFactor"]) for m in doc["materials"]}
     assert (1.0, 0.0, 0.0, 1.0) in colours
@@ -104,6 +118,12 @@ def test_static_scene_keeps_fixtures_and_drops_what_moves_or_is_skipped(tmp_path
     refused = static_scene_glb(stage(True), np.eye(4), skip, root)
     assert refused["note"] == "uses NVIDIA Isaac Sim assets, which may not be converted"
     assert "glb" not in refused
+
+    # A layer beside the root, not under it, is not NVIDIA's.
+    near = static_scene_glb(stage(True), np.eye(4), skip, str(tmp_path / "nvidia"))
+    assert "glb" in near, near["log"]
+    over = static_scene_glb(stage(False), np.eye(4), skip, root, limit_bytes=100)
+    assert over["note"] == "scene is over the 0 MB limit"
 
     empty = static_scene_glb(stage(False), np.eye(4), [*skip, "/World/env"], root)
     assert empty["note"] == "the scene has no static geometry"
@@ -177,3 +197,22 @@ def test_a_timed_out_sidecar_call_reopens_the_req_socket(monkeypatch: pytest.Mon
     with pytest.raises(Again):
         SidecarClient.call(cast("SidecarClient", client), "scene_mesh")
     assert reopened == [True]
+
+
+def test_overlay_registers_this_runs_local_package_with_an_absolute_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openral_hal import ros_package_overlay as rpo
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENRAL_CACHE_DIR", "cache")  # relative on purpose
+    root = rpo.sim_scene_package_root()
+    assert root.is_absolute() and root == tmp_path / "cache" / "sim_scene"
+    # An older overlay already indexes the package: this run's root must still win.
+    old = tmp_path / "old_overlay"
+    (old / "share" / "ament_index" / "resource_index" / "packages").mkdir(parents=True)
+    (old / "share" / "ament_index" / "resource_index" / "packages" / "openral_sim_scene").touch()
+    monkeypatch.setenv("AMENT_PREFIX_PATH", str(old))
+    prefix = rpo.public_package_overlay("", {rpo.SIM_SCENE_PACKAGE: root})
+    assert prefix is not None
+    assert (prefix / "share" / "openral_sim_scene").resolve() == root
