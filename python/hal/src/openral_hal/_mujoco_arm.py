@@ -289,6 +289,8 @@ class MujocoArmHAL(HALBase):
         self._starvation_warned: bool = False
         self._model: mujoco.MjModel | None = None
         self._data: mujoco.MjData | None = None
+        #: ``/openral/viz/sim_scene``'s payload once connect exported it (platform#139).
+        self.sim_scene: dict[str, object] | None = None
         # Lazily-created offscreen renderers for read_images() (issue #191
         # Phase 3b), keyed by (height, width). One renderer per distinct camera
         # resolution so every camera renders at ITS OWN declared intrinsics
@@ -389,6 +391,14 @@ class MujocoArmHAL(HALBase):
         self._resolve_time_base()
         self._connected = True
         self._last_state_time = time.monotonic()
+        failed = str((self.sim_scene or {}).get("note", "")).startswith("export failed")
+        if self.sim_scene is None or failed:  # a failed export retries next connect
+            from openral_hal.sim_scene import mujoco_scene_mesh, write_sim_scene
+
+            model, data, desc = self._model, self._data, self.description
+            self.sim_scene = write_sim_scene(
+                lambda limit: mujoco_scene_mesh(model, data, desc, limit)
+            )
         log.info(
             "hal.connect",
             robot=self.description.name,

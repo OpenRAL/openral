@@ -483,3 +483,38 @@ def test_hal_exports_a_mujoco_scene_in_the_arm_base_frame(
     )  # fmt: skip
     # The robot's root body (robot_mount, at x = -1) is the frame: the counter is at x 1.5..2.5.
     assert doc["accessors"][wood["attributes"]["POSITION"]]["max"][0] == pytest.approx(2.5)
+
+
+def test_a_mujoco_arm_hal_exports_its_scene_on_connect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("mujoco")
+    from openral_core import (
+        ControlMode,
+        EmbodimentKind,
+        JointSpec,
+        JointType,
+        RobotCapabilities,
+        RobotDescription,
+        SafetyEnvelope,
+    )
+    from openral_hal._mujoco_arm import MujocoArmHAL
+
+    monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path))
+    (tmp_path / "scene.xml").write_text(_MJCF)
+    desc = RobotDescription(
+        name="arm",
+        embodiment_kind=EmbodimentKind.MANIPULATOR,
+        joints=[
+            JointSpec(name="j1", joint_type=JointType.REVOLUTE, parent_link="a", child_link="b")
+        ],
+        capabilities=RobotCapabilities(supported_control_modes=[ControlMode.JOINT_POSITION]),
+        safety=SafetyEnvelope(),
+    )
+    xml = str(tmp_path / "scene.xml")
+    arm = MujocoArmHAL(desc, mjcf_path=xml, joint_qpos_addr={"j1": 7}, actuator_index={"j1": 0})
+    arm.connect()
+    try:
+        assert arm.sim_scene is not None and arm.sim_scene["triangles"] == 14, arm.sim_scene
+    finally:
+        arm.disconnect()

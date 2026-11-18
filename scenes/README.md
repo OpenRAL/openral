@@ -426,8 +426,9 @@ load, and the YAML alone tells a reader which objects move. The rule is what
 `static_colliders` uses to flag a collider `dynamic`, and what the robot console's
 Sim scene layer ([OpenRAL/platform#133](https://github.com/OpenRAL/platform/issues/133))
 uses to draw only the static scene, with its base-colour textures embedded at 512 px. A
-MuJoCo scene's layer draws every geom welded to the world (no joint above it), minus the
-robot and mocap bodies, in flat colours (a texture contributes its mean colour). When authoring an environment USD, give a fixture
+MuJoCo scene's layer (`SimAttachedHAL` and the composed-scene `MujocoArmHAL`) draws every
+geom welded to the world (no joint above it), minus the robot and mocap bodies, in flat
+colours (a texture contributes its mean colour). When authoring an environment USD, give a fixture
 that never moves (a table, a shelf, a wall) no rigid body, or a kinematic one; a dynamic body
 counts as movable even if the task never touches it. A third-party stage may not follow
 this: Arena's maple table is a dynamic body, and the LeIsaac kitchen's drawers and props are
