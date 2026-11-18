@@ -54,13 +54,13 @@ class PinnedAsset(NamedTuple):
 
 
 ROBOT_UI: PinnedAsset | None = PinnedAsset(
-    url="https://github.com/OpenRAL/openral/releases/download/robot-ui-781421d/openral-robot-ui-robot-ui-781421d.tar.gz",
-    sha256="1ca48ddb07fdc5e65f00a1fd251f6b079108775d224809fb1f09e9ee52925326",
-    size=385992,
+    url="https://github.com/OpenRAL/openral/releases/download/robot-ui-f69610b/openral-robot-ui-robot-ui-f69610b.tar.gz",
+    sha256="b5e9e9dd82046dd5b63e4108409540a4041b438f904359f81d65eefa4378f301",
+    size=387852,
 )
 """The prebuilt robot console this dashboard serves, or ``None`` to serve the built-in
 fallback page. The console's release workflow publishes each build and opens the pin
-bump here (``tools/pin_robot_ui.py``): ``robot-ui-781421d`` until the next pin."""
+bump here (``tools/pin_robot_ui.py``): ``robot-ui-f69610b`` until the next pin."""
 
 
 def _cache_root() -> Path:
