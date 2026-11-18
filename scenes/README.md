@@ -419,7 +419,7 @@ tilting with the plate from there (a pen holder the arm turns turns its box).
 |---|---|---|
 | In the USD | an enabled, non-kinematic `UsdPhysics.RigidBodyAPI` on the prim or an ancestor | no rigid body, or one with `physics:kinematicEnabled = true` or `physics:rigidBodyEnabled = false` |
 | Spawned from `objects` | `dynamic: true` (gets a rigid body and convex hulls if the asset has none) | `dynamic: false` (a fixed prop, such as the DROID stand) |
-| Already in the environment USD | named in `stage_objects` (must carry a rigid body) | everything else in the stage |
+| Already in the environment USD | named in `stage_objects` (must carry a rigid body), or a `link_attachments` prim (it rides a robot link, like the AMR aisle's tote) | everything else in the stage |
 
 Every `objects` entry states `dynamic`: it has no default, so a scene that omits it fails at
 load, and the YAML alone tells a reader which objects move. The rule is what
