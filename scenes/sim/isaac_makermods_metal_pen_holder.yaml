@@ -67,9 +67,11 @@ scene:
     objects:
       - name: pen_holder  # on the shelf top; origin at the centre of its bottom face
         usd: "scenes/sim/assets/makermods_metal_pen_holder/pen_holder.usda"
+        dynamic: true
         xyz: [0.475, 0.294, 0.0905]
       - name: pen  # on the desk: radius 0.01
         usd: "scenes/sim/assets/makermods_metal_pen_holder/pen.usda"
+        dynamic: true
         xyz: [0.27, -0.318, 0.0105]
         yaw: -0.0297
     # The wrists' sim_placement composed with MetalPenHolderOptions.camera_offsets (the

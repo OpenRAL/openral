@@ -1046,6 +1046,7 @@ def test_object_pose_noise_schema() -> None:
                 "usd": "isaac:Isaac/Props/YCB/Axis_Aligned_Physics/003_cracker_box.usd",
                 "name": "cracker_box",
                 "xyz": (0.0, 0.0, 0.2),
+                "dynamic": True,
                 "pose_noise": {"xy_sigma_m": (0.01, 0.005), "yaw_sigma_deg": 6.0},
             }
         ]
@@ -1059,6 +1060,7 @@ def test_object_pose_noise_schema() -> None:
                     "usd": "a.usd",
                     "name": "a",
                     "xyz": (0, 0, 0),
+                    "dynamic": True,
                     "pose_noise": {"xy_sigma_m": (-1, 0)},
                 }
             ]
@@ -1070,6 +1072,7 @@ def test_object_pose_noise_schema() -> None:
                     "usd": "a.usd",
                     "name": "a",
                     "xyz": (0, 0, 0),
+                    "dynamic": True,
                     "pose_noise": {"keep_inside_xy": ((0.1, 0.0), (0.0, 0.1))},
                 }
             ]

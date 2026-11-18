@@ -53,10 +53,13 @@ scene:
     objects:
       - name: cracker_box
         usd: "isaac:Isaac/Props/YCB/Axis_Aligned_Physics/003_cracker_box.usd"
+        dynamic: true
         xyz: [-0.45, 4.80, 0.40]
       - name: sugar_box
         usd: "isaac:Isaac/Props/YCB/Axis_Aligned_Physics/004_sugar_box.usd"
+        dynamic: true
         xyz: [-0.45, 5.10, 0.35]
       - name: mustard_bottle
         usd: "isaac:Isaac/Props/YCB/Axis_Aligned_Physics/006_mustard_bottle.usd"
+        dynamic: true
         xyz: [-0.45, 5.40, 0.35]
