@@ -94,6 +94,8 @@ if TYPE_CHECKING:
     from openral_core import IntrinsicsPinhole
     from openral_sim.rollout import SimRollout
 
+    from openral_hal.sim_scene import SceneCache
+
 
 def _task_success_logger() -> Any:  # noqa: ANN401  # reason: structlog's BoundLogger is untyped
     """Bind the task-success structlog logger.
@@ -502,8 +504,8 @@ class SimAttachedHAL:
     # defaults; instances rebind them.
     _held_twist: tuple[float, float, float] | None = None
     _held_twist_until_ns: int = 0
-    #: ``/openral/viz/sim_scene``'s payload once connect exported it (Isaac and MuJoCo sims).
-    sim_scene: dict[str, object] | None = None
+    #: The Sim scene export per scene source (``export_sim_scene``), made on first use.
+    _scene_cache: SceneCache | None = None
 
     def __init__(
         self,
@@ -694,23 +696,37 @@ class SimAttachedHAL:
         if self._env_action_dim is None:
             self._env_action_dim = self._probe_env_action_dim()
         self._check_time_base()
-        failed = str((self.sim_scene or {}).get("note", "")).startswith("export failed")
-        exports = hasattr(self._env, "scene_mesh") or self._mujoco_handles() is not None
-        if (self.sim_scene is None or failed) and exports:
-            self.sim_scene = self._export_sim_scene()  # a failed export retries next connect
 
-    def _export_sim_scene(self) -> dict[str, object]:
-        """``sim_scene.write_sim_scene`` of the sidecar's ``scene_mesh``, else the MuJoCo one."""
-        from openral_hal.sim_scene import write_sim_scene  # noqa: PLC0415  # reason: sim only
+    def export_sim_scene(self) -> dict[str, object] | None:
+        """``/openral/viz/sim_scene``'s payload for the live scene, or ``None`` (no exporter).
 
-        return write_sim_scene(getattr(self._env, "scene_mesh", None) or self._mujoco_scene_mesh)
+        The Isaac sidecar's ``scene_mesh``, else ``mujoco_scene_mesh`` on the env's live
+        model in the frame ``odom_from_base`` names, through a ``SceneCache``: exported on
+        the first call (the lifecycle node latches the topic at configure), again after a
+        reset that composed a new ``MjModel`` (an unpinned RoboCasa kitchen) or a failed
+        export. Never raises but ``ROSSafetyViolation`` (``write_sim_scene``).
+        """
+        from openral_hal.sim_scene import (  # noqa: PLC0415  # reason: sim only
+            SceneCache,
+            mujoco_scene_mesh,
+            odom_from_base,
+        )
 
-    def _mujoco_scene_mesh(self, limit_bytes: int) -> dict[str, Any]:
-        """``sim_scene.mujoco_scene_mesh`` on the env's live model (connect checks the handles)."""
-        from openral_hal.sim_scene import mujoco_scene_mesh  # noqa: PLC0415  # reason: sim only
-
-        model, data = self._mujoco_handles()  # type: ignore[misc]  # reason: gated in connect
-        return mujoco_scene_mesh(model, data, self.description, limit_bytes)
+        if self._scene_cache is None:
+            self._scene_cache = SceneCache()
+        isaac = getattr(self._env, "scene_mesh", None)
+        if callable(isaac):
+            return self._scene_cache.get(self._env, isaac)
+        handles = self._mujoco_handles()
+        if handles is None:
+            return None
+        model, data = handles
+        return self._scene_cache.get(
+            model,
+            lambda limit: mujoco_scene_mesh(
+                model, data, self.description, limit, odom_from_base(self)
+            ),
+        )
 
     def _check_time_base(self) -> None:
         """Refuse an env whose step is not one control period of the robot.

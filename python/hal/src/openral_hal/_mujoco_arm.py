@@ -59,6 +59,8 @@ from openral_hal._slot_group import SlotGroupStager, compose_slot_group_action
 if TYPE_CHECKING:
     import mujoco
 
+    from openral_hal.sim_scene import SceneCache
+
 __all__ = ["MujocoArmHAL"]
 
 
@@ -289,8 +291,8 @@ class MujocoArmHAL(HALBase):
         self._starvation_warned: bool = False
         self._model: mujoco.MjModel | None = None
         self._data: mujoco.MjData | None = None
-        #: ``/openral/viz/sim_scene``'s payload once connect exported it (platform#139).
-        self.sim_scene: dict[str, object] | None = None
+        #: The Sim scene export per loaded model (``export_sim_scene``), made on first use.
+        self._scene_cache: SceneCache | None = None
         # Lazily-created offscreen renderers for read_images() (issue #191
         # Phase 3b), keyed by (height, width). One renderer per distinct camera
         # resolution so every camera renders at ITS OWN declared intrinsics
@@ -391,14 +393,6 @@ class MujocoArmHAL(HALBase):
         self._resolve_time_base()
         self._connected = True
         self._last_state_time = time.monotonic()
-        failed = str((self.sim_scene or {}).get("note", "")).startswith("export failed")
-        if self.sim_scene is None or failed:  # a failed export retries next connect
-            from openral_hal.sim_scene import mujoco_scene_mesh, write_sim_scene
-
-            model, data, desc = self._model, self._data, self.description
-            self.sim_scene = write_sim_scene(
-                lambda limit: mujoco_scene_mesh(model, data, desc, limit)
-            )
         log.info(
             "hal.connect",
             robot=self.description.name,
@@ -499,6 +493,27 @@ class MujocoArmHAL(HALBase):
                 with contextlib.suppress(Exception):
                     renderer.close()
             self._renderers.clear()
+
+    def export_sim_scene(self) -> dict[str, object] | None:
+        """``/openral/viz/sim_scene``'s payload for the loaded scene, or ``None`` before connect.
+
+        ``sim_scene.mujoco_scene_mesh`` on the live model, cached per model
+        (``SceneCache``); called by the lifecycle node when it latches the topic, so a
+        connect outside a deploy (tests, ``sim run``) exports nothing (platform#139).
+        """
+        from openral_hal.sim_scene import SceneCache, mujoco_scene_mesh, odom_from_base
+
+        model, data = self._model, self._data
+        if model is None or data is None:
+            return None
+        if self._scene_cache is None:
+            self._scene_cache = SceneCache()
+        return self._scene_cache.get(
+            model,
+            lambda limit: mujoco_scene_mesh(
+                model, data, self.description, limit, odom_from_base(self)
+            ),
+        )
 
     def mujoco_handles(self) -> tuple[Any, Any] | None:
         """Expose the live MuJoCo ``(model, data)`` for the bare-twin arm.

@@ -2335,6 +2335,8 @@ if _ROS2_AVAILABLE:
 
         #: ``/openral/viz/sim_scene``'s latched publisher while active (sims only).
         _sim_scene_pub: Any = None
+        #: The payload last latched on it (a reset re-latches only a changed scene).
+        _sim_scene_payload: dict[str, object] | None = None
 
         def __init__(
             self,
@@ -2754,6 +2756,7 @@ if _ROS2_AVAILABLE:
                 self._vision_attachment.teardown()
                 self._vision_attachment = None
                 self._setup_vision_attachment()
+            self._publish_sim_scene()  # a reset may have composed a new static scene
             self.get_logger().info(f"reset_episode: new episode, env seed {seed}")
             response.success = True  # type: ignore[attr-defined]
             response.message = f"seed={seed}"  # type: ignore[attr-defined]
@@ -2992,15 +2995,18 @@ if _ROS2_AVAILABLE:
             return TransitionCallbackReturn.SUCCESS
 
         def _publish_sim_scene(self) -> None:
-            """Latch ``/openral/viz/sim_scene`` when the HAL exported a static scene (platform#133).
+            """Latch ``/openral/viz/sim_scene`` when the HAL exports a static scene (platform#133).
 
             ``std_msgs/String`` JSON: ``{"uri", "bytes", "triangles", "frame_id"}`` or
             ``{"note"}``. The frame is the odometry frame (a fixed arm's: its base frame),
             which starts at the spawned base, where the export is baked. Only sim HALs
-            (the Isaac sidecar, a MuJoCo env) export one: real robots never advertise it.
+            (``export_sim_scene``: the Isaac sidecar, a MuJoCo env) export one: real robots
+            never advertise it. Called at configure and after ``reset_episode``; an
+            unchanged payload is not re-latched.
             """
             assert self._hal is not None
-            scene = getattr(self._hal, "sim_scene", None)
+            export = getattr(self._hal, "export_sim_scene", None)
+            scene = export() if callable(export) else None
             if scene is None:
                 return
             import json
@@ -3018,6 +3024,9 @@ if _ROS2_AVAILABLE:
             if self._sim_scene_pub is None:  # torn down on deactivate / cleanup
                 self._sim_scene_pub = self.create_publisher(String, "/openral/viz/sim_scene", qos)
             payload = {**scene, "frame_id": frame} if "uri" in scene else dict(scene)
+            if payload == self._sim_scene_payload:
+                return
+            self._sim_scene_payload = payload
             self._sim_scene_pub.publish(String(data=json.dumps(payload)))
             self.get_logger().info(f"sim scene layer: {payload}")
 
@@ -3260,6 +3269,7 @@ if _ROS2_AVAILABLE:
             if self._sim_scene_pub is not None:
                 self.destroy_publisher(self._sim_scene_pub)
                 self._sim_scene_pub = None
+                self._sim_scene_payload = None
 
         def on_cleanup_pre_disconnect(self) -> None:
             """Idempotent teardown of the sensor + mobile-base bridges + ResetToPose."""
@@ -3277,6 +3287,7 @@ if _ROS2_AVAILABLE:
             if self._sim_scene_pub is not None:
                 self.destroy_publisher(self._sim_scene_pub)
                 self._sim_scene_pub = None
+                self._sim_scene_payload = None
             if self._reset_to_pose_srv is not None:
                 self.destroy_service(self._reset_to_pose_srv)
                 self._reset_to_pose_srv = None

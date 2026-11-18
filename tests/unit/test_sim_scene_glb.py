@@ -6,21 +6,15 @@ import json
 import struct
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, cast
 
 import numpy as np
 import pytest
-from openral_hal.sim_attached import SimAttachedHAL
+from openral_hal.sim_scene import SceneCache, mujoco_scene_mesh, write_sim_scene
 from openral_sim.sidecar import SidecarClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 from scene_glb import gprim_mesh, mujoco_static_scene_glb, static_scene_glb, write_glb
-
-
-def _hal(**kw: object) -> SimAttachedHAL:
-    """Only ``_env`` is read by ``_export_sim_scene``."""
-    return cast("SimAttachedHAL", SimpleNamespace(**kw))
 
 
 def _doc(glb: bytes) -> dict[str, Any]:
@@ -243,7 +237,7 @@ def test_hal_writes_the_exported_glb_and_sweeps_only_week_old_scenes(
     stage = usd.Stage.CreateInMemory()
     UsdGeom.Cube.Define(stage, "/World/wall")
     env = _UsdSceneEnv(stage)
-    got = SimAttachedHAL._export_sim_scene(_hal(_env=env))
+    got = write_sim_scene(env.scene_mesh)
     name = str(got["uri"]).removeprefix("package://openral_sim_scene/")
     assert got == {
         "uri": f"package://openral_sim_scene/{name}",
@@ -259,18 +253,15 @@ def test_hal_writes_the_exported_glb_and_sweeps_only_week_old_scenes(
     nvidia.defaultPrim = "Rack"
     nvidia.Save()
     stage.DefinePrim("/World/rack").GetReferences().AddReference(nvidia.identifier)
-    refused = SimAttachedHAL._export_sim_scene(
-        _hal(_env=_UsdSceneEnv(stage, str(tmp_path / "nvidia")))
-    )
+    refused = write_sim_scene(_UsdSceneEnv(stage, str(tmp_path / "nvidia")).scene_mesh)
     assert refused == {"note": "uses NVIDIA Isaac Sim assets, which may not be converted"}
 
-    broken = SimAttachedHAL._export_sim_scene(_hal(_env=_UsdSceneEnv(None)))
+    broken = write_sim_scene(_UsdSceneEnv(None).scene_mesh)
     assert str(broken["note"]).startswith("export failed: AttributeError")
     # A reply that passes as a GLB but carries no triangle count writes nothing.
     before = sorted(pkg.iterdir())
-    bad = SimpleNamespace(scene_mesh=lambda _: {"glb": b"glTF", "triangles": None})
-    assert SimAttachedHAL._export_sim_scene(_hal(_env=bad)) == {
-        "note": "export failed: the sidecar sent a malformed scene"
+    assert write_sim_scene(lambda _: {"glb": b"glTF", "triangles": None}) == {
+        "note": "export failed: the exporter sent a malformed scene"
     }
     assert sorted(pkg.iterdir()) == before
 
@@ -351,7 +342,10 @@ def test_a_textured_primitive_embeds_its_image_and_uvs() -> None:
     cube = gprim_mesh("Cube")
     assert cube is not None
     uv = np.zeros((len(cube[0]), 2))
-    glb = write_glb([((1, 1, 1, 1), *cube, uv, (b"\xff\xd8jpeg", "image/jpeg"))])
+    glb = write_glb([
+        ((1, 1, 1, 1), *cube, uv, (b"\xff\xd8jpeg", "image/jpeg", False)),
+        ((1, 1, 1, 1), *cube, uv, (b"\x89PNG", "image/png", True)),
+    ])  # fmt: skip
     doc = _doc(glb)
     prim = doc["meshes"][0]["primitives"][0]
     assert doc["accessors"][prim["attributes"]["TEXCOORD_0"]]["type"] == "VEC2"
@@ -360,8 +354,12 @@ def test_a_textured_primitive_embeds_its_image_and_uvs() -> None:
     assert doc["images"][0]["mimeType"] == "image/jpeg"
     assert "target" not in doc["bufferViews"][doc["images"][0]["bufferView"]]  # glTF: images
     assert _image(doc, glb, 0) == b"\xff\xd8jpeg"
+    assert "alphaMode" not in doc["materials"][0]
+    assert doc["materials"][1]["alphaMode"] == "BLEND"  # a PNG carries alpha
+    assert doc["textures"][1] == {"source": 1, "sampler": 0}
+    assert doc["samplers"][0] == {"wrapS": 33071, "wrapT": 33071}  # clamp to edge
     with pytest.raises(ValueError, match="uvs for"):
-        write_glb([((1, 1, 1, 1), *cube, uv[:3], (b"x", "image/png"))])
+        write_glb([((1, 1, 1, 1), *cube, uv[:3], (b"x", "image/png", False))])
 
 
 def test_a_textured_mesh_embeds_its_shrunk_texture(tmp_path: Path) -> None:
@@ -407,9 +405,87 @@ def test_a_textured_mesh_embeds_its_shrunk_texture(tmp_path: Path) -> None:
     with image_mod.open(io.BytesIO(_image(doc, out["glb"], 0))) as im:
         assert im.format == "JPEG" and im.size == (512, 256)
 
+    # Over the limit with its textures: rebuilt in each texture's mean colour, not refused.
+    tight = static_scene_glb(s, np.eye(4), [], str(tmp_path / "nvidia"), len(out["glb"]) - 1)
+    assert "textures dropped" in tight["log"] and "images" not in _doc(tight["glb"])
+    factors = [
+        m["pbrMetallicRoughness"]["baseColorFactor"] for m in _doc(tight["glb"])["materials"]
+    ]
+    assert any(np.allclose(f[:3], (200 / 255, 40 / 255, 40 / 255), atol=0.01) for f in factors)
+
     (tmp_path / "poster.png").write_bytes(b"not an image")
     grey = static_scene_glb(s, np.eye(4), [], str(tmp_path / "nvidia"))
     assert "1 unreadable textures drawn grey" in grey["log"] and "images" not in _doc(grey["glb"])
+
+
+def test_texture_wiring_through_interface_inputs_transforms_and_nvidia_layers(
+    tmp_path: Path,
+) -> None:
+    usd = pytest.importorskip("pxr.Usd")
+    image_mod = pytest.importorskip("PIL.Image")
+    from pxr import Sdf, UsdGeom, UsdShade
+
+    png = tmp_path / "tiles.png"
+    image_mod.new("RGB", (64, 64), (10, 200, 10)).save(png)
+    s = usd.Stage.CreateInMemory()
+    quad = UsdGeom.Mesh.Define(s, "/World/floor")
+    quad.CreatePointsAttr([(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)])
+    quad.CreateFaceVertexCountsAttr([4])
+    quad.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+    UsdGeom.PrimvarsAPI(quad).CreatePrimvar(  # a primvar only the reader's varname names
+        "uv", Sdf.ValueTypeNames.Float2Array, UsdGeom.Tokens.vertex
+    ).Set([(0, 0), (1, 0), (1, 1), (0, 1)])
+
+    def material(path: str, layer: Any = None) -> Any:
+        if layer is not None:
+            s.SetEditTarget(layer)
+        mat = UsdShade.Material.Define(s, path)
+        reader = UsdShade.Shader.Define(s, f"{path}/Reader")
+        reader.CreateIdAttr("UsdPrimvarReader_float2")
+        reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("uv")
+        xf = UsdShade.Shader.Define(s, f"{path}/Xf")
+        xf.CreateIdAttr("UsdTransform2d")
+        xf.CreateInput("in", Sdf.ValueTypeNames.Float2).ConnectToSource(
+            reader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+        )
+        xf.CreateInput("scale", Sdf.ValueTypeNames.Float2).Set((4.0, 4.0))
+        tex = UsdShade.Shader.Define(s, f"{path}/Tex")
+        tex.CreateIdAttr("UsdUVTexture")
+        tex.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(str(png))
+        tex.CreateInput("wrapS", Sdf.ValueTypeNames.Token).Set("clamp")
+        tex.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(
+            xf.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+        )
+        # The URDF importer's pattern: the surface reads a Material interface input.
+        iface = mat.CreateInput("diffuse", Sdf.ValueTypeNames.Color3f)
+        iface.ConnectToSource(tex.CreateOutput("rgb", Sdf.ValueTypeNames.Float3))
+        sh = UsdShade.Shader.Define(s, f"{path}/S")
+        sh.CreateIdAttr("UsdPreviewSurface")
+        sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(iface)
+        s.SetEditTarget(s.GetRootLayer())
+        return mat
+
+    UsdShade.MaterialBindingAPI.Apply(quad.GetPrim()).Bind(material("/World/Looks/tiles"))
+    out = static_scene_glb(s, np.eye(4), [], str(tmp_path / "nvidia"))
+    doc = _doc(out["glb"])
+    assert len(doc["images"]) == 1, out["log"]
+    prim = doc["meshes"][0]["primitives"][0]
+    uv = doc["accessors"][prim["attributes"]["TEXCOORD_0"]]
+    assert uv["count"] == 4
+    view = doc["bufferViews"][uv["bufferView"]]
+    start = 20 + struct.unpack_from("<I", out["glb"], 12)[0] + 8 + view["byteOffset"]
+    st = np.frombuffer(out["glb"], np.float32, 8, start).reshape(4, 2)
+    assert st[:, 0].max() == pytest.approx(4.0) and st[:, 1].min() == pytest.approx(-3.0)
+    assert doc["textures"][0]["sampler"] == 0  # wrapS clamp
+
+    # The same material authored in an NVIDIA layer: its texture is not embedded, even
+    # though the image itself sits outside the NVIDIA root.
+    (tmp_path / "nvidia").mkdir()
+    sub = Sdf.Layer.CreateNew(str(tmp_path / "nvidia" / "looks.usda"))
+    s.GetRootLayer().subLayerPaths.append(sub.identifier)
+    UsdShade.MaterialBindingAPI(quad.GetPrim()).Bind(material("/World/Looks/nv", sub))
+    nv = static_scene_glb(s, np.eye(4), [], str(tmp_path / "nvidia"))
+    assert "1 NVIDIA textures left out" in nv["log"] and "images" not in _doc(nv["glb"])
 
 
 _MJCF = """
@@ -423,6 +499,8 @@ _MJCF = """
     <body name="counter" pos="1 0 0.5">
       <geom type="box" size="0.5 0.3 0.5" material="wood"/>
       <geom type="box" size="0.5 0.3 0.5" contype="0" conaffinity="0" material="wood"/>
+      <geom type="box" size="0.1 0.1 0.4" contype="0" conaffinity="0" material="wood"
+            rgba="0 1 0 1"/>
       <geom type="sphere" size="0.05" rgba="1 1 1 0"/>
     </body>
     <body name="cup" pos="1 0 1.1"><freejoint/><geom type="cylinder" size="0.04 0.05"/></body>
@@ -440,55 +518,7 @@ _MJCF = """
 """
 
 
-def test_mujoco_static_scene_keeps_world_welded_geoms_minus_robot_and_mocap() -> None:
-    mujoco = pytest.importorskip("mujoco")
-    model = mujoco.MjModel.from_xml_string(_MJCF)
-    data = mujoco.MjData(model)
-    mujoco.mj_forward(model, data)
-    shift = np.eye(4)
-    shift[:3, 3] = [0.0, 0.0, -1.0]
-    out = mujoco_static_scene_glb(model, data, shift)
-    assert out["triangles"] == 2 + 12, out["log"]  # floor + the counter's visual box only
-    doc = _doc(out["glb"])
-    colours = {tuple(m["pbrMetallicRoughness"]["baseColorFactor"]) for m in doc["materials"]}
-    assert colours == {(0.5, 0.5, 0.5, 1.0), (0.5, 0.25, 0.0, 1.0)}  # wood: its mean colour
-    zs = [doc["accessors"][p["attributes"]["POSITION"]] for p in doc["meshes"][0]["primitives"]]
-    assert min(a["min"][2] for a in zs) == pytest.approx(-1.0)  # the floor, in the frame
-    assert max(a["max"][2] for a in zs) == pytest.approx(0.0)  # the counter's top
-
-    over = mujoco_static_scene_glb(model, data, np.eye(4), limit_bytes=100)
-    assert over["note"] == "scene is over the 0 MB limit"
-
-
-def test_hal_exports_a_mujoco_scene_in_the_arm_base_frame(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    mujoco = pytest.importorskip("mujoco")
-    monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path))
-    model = mujoco.MjModel.from_xml_string(_MJCF)
-    data = mujoco.MjData(model)
-    mujoco.mj_forward(model, data)
-    desc = SimpleNamespace(base_frame="not_in_the_mjcf", base_joints=None)
-    hal = SimpleNamespace(_env=object(), _mujoco_handles=lambda: (model, data), description=desc)
-    hal._mujoco_scene_mesh = lambda limit: SimAttachedHAL._mujoco_scene_mesh(
-        cast("SimAttachedHAL", hal), limit
-    )
-    got = SimAttachedHAL._export_sim_scene(cast("SimAttachedHAL", hal))
-    assert got["triangles"] == 14, got
-    glb = (tmp_path / "sim_scene" / str(got["uri"]).rsplit("/", 1)[1]).read_bytes()
-    doc = _doc(glb)
-    wood = next(
-        p for p in doc["meshes"][0]["primitives"]
-        if doc["materials"][p["material"]]["pbrMetallicRoughness"]["baseColorFactor"][1] == 0.25
-    )  # fmt: skip
-    # The robot's root body (robot_mount, at x = -1) is the frame: the counter is at x 1.5..2.5.
-    assert doc["accessors"][wood["attributes"]["POSITION"]]["max"][0] == pytest.approx(2.5)
-
-
-def test_a_mujoco_arm_hal_exports_its_scene_on_connect(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pytest.importorskip("mujoco")
+def _arm_description() -> Any:  # reason: openral_core imported lazily
     from openral_core import (
         ControlMode,
         EmbodimentKind,
@@ -498,11 +528,8 @@ def test_a_mujoco_arm_hal_exports_its_scene_on_connect(
         RobotDescription,
         SafetyEnvelope,
     )
-    from openral_hal._mujoco_arm import MujocoArmHAL
 
-    monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path))
-    (tmp_path / "scene.xml").write_text(_MJCF)
-    desc = RobotDescription(
+    return RobotDescription(
         name="arm",
         embodiment_kind=EmbodimentKind.MANIPULATOR,
         joints=[
@@ -511,10 +538,114 @@ def test_a_mujoco_arm_hal_exports_its_scene_on_connect(
         capabilities=RobotCapabilities(supported_control_modes=[ControlMode.JOINT_POSITION]),
         safety=SafetyEnvelope(),
     )
+
+
+def test_mujoco_static_scene_keeps_world_welded_geoms_minus_robot_and_mocap() -> None:
+    mujoco = pytest.importorskip("mujoco")
+    model = mujoco.MjModel.from_xml_string(_MJCF)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    shift = np.eye(4)
+    shift[:3, 3] = [0.0, 0.0, -1.0]
+    out = mujoco_static_scene_glb(model, data, shift)
+    # floor + the counter's two visual boxes (not its collision box, nor the invisible ball)
+    assert out["triangles"] == 2 + 12 + 12, out["log"]
+    doc = _doc(out["glb"])
+    colours = {tuple(m["pbrMetallicRoughness"]["baseColorFactor"]) for m in doc["materials"]}
+    # wood: its texture's mean colour; the green box: its own rgba beats its material's,
+    # still times the material's texture (as MuJoCo draws it)
+    assert colours == {(0.5, 0.5, 0.5, 1.0), (0.5, 0.25, 0.0, 1.0), (0.0, 0.25, 0.0, 1.0)}
+    zs = [doc["accessors"][p["attributes"]["POSITION"]] for p in doc["meshes"][0]["primitives"]]
+    assert min(a["min"][2] for a in zs) == pytest.approx(-1.0)  # the floor, in the frame
+    assert max(a["max"][2] for a in zs) == pytest.approx(0.0)  # the counter's top
+
+    over = mujoco_static_scene_glb(model, data, np.eye(4), limit_bytes=100)
+    assert over["note"] == "scene is over the 0 MB limit"
+
+
+def test_a_mujoco_scene_is_baked_in_the_frame_the_base_tf_uses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mujoco = pytest.importorskip("mujoco")
+    monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path))
+    model = mujoco.MjModel.from_xml_string(_MJCF)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    def wood_max_x(odom_from_base: Any = None) -> float:
+        out = mujoco_scene_mesh(model, data, _arm_description(), 10_000_000, odom_from_base)
+        doc = _doc(out["glb"])
+        wood = next(
+            p for p in doc["meshes"][0]["primitives"]
+            if doc["materials"][p["material"]]["pbrMetallicRoughness"]["baseColorFactor"][1]
+            == 0.25
+        )  # fmt: skip
+        return float(doc["accessors"][wood["attributes"]["POSITION"]]["max"][0])
+
+    # No body named for base_frame: the actuated robot's root (robot_mount, x = -1).
+    assert wood_max_x() == pytest.approx(2.5)  # the counter spans x 0.5..1.5 in the world
+    odom = np.eye(4)
+    odom[0, 3] = 10.0  # a mobile base 10 m along its odometry frame's x
+    assert wood_max_x(odom) == pytest.approx(12.5)
+
+
+def test_a_mujoco_arm_hal_exports_only_when_asked_and_once_per_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("mujoco")
+    from openral_hal._mujoco_arm import MujocoArmHAL
+
+    monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path))
+    (tmp_path / "scene.xml").write_text(_MJCF)
     xml = str(tmp_path / "scene.xml")
-    arm = MujocoArmHAL(desc, mjcf_path=xml, joint_qpos_addr={"j1": 7}, actuator_index={"j1": 0})
+    arm = MujocoArmHAL(
+        _arm_description(), mjcf_path=xml, joint_qpos_addr={"j1": 7}, actuator_index={"j1": 0}
+    )
+    assert arm.export_sim_scene() is None  # not connected
     arm.connect()
     try:
-        assert arm.sim_scene is not None and arm.sim_scene["triangles"] == 14, arm.sim_scene
+        assert not (tmp_path / "sim_scene").exists()  # connect alone exports nothing
+        scene = arm.export_sim_scene()
+        assert scene is not None and scene["triangles"] == 26, scene
+        glb = tmp_path / "sim_scene" / str(scene["uri"]).rsplit("/", 1)[1]
+        glb.unlink()
+        assert arm.export_sim_scene() == scene and not glb.exists()  # cached, not re-exported
     finally:
         arm.disconnect()
+
+
+def test_a_scene_cache_retries_a_failed_export() -> None:
+    calls: list[int] = []
+
+    def flaky(limit_bytes: int) -> dict[str, Any]:
+        calls.append(limit_bytes)
+        if len(calls) == 1:
+            raise RuntimeError("sidecar busy")
+        return {"note": "the scene has no static geometry"}
+
+    cache = SceneCache()
+    assert str(cache.get("stage", flaky)["note"]).startswith("export failed: RuntimeError")
+    assert cache.get("stage", flaky) == {"note": "the scene has no static geometry"}
+    assert cache.get("stage", flaky) == {"note": "the scene has no static geometry"}
+    assert len(calls) == 2
+
+
+def test_texture_encoding_and_uv_transforms_need_no_usd(tmp_path: Path) -> None:
+    """The texture path's pure parts, run in the default lane (no ``scene-usd`` group)."""
+    import io
+
+    from PIL import Image
+    from scene_glb import _encode_texture, _srt
+
+    Image.new("RGB", (1024, 256), (255, 0, 0)).save(tmp_path / "red.png")
+    data, mime, mean = _encode_texture(str(tmp_path / "red.png"))
+    assert mime == "image/jpeg" and np.allclose(mean, (1.0, 0.0, 0.0), atol=0.02)
+    with Image.open(io.BytesIO(data)) as im:
+        assert im.size == (512, 128)
+    decal = Image.new("RGBA", (8, 8), (0, 0, 255, 255))
+    decal.putpixel((0, 0), (0, 0, 0, 0))
+    decal.save(tmp_path / "decal.png")
+    assert _encode_texture(str(tmp_path / "decal.png"))[1] == "image/png"  # alpha kept
+
+    m = _srt((2.0, 3.0), 90.0, (0.5, 0.0))  # scale, then rotate, then translate
+    assert np.allclose(m @ [1.0, 0.0, 1.0], [0.5, 2.0, 1.0])

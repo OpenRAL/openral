@@ -425,7 +425,8 @@ Every `objects` entry states `dynamic`: it has no default, so a scene that omits
 load, and the YAML alone tells a reader which objects move. The rule is what
 `static_colliders` uses to flag a collider `dynamic`, and what the robot console's
 Sim scene layer ([OpenRAL/platform#133](https://github.com/OpenRAL/platform/issues/133))
-uses to draw only the static scene, with its base-colour textures embedded at 512 px. A
+uses to draw only the static scene, with its base-colour textures embedded at 512 px
+(each texture's mean colour instead when they would push it over 10 MB). A
 MuJoCo scene's layer (`SimAttachedHAL` and the composed-scene `MujocoArmHAL`) draws every
 geom welded to the world (no joint above it), minus the robot and mocap bodies, in flat
 colours (a texture contributes its mean colour). When authoring an environment USD, give a fixture
