@@ -31,7 +31,7 @@ import binascii
 import json
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal  # Any: JSON Schema dicts are untyped by nature
 from urllib.parse import urlsplit
@@ -79,6 +79,11 @@ WRITE_CONTROLS_ENV = "OPENRAL_DASHBOARD_WRITE_CONTROLS"
 """``=1`` puts ``skill:*`` actions in the manifest and lets the dashboard run them (ADR-0084)."""
 REMOTE_CONTROL_ENV = "OPENRAL_DASHBOARD_REMOTE_CONTROL"
 """``=1`` allows reset, prompt and skills over the tunnel listener (E-STOP always is)."""
+RSKILLS_ENV = "OPENRAL_RSKILLS"
+"""The rSkills this robot may run: comma-separated rSkill ids (``OpenRAL/rskill-…``), curated
+per robot on openral.com (OpenRAL/platform#147) and applied as an account setting. The reasoner's
+palette and the manifest's ``skill:*`` actions admit only these. Unset or empty: every installed
+rSkill."""
 ENROLMENT_PATH_ENV = "OPENRAL_ROBOT_ENROLMENT"
 """Overrides where the robot enrolment lives (default ``~/.config/openral/robot.json``)."""
 TRUSTED_ISSUERS: tuple[str, ...] = ("https://www.openral.com", "https://dev.openral.com")
@@ -266,6 +271,50 @@ def _skill_label(rskill_id: str) -> str:
     return rskill_id.rsplit("/", 1)[-1].removeprefix("rskill-")
 
 
+def allowed_rskills_from_env(environ: Mapping[str, str] | None = None) -> frozenset[str] | None:
+    """The rSkill list in ``OPENRAL_RSKILLS``, or ``None`` when it sets none (no restriction).
+
+    Ids are casefolded, as Hugging Face repo ids are case-insensitive: compare with
+    :func:`rskill_listed`, never with ``in``.
+
+    Args:
+        environ: The environment to read; ``os.environ`` when ``None``.
+
+    Returns:
+        The listed rSkill ids, or ``None``.
+
+    Example:
+        >>> sorted(
+        ...     allowed_rskills_from_env(
+        ...         {"OPENRAL_RSKILLS": " OpenRAL/rskill-a, ,OpenRAL/rskill-b"}
+        ...     )
+        ... )
+        ['openral/rskill-a', 'openral/rskill-b']
+        >>> allowed_rskills_from_env({"OPENRAL_RSKILLS": " , "}) is None
+        True
+    """
+    raw = (os.environ if environ is None else environ).get(RSKILLS_ENV, "")
+    ids = frozenset(x.strip().casefold() for x in raw.split(",") if x.strip())
+    return ids or None
+
+
+def rskill_listed(rskill_id: str, allowed: frozenset[str] | None) -> bool:
+    """Whether the robot's rSkill list (:func:`allowed_rskills_from_env`) admits ``rskill_id``.
+
+    Example:
+        >>> rskill_listed("OpenRAL/rskill-A", frozenset({"openral/rskill-a"}))
+        True
+        >>> rskill_listed("OpenRAL/rskill-b", None)  # no list: every rSkill
+        True
+    """
+    return allowed is None or rskill_id.casefold() in allowed
+
+
+def casefold_rskills(ids: frozenset[str] | None) -> frozenset[str] | None:
+    """A caller's rSkill list as :func:`rskill_listed` compares it (casefolded); ``None`` kept."""
+    return None if ids is None else frozenset(i.casefold() for i in ids)
+
+
 def build_robot_manifest(
     robot: RobotDescription,
     runtime: DeployRuntime,
@@ -276,6 +325,7 @@ def build_robot_manifest(
     remote_control: bool,
     commercial_deployment: bool = False,
     unit_serial: str | None = None,
+    allowed_rskill_ids: frozenset[str] | None = None,
 ) -> RobotManifest:
     """Build the manifest a deploy emits.
 
@@ -292,6 +342,8 @@ def build_robot_manifest(
             action but ``estop`` (which is always remote).
         commercial_deployment: Drop skills whose licence forbids commercial use.
         unit_serial: This unit's serial (``resolve_unit_identity``).
+        allowed_rskill_ids: The robot's rSkill list (``allowed_rskills_from_env``): only these
+            become ``skill:<id>`` actions. ``None``: no restriction.
 
     Returns:
         The manifest; actions are ``estop`` first, then the rest in id order.
@@ -355,6 +407,7 @@ def build_robot_manifest(
             if rskill_matches_robot(
                 s, robot.capabilities, commercial_deployment=commercial_deployment
             )
+            and rskill_listed(s.name, casefold_rskills(allowed_rskill_ids))
         }
         actions += [
             ManifestAction(

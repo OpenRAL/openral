@@ -32,6 +32,8 @@ from openral_core import (
     RSkillAction,
     RSkillManifest,
     TaskSpace,
+    casefold_rskills,
+    rskill_listed,
     rskill_matches_robot,
     task_space_compatible,
 )
@@ -475,6 +477,7 @@ def build_tool_palette(
     memory_available: bool = False,
     object_tracking: bool = False,
     grasp_hand_required: bool = False,
+    allowed_rskill_ids: frozenset[str] | None = None,
 ) -> ToolPalette:
     """Build a ``ToolPalette`` from the installed-skill registry.
 
@@ -538,6 +541,10 @@ def build_tool_palette(
         grasp_hand_required: With ``object_tracking``, the robot has several hands and the
             deployment declares no grasping hand (``grasp_contact_links``): a manipulation
             skill's ``object_target`` is ``"grasp_and_hand_required"``.
+        allowed_rskill_ids: The robot's curated rSkill list (``OPENRAL_RSKILLS``,
+            ``openral_core.allowed_rskills_from_env``): only these actuating skills are admitted.
+            Detectors are perception, not tools, and are not filtered. ``None``: no
+            restriction.
 
     Returns:
         A frozen ``ToolPalette``.
@@ -553,6 +560,7 @@ def build_tool_palette(
         >>> palette.skills
         ()
     """
+    allowed = casefold_rskills(allowed_rskill_ids)
     entries: list[RSkillToolEntry] = []
     continuous_detectors: list[ContinuousDetectorEntry] = []
     on_demand_detectors: list[OnDemandDetectorEntry] = []
@@ -603,6 +611,8 @@ def build_tool_palette(
         if not rskill_matches_robot(
             skill, robot_capabilities, commercial_deployment=commercial_deployment
         ):
+            continue
+        if not rskill_listed(skill.name, allowed):
             continue
         ros = skill.ros_integration
         entries.append(

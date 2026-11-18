@@ -355,6 +355,11 @@ ACCOUNT_SETTINGS = frozenset(
 )
 """The reasoner settings openral.com may set on a linked robot."""
 
+SKILL_SETTINGS = frozenset({"OPENRAL_RSKILLS"})
+"""The robot's curated rSkill list openral.com may set (OpenRAL/platform#147): which installed
+rSkills its reasoner may use (``openral_core.RSKILLS_ENV``). It carries no key or URL,
+so it applies whether or not the robot's console chooses the reasoner."""
+
 CONTROL_SETTINGS = frozenset({REMOTE_CONTROL_ENV, WRITE_CONTROLS_ENV})
 """The dashboard's remote- and write-control switches openral.com may set (ADR-0132).
 
@@ -413,14 +418,14 @@ def apply_reasoner_settings(*, echo: Callable[[str], None]) -> list[str]:
     if console:
         # The control switches carry no key or URL, so the account's still apply.
         applied = apply_console_settings(echo=echo, console=console)
-        return applied + apply_account_settings(echo=echo, names=CONTROL_SETTINGS)
+        return applied + apply_account_settings(echo=echo, names=CONTROL_SETTINGS | SKILL_SETTINGS)
     return apply_account_settings(echo=echo)
 
 
 def apply_account_settings(
     *,
     echo: Callable[[str], None],
-    names: frozenset[str] = ACCOUNT_SETTINGS | CONTROL_SETTINGS,
+    names: frozenset[str] = ACCOUNT_SETTINGS | CONTROL_SETTINGS | SKILL_SETTINGS,
 ) -> list[str]:
     """Put this robot's openral.com account settings into ``os.environ`` (ADR-0129).
 
