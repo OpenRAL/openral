@@ -44,9 +44,33 @@ runs:
     #      <g> --inexact". A remediation you cannot run in the environment
     #      that printed it is worse than no remediation. CLAUDE.md §1.2.
     # ubuntu-24.04 ships just 1.21 in universe, so no extra action/tap.
+    # The .debs themselves are cached: archive.ubuntu.com has served this
+    # ~60 MB install at 10-12 min on some shards (2026-11-18), pushing
+    # core_selected past its 15 min timeout before a test ran. With the debs
+    # restored, apt only refreshes its indexes. Saved only on master (like the
+    # uv cache, see cache-warm.yml); a newer image's package versions miss
+    # the restored debs and apt downloads just those, so a stale entry is
+    # slow, never wrong.
+    - name: apt .deb cache key
+      id: apt-key
+      shell: bash
+      # ImageOS/ImageVersion are runner process env vars, not `env` context.
+      run: echo "key=apt-debs-${ImageOS:-unknown}-${ImageVersion:-unknown}-ffmpeg-osmesa-just" >> "$GITHUB_OUTPUT"
+
+    - name: Restore apt .deb cache (ffmpeg + osmesa + just)
+      id: apt-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: ~/apt-debs
+        key: ${{ steps.apt-key.outputs.key }}
+        restore-keys: apt-debs-
+
     - name: Install native runtime libs (torchcodec + MuJoCo OSMesa + just)
       shell: bash
       run: |
+        if compgen -G "$HOME/apt-debs/*.deb" >/dev/null; then
+          sudo cp "$HOME"/apt-debs/*.deb /var/cache/apt/archives/
+        fi
         # Azure's mirror can stall FFmpeg downloads beyond the job timeout.
         sudo find /etc/apt -maxdepth 2 -type f \( -name '*.list' -o -name '*.sources' -o -name 'apt-mirrors.txt' \) \
           -exec sed -i 's|://azure.archive.ubuntu.com/ubuntu|://archive.ubuntu.com/ubuntu|g' {} +
@@ -61,6 +85,17 @@ runs:
           || echo "::warning::apt-get update reported errors; the install below is the gate"
         sudo apt-get install -y --no-install-recommends ffmpeg libosmesa6 just
         just --version
+
+    - name: Save apt .deb cache (master only)
+      if: github.ref == 'refs/heads/master' && steps.apt-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: mkdir -p ~/apt-debs && cp /var/cache/apt/archives/*.deb ~/apt-debs/
+
+    - if: github.ref == 'refs/heads/master' && steps.apt-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: ~/apt-debs
+        key: ${{ steps.apt-cache.outputs.cache-primary-key }}
 
     - name: Install Python dependencies
       shell: bash
