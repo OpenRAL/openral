@@ -156,8 +156,11 @@ def test_head_camera_ships_registered_rgbd_frames(env: Any) -> None:
     fx, fy, cx, cy = k
     assert fx == pytest.approx(fy, rel=1e-3)
     assert (cx, cy) == pytest.approx((w / 2.0, h / 2.0), abs=1.0)
-    # Optical frame at the head mount (openarm_base + 0.2 m z), looking forward-down.
-    assert pose[:3, 3] == pytest.approx((0.0, 0.0, 0.2), abs=1e-3)
+    # Optical frame at the head ZED's calibrated mount in openarm_base, looking forward-down.
+    desc = RobotDescription.from_yaml(str(_repo_root() / "robots" / "openarm" / "robot.yaml"))
+    zed = next(s for s in desc.sensors if s.name == "head_zed")
+    assert zed.static_transform_xyz_rpy is not None
+    assert pose[:3, 3] == pytest.approx(zed.static_transform_xyz_rpy[:3], abs=1e-3)
     assert pose[0, 2] > 0.2 and pose[2, 2] < -0.8  # optical z: forward and down
     v, u = np.nonzero(depth > 0.0)
     pick = np.linspace(0, len(u) - 1, 200).astype(int)
@@ -167,7 +170,6 @@ def test_head_camera_ships_registered_rgbd_frames(env: Any) -> None:
     assert float(np.min(lifted[:, 2])) == pytest.approx(-0.698, abs=0.03)  # the floor
     # The HAL keeps the newest frame for the sensor bridge between the steps that carry
     # one, and its cloud is that frame's lift, coloured by the pixel each point came from.
-    desc = RobotDescription.from_yaml(str(_repo_root() / "robots" / "openarm" / "robot.yaml"))
     hal = SimAttachedHAL(env, desc)
     hal.connect()
     for _ in range(3):
@@ -178,13 +180,12 @@ def test_head_camera_ships_registered_rgbd_frames(env: Any) -> None:
     colours = hal.read_depth_cloud_colours()["head_zed"]
     assert cloud is hal.read_depth_clouds()["head_zed"]  # one deprojection per frame
     assert len(colours) == len(cloud) > 1000
-    spec = next(s for s in desc.sensors if s.name == "head_zed")
     want, want_rgb = cloud_from_depth_frame(
         held["depth"],
         held["rgb"],
         held["k"],
         held["optical_in_base"],
-        max_planar_range_m=spec.range_max_m,
+        max_planar_range_m=zed.range_max_m,
     )
     np.testing.assert_array_equal(cloud, want)
     np.testing.assert_array_equal(colours, want_rgb)
