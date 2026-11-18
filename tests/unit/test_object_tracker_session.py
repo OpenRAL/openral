@@ -771,8 +771,9 @@ def test_several_targets_are_narrowed_to_the_one_in_the_search_box() -> None:
 def test_a_named_memory_node_binds_only_its_instance_through_tf2() -> None:
     """Issue #631: a goal naming one memory node seeds its TARGET query with the node's box in
     ``map``. With two same-label oranges tracked, only the one centred in it, re-expressed in
-    the grid frame through tf2, is the goal's; with no tf2 neither is (fail closed), never the
-    neighbour. The scope follows tf2 per grid (the base moves under ``map``)."""
+    the grid frame through tf2, is the goal's, never the neighbour. The scope follows tf2 per
+    grid (the base moves under ``map``); a lookup that misses keeps the last resolved box (one
+    late tf never resets the query); a scope that never resolved matches nothing."""
     s, oid, _, centre = _grasp_region_rig(box=False)
     other = _mint(s, centre + np.array([0.12, 0.0, 0.0]))
     offset = np.array([1.0, -0.5, 0.0])  # grid <- map: a pure translation
@@ -799,7 +800,29 @@ def test_a_named_memory_node_binds_only_its_instance_through_tf2() -> None:
 
     s.zone_transform = lambda _frame, _ns: None  # tf2 lost
     s.on_grid(s.grid, s.grid_stamp_ns + 1)  # type: ignore[arg-type]
-    assert not standing.matches(store.get(oid)) and not standing.matches(store.get(other))  # type: ignore[arg-type]
+    assert standing.matches(store.get(other)) and not standing.matches(store.get(oid))  # type: ignore[arg-type]
+
+    # A new goal whose scope never resolves (no tf2 yet) matches neither: fail closed.
+    renamed = named.model_copy(update={"stamp_ns": named.stamp_ns + 1})
+    s.on_grasp_declaration(renamed)
+    (fresh,) = s.tracker.queries.queries
+    assert not fresh.matches(store.get(oid)) and not fresh.matches(store.get(other))  # type: ignore[arg-type]
+
+
+def test_the_runners_search_box_seed_does_not_scope_the_goal_to_an_instance() -> None:
+    """Review of #638: the runner seeds an unseeded TARGET query with the scene's search box.
+    That box is the declaration's own ``search_box`` (scoped, or logged unscoped, as such), not
+    a named instance: it never becomes a tf2-gated instance scope."""
+    s, oid, _, centre = _grasp_region_rig(box=False)
+    decl = s.grasp_declaration
+    assert decl is not None
+    box = _search_box("map", centre)
+    (query,) = decl.target_queries
+    seeded = query.model_copy(update={"seed": box})
+    s.on_grasp_declaration(decl.model_copy(update={"search_box": box, "target_queries": (seeded,)}))
+    (standing,) = s.tracker.queries.queries
+    assert standing.within is None  # the off-frame search box is logged unscoped
+    assert standing.matches(s.tracker.store.get(oid))  # type: ignore[arg-type]
 
 
 def test_a_count_all_declaration_makes_every_orange_eligible_and_nothing_else() -> None:

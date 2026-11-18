@@ -743,14 +743,24 @@ class TrackerSession:
             )
             within = None
         # A TARGET query's seed names the instance (a recalled memory node, #631): it scopes
-        # the query like the search box does, through tf2 (`_rescope`). One seed only: two
-        # TARGET queries seeded apart name no single instance; one box on several (the runner
-        # seeds each with the scene's search box) is one scope.
+        # the query like the search box does, through tf2 (`_rescope`). The runner's seed is
+        # the scene's search box itself (handled above), never an instance. One seed only:
+        # TARGET queries seeded apart name no single instance (logged; label match).
         seeds: list[PlaceRegion] = []
         for q in decl.target_queries:
-            if q.role is ObjectRole.TARGET and q.seed is not None and q.seed not in seeds:
-                seeds.append(q.seed)
+            seed = q.seed
+            if q.role is not ObjectRole.TARGET or seed is None:
+                continue
+            if seed not in (decl.search_box, *seeds):
+                seeds.append(seed)
         scope = seeds[0] if tracking and decl.active and len(seeds) == 1 else None
+        if tracking and decl.active and len(seeds) > 1:
+            log.warning(
+                "object_tracker.goal_scope_ambiguous",
+                target_id=decl.target_id,
+                seeds=len(seeds),
+                why="TARGET queries seeded apart name no single instance; label match only",
+            )
         self._set_goal(
             "grasp",
             decl.target_id,
@@ -1384,7 +1394,7 @@ class TrackerSession:
             None,
             query_tuple,
             invocation_id=invocation_id,
-            within=scope or within,
+            within=within,
             scope=scope,
         )
         self._rescope()
@@ -1413,19 +1423,27 @@ class TrackerSession:
     def _rescope(self) -> None:
         """Re-express each goal's ``scope`` in the grid frame (the base moves under ``map``).
 
-        Through ``zone_transform`` at the newest grid's stamp; no tf2 (or a tilted transform)
-        keeps the scope in its own frame, where ``centre_within`` matches no track: fail closed.
+        Through ``zone_transform`` at the newest grid's stamp. A lookup that misses (or a tilted
+        transform) after the scope resolved keeps the last resolved box, so one late tf does
+        not reset the query; one that never resolved keeps the scope in its own frame, where
+        ``centre_within`` matches no track: fail closed.
         """
         for goal in self._goals.values():
             if goal is None or goal.scope is None:
                 continue
-            scope, within = goal.scope, goal.scope
-            if scope.frame_id != self.frame_id and self.zone_transform is not None:
-                t = self.zone_transform(scope.frame_id, self.grid_stamp_ns)
+            scope, within, error = goal.scope, goal.scope, ""
+            if scope.frame_id != self.frame_id:
+                t = None
+                if self.zone_transform is not None:
+                    t = self.zone_transform(scope.frame_id, self.grid_stamp_ns)
                 try:
-                    within = scope if t is None else rebase_box(scope, t, self.frame_id)
-                except ROSConfigError:
-                    within = scope
+                    if t is None:
+                        raise ROSConfigError(f"no tf2 {self.frame_id} <- {scope.frame_id}")
+                    within = rebase_box(scope, t, self.frame_id)
+                except ROSConfigError as exc:
+                    error = str(exc)
+                    if goal.scope_resolved and goal.within is not None:
+                        within = goal.within  # the last resolved box
             resolved = within.frame_id == self.frame_id
             if resolved != goal.scope_resolved:
                 goal.scope_resolved = resolved
@@ -1435,6 +1453,7 @@ class TrackerSession:
                     scope_frame=scope.frame_id,
                     grid_frame=self.frame_id,
                     resolved=resolved,
+                    error=error,
                 )
             goal.within = within
             for q in self.tracker.queries.queries:

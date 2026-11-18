@@ -2837,7 +2837,8 @@ class ObjectTracker:
             if seed is not None and seed.frame_id != self.store.frame_id:
                 # A fixed-frame seed (a recalled memory node in `map`, #631) searches where
                 # the session re-expressed it (`within`), else not at all: an off-frame box
-                # would crop nothing and lose the workspace crop below.
+                # would crop nothing and lose the workspace crop below. An unresolved scope is
+                # logged once by the session (`object_tracker.goal_scope resolved=False`).
                 w = q.within
                 seed = w if w is not None and w.frame_id == self.store.frame_id else None
             base = TrackerRequest(
