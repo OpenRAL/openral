@@ -20,40 +20,43 @@ Either of:
   + destination), never "the first batch of objects" or "the remaining items".
 
 ## Preconditions
-- A self-maintained memory backend is available (`memory_write` / `memory_search`
-  tools) so the decomposed plan survives a reasoner tick.
+- `decompose_mission` is in the tool list. It writes the `## MISSION` task
+  ledger the node sequences and the dashboard's Mission card shows.
 - A scene-query tool (`query_scene`) is available to check each subtask's
   done-condition; a reward monitor (`query_task_progress`) may also be up.
 
 ## Steps
-1. **Decompose.** Break the goal into an ordered list of subtasks, each a
-   `(action, verifiable done-condition)` pair — e.g. `["bowls stacked" via
-   query_scene, "bowls in drawer", "plate on cookie box"]`. Each done-condition
-   must be something `query_scene` (or `query_task_progress`) can confirm.
-2. **Record.** Write the ordered list to memory as open tasks
-   (`memory_write(op=add, section="open_tasks", ...)`) — an internal `TODO.md` so
-   the plan survives a tick and the mission can resume after an interruption.
-3. **Execute in order** (bounded by `playbook.max_steps`). For each subtask in
-   list order:
-   - Dispatch the matching skill toward its action:
-     `execute_rskill(<skill>, goal=<subtask.action>)`.
-4. **Verify before advancing.** Confirm the subtask's done-condition with
-   `query_scene(<subtask.done_condition>)` (and `query_task_progress` if a reward
-   monitor is up) **BEFORE** moving on. **Never assume success.**
-5. **Mark done.** On a verified subtask, `memory_write(op=supersede,
-   section="open_tasks", ...)` to mark it done and advance to the next.
-6. **Per-subtask replan.** On a subtask FAILURE, replan **that subtask only**
-   (retry / substitute skill) — do **not** restart the whole mission. The
+1. **Decompose before acting.** Before any `execute_rskill`, call `decompose_mission`
+   with an EMPTY `target_task_id` and the ordered subtasks: one per
+   skill-sized step, each naming its one object or place (e.g.
+   `[{object_ref: "shelf S3", text: "navigate to the dock pose in front of shelf S3"},
+   {object_ref: "box", text: "restock box x1 into lower slot 1"}]`). The node
+   refuses this whole-queue write once a task has been attempted, so it must
+   come before the goal's first `execute_rskill`; read-only looks may come
+   first (a collective target is grounded with `locate_in_view` before it is
+   split, per the Trigger above). Do NOT keep the plan only in memory or in
+   your rationale: a plan outside the ledger gets no per-step verdict,
+   retry budget or dashboard row.
+2. **Execute the active subtask.** Dispatch the matching skill toward it:
+   `execute_rskill(<skill>, prompt=<subtask text>)`. The ledger shows one
+   active subtask at a time.
+3. **Verify before advancing.** Confirm the subtask's done-condition with
+   `query_scene(<done-condition>)` (and `query_task_progress` if a reward
+   monitor is up). **Never assume success.** The node advances the ledger to
+   the next subtask once the active one is verified.
+4. **Per-subtask replan.** On a subtask FAILURE, replan **that subtask only**
+   (retry / substitute skill, or `decompose_mission` with `target_task_id` set
+   to it to split it finer) — do **not** restart the whole mission. The
    already-verified subtasks stay done.
 
 ## Verify (done predicate)
-All subtasks' done-conditions confirmed — the `open_tasks` list is empty.
+Every subtask in the `## MISSION` ledger is done.
 
 ## Fallbacks
 - A subtask that exhausts its replan budget → `emit_prompt` to the operator
   describing exactly which subtask blocked and why ("I stacked the bowls but can't
   open the drawer — the handle won't move"). This is the terminal human-handoff
-  rung of the replanning ladder. The remaining `open_tasks` stay recorded so the
+  rung of the replanning ladder. The remaining subtasks stay in the ledger so the
   mission can resume.
 - **Never** loop past `max_steps`. Every subtask tried and its outcome are on the
   OTel trace, so the mission is replayable.

@@ -8,7 +8,7 @@ the LLM as one opaque string and forgotten on the pull-once prompt drain.
 
 from __future__ import annotations
 
-from typing import TypeVar
+from typing import Any, TypeVar, cast
 
 from openral_reasoner import (
     MissionState,
@@ -281,3 +281,64 @@ def test_rearm_active_moves_verifying_back_to_active() -> None:
     assert rearmed is m.active() and rearmed.status == "active"
     # idempotent on an already-active task.
     assert _some(m.rearm_active()).status == "active"
+
+
+def _summary_tasks(m: MissionState) -> list[dict[str, Any]]:
+    return cast("list[dict[str, Any]]", m.to_summary()["tasks"])
+
+
+def test_steps_track_each_dispatch_and_agree_with_the_ladder() -> None:
+    """Each dispatch is a step; an unreported one is interrupted; a counted failure wins."""
+    m = MissionState.from_prompt("go to shelf S3 and restock lower slot 1")
+    m.record_attempt(rskill_id="nav", prompt="go to S3")
+    m.settle_step("ok")
+    m.record_attempt(rskill_id="restock", prompt="restock slot 1")  # never reported back
+    m.record_attempt(rskill_id="restock", prompt="restock slot 1")
+    m.settle_step("ok")
+    _some(m.active()).settle_step("failed", overwrite=True)  # reward gate: not done
+    m.record_attempt(rskill_id="restock", prompt="restock slot 1")
+    m.settle_step("cancelled", task_id="t1")
+    m.settle_step("ok")  # a late result must not rewrite a settled step
+    steps = _summary_tasks(m)[0]["steps"]
+    assert [(s["rskill_id"], s["outcome"]) for s in steps] == [
+        ("nav", "ok"),
+        ("restock", "interrupted"),
+        ("restock", "failed"),
+        ("restock", "cancelled"),
+    ]
+    assert m.to_summary()["goal"] == "go to shelf S3 and restock lower slot 1"
+
+
+def test_splits_keep_the_goal_and_the_parent_steps_at_every_depth() -> None:
+    """Nested subdivisions keep each replaced task (text + steps) by id; a restart restores them."""
+    goal = "go to shelf S3 and restock lower slot 1"
+    m = MissionState.from_prompt(goal)
+    m.record_attempt(rskill_id="nav", prompt="go to S3")
+    m.subdivide_active(["navigate to shelf S3", "restock box x1 into lower slot 1"])
+    m.record_attempt(rskill_id="nav", prompt="navigate")
+    m.subdivide_active(["clear the aisle", "drive to the S3 dock"])
+    summary = m.to_summary()
+    assert [t["id"] for t in _summary_tasks(m)] == ["t1.1.1", "t1.1.2", "t1.2"]
+    assert summary["splits"] == {
+        "t1": {
+            "text": goal,
+            "steps": [{"rskill_id": "nav", "prompt": "go to S3", "outcome": "interrupted"}],
+        },
+        "t1.1": {
+            "text": "navigate to shelf S3",
+            "steps": [{"rskill_id": "nav", "prompt": "navigate", "outcome": "interrupted"}],
+        },
+    }
+    m.record_attempt(rskill_id="nav", prompt="clear")  # in flight at the "crash"
+    restored = MissionState.from_state_dict(m.to_state_dict())
+    assert restored.to_summary()["splits"] == summary["splits"]
+    assert restored.to_summary()["goal"] == goal
+    assert _summary_tasks(restored)[0]["steps"][-1]["outcome"] == "interrupted"
+
+
+def test_populated_queue_keeps_the_operator_goal() -> None:
+    """decompose_mission populate builds a new queue; the goal it serves stays for the card."""
+    seed = MissionState.from_prompt("go to shelf S3 and restock lower slot 1")
+    m = MissionState(["navigate to shelf S3", "restock lower slot 1"], goal=seed.goal)
+    assert m.to_summary()["goal"] == "go to shelf S3 and restock lower slot 1"
+    assert [t["depth"] for t in _summary_tasks(m)] == [0, 0]

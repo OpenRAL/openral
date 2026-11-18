@@ -25,7 +25,7 @@ unit-testable. The ROS node drives transitions;
 from __future__ import annotations
 
 import dataclasses
-from typing import Literal
+from typing import Literal, TypedDict
 
 __all__ = [
     "DEFAULT_MAX_ATTEMPTS",
@@ -263,6 +263,20 @@ TaskStatus = Literal["pending", "active", "verifying", "done", "abandoned"]
 abandoned``. ``abandoned`` and ``done`` are terminal — a task is never silently
 re-queued."""
 
+StepOutcome = Literal["running", "ok", "failed", "cancelled", "interrupted"]
+"""How one dispatch at a task came back. ``failed``: aborted, rejected, or counted
+as a failure by the ladder (e.g. a success the reward gate scored not done);
+``cancelled``: stopped by the operator / e-stop; ``interrupted``: never reported
+back (a new dispatch or a reasoner restart came first)."""
+
+
+class SplitRecord(TypedDict):
+    """A task ``MissionState.subdivide_active`` replaced: its text and the steps it ran."""
+
+    text: str
+    steps: list[dict[str, str]]
+
+
 _ACTIVE_STATES: frozenset[TaskStatus] = frozenset({"active", "verifying"})
 _TERMINAL_STATES: frozenset[TaskStatus] = frozenset({"done", "abandoned"})
 
@@ -294,6 +308,12 @@ class TaskState:
             from the operator goal is ``0``; a child spliced in by
             ``MissionState.subdivide_active`` is ``parent.depth + 1``. Bounds
             the subdivision ladder against ``DEFAULT_MAX_SUBDIVIDE_DEPTH``.
+        steps: One entry per dispatch at this task, in order: the rSkill, the
+            prompt it got, and its ``StepOutcome`` (``running`` until the skill
+            returns). Lets the dashboard show a task the reasoner worked through in
+            several skills (navigate, then restock) step by step. Display only:
+            ``attempts`` / ``failures`` drive the ladder, and a counted failure
+            marks its step ``failed`` so the two never disagree.
     """
 
     task_id: str
@@ -306,6 +326,12 @@ class TaskState:
     last_trace_id: str | None = None
     last_verdict: str | None = None
     depth: int = 0
+    steps: list[dict[str, str]] = dataclasses.field(default_factory=list)
+
+    def settle_step(self, outcome: StepOutcome, *, overwrite: bool = False) -> None:
+        """Set the last step's outcome; only a ``running`` one unless ``overwrite``."""
+        if self.steps and (overwrite or self.steps[-1]["outcome"] == "running"):
+            self.steps[-1]["outcome"] = outcome
 
 
 class MissionState:
@@ -331,8 +357,16 @@ class MissionState:
         True
     """
 
-    def __init__(self, tasks: list[str]) -> None:
-        """Build the queue from ordered subtask strings; activate the first."""
+    def __init__(self, tasks: list[str], *, goal: str | None = None) -> None:
+        """Build the queue from ordered subtask strings; activate the first.
+
+        ``goal`` is the operator goal the queue serves (display only), kept
+        when ``decompose_mission`` replaces the single-task seed.
+        """
+        self.goal = goal
+        # Every task ``subdivide_active`` replaced, by id: its text and the steps it
+        # ran before the split. Its children's dot-path ids hang under it.
+        self._splits: dict[str, SplitRecord] = {}
         self._tasks: list[TaskState] = [
             TaskState(task_id=f"t{i + 1}", text=text) for i, text in enumerate(tasks)
         ]
@@ -354,7 +388,7 @@ class MissionState:
         yields an empty mission.
         """
         goal = text.strip()
-        return cls([goal] if goal else [])
+        return cls([goal] if goal else [], goal=goal or None)
 
     # ── readers ──────────────────────────────────────────────────────────────
 
@@ -407,8 +441,14 @@ class MissionState:
 
     # ── mutators (each returns the new active task, or None when finished) ────
 
-    def record_attempt(self, *, rskill_id: str | None, trace_id: str | None = None) -> None:
-        """Note a dispatch against the active task (increments ``attempts``)."""
+    def record_attempt(
+        self,
+        *,
+        rskill_id: str | None,
+        trace_id: str | None = None,
+        prompt: str = "",
+    ) -> None:
+        """Note a dispatch against the active task (increments ``attempts``, opens a step)."""
         task = self.active()
         if task is None:
             return
@@ -418,6 +458,36 @@ class MissionState:
             task.tried_rskill_ids = (*task.tried_rskill_ids, rskill_id)
         if trace_id is not None:
             task.last_trace_id = trace_id
+        task.settle_step("interrupted")  # a step nobody reported back on
+        task.steps.append({"rskill_id": rskill_id or "", "prompt": prompt, "outcome": "running"})
+
+    def settle_step(
+        self,
+        outcome: StepOutcome,
+        *,
+        task_id: str | None = None,
+        overwrite: bool = False,
+    ) -> None:
+        """Set the last step outcome of task ``task_id`` (default: the active task).
+
+        Only a ``running`` step changes unless ``overwrite``. Display only.
+
+        Example:
+            >>> m = MissionState.from_prompt("go to S3 and restock")
+            >>> m.record_attempt(rskill_id="nav", prompt="go to S3")
+            >>> m.settle_step("ok")
+            >>> m.record_attempt(rskill_id="restock", prompt="restock slot 1")
+            >>> m.record_attempt(rskill_id="restock", prompt="restock slot 1")
+            >>> [s["outcome"] for s in m.active().steps]
+            ['ok', 'interrupted', 'running']
+        """
+        task = (
+            self.active()
+            if task_id is None
+            else next((t for t in self._tasks if t.task_id == task_id), None)
+        )
+        if task is not None:
+            task.settle_step(outcome, overwrite=overwrite)
 
     def mark_verifying(self) -> None:
         """Move the active task ``active → verifying`` (a skill returned; gating)."""
@@ -472,8 +542,9 @@ class MissionState:
         Replaces the blocked active task in the queue with ``subtasks`` —
         flat children ``t<n>.1, t<n>.2, …`` at ``depth + 1`` — and activates
         the first. The parent is removed, children take its slot, and any
-        pending tail keeps its order, so the ledger and dashboard need no
-        change.
+        pending tail keeps its order. The parent's text and steps are kept in
+        the mission's split map (``to_summary()["splits"]``) so the dashboard can
+        still show the goal its children serve and what it ran before the split.
 
         Refused (returns ``None``) when the active task is already at
         ``max_depth`` (``DEFAULT_MAX_SUBDIVIDE_DEPTH``), when there is no
@@ -512,6 +583,8 @@ class MissionState:
             )
             for i, text in enumerate(children)
         ]
+        task.settle_step("interrupted")
+        self._splits[task.task_id] = {"text": task.text, "steps": [dict(s) for s in task.steps]}
         self._tasks[index : index + 1] = spliced
         return spliced[0]
 
@@ -544,6 +617,11 @@ class MissionState:
             [('t1', 'active', 1), ('t2', 'pending', 0)]
         """
         return {
+            "goal": self.goal,
+            "splits": {
+                k: {"text": v["text"], "steps": [dict(s) for s in v["steps"]]}
+                for k, v in self._splits.items()
+            },
             "tasks": [
                 {
                     "task_id": t.task_id,
@@ -556,6 +634,7 @@ class MissionState:
                     "last_trace_id": t.last_trace_id,
                     "last_verdict": t.last_verdict,
                     "depth": t.depth,
+                    "steps": [dict(s) for s in t.steps],
                 }
                 for t in self._tasks
             ],
@@ -564,7 +643,16 @@ class MissionState:
     @classmethod
     def from_state_dict(cls, state: dict[str, object]) -> MissionState:
         """Rebuild a mission from ``to_state_dict`` output (exact resume)."""
-        mission = cls([])
+        goal = state.get("goal")
+        mission = cls([], goal=str(goal) if goal else None)
+        raw_splits = state.get("splits")
+        if isinstance(raw_splits, dict):
+            for key, raw in raw_splits.items():
+                if isinstance(raw, dict):
+                    mission._splits[str(key)] = {
+                        "text": str(raw.get("text", "")),
+                        "steps": _restore_steps(raw.get("steps")),
+                    }
         raw_tasks = state.get("tasks")
         if not isinstance(raw_tasks, list):
             raise ValueError(f"MissionState.from_state_dict: 'tasks' must be a list, got {state!r}")
@@ -583,6 +671,7 @@ class MissionState:
                     last_trace_id=raw.get("last_trace_id"),
                     last_verdict=raw.get("last_verdict"),
                     depth=int(raw.get("depth", 0)),
+                    steps=_restore_steps(raw.get("steps")),
                 )
             )
         valid_statuses = {"pending", "active", "verifying", "done", "abandoned"}
@@ -631,9 +720,16 @@ class MissionState:
                     "pending": self.pending_verdicts.get(t.task_id, 0),
                     "verdict": t.last_verdict,
                     "rskill_id": t.last_rskill_id,
+                    "depth": t.depth,
+                    "steps": [dict(s) for s in t.steps],
                 }
                 for t in self._tasks
             ],
+            "goal": self.goal,
+            "splits": {
+                k: {"text": v["text"], "steps": [dict(s) for s in v["steps"]]}
+                for k, v in self._splits.items()
+            },
         }
 
     def render(self) -> str:
@@ -666,3 +762,16 @@ class MissionState:
         if pending:
             lines.append(f"… {pending} pending task(s)")
         return "\n".join(lines)
+
+
+def _restore_steps(raw: object) -> list[dict[str, str]]:
+    """Steps from a persisted state; a step still ``running`` at the restart never reports back."""
+    steps = [
+        {k: str(s.get(k, "")) for k in ("rskill_id", "prompt", "outcome")}
+        for s in (raw if isinstance(raw, list) else ())
+        if isinstance(s, dict)
+    ]
+    for s in steps:
+        if s["outcome"] == "running":
+            s["outcome"] = "interrupted"
+    return steps
