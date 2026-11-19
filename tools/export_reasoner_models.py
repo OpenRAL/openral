@@ -20,13 +20,15 @@ from openral_core import reasoner_model_options
 
 
 def export() -> list[dict[str, object]]:
-    """``[{id, label, needs, keys}]`` in the registry's order.
+    """``[{id, label, needs, keys, served}]`` in the registry's order.
 
     Example:
         >>> {m["id"]: m["keys"] for m in export()}["claude-opus-4-8"]
         ['ANTHROPIC_API_KEY']
         >>> next(m for m in export() if m["id"] == "gpt-5.5")["label"]
         'GPT-5.5'
+        >>> {m["id"]: m["served"] for m in export()}["kimi-k3-cloud"]
+        'kimi-k3'
     """
     return [option.model_dump() for option in reasoner_model_options()]
 

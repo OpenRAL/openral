@@ -84,9 +84,9 @@ jobs:
           assert len(raw) <= 65536, "reasoner-models.json is over 64 KiB"
           models = json.loads(raw)
           assert isinstance(models, list) and 0 < len(models) <= 100, "not a non-empty list"
-          token = re.compile(r"[A-Za-z0-9._:/(), -]{1,80}")
+          token = re.compile(r"[A-Za-z0-9._:/(), ~-]{1,80}")  # ~: OpenRouter's "latest" aliases
           for m in models:
-              assert isinstance(m, dict) and set(m) <= {"id", "label", "needs", "keys"}, m
+              assert isinstance(m, dict) and set(m) <= {"id", "label", "needs", "keys", "served"}, m
               assert {"id", "label"} <= set(m), m
               for k, v in m.items():
                   if k == "keys":  # the key settings a model runs on, any one enough
