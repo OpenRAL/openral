@@ -136,3 +136,29 @@ async def test_the_mission_stream_sends_only_changes(issuer: FakeIssuer, tmp_pat
     frames = [json.loads(f[6:]) for f in resp.text.split("\n\n") if f.startswith("data: ")]
     assert [f["stopped"] for f in frames] == [False, True]
     assert all("ts_unix" not in f and "events" not in f for f in frames)
+
+
+@pytest.mark.asyncio
+async def test_a_busy_unchanged_stream_still_sends_keepalives(
+    issuer: FakeIssuer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Telemetry that doesn't change the view must not starve the keepalive."""
+    from openral_observability.dashboard import app as app_mod
+
+    monkeypatch.setattr(app_mod, "_SSE_KEEPALIVE_S", 0.3)
+    store = TelemetryStore()
+    app = create_app(store, verifier=_verifier(issuer, tmp_path))
+    now = int(time.time())
+    token = issuer.mint(iat=now, exp=now + 3)
+
+    async def busy() -> None:
+        for _ in range(25):  # unchanged view, a publish every 0.1 s: never a 0.3 s gap
+            await asyncio.sleep(0.1)
+            store.set_estopped(False)
+
+    async with _remote(app) as client:
+        task = asyncio.create_task(busy())
+        resp = await client.get("/api/mission/stream", headers=_auth(token))
+        await task
+    assert resp.text.count(": keepalive") >= 3
+    assert resp.text.count("data: ") == 1

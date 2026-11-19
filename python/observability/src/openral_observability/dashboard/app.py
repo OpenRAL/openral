@@ -1686,6 +1686,10 @@ def create_app(  # noqa: PLR0915  # reason: flat FastAPI route-registration tabl
     return app
 
 
+# An SSE stream sends something at least this often, so proxies keep it open.
+_SSE_KEEPALIVE_S = 15.0
+
+
 async def _sse_stream(
     request: Request,
     *,
@@ -1719,21 +1723,31 @@ async def _sse_stream(
     queue = store.subscribe()
     try:
         yield frame(store.snapshot())
+        # Something every ``_SSE_KEEPALIVE_S``, counted from the last bytes sent: with a ``view``, a
+        # robot busy with unchanged telemetry sends no frames, and an idle stream gets cut.
+        sent_at = time.monotonic()
         while True:
             if await request.is_disconnected():
                 return
-            wait_s = 15.0
+            wait_s = max(0.0, _SSE_KEEPALIVE_S - (time.monotonic() - sent_at))
             if deadline is not None:
-                wait_s = min(wait_s, deadline - time.time())
-                if wait_s <= 0:
+                if deadline - time.time() <= 0:
                     return
+                wait_s = min(wait_s, deadline - time.time())
             try:
                 payload = await asyncio.wait_for(queue.get(), timeout=wait_s)
             except TimeoutError:
+                if deadline is not None and deadline - time.time() <= 0:
+                    return
                 yield b": keepalive\n\n"
+                sent_at = time.monotonic()
                 continue
             if data := frame(payload):
                 yield data
+                sent_at = time.monotonic()
+            elif time.monotonic() - sent_at >= _SSE_KEEPALIVE_S:
+                yield b": keepalive\n\n"
+                sent_at = time.monotonic()
     finally:
         store.unsubscribe(queue)
 
