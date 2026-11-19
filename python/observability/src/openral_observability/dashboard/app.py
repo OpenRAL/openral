@@ -968,6 +968,54 @@ async def _run_action(  # noqa: PLR0911  # reason: one return per action kind / 
     return await _skill_execute_response(rskill_id, json.dumps(args) if args else "", actor)
 
 
+def mission_view(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """What a program following this robot needs from ``snapshot``, in a few hundred bytes.
+
+    ``GET /api/mission`` and ``/api/mission/stream`` (#659): the mission (its goal, the
+    correlation id of the prompt that started it, each task's status), the reasoner's last
+    tick, and whether the robot is stopped. ``/api/state`` carries the same facts among
+    camera thumbnails, events and metrics.
+
+    Example:
+        >>> v = mission_view({"topics": {"safety_status": {"latched": True}}})
+        >>> v["mission"], v["stopped"], v["latched"], v["estopped"]
+        (None, True, True, False)
+    """
+    topics = snapshot.get("topics") or {}
+    reasoner = topics.get("reasoner") or {}
+    raw = reasoner.get("mission")
+    mission: dict[str, Any] | None = None
+    if isinstance(raw, dict):
+        tasks = [
+            {k: t.get(k) for k in ("id", "text", "status", "attempts", "failures", "verdict")}
+            for t in raw.get("tasks") or []
+            if isinstance(t, dict)
+        ]
+        mission = {
+            "goal": raw.get("goal"),
+            "correlation_id": raw.get("correlation_id"),
+            "tasks": tasks,
+            # Every task done or abandoned (``MissionState.is_complete``).
+            "finished": bool(tasks) and all(t["status"] in ("done", "abandoned") for t in tasks),
+        }
+    status = topics.get("safety_status") or {}
+    estopped = bool((topics.get("safety") or {}).get("estopped")) or any(
+        isinstance(v, dict) and v.get("estopped") for v in (topics.get("hal_estop") or {}).values()
+    )
+    latched = status.get("latched") is True
+    return {
+        "mission": mission,
+        "reasoner": {
+            k: reasoner.get(k)
+            for k in ("ts_unix", "tick_idx", "tool", "rskill_id", "error_kind", "message")
+        },
+        "stopped": estopped or latched,  # nothing moves until a person resets it
+        "estopped": estopped,
+        "latched": latched,
+        "latch_reason": status.get("drop_reason_label") if latched else None,
+    }
+
+
 def _without_images(snapshot: dict[str, Any]) -> dict[str, Any]:
     """``snapshot`` minus the camera thumbnails (``?images=0``; cameras are polled as JPEGs).
 
@@ -1396,6 +1444,20 @@ def create_app(  # noqa: PLR0915  # reason: flat FastAPI route-registration tabl
     async def get_state(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
         return JSONResponse(request.app.state.store.snapshot())
 
+    @app.get("/api/mission")
+    async def get_mission(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        # ``ts_unix``: this reply's time, so a poller can tell a live robot from a cached page.
+        view = mission_view(request.app.state.store.snapshot())
+        return JSONResponse({**view, "ts_unix": time.time()})
+
+    @app.get("/api/mission/stream")
+    async def get_mission_stream(request: Request) -> StreamingResponse:  # pyright: ignore[reportUnusedFunction]
+        return StreamingResponse(
+            _sse_stream(request, view=mission_view),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     @app.get("/api/stream")
     async def get_stream(  # pyright: ignore[reportUnusedFunction]
         request: Request, images: bool = True
@@ -1624,20 +1686,35 @@ def create_app(  # noqa: PLR0915  # reason: flat FastAPI route-registration tabl
     return app
 
 
-async def _sse_stream(request: Request, *, images: bool = True) -> AsyncIterator[bytes]:
-    """Server-Sent Events generator for ``/api/stream``.
+async def _sse_stream(
+    request: Request,
+    *,
+    images: bool = True,
+    view: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+) -> AsyncIterator[bytes]:
+    """Server-Sent Events generator for ``/api/stream`` and ``/api/mission/stream``.
 
     Emits an initial snapshot so a fresh client sees the current state without
     waiting for the next ingest, then every delta from the store's subscription
     queue, with a ``: keepalive`` comment every 15 s. ``images=False`` drops the
-    camera thumbnails. On the remote listener the stream ends at the token's
-    ``exp``: the client reconnects with a fresh token.
+    camera thumbnails. With ``view`` (``mission_view``) each frame is that view of
+    the snapshot, sent only when it differs from the last one sent. On the remote
+    listener the stream ends at the token's ``exp``: the client reconnects with a
+    fresh token.
     """
     store: TelemetryStore = request.app.state.store
     deadline: float | None = request.state.principal.exp
+    last: bytes | None = None
 
     def frame(payload: dict[str, Any]) -> bytes:
-        return _sse_frame(payload if images else _without_images(payload))
+        nonlocal last
+        if view is None:
+            return _sse_frame(payload if images else _without_images(payload))
+        data = _sse_frame(view(payload))
+        if data == last:
+            return b""  # unchanged: nothing to send
+        last = data
+        return data
 
     queue = store.subscribe()
     try:
@@ -1655,7 +1732,8 @@ async def _sse_stream(request: Request, *, images: bool = True) -> AsyncIterator
             except TimeoutError:
                 yield b": keepalive\n\n"
                 continue
-            yield frame(payload)
+            if data := frame(payload):
+                yield data
     finally:
         store.unsubscribe(queue)
 
