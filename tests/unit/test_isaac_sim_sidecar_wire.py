@@ -769,11 +769,12 @@ class TestImageTime:
         """Issue #641: ``top`` (``shares_mount_with: head_zed``) is stamped in
         ``zed_camera_link_optical_frame``, and the bridge puts that frame on TF once.
 
-        With the ZED a depth sensor, Isaac places it: the depth leg broadcasts
+        With the ZED a depth camera, Isaac places it: the depth leg broadcasts
         ``base -> optical`` live and nothing is latched (a second, static parent under
-        ``zed_camera_link`` would fight it). With an RGB-only head camera on the same
-        mount there is no depth leg, so the bridge latches the mount's REP-103 child
-        itself; it used to ignore ``shares_mount_with`` and publish nothing."""
+        ``zed_camera_link`` would fight it). With a ZED whose depth the sim does not
+        synthesise (no intrinsics) there is no depth leg for it, so the bridge latches
+        the mount's REP-103 child for ``top``; it used to ignore ``shares_mount_with``
+        and publish nothing, since it never iterated that mount sensor."""
         rclpy = pytest.importorskip("rclpy")  # default reason matches the declared `ros` gap
         from openral_core.depth_extrinsic import image_frame_id
         from openral_hal.depth_cloud import BODY_TO_OPTICAL_QUAT_XYZW
@@ -786,11 +787,11 @@ class TestImageTime:
             hal = self._hal(s.port)
             desc = hal.description
             if not zed_renders_depth:
-                rgb_zed = [
-                    x.model_copy(update={"modality": "rgb"}) if x.name == "head_zed" else x
+                no_cast = [
+                    x.model_copy(update={"intrinsics": None}) if x.name == "head_zed" else x
                     for x in desc.sensors
                 ]
-                desc = desc.model_copy(update={"sensors": rgb_zed})
+                desc = desc.model_copy(update={"sensors": no_cast})
             top = next(x for x in desc.sensors if x.name == "top")
             assert image_frame_id(top, desc.sensors) == optical
             rclpy.init()
@@ -817,8 +818,11 @@ class TestImageTime:
                 bridge._setup_cameras()
                 bridge._setup_depth()
                 bridge._publish_depth_clouds_from_obs()
-                deadline = time.monotonic() + 3.0
-                while time.monotonic() < deadline:
+                deadline = time.monotonic() + 5.0
+                while not parents and time.monotonic() < deadline:
+                    rclpy.spin_once(node, timeout_sec=0.1)
+                settle = time.monotonic() + 0.5  # a second parent would arrive with the first
+                while time.monotonic() < settle:
                     rclpy.spin_once(node, timeout_sec=0.1)
                 if zed_renders_depth:
                     assert parents == {("live", desc.base_frame)}

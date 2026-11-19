@@ -172,14 +172,16 @@ def test_real_launch_publishes_every_optical_child_a_consumer_names(
 
     sensors = lift_sensors(robot)
     want = MOUNTS.get(robot, {})
-    mounts = launch_module._optical_mounts(sensors, "real")  # type: ignore[attr-defined]
-    assert mounts == {frame: optical for _, frame, optical in want.values()}
-    assert launch_module._optical_mounts(sensors, "sim") == {}  # type: ignore[attr-defined]
+    optical_mounts = launch_module._optical_mounts  # type: ignore[attr-defined]  # reason: module loaded by path
+    mounts = optical_mounts(sensors, "real")
+    # A mount frame that is already optical needs no child.
+    assert mounts == {frame: opt for _, frame, opt in want.values() if opt != frame}
+    assert optical_mounts(sensors, "sim") == {}
     for spec in sensors:
         if spec.modality != "rgb":
             continue
         frame = image_frame_id(spec, sensors)
-        assert frame == spec.frame_id or frame in mounts.values()
+        assert frame == spec.frame_id or frame in {opt for _, _, opt in want.values()}
         da3 = resolve_estimated_depth_camera(sensors, spec.name, hal_mode="real")
         if da3.optical_parent is not None:
             assert mounts[da3.optical_parent] == da3.cloud_frame == frame

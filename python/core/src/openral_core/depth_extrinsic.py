@@ -218,8 +218,7 @@ def resolve_estimated_depth_camera(
         >>> [p.split(": ")[1].split(",")[0] for p in real.problems]  # nor a binding
         ['no deploy_binding', 'no mount ties it to the robot']
     """
-    by_name = {s.name: s for s in sensors}
-    spec = by_name.get(camera)
+    spec = next((s for s in sensors if s.name == camera), None)
     if spec is None:
         return EstimatedDepthMount("", None, camera, [f"{camera}: no such sensor"])
     if spec.modality != "rgb":

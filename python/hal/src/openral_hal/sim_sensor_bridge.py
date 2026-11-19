@@ -2939,7 +2939,7 @@ class SimSensorBridge:
         self._depth_colour_disabled: set[str] = set()
         # Optical frames latched on /tf_static under a manifest mount
         # (``_publish_optical_mount``): never also broadcast live, a frame has one parent.
-        self._depth_static_optical: set[str] = set()
+        self._static_optical_frames: set[str] = set()
         # Backend RGB-D frames already published (identity per camera) and the
         # cameras warned for a colour/depth size mismatch (``_publish_depth_frame``).
         self._depth_frames_published: dict[str, Any] = {}
@@ -3148,7 +3148,7 @@ class SimSensorBridge:
                 renderer.close()
         self._depth_colour_renderers.clear()
         self._depth_colour_disabled.clear()
-        self._depth_static_optical.clear()
+        self._static_optical_frames.clear()
         self._depth_frames_published.clear()
         self._depth_clouds_published.clear()
         self._depth_colour_mismatch_warned.clear()
@@ -3495,6 +3495,8 @@ class SimSensorBridge:
             spec = specs.get(name)
             if spec is None or name in self._camera_tf_disabled:
                 continue
+            if str(spec.frame_id) in self._static_optical_frames:
+                continue  # latched under a manifest mount: a frame has one parent
             try:
                 xyz, quat = camera_optical_tf_to_base(
                     model=model,
@@ -4535,7 +4537,7 @@ class SimSensorBridge:
             backend_places_depth=getattr(self._hal, "mujoco_handles", lambda: None)() is None
             and callable(getattr(self._hal, "read_depth_clouds", None)),
         )
-        if placed is None or placed.optical in self._depth_static_optical:  # latched
+        if placed is None or placed.optical in self._static_optical_frames:  # latched
             return
         optical = placed.optical
         from geometry_msgs.msg import TransformStamped
@@ -4553,7 +4555,7 @@ class SimSensorBridge:
         tf.transform.rotation.z = qz
         tf.transform.rotation.w = qw
         self._static_tf_broadcaster.sendTransform(tf)
-        self._depth_static_optical.add(optical)
+        self._static_optical_frames.add(optical)
 
     def _mujoco_depth_frame(
         self, name: str, kwargs: dict[str, Any], model: Any, data: Any, stride: int
@@ -5783,7 +5785,7 @@ class SimSensorBridge:
         if (
             self._tf_broadcaster is not None
             and tf_stamp is not None
-            and optical not in self._depth_static_optical  # latched under its mount
+            and optical not in self._static_optical_frames  # latched under its mount
         ):
             qw, qx, qy, qz = rotation_to_quat_wxyz(optical_in_base[:3, :3])
             tf = TransformStamped()

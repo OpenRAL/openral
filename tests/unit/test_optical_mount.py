@@ -14,6 +14,7 @@ Real fixtures (CLAUDE.md §1.11): every ``robots/*/robot.yaml``.
 
 from __future__ import annotations
 
+from functools import cache
 from pathlib import Path
 
 import pytest
@@ -40,10 +41,11 @@ MOUNTS: dict[str, dict[str, tuple[str, str, str]]] = {
 }
 
 
-def lift_sensors(robot: str) -> list[SensorSpec]:
+@cache
+def lift_sensors(robot: str) -> tuple[SensorSpec, ...]:
     """The sensors the object lift resolves cameras over: the manifest's and its bundles'."""
     desc = RobotDescription.from_yaml(str(_REPO / "robots" / robot / "robot.yaml"))
-    return [*desc.sensors, *(s for b in desc.sensor_bundles for s in b.sensors)]
+    return (*desc.sensors, *(s for b in desc.sensor_bundles for s in b.sensors))
 
 
 @pytest.mark.parametrize("robot", ROBOTS)
@@ -74,6 +76,9 @@ def test_the_sim_bridge_latches_the_frame_the_lift_reads(robot: str) -> None:
     for name, (mount, frame, optical) in MOUNTS[robot].items():
         spec = next(s for s in sensors if s.name == name)
         latched = _static_optical_mount(spec, sensors, backend_places_depth=False)
+        if optical == frame:  # the mount frame is already optical: no child to latch
+            assert latched is None
+            continue
         assert latched is not None and latched[1:] == (frame, optical)
         mount_is_depth = next(s for s in sensors if s.name == mount).is_depth_camera
         isaac = _static_optical_mount(spec, sensors, backend_places_depth=True)
@@ -98,26 +103,35 @@ def test_the_da3_cloud_frame_is_the_image_frame(robot: str, hal_mode: str) -> No
             assert da3.cloud_frame in ("", spec.frame_id)
             assert hal_mode == "sim" or not da3.cloud_frame
         else:
-            assert (da3.mount_sensor, da3.optical_parent, da3.cloud_frame) == want
+            mount, frame, optical = want
+            parent = None if optical == frame else frame
+            assert (da3.mount_sensor, da3.optical_parent, da3.cloud_frame) == (
+                mount,
+                parent,
+                optical,
+            )
 
 
-def test_a_shared_mount_gets_its_optical_child_in_sim_without_a_depth_sensor() -> None:
+def test_a_shared_mount_gets_its_optical_child_when_the_sim_casts_no_depth_for_it() -> None:
     """The behaviour #641 changes: the sim bridge used to ignore ``shares_mount_with``.
 
     OpenArm ``top`` rides ``head_zed``'s mount, so its pixels are in
-    ``zed_camera_link_optical_frame``. The bridge latched that frame only for the depth
-    sensor itself; with an RGB-only head camera on that mount nothing published it and
+    ``zed_camera_link_optical_frame``. The bridge latched that frame only from
+    ``head_zed``'s own pass; for a mount sensor it never iterated (here a ZED whose
+    depth the sim does not synthesise: no intrinsics) nothing published the frame and
     the lift dropped every ``top`` detection. The RGB camera now gets its mount's child
-    itself, on every backend.
+    itself, on every backend. The bridge runs this on a real node in
+    ``test_isaac_sim_sidecar_wire.py``.
     """
     arm = lift_sensors("openarm")
     top = next(s for s in arm if s.name == "top")
     assert top.shares_mount_with == "head_zed" and top.frame_id == "world"
-    rgb_only = [
-        s.model_copy(update={"modality": "rgb"}) if s.name == "head_zed" else s for s in arm
+    no_cast = [
+        s.model_copy(update={"intrinsics": None}) if s.name == "head_zed" else s for s in arm
     ]
+    assert not next(s for s in no_cast if s.name == "head_zed").is_depth_camera
     for backend_places_depth in (False, True):
-        placed = _static_optical_mount(top, rgb_only, backend_places_depth=backend_places_depth)
+        placed = _static_optical_mount(top, no_cast, backend_places_depth=backend_places_depth)
         assert placed is not None
         assert placed[1:] == ("zed_camera_link", "zed_camera_link_optical_frame")
 
@@ -125,8 +139,7 @@ def test_a_shared_mount_gets_its_optical_child_in_sim_without_a_depth_sensor() -
 def test_the_depth_leg_latches_a_sensors_own_mount() -> None:
     """The depth leg stamps a raster in the sensor's own optical frame, so it resolves
     the sensor alone (no ``sensors`` to share a mount with)."""
-    arm = lift_sensors("openarm")
-    zed = next(s for s in arm if s.name == "head_zed")
+    zed = next(s for s in lift_sensors("openarm") if s.name == "head_zed")
     placed = _static_optical_mount(zed, (), backend_places_depth=False)
     assert placed is not None and placed.sensor is zed
     assert placed[1:] == ("zed_camera_link", "zed_camera_link_optical_frame")
