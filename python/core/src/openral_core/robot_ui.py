@@ -31,6 +31,7 @@ import binascii
 import json
 import os
 import re
+import socket
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal  # Any: JSON Schema dicts are untyped by nature
@@ -73,6 +74,7 @@ __all__ = [
     "camera_position",
     "enrolment_path",
     "parse_robot_link_code",
+    "robot_instance_id",
     "rskill_matches_robot",
 ]
 
@@ -232,6 +234,9 @@ class RobotManifest(BaseModel):
         name: Display name.
         embodiment_kind: The robot's kinematic class.
         unit_serial: This unit's serial, when known.
+        instance_id: Which robot this is, apart from others of the same model
+            (``robot_instance_id``): its openral.com robot id when linked, else
+            ``local:<host>:<ROS domain>``. ``robot_id`` names the model only.
         base_frame: The TF frame the 3D view follows (``RobotDescription.base_frame``).
         panels: Panels, in display order.
         actions: Actions, ``estop`` first.
@@ -244,6 +249,7 @@ class RobotManifest(BaseModel):
     name: str
     embodiment_kind: EmbodimentKind
     unit_serial: str | None = None
+    instance_id: str | None = None
     base_frame: str = "base_link"
     panels: list[ManifestPanel]
     actions: list[ManifestAction]
@@ -338,6 +344,7 @@ def build_robot_manifest(
     remote_control: bool,
     commercial_deployment: bool = False,
     unit_serial: str | None = None,
+    instance_id: str | None = None,
     allowed_rskill_ids: frozenset[str] | None = None,
 ) -> RobotManifest:
     """Build the manifest a deploy emits.
@@ -355,6 +362,7 @@ def build_robot_manifest(
             action but ``estop`` (which is always remote).
         commercial_deployment: Drop skills whose licence forbids commercial use.
         unit_serial: This unit's serial (``resolve_unit_identity``).
+        instance_id: Which robot this is (``robot_instance_id``).
         allowed_rskill_ids: The robot's rSkill list (``allowed_rskills_from_env``): only these
             become ``skill:<id>`` actions. ``None``: no restriction.
 
@@ -438,6 +446,7 @@ def build_robot_manifest(
         name=robot.name,
         embodiment_kind=robot.embodiment_kind,
         unit_serial=unit_serial,
+        instance_id=instance_id,
         base_frame=robot.base_frame,
         panels=panels,
         actions=actions,
@@ -538,6 +547,31 @@ def enrolment_path() -> Path:
     """``$OPENRAL_ROBOT_ENROLMENT``, else ``~/.config/openral/robot.json``."""
     env = os.environ.get(ENROLMENT_PATH_ENV)
     return Path(env) if env else Path.home() / ".config" / "openral" / "robot.json"
+
+
+def robot_instance_id() -> str:
+    """Which robot this is, for ``RobotManifest.instance_id`` (#663).
+
+    Its openral.com robot id when it is linked (the enrolment's ``robot``), else
+    ``local:<host>:<ROS_DOMAIN_ID>``, so two robots of one model, or two sims on one
+    machine, still differ. An unreadable enrolment falls back to the local id: the
+    manifest is advisory and never blocks a deploy.
+
+    Example:
+        >>> import os
+        >>> os.environ[ENROLMENT_PATH_ENV] = "/nonexistent/robot.json"
+        >>> robot_instance_id().startswith("local:")
+        True
+    """
+    path = enrolment_path()
+    try:
+        if path.is_file():
+            return RobotEnrolment.model_validate_json(path.read_text(encoding="utf-8")).robot
+    except (OSError, ValueError):  # pydantic's ValidationError is a ValueError
+        pass
+    host = re.sub(r"[^A-Za-z0-9.-]", "-", socket.gethostname())[:64] or "host"
+    domain = os.environ.get("ROS_DOMAIN_ID", "").strip() or "0"
+    return f"local:{host}:{domain}"
 
 
 def parse_robot_link_code(code: str) -> tuple[RobotEnrolment, str, str | None]:

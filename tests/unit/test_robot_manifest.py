@@ -222,6 +222,7 @@ _manifest_st = st.builds(
     name=st.text(max_size=20),
     embodiment_kind=st.sampled_from(list(EmbodimentKind)),
     unit_serial=st.none() | _id,
+    instance_id=st.none() | _id,
     base_frame=_id,
     panels=st.lists(_panel_st, max_size=5),
     actions=st.lists(_action_st, max_size=5),
@@ -385,3 +386,63 @@ def test_the_override_replaces_the_trusted_issuers(monkeypatch: pytest.MonkeyPat
     assert parse_robot_link_code(_code({**_LINK, **self_hosted}))[0].jwks == self_hosted["jwks"]
     with pytest.raises(ROSConfigError, match="trusted issuer"):
         parse_robot_link_code(_code(_LINK))  # openral.com is no longer listed
+
+
+# ── which robot this is (#663) ───────────────────────────────────────────────
+
+
+def test_a_linked_robot_is_named_by_its_openral_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openral_core import robot_instance_id
+    from openral_core.robot_ui import ENROLMENT_PATH_ENV
+
+    path = tmp_path / "robot.json"
+    path.write_text(
+        json.dumps(
+            {
+                "v": 1,
+                "robot": "57fcd495c9",
+                "aud": "https://r-57fcd495c9.openral.com",
+                "org": "lab",
+                "iss": "https://www.openral.com/api/auth",
+                "jwks": "https://www.openral.com/api/auth/jwks",
+            }
+        )
+    )
+    monkeypatch.setenv(ENROLMENT_PATH_ENV, str(path))
+    assert robot_instance_id() == "57fcd495c9"
+    path.write_text("{not json")  # unreadable: the local id, never an error
+    monkeypatch.setenv("ROS_DOMAIN_ID", "31")
+    assert robot_instance_id().startswith("local:") and robot_instance_id().endswith(":31")
+
+
+def test_two_sims_on_one_machine_have_different_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openral_core import robot_instance_id
+    from openral_core.robot_ui import ENROLMENT_PATH_ENV
+
+    monkeypatch.setenv(ENROLMENT_PATH_ENV, str(tmp_path / "none.json"))
+    monkeypatch.setenv("ROS_DOMAIN_ID", "31")
+    a = robot_instance_id()
+    monkeypatch.setenv("ROS_DOMAIN_ID", "33")
+    assert a != robot_instance_id()
+    monkeypatch.delenv("ROS_DOMAIN_ID")
+    assert robot_instance_id().endswith(":0")
+
+
+def test_the_manifest_carries_the_instance_id() -> None:
+    robot = RobotDescription.from_yaml(str(_REPO / "robots/so101_follower/robot.yaml"))
+    manifest = build_robot_manifest(
+        robot,
+        DeployRuntime(enable_reasoner=True),
+        [],
+        bridge_on=False,
+        write_controls=False,
+        remote_control=False,
+        instance_id="57fcd495c9",
+    )
+    assert (manifest.robot_id, manifest.instance_id) == ("so101_follower", "57fcd495c9")
+    wire = json.loads(manifest.model_dump_json(by_alias=True))
+    assert wire["instance_id"] == "57fcd495c9"
