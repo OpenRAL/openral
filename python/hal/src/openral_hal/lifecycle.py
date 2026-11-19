@@ -2026,6 +2026,28 @@ if _ROS2_AVAILABLE:
                 )
                 self._publish_action_applied_tick(self._deferred_action_applied_tick)
 
+        def _on_send_failure(self, exc: Exception, source: str) -> None:
+            """A refused ``send_action``: skip the tick, or latch an e-stop the HAL raised.
+
+            ``ROSEStopRequested`` from ``send_action`` means the HAL stopped itself
+            mid-send (a ``GroupedRosControlHAL`` fan-out that reached some controllers
+            but not all): an e-stop, never a skipped tick. Latching it here makes the
+            heartbeat report it (with the downstream stop report) and drops every later
+            command; ``/openral/estop`` carries it to the rest of the graph when this node
+            has that publisher. Any other typed error skips the tick with a warning.
+            """
+            from openral_core.exceptions import ROSEStopRequested
+
+            if not isinstance(exc, ROSEStopRequested):
+                self.get_logger().warn(f"send_action ({source}) failed: {exc}")
+                return
+            self.get_logger().fatal(f"send_action ({source}) e-stopped the HAL: {exc}")
+            if self._tracking_estop_pub is not None:
+                from std_msgs.msg import Empty
+
+                self._tracking_estop_pub.publish(Empty())
+            self._on_estop(None)
+
         def _send_action_traced(self, action: Any, *, source: str) -> bool:  # noqa: ANN401  # reason: action shape is HAL-adapter-specific (numpy ndarray / dict / typed namedtuple)
             """Forward ``action`` to ``self._hal.send_action`` inside a ``hal.send_action`` span.
 
@@ -2059,10 +2081,10 @@ if _ROS2_AVAILABLE:
             ):
                 try:
                     self._hal.send_action(action)
-                except Exception as exc:  # reason: HAL surfaces typed errors; log + skip
+                except Exception as exc:  # reason: HAL surfaces typed errors; see _on_send_failure
                     hal_send_span.record_exception(exc)
                     applied = False
-                    self.get_logger().warn(f"send_action ({source}) failed: {exc}")
+                    self._on_send_failure(exc, source)
                 # Refresh the proprio snapshot after the step (this
                 # runs in the default/"sim" group, so the MjData read is safe).
                 if applied:
