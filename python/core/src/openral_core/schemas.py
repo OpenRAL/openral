@@ -16545,7 +16545,7 @@ class LifecycleTransitionTool(_ReasonerToolBase):
 EMIT_PROMPT_TOPICS: tuple[str, ...] = ("/openral/prompt", "/openral/prompt_in/auto")
 """The only topics an LLM-chosen ``EmitPromptTool`` may publish on.
 
-``/openral/prompt`` (self-cascade) and the prompt router's machine-priority
+``/openral/prompt`` (to the operator) and the prompt router's machine-priority
 ``auto`` input. Never a human-priority router input (``cli`` / ``dashboard``),
 which would let the model impersonate the operator, and never an arbitrary
 topic: the target is LLM output, and a ``PromptStamped`` publisher on any
@@ -16577,8 +16577,10 @@ class EmitPromptTool(_ReasonerToolBase):
 
     tool: Literal["emit_prompt"] = "emit_prompt"
     target_topic: Literal["/openral/prompt", "/openral/prompt_in/auto"] = Field(
-        description="Prompt topic to publish on: '/openral/prompt' (self-cascade) or "
-        "'/openral/prompt_in/auto' (the prompt router's machine-priority input).",
+        description="Prompt topic to publish on: '/openral/prompt' to say something to the "
+        "operator (a question goes here, and the robot then waits for the reply), or "
+        "'/openral/prompt_in/auto' to queue a follow-up instruction to yourself (the prompt "
+        "router's machine-priority input).",
     )
     text: str = Field(min_length=1, description="Prompt text to publish.")
     metadata_json: str = Field(
