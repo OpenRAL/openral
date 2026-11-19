@@ -250,8 +250,14 @@ async def _drain_skill_goal_stdout(
     captured_lines: list[str],
     goal_id: str,
     skill_id: str,
+    *,
+    store: TelemetryStore | None = None,
 ) -> None:
     """Drain remaining ``stdout`` after goal acceptance and audit-log the outcome.
+
+    With ``store``, the outcome also becomes ``topics.skill_result`` for this
+    ``goal_id`` (``TelemetryStore.set_skill_result``, #662); a drain that fails
+    records the goal as finished with no success, so a caller is never left waiting.
 
     Runs as a background ``asyncio.Task`` — must catch all exceptions and log
     them (never crash the event loop). Started by ``_skill_execute_response``
@@ -263,16 +269,10 @@ async def _drain_skill_goal_stdout(
         async for raw in stdout:
             remaining.append(raw.decode("utf-8", errors="replace").rstrip())
         await proc.wait()
-        full_out = "\n".join(remaining)
-        # Parse success / failure_reason / trace_id from the output.
-        success = "success: True" in full_out or "success=True" in full_out
-        failure_reason: str | None = None
-        trace_id: str | None = None
-        for line in remaining:
-            if "failure_reason:" in line:
-                failure_reason = line.split("failure_reason:", 1)[-1].strip() or None
-            if "trace_id:" in line:
-                trace_id = line.split("trace_id:", 1)[-1].strip() or None
+        fields = _goal_result_fields(remaining)
+        success = fields.get("success") == "True"
+        failure_reason = fields.get("failure_reason") or None
+        trace_id = fields.get("trace_id") or None
         _logger.warning(
             "dashboard_skill_result",
             goal_id=goal_id,
@@ -281,6 +281,17 @@ async def _drain_skill_goal_stdout(
             trace_id=trace_id,
             failure_reason=failure_reason,
         )
+        if store is not None:
+            store.set_skill_result(
+                _skill_result(
+                    goal_id,
+                    skill_id,
+                    "finished",
+                    success=success,
+                    failure_reason=failure_reason,
+                    trace_id=trace_id,
+                )
+            )
     except Exception as exc:  # background task must log, never crash
         _logger.warning(
             "dashboard_skill_drain_error",
@@ -288,6 +299,63 @@ async def _drain_skill_goal_stdout(
             skill_id=skill_id,
             error=str(exc),
         )
+        if store is not None:
+            store.set_skill_result(
+                _skill_result(
+                    goal_id, skill_id, "finished", success=False, failure_reason=f"drain: {exc}"
+                )
+            )
+
+
+_RESULT_FIELD_RE = re.compile(r"^\s*(success|failure_reason|trace_id)\s*[:=]\s*(.*?)\s*$")
+
+
+def _goal_result_fields(lines: list[str]) -> dict[str, str]:
+    """``success`` / ``failure_reason`` / ``trace_id`` from ``ros2 action send_goal`` output.
+
+    Each is a field at the start of its own line (``success: True``, or ``success=True``),
+    the last one wins, and a string loses the quotes ``ros2 action`` prints. A field's
+    name inside another field's text (a failure reason quoting "success: True") is text.
+
+    Example:
+        >>> out = [
+        ...     "Result:",
+        ...     "    success: False",
+        ...     "    failure_reason: 'precondition: expected success: True from gripper'",
+        ... ]
+        >>> f = _goal_result_fields(out)
+        >>> f["success"], f["failure_reason"]
+        ('False', 'precondition: expected success: True from gripper')
+        >>> _goal_result_fields(["success=True"])["success"]
+        'True'
+    """
+    out: dict[str, str] = {}
+    for line in lines:
+        m = _RESULT_FIELD_RE.match(line)
+        if m:
+            out[m.group(1)] = m.group(2).strip("'\"")
+    return out
+
+
+def _skill_result(
+    goal_id: str,
+    skill_id: str,
+    state: str,
+    *,
+    success: bool | None = None,
+    failure_reason: str | None = None,
+    trace_id: str | None = None,
+) -> dict[str, Any]:
+    """One ``topics.skill_result`` record (``TelemetryStore.set_skill_result``)."""
+    return {
+        "goal_id": goal_id,
+        "skill_id": skill_id,
+        "state": state,
+        "success": success,
+        "failure_reason": failure_reason,
+        "trace_id": trace_id,
+        "ts_unix": time.time(),
+    }
 
 
 # ── Operator voice prompt (POST /api/transcribe) ──────────────────────────────
@@ -621,7 +689,9 @@ async def _estop_trigger_response() -> JSONResponse:
     return JSONResponse({"ok": True, "accepted": True}, status_code=200)
 
 
-async def _skill_execute_response(skill_id: str, goal_params_json: str, actor: str) -> JSONResponse:
+async def _skill_execute_response(
+    skill_id: str, goal_params_json: str, actor: str, store: TelemetryStore | None = None
+) -> JSONResponse:
     """Dispatch an ExecuteRskill action goal (guarded write-control; safety kernel disposes).
 
     Async accept-then-track: the endpoint returns as soon as the action server
@@ -738,8 +808,12 @@ async def _skill_execute_response(skill_id: str, goal_params_json: str, actor: s
         actor=actor,
     )
 
+    if store is not None:
+        store.set_skill_result(_skill_result(accepted_goal_id, skill_id, "running"))
     _in_background(
-        _drain_skill_goal_stdout(stdout, proc, captured_lines, accepted_goal_id, skill_id)
+        _drain_skill_goal_stdout(
+            stdout, proc, captured_lines, accepted_goal_id, skill_id, store=store
+        )
     )
 
     return JSONResponse(
@@ -965,7 +1039,9 @@ async def _run_action(  # noqa: PLR0911  # reason: one return per action kind / 
     rskill_id = action.id.removeprefix("skill:")
     await _announce_operator_action("skill_execute", principal, client_ip, rskill_id)
     actor = principal.sub or client_ip
-    return await _skill_execute_response(rskill_id, json.dumps(args) if args else "", actor)
+    return await _skill_execute_response(
+        rskill_id, json.dumps(args) if args else "", actor, app_state.store
+    )
 
 
 def mission_view(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -1012,6 +1088,8 @@ def mission_view(snapshot: dict[str, Any]) -> dict[str, Any]:
         # The robot said something to its operator and waits for a reply (#660). ``None``:
         # its openral predates the flag, or no tick yet. ``question``: what it said, when
         # free text may leave the host.
+        # The last skill run from the dashboard, by its ``goal_id`` (#662).
+        "skill_result": topics.get("skill_result"),
         "awaiting_operator": reasoner.get("awaiting_operator"),
         "question": reasoner.get("operator_question"),
         "stopped": estopped or latched,  # nothing moves until a person resets it

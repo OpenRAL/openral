@@ -627,6 +627,19 @@ class TelemetryStore:
             payload = self._snapshot_locked()
         self._publish(payload)
 
+    def set_skill_result(self, result: dict[str, Any]) -> None:
+        """Record the latest dashboard skill action: running, then its outcome (#662).
+
+        ``result`` is ``{goal_id, skill_id, state, success, failure_reason, trace_id,
+        ts_unix}`` with ``state`` ``running`` or ``finished``; it lands in
+        ``topics.skill_result`` and in ``/api/mission``, so the caller that got the
+        ``goal_id`` back can read how that goal ended. Pushed to subscribers at once.
+        """
+        with self._lock:
+            self._topics["skill_result"] = dict(result)
+            payload = self._snapshot_locked()
+        self._publish(payload)
+
     def set_estopped(self, value: bool) -> None:
         """Force the e-stop latch flag from an authoritative operator action.
 
