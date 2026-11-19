@@ -257,10 +257,12 @@ async def test_prompt_validates_args_then_publishes(
         ]
         bad = [await client.post("/api/actions/prompt", json=body) for body in bodies]
         resp = await client.post("/api/actions/prompt", json={"args": {"text": "pick the eraser"}})
+        made = resp.json()["correlation_id"]  # the dashboard names a prompt sent without one
         assert json.loads(argv_log.read_text()) == [
             "prompt",
             "--topic",
             "/openral/prompt_in/dashboard",
+            f"--correlation-id={made}",
             "--",
             "pick the eraser",
         ]
