@@ -31,7 +31,17 @@ mkdir -p "$WS/src" "$WS/third"
 source /opt/ros/jazzy/setup.bash
 
 # No --skip-existing: an existing checkout is fetched and moved to the pin; vcs refuses a
-# different remote URL, and git refuses to check out over conflicting local edits.
+# different remote URL. Git would carry non-conflicting local edits across the checkout,
+# so refuse any (bar this script's own COLCON_IGNORE) rather than build modified sources.
+for repo in "$WS"/src/*/; do
+  [ -d "$repo/.git" ] || continue
+  dirty=$(git -C "$repo" status --porcelain | grep -v '^?? COLCON_IGNORE$' || true)
+  if [ -n "$dirty" ]; then
+    echo "refusing: local changes in $repo (commit, stash or remove them):" >&2
+    echo "$dirty" >&2
+    exit 1
+  fi
+done
 vcs import "$WS/src" < "$HERE/deps.repos"
 touch "$WS/src/flexiv_rdk/COLCON_IGNORE"
 
