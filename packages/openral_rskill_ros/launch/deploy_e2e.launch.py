@@ -2424,8 +2424,12 @@ def _robot_mesh_package(
     registers it (``_foxglove_asset_env``). Any failure leaves the URDF as it was.
     """
     refs = {m[2] for m in _LOCAL_MESH.finditer(urdf_xml)}
-    files = {r: (urdf_dir / r).resolve() for r in refs}
-    files = {r: f for r, f in files.items() if f.is_file()}
+    try:  # an unreadable parent raises from resolve()/is_file()
+        files = {r: (urdf_dir / r).resolve() for r in refs}
+        files = {r: f for r, f in files.items() if f.is_file()}
+    except OSError as exc:
+        print(f"[deploy_e2e] foxglove: URDF meshes will not load: {exc!r}", flush=True)
+        return urdf_xml, {}
     if not files:
         return urdf_xml, {}
     digest = hashlib.sha256(str(urdf_dir.resolve()).encode()).hexdigest()[:8]
