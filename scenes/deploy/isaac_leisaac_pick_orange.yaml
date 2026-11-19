@@ -157,10 +157,28 @@ grasp_declaration:
 # uses the tracked destination. SIM-ONLY, Safety-WG review owed.
 place_zones:
   - name: plate
-    region:
+    region: &plate_zone
       frame_id: base
       pose: {xyz: [-0.2153, -0.2716, 0.0386], quat_xyzw: [0.0, 0.0, 0.0, 1.0], frame_id: base}
       half_extents: [0.10, 0.10, 0.08]
+
+# What success means for the scene's task, by prompt (issue #635,
+# openral_core.SuccessCondition): the three oranges rest, released, with their tracked box
+# centres inside the plate zone above, for one second of tracker time. The rSkill runner
+# judges a goal with one of these prompts by it over the object tracker's tracks and reports
+# the TaskOutcome; the simulator's own `placement_success` grade stays the ground truth it
+# can be compared with. Goals with any other prompt are judged by nothing.
+# It labels the result only (`end_on_success` is off): on q5090 (2026-11-19) the tracker held
+# three confirmed `orange` tracks in the plate with one orange there, so a settled verdict
+# here must not cut the policy short.
+success_conditions:
+  "Pick three oranges and put them into the plate": &oranges_in_plate
+    object_label: orange
+    region: *plate_zone
+    min_count: 3
+    settle_s: 1.0
+  "Grab orange and place into plate": *oranges_in_plate
+
 runtime:
   enable_slam: false
   enable_nav2: false

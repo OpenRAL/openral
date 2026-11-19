@@ -119,7 +119,10 @@ from openral_core.schemas import (
     SpatialNodeKind,
     SpatialRelationKind,
     SphereShape,
+    SuccessCondition,
+    TaskOutcome,
     TaskSpec,
+    TaskVerdict,
     TickResult,
     VisionAttachmentRuntime,
     VLASpec,
@@ -839,6 +842,52 @@ def test_fuzz_place_declaration(instance: PlaceDeclaration) -> None:
 def test_fuzz_place_zone(instance: PlaceZone) -> None:
     """PlaceZone round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(PlaceZone, instance)
+
+
+@_FUZZ_SETTINGS
+@given(
+    st.builds(
+        SuccessCondition,
+        object_label=st.text(min_size=1, max_size=64),
+        # A region's orientation is a rotation (a zero quaternion is refused), posed in
+        # the region's own frame.
+        region=_grasp_region_st.filter(lambda r: sum(q * q for q in r.pose.quat_xyzw) > 1e-6).map(
+            lambda r: r.model_copy(
+                update={"pose": r.pose.model_copy(update={"frame_id": r.frame_id})}
+            )
+        ),
+        min_count=st.integers(min_value=1, max_value=32),
+        settle_s=st.floats(min_value=1e-3, max_value=60.0, allow_nan=False),
+        max_evidence_gap_s=st.floats(min_value=1e-3, max_value=60.0, allow_nan=False),
+        end_on_success=st.booleans(),
+    )
+)
+def test_fuzz_success_condition(instance: SuccessCondition) -> None:
+    """SuccessCondition (issue #635) round-trips and validates; no evidence is never a success."""
+    from openral_core.success import SuccessJudge
+
+    _round_trip_and_validate(SuccessCondition, instance)
+    judge = SuccessJudge(instance)
+    judge.observe(None)
+    assert judge.outcome().verdict is TaskVerdict.UNKNOWN
+
+
+@_FUZZ_SETTINGS
+@given(
+    st.builds(
+        TaskOutcome,
+        verdict=st.sampled_from(TaskVerdict),
+        source=st.sampled_from(["success_condition", "skill", "checker", "none"]),
+        reason=st.text(max_size=TaskOutcome.MAX_REASON_CHARS),
+        object_ids=st.lists(st.text(max_size=16), max_size=4).map(tuple),
+        resting=st.integers(min_value=0, max_value=32),
+        required=st.integers(min_value=0, max_value=32),
+        held_s=st.floats(min_value=0.0, max_value=600.0, allow_nan=False),
+    )
+)
+def test_fuzz_task_outcome(instance: TaskOutcome) -> None:
+    """TaskOutcome (issue #635) round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(TaskOutcome, instance)
 
 
 @_FUZZ_SETTINGS

@@ -167,8 +167,9 @@ robots:
 - A robot's `scene` is a `DeployScene` that builds a bare MuJoCo twin: it names
   `robot_id`, declares no `composition`, and its `scene.id` is not a registered
   sim scene. Several robots may share one file.
-- `ros_domain_id` values must be at least 2 apart: under the Fast-DDS
-  large-data profile adjacent domains see each other. Prefer domains below 102
+- `ros_domain_id` values must be at least 2 apart: a graph with a wider
+  discovery range than the deploy profile's (an older OpenRAL, an operator
+  profile) reaches one domain over. Prefer domains below 102
   (above, a domain's RTPS ports fall in Linux's ephemeral port range) and avoid
   0, 42, 50-101 and 77, which OpenRAL uses elsewhere.
 - Arena element names must not clash with a robot's (the model then does not

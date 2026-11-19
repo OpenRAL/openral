@@ -57,6 +57,7 @@ _ROUTES: dict[str, str | None] = {
     "pusht_2d": None,
     "r1pro": None,
     "rizon4": "srdf",
+    "rizon_dual": "srdf",
     "sawyer": "mjcf",
     "so100_follower": "sampling",
     "so101_follower": "sampling",

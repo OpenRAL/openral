@@ -2271,6 +2271,53 @@
       "title": "SphereShape",
       "type": "object"
     },
+    "SuccessCondition": {
+      "additionalProperties": false,
+      "description": "What success means for a policy run, as a predicate over world state (issue #635).\n\nOne predicate today: *at least ``min_count`` objects labelled ``object_label`` rest,\nreleased, with their box centres inside ``region``, and have for ``settle_s``*.\n``openral_core.success.SuccessJudge`` judges it over the object tracker's\n``TrackedObjectSet`` s; the rSkill runner reports the ``TaskOutcome`` of every run and,\nwith ``end_on_success``, ends a run that satisfies it.\n\nDeclared per goal (``ExecuteRskill.Goal.success_condition``), which wins, or per scene\nand prompt (``DeployScene.success_conditions``). Advisory: it can only end a goal or\nlabel its result; it commands nothing and is never a safety-kernel input.\n\nAttributes:\n    object_label: Label of the tracked objects (``TrackedObject.label``, compared\n        case-folded). Any track of the label counts, so an object of that class\n        already resting in ``region`` does too.\n    region: Box an object's centre must rest inside, in the tracker's grid frame\n        (the robot base frame); ``geometry`` empty. Another frame is never\n        re-expressed: the verdict is ``unknown``.\n    min_count: How many objects must rest in the region.\n    settle_s: Seconds of tracker evidence the predicate must hold over (> 0: one\n        tracked set alone never decides a success).\n    max_evidence_gap_s: Longest gap between two sets the tracker publishes that the\n        hold may span; a longer one restarts ``settle_s``.\n    end_on_success: End the run once the condition has settled. Off by default: the\n        verdict then only labels the result, and the run still ends on its budget,\n        its skill or a completion check. A wrong ``succeeded`` (the tracker holding\n        a track for something that is not there) then costs a label, not the task.\n\nExample:\n    >>> region = PlaceRegion(\n    ...     frame_id=\"base\",\n    ...     pose=Pose6D(xyz=(0.3, 0.1, 0.02), quat_xyzw=(0, 0, 0, 1), frame_id=\"base\"),\n    ...     half_extents=(0.03, 0.03, 0.03),\n    ... )\n    >>> SuccessCondition(object_label=\"cube\", region=region).min_count\n    1",
+      "properties": {
+        "object_label": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Object Label",
+          "type": "string"
+        },
+        "region": {
+          "$ref": "#/$defs/PlaceRegion"
+        },
+        "min_count": {
+          "default": 1,
+          "maximum": 32,
+          "minimum": 1,
+          "title": "Min Count",
+          "type": "integer"
+        },
+        "settle_s": {
+          "default": 1.0,
+          "exclusiveMinimum": 0.0,
+          "maximum": 60.0,
+          "title": "Settle S",
+          "type": "number"
+        },
+        "max_evidence_gap_s": {
+          "default": 2.0,
+          "exclusiveMinimum": 0.0,
+          "maximum": 60.0,
+          "title": "Max Evidence Gap S",
+          "type": "number"
+        },
+        "end_on_success": {
+          "default": false,
+          "title": "End On Success",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "object_label",
+        "region"
+      ],
+      "title": "SuccessCondition",
+      "type": "object"
+    },
     "SurfaceFreeSpaceCalibration": {
       "additionalProperties": false,
       "description": "External sensor/pose error bounds required to retire observed surface cells.\n\nThe reference identifies independently established calibration evidence; this\nconfiguration does not establish that evidence or authorize world-map clearing.",
@@ -2798,6 +2845,13 @@
         }
       ],
       "default": null
+    },
+    "success_conditions": {
+      "additionalProperties": {
+        "$ref": "#/$defs/SuccessCondition"
+      },
+      "title": "Success Conditions",
+      "type": "object"
     },
     "place_zones": {
       "items": {
