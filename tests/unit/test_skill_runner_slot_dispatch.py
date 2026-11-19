@@ -557,5 +557,6 @@ def test_uncommanded_position_joints_are_padded_inside_their_limits(
     assert row[6] == -0.2231  # left_joint7: its upper limit, the in-limit value nearest 0
     assert row[:6] == [0.0] * 6
     for value, joint in zip(row, robot.joints, strict=True):
+        assert joint.position_limits is not None, joint.name  # every rizon_dual joint has them
         lo, hi = joint.position_limits
         assert lo <= value <= hi, joint.name
