@@ -1191,7 +1191,12 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             self._source_clock.observe(clock_ns=self._joint_rx_ns, stamp_ns=stamp)
             self._fill.joints(time.monotonic())
             self._fill.touch(time.monotonic())
-            self.session.on_joint_state(positions, stamp)
+            if self.session.on_joint_state(positions, stamp):
+                # The base moved off the station and the session dropped its tracks (#651):
+                # the in-flight call's answer is about a frame from before the move.
+                self._issued_frame = None
+                self._drop_abandoned()
+                self.get_logger().info("object_tracker.station_reset transition=base_moved")
             self._publish_attachment()
 
         def _on_safe_action(self, msg: Any) -> None:

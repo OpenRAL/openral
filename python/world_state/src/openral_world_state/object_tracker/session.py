@@ -34,7 +34,7 @@ from __future__ import annotations
 import math
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 
 import numpy as np
@@ -79,7 +79,7 @@ from openral_world_state.object_tracker.binding import (
 )
 from openral_world_state.object_tracker.cover import Cell, hand_touches
 from openral_world_state.object_tracker.fit import ContainingFit
-from openral_world_state.object_tracker.grounding import centre_within, in_scope
+from openral_world_state.object_tracker.grounding import in_scope
 from openral_world_state.object_tracker.pinch import HandModel
 from openral_world_state.object_tracker.release import JawReleaseMonitor, release_track
 from openral_world_state.object_tracker.stall import JawStallDetector
@@ -155,6 +155,14 @@ _JOINT_SAMPLE_MAX_AGE_NS = round(_R.joint_sample_max_age_s * _NS)
 
 #: A source stamp this far behind the newest one is a reset clock, not a late message.
 _CLOCK_RESET_NS = 1_000_000_000
+
+#: Base displacement (planar metres; yaw radians) past which what a station measured is
+#: discarded (``TrackerSession._base_moved``). The safety kernel's station thresholds
+#: (``station_motion_translation_m`` / ``station_motion_rotation_rad`` defaults; no launch
+#: overrides them): the tracker forgets its base-frame tracks at the displacement the kernel
+#: retires their allowances at. *Calibration point.*
+STATION_MOTION_M = 0.02
+STATION_ROTATION_RAD = 0.02
 
 #: Kinds whose base cannot carry a base-frame zone away from the furniture (the deploy's
 #: ``_check_place_zone_frames`` rule, enforced here too: a launch arg bypasses the CLI).
@@ -252,19 +260,13 @@ class _Goal:
     #: is centred in: the query fails closed instead of binding a same-label neighbour.
     scope: PlaceRegion | None = None
     scope_resolved: bool | None = None  # last logged resolve state of ``scope``
-    #: Set when ``scope`` is in another frame than the grid: the ids of the tracks measured
-    #: inside it (``TrackerSession._measure_scope``), shared with the goal's TARGET queries
-    #: (``StandingQuery.members``). They decide the match; ``within`` only crops the search.
-    members: set[str] | None = None
-    #: ``object_id -> ((box, fit stamp), inside)``: what ``members`` was last judged from.
-    measured: dict[str, tuple[tuple[PlaceRegion, int], bool]] = field(default_factory=dict)
 
     def owns(self, track: TrackedObject) -> bool:
         """Whether ``track`` is an instance of one of this goal's queries."""
         return any(
             track.label == q.label
             and track.role is q.role
-            and (q.role is not ObjectRole.TARGET or in_scope(track, self.within, self.members))
+            and (q.role is not ObjectRole.TARGET or in_scope(track, self.within))
             for q in self.queries
         )
 
@@ -435,6 +437,9 @@ class TrackerSession:
         # bound (a real ATTACH for that close is then a duplicate, not a second bind).
         self._derived: set[str] = set()
         self._goals: dict[str, _Goal | None] = {"grasp": None, "place": None, "deploy": None}
+        # Measured ``(forward, side, yaw)`` of the planar base the unheld tracks and released
+        # records were measured at (``_base_moved``); ``None`` on a fixed base or unmeasured.
+        self._station_anchor: tuple[float, float, float] | None = None
         self._now_ns = 0
         self._clock_reset = False  # the joint stamps went back at least once (a sim reset)
 
@@ -682,7 +687,6 @@ class TrackerSession:
         if source_stamp_ns >= self.grid_stamp_ns:
             self.grid, self.grid_stamp_ns = grid, source_stamp_ns
             self._rescope()
-            self._measure_scope()
             self._tick(source_stamp_ns)
 
     def on_jaw_command(self, gripper_joint: str, target: float, stamp_ns: int) -> None:
@@ -695,9 +699,57 @@ class TrackerSession:
         if detector is not None and math.isfinite(target):
             detector.command(target, stamp_ns)
 
-    def on_joint_state(self, positions: Mapping[str, float], stamp_ns: int) -> None:
-        """Fold measured joints in (manifest names); run the jaw-open release rule."""
+    def _base_moved(self) -> bool:
+        """Whether the planar base left the pose this station's tracks were measured at.
+
+        Tracks, released records and the grid are base-frame, so they hold only while the base
+        keeps that pose (``leave_station``); a fixed-frame box (a memory node's goal scope, a
+        place zone) is re-expressed where the base stands NOW, and compared with a track from
+        before a move it would miss the node's instance or take its neighbour (issue #651).
+        Read from the measured ``base_joints`` like the kernel's station mode, with its
+        thresholds (``STATION_MOTION_M`` / ``STATION_ROTATION_RAD``). The anchor follows the
+        base while nothing base-frame is kept, so a base that stopped just short of a
+        threshold does not cross it on settle noise once tracks exist; on a move it jumps to
+        the new pose. ``False`` on a fixed base or until every base joint is measured.
+        """
+        names = (self.description.base_joints or [])[:3]
+        if not names or not self.positions.keys() >= set(names):
+            return False
+        x, y, yaw = (self.positions[n] for n in names)
+        anchor = self._station_anchor
+        held = self._held_ids()
+        kept = bool(self._released) or any(
+            t.status is not TrackStatus.BOUND and t.object_id not in held
+            for t in self.tracker.store.all()
+        )
+        if anchor is not None and kept:
+            turn = math.remainder(yaw - anchor[2], math.tau)
+            if (
+                math.hypot(x - anchor[0], y - anchor[1]) <= STATION_MOTION_M
+                and abs(turn) <= STATION_ROTATION_RAD
+            ):
+                return False
+        self._station_anchor = (x, y, yaw)
+        return anchor is not None and kept
+
+    def on_joint_state(self, positions: Mapping[str, float], stamp_ns: int) -> bool:
+        """Fold measured joints in (manifest names); run the jaw-open release rule.
+
+        Returns:
+            Whether the base moved off the station (``_base_moved``) and its tracks were
+            discarded (``leave_station``): the caller drops its own in-flight request, whose
+            answer is about a frame from before the move.
+        """
         self.positions.update(positions)
+        moved = self._base_moved()
+        if moved:
+            dropped, released = self.leave_station()
+            log.info(
+                "object_tracker.base_moved",
+                dropped_tracks=dropped,
+                released_records=released,
+                anchor=self._station_anchor,
+            )
         if self._joints <= self.positions.keys():
             self._joint_history.append((stamp_ns, dict(self.positions)))
         for joint, binder in self.binders.items():
@@ -727,6 +779,7 @@ class TrackerSession:
             self.on_grasp_event(
                 GraspEventKind.ATTACH, joint, jaw=held, hold=held, stamp_ns=stamp_ns, derived=True
             )
+        return moved
 
     def on_grasp_declaration(self, decl: GraspDeclaration) -> None:
         """A grasp declaration (or its retraction) from dispatch."""
@@ -1034,7 +1087,6 @@ class TrackerSession:
             results=results,
             hand_spaces=hands,
         )
-        self._measure_scope()  # this feed's fits, before ownership reads them
         # A declaration can open before the first matching fit; that fit may be
         # minted by an older standing query. Reconcile ownership after every feed.
         self._rekey_live_tracks()
@@ -1404,10 +1456,8 @@ class TrackerSession:
             invocation_id=invocation_id,
             within=within,
             scope=scope,
-            members=set() if scope is not None and scope.frame_id != self.frame_id else None,
         )
         self._rescope()
-        self._measure_scope()
         self._rekey_live_tracks()
         if self._now_ns > 0:
             self._start(goal, self._now_ns)
@@ -1427,7 +1477,6 @@ class TrackerSession:
                 stamp_ns=stamp_ns,
                 invocation_id=goal.invocation_id,
                 within=goal.within if query.role is ObjectRole.TARGET else None,
-                members=goal.members if query.role is ObjectRole.TARGET else None,
             )
         goal.start_ns = stamp_ns
 
@@ -1437,9 +1486,7 @@ class TrackerSession:
         Through ``zone_transform`` at the newest grid's stamp. A lookup that misses (or a tilted
         transform) after the scope resolved keeps the last resolved box, so one late tf does
         not reset the query; one that never resolved keeps the scope in its own frame, where
-        ``centre_within`` matches no track: fail closed. For a scope in another frame than the
-        grid this box only crops the search (where the node is now); which tracks are inside
-        is ``_measure_scope``'s.
+        ``centre_within`` matches no track: fail closed.
         """
         for goal in self._goals.values():
             if goal is None or goal.scope is None:
@@ -1472,44 +1519,6 @@ class TrackerSession:
             for q in self.tracker.queries.queries:
                 if q.goal_id == goal.goal_id and q.query.role is ObjectRole.TARGET:
                     q.within = within
-
-    def _measure_scope(self) -> None:
-        """Judge each track against a fixed-frame goal ``scope`` where the track was measured.
-
-        A track's box is in the grid (base) frame as the base stood at its last fit, so it is
-        compared with the scope re-expressed through ``zone_transform`` at that fit's stamp:
-        both sides in the scope's own fixed frame (#651). The newest grid's box (``_rescope``)
-        would move with the base while an unrefitted track's box does not, and a base that
-        moved between the fit and the match would drop the node's instance or bind its
-        neighbour. A verdict holds until the track is fitted again (a new box or fit stamp).
-        Fail closed: a track with no transform at its fit stamp (tf2 missing, tilted, or older
-        than the buffer) is out until a later fit resolves; one already judged keeps its
-        verdict over a miss, so one late tf does not reset the query.
-        """
-        for goal in self._goals.values():
-            if goal is None or goal.scope is None or goal.members is None:
-                continue
-            measured: dict[str, tuple[tuple[PlaceRegion, int], bool]] = {}
-            for track in self.tracker.store.all():
-                fit = (track.box, track.last_fit_stamp_ns)
-                verdict = goal.measured.get(track.object_id)
-                if (verdict is None or verdict[0] != fit) and self.zone_transform is not None:
-                    t = self.zone_transform(goal.scope.frame_id, track.last_fit_stamp_ns)
-                    try:
-                        there = None if t is None else rebase_box(goal.scope, t, self.frame_id)
-                    except ROSConfigError:
-                        there = None  # tilted: unjudged, as a missing transform
-                    if there is not None:
-                        verdict = (fit, centre_within(track.box, there))
-                if verdict is not None:
-                    measured[track.object_id] = verdict
-            goal.measured = measured
-            inside = {oid for oid, (_, ok) in measured.items() if ok}
-            if inside != goal.members:
-                log.info("object_tracker.goal_scope_members", goal_id=goal.goal_id,
-                         inside=sorted(inside))  # fmt: skip
-                goal.members.clear()  # in place: the goal's queries hold this set
-                goal.members.update(inside)
 
     def _clear_declaration_scope(self, key: str) -> None:
         """Remove a closed declaration's ownership key from its tracks."""

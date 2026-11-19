@@ -770,30 +770,16 @@ def test_several_targets_are_narrowed_to_the_one_in_the_search_box() -> None:
 
 def test_a_named_memory_node_binds_only_its_instance_through_tf2() -> None:
     """Issue #631: a goal naming one memory node seeds its TARGET query with the node's box in
-    ``map``. With two same-label oranges tracked, only the one measured inside it is the
-    goal's, never the neighbour.
-
-    Issue #651: the base moves between the tracks' birth and the match. A track's box stays
-    where the base stood at its fit, so it is judged against the node's box through tf2 at
-    that fit's stamp (both in ``map``), not against the box where the base stands now, which
-    lies over the neighbour. A lookup that misses keeps a judged track's verdict (one late tf
-    never resets the query); a track never judged, or a scope that never resolved, matches
-    nothing."""
-    s, oid, _, centre = _grasp_region_rig(box=False)  # both oranges fitted at stamp 1
-    drive = np.array([0.12, 0.0, 0.0])
-    other = _mint(s, centre + drive)
-    offset = np.array([1.0, -0.5, 0.0])  # grid <- map before the base drives
-    drove_ns = 100
-
-    def tf(frame: str, stamp_ns: int) -> NDArray[np.float64] | None:
-        if frame != "map":
-            return None
-        t = np.eye(4)
-        t[:3, 3] = offset + (drive if stamp_ns >= drove_ns else 0.0)
-        return t
-
-    s.zone_transform = tf
-    s.on_grid(s.grid, 2 * drove_ns)  # type: ignore[arg-type]  # the base has driven 0.12 m
+    ``map``. With two same-label oranges tracked, only the one centred in it, re-expressed in
+    the grid frame through tf2, is the goal's, never the neighbour. The scope follows tf2 per
+    grid (the base moves under ``map``); a lookup that misses keeps the last resolved box (one
+    late tf never resets the query); a scope that never resolved matches nothing."""
+    s, oid, _, centre = _grasp_region_rig(box=False)
+    other = _mint(s, centre + np.array([0.12, 0.0, 0.0]))
+    offset = np.array([1.0, -0.5, 0.0])  # grid <- map: a pure translation
+    shift = np.eye(4)
+    shift[:3, 3] = offset
+    s.zone_transform = lambda frame, _ns: shift if frame == "map" else None
     decl = s.grasp_declaration
     assert decl is not None
     (query,) = decl.target_queries
@@ -801,43 +787,104 @@ def test_a_named_memory_node_binds_only_its_instance_through_tf2() -> None:
     named = decl.model_copy(update={"target_queries": (seeded,)})
     s.on_grasp_declaration(named)
     store = s.tracker.store
-    (standing,) = s.tracker.queries.queries
-    # The node's box where the base stands now lies over the neighbour's stale box ...
-    assert standing.within is not None
-    assert standing.within.pose.xyz == pytest.approx(tuple(centre + drive))
-    # ... and still only the node's own orange, measured in it before the drive, is the goal's.
-    assert standing.matches(store.get(oid))  # type: ignore[arg-type]
-    assert not standing.matches(store.get(other))  # type: ignore[arg-type]
     assert store.get(oid).declaration_key == "orange@1"  # type: ignore[union-attr]
     assert store.get(other).declaration_key == ""  # type: ignore[union-attr]
-
-    def refit(track_id: str, xyz: NDArray[np.float64], stamp_ns: int) -> None:
-        t = store.get(track_id)
-        assert t is not None
-        pose = t.box.pose.model_copy(update={"xyz": tuple(float(v) for v in xyz)})
-        box = t.box.model_copy(update={"pose": pose})
-        store.replace(t.model_copy(update={"box": box, "last_fit_stamp_ns": stamp_ns}))
-
-    # Both are fitted again from where the base now stands: the same verdicts.
-    refit(oid, centre + drive, 2 * drove_ns)
-    refit(other, centre + 2 * drive, 2 * drove_ns)
-    s.on_grid(s.grid, 2 * drove_ns + 1)  # type: ignore[arg-type]
+    (standing,) = s.tracker.queries.queries
     assert standing.matches(store.get(oid))  # type: ignore[arg-type]
     assert not standing.matches(store.get(other))  # type: ignore[arg-type]
 
-    s.zone_transform = lambda _frame, _ns: None  # tf2 lost
-    refit(oid, centre + drive, 2 * drove_ns + 2)  # a fit that cannot be judged
-    late = _mint(s, centre + drive, fit_ns=2 * drove_ns + 2)  # a track never judged
-    s.on_grid(s.grid, 2 * drove_ns + 3)  # type: ignore[arg-type]
-    assert standing.matches(store.get(oid)), "a judged track keeps its verdict over a miss"  # type: ignore[arg-type]
-    assert not standing.matches(store.get(late)), "never judged: fail closed"  # type: ignore[arg-type]
-    assert not standing.matches(store.get(other))  # type: ignore[arg-type]
+    # The base drives 0.12 m: the same map box now lies over the other orange.
+    shift[:3, 3] = offset + np.array([0.12, 0.0, 0.0])
+    s.on_grid(s.grid, s.grid_stamp_ns + 1)  # type: ignore[arg-type]
+    assert standing.matches(store.get(other)) and not standing.matches(store.get(oid))  # type: ignore[arg-type]
 
-    # A new goal whose scope never resolves (no tf2 yet) matches none: fail closed.
+    s.zone_transform = lambda _frame, _ns: None  # tf2 lost
+    s.on_grid(s.grid, s.grid_stamp_ns + 1)  # type: ignore[arg-type]
+    assert standing.matches(store.get(other)) and not standing.matches(store.get(oid))  # type: ignore[arg-type]
+
+    # A new goal whose scope never resolves (no tf2 yet) matches neither: fail closed.
     renamed = named.model_copy(update={"stamp_ns": named.stamp_ns + 1})
     s.on_grasp_declaration(renamed)
     (fresh,) = s.tracker.queries.queries
-    assert not any(fresh.matches(store.get(t)) for t in (oid, other, late))  # type: ignore[arg-type]
+    assert not fresh.matches(store.get(oid)) and not fresh.matches(store.get(other))  # type: ignore[arg-type]
+
+
+def test_a_base_move_discards_the_station_so_a_memory_node_never_binds_a_stale_track() -> None:
+    """Issue #651: tracks are base-frame boxes from where the base stood at their fit, while a
+    memory node's scope is re-expressed where the base stands now. The base moves between
+    the tracks' birth and the match, by the two oranges' spacing: the node's box then lies
+    over the NEIGHBOUR's stale box. Past the kernel's station threshold the session discards
+    what the station measured, so no stale track is matched (fail closed), and the tracks
+    measured from the new pose bind the node's own orange. Under the threshold they stay."""
+    from openral_world_state.object_tracker.session import STATION_MOTION_M, STATION_ROTATION_RAD
+
+    from tests.unit.test_object_tracker_binding import _grid
+
+    d = RobotDescription.from_yaml("robots/openamrobot_v2/robot.yaml")
+    assert d.base_joints is not None
+    forward, side, yaw = d.base_joints[:3]
+    s = TrackerSession(d, cell_m=RES, grounding_wait_s=3.0, params=TrackerParams())
+    s.mode = TrackingMode.TRACKING
+    centre, spacing = np.array([0.5, 0.0, 0.4]), np.array([0.12, 0.0, 0.0])
+    base = {forward: 0.0, side: 0.0, yaw: 0.0}
+    offset = np.array([1.0, -0.5, 0.0])  # grid <- map with the base at its first pose
+
+    def tf(frame: str, _stamp_ns: int) -> NDArray[np.float64] | None:
+        t = np.eye(4)  # the base drives along its own x: map points move back in its frame
+        t[:3, 3] = offset - np.array([base[forward], 0.0, 0.0])
+        return t if frame == "map" else None
+
+    def grid(stamp_ns: int) -> None:
+        s.on_grid(_grid(s.frame_id, centre[None, :], centre - 0.3, 60), stamp_ns)
+
+    s.zone_transform = tf
+    assert s.on_joint_state(base, 1) is False
+    oid, other = _mint(s, centre), _mint(s, centre + spacing)
+    grid(5)
+    seed = _search_box("map", centre - offset)  # the node: the first orange, in map
+    query = ObjectQuery(label="orange", count="one", role=ObjectRole.TARGET, seed=seed)
+    named = _decl(1, label="orange", robot="openamrobot_v2").model_copy(
+        update={"target_queries": (query,)}
+    )
+    s.on_grasp_declaration(named)
+    (standing,) = s.tracker.queries.queries
+    store = s.tracker.store
+    assert standing.matches(store.get(oid))  # type: ignore[arg-type]
+    assert not standing.matches(store.get(other))  # type: ignore[arg-type]
+
+    # Settle noise under the thresholds: the station holds.
+    base[forward], base[yaw] = 0.9 * STATION_MOTION_M, 0.9 * STATION_ROTATION_RAD
+    assert s.on_joint_state(base, 6) is False
+    assert {t.object_id for t in store.all()} == {oid, other}
+
+    # The base backs up by the spacing: the node's box now lies over the neighbour's old box.
+    base[forward], base[yaw] = -float(spacing[0]), 0.0
+    assert s.on_joint_state(base, 7) is True
+    assert store.all() == [], "no track from before the move is left to match"
+    grid(8)
+    assert standing.within is not None
+    assert standing.within.pose.xyz == pytest.approx(tuple(centre + spacing))
+
+    # Measured again from the new pose, the node's own orange is the goal's; its neighbour is not.
+    again, neighbour = _mint(s, centre + spacing), _mint(s, centre + 2 * spacing)
+    assert s.on_joint_state(base, 9) is False
+    s.on_grasp_declaration(named)  # rekeys
+    assert standing.matches(store.get(again))  # type: ignore[arg-type]
+    assert not standing.matches(store.get(neighbour))  # type: ignore[arg-type]
+    assert store.get(again).declaration_key == "orange@1"  # type: ignore[union-attr]
+    assert store.get(neighbour).declaration_key == ""  # type: ignore[union-attr]
+
+    # A turn past the rotation threshold leaves the station as well.
+    base[yaw] = 1.5 * STATION_ROTATION_RAD
+    assert s.on_joint_state(base, 10) is True and store.all() == []
+
+
+def test_a_fixed_base_never_leaves_its_station() -> None:
+    """No ``base_joints``: joint states never discard the tracks (issue #651's rule is a
+    mobile base's)."""
+    s, oid, q, _ = _grasp_region_rig()
+    assert s.on_joint_state(q, 7) is False
+    assert s.tracker.store.get(oid) is not None
 
 
 def test_the_runners_search_box_seed_does_not_scope_the_goal_to_an_instance() -> None:

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from collections.abc import Callable, Sequence, Set
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum, auto
 from statistics import median
@@ -685,13 +685,11 @@ class ObjectTracker:
         stamp_ns: int,
         invocation_id: str = "",
         within: PlaceRegion | None = None,
-        members: Set[str] | None = None,
     ) -> None:
         """Start a standing query (G.1) at goal dispatch, source time ``stamp_ns``.
 
         ``within``: only tracks centred in it are the query's instances
-        (``StandingQuery.within``); ``members`` replaces that test for a fixed-frame scope
-        (``StandingQuery.members``).
+        (``StandingQuery.within``).
         """
         self.queries.open(
             goal_id,
@@ -701,7 +699,6 @@ class ObjectTracker:
             stamp_ns=stamp_ns,
             invocation_id=invocation_id,
             within=within,
-            members=members,
         )
 
     def close_goal(self, goal_id: str) -> None:
