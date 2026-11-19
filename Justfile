@@ -440,6 +440,7 @@ ros2-build:
                           opentelemetry_cpp_vendor \
                           openral_hal_node \
                           openral_hal_openarm \
+                          openral_hal_rizon \
                           openral_hal_unitree \
                           openral_world_state \
                           openral_reasoner_ros \
@@ -532,6 +533,7 @@ ros2-test:
                           opentelemetry_cpp_vendor \
                           openral_hal_node \
                           openral_hal_openarm \
+                          openral_hal_rizon \
                           openral_hal_unitree \
                           openral_world_state \
                           openral_reasoner_ros \

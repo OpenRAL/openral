@@ -1742,11 +1742,15 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     default_omdet_manifest = repo_root / "rskills" / "omdet-turbo-indoor" / "rskill.yaml"
     if object_detector_manifest:
         resolved_object_detector_manifest = str(Path(object_detector_manifest).resolve())
-        resolved_object_detector_onnx = (
-            object_detector_onnx.resolve()
-            if object_detector_onnx is not None
-            else default_rtdetr_onnx
-        )
+        # An ONNX skill ships its model.onnx beside its manifest: use it, so a
+        # manifest-only detector runs its own weights, not RT-DETR R18's.
+        manifest_onnx = Path(resolved_object_detector_manifest).parent / "model.onnx"
+        if object_detector_onnx is not None:
+            resolved_object_detector_onnx = object_detector_onnx.resolve()
+        elif manifest_onnx.is_file():
+            resolved_object_detector_onnx = manifest_onnx
+        else:
+            resolved_object_detector_onnx = default_rtdetr_onnx
     elif object_detector_onnx is not None:
         # Explicit ONNX → the legacy fixed-label RT-DETR path (no manifest).
         resolved_object_detector_manifest = ""

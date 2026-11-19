@@ -38,6 +38,7 @@ EXPECTED = {
     "pusht_2d": "top",
     "r1pro": "head",
     "rizon4": "",
+    "rizon_dual": "",
     "sawyer": "front",
     "so100_follower": "top",
     "so101_follower": "top",

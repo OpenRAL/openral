@@ -1,0 +1,35 @@
+# Dual Flexiv Rizon 4s — REAL hardware bench cell (q5090).
+#
+#     openral deploy run --config scenes/deploy/rizon_dual_bench.yaml
+#
+# `deploy run` includes `openral_hal_rizon`'s real_bringup.launch.py: one upstream
+# FlexivHardwareInterface per arm. Activation ENABLES BOTH ARMS (brakes released, servo
+# on); the trajectory controllers then hold the measured pose, so nothing moves until a
+# trajectory arrives. Keep each arm's E-stop in reach. Stopping the deploy does NOT disable
+# the arms (upstream Robot::Stop() leaves them enabled): disable them or press the E-stops. Needs the upstream Flexiv packages
+# sourced (packages/openral_hal_rizon/README.md "Provisioning") and each arm in Remote
+# mode (Ethernet) on its controller.
+#
+# Arms only: no cameras, no jaws, no reasoner. Every runtime feature that needs a sensor
+# the manifest does not declare is off.
+scene:
+  id: rizon_dual_bench
+robot_id: rizon_dual
+
+runtime:
+  enable_reasoner: false
+  enable_slam: false
+  enable_nav2: false
+  enable_octomap: false
+  enable_octomap_kernel_check: true
+  enable_object_detector: false
+  object_detector_onnx: null
+  object_detector_manifest: null
+  object_detector_query: null
+  object_detector_locators: null
+  enable_reward_monitor: false
+  reward_monitor_manifest: null
+  reward_monitor_task: null
+  enable_critic: false
+  spatial_memory_ingest: false
+  approach_skill_id: null

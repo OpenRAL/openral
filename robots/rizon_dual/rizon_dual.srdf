@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The dual Rizon's rest pose for the collision checks (q = 0 is outside joint 7's rig
+     limits). `home` is the reference rig's measured home: grippers' grasp frames 0.15 m
+     apart at (0.705, +-0.075, 0.92) in `world`, where both arms park (q5090, 2026-11-11).
+     No disable_collisions: the ACM is the lowering's adjacent pairs only. -->
+<robot name="rizon_dual">
+  <group name="arms">
+    <chain base_link="left_base_link" tip_link="left_flange"/>
+    <chain base_link="right_base_link" tip_link="right_flange"/>
+  </group>
+  <group_state name="home" group="arms">
+    <joint name="left_joint1" value="0.6621"/>
+    <joint name="left_joint2" value="1.6728"/>
+    <joint name="left_joint3" value="0.9390"/>
+    <joint name="left_joint4" value="1.3845"/>
+    <joint name="left_joint5" value="2.8105"/>
+    <joint name="left_joint6" value="2.1359"/>
+    <joint name="left_joint7" value="-1.7939"/>
+    <joint name="right_joint1" value="-0.8426"/>
+    <joint name="right_joint2" value="-1.7481"/>
+    <joint name="right_joint3" value="2.0722"/>
+    <joint name="right_joint4" value="1.8527"/>
+    <joint name="right_joint5" value="0.8346"/>
+    <joint name="right_joint6" value="1.1838"/>
+    <joint name="right_joint7" value="1.2634"/>
+  </group_state>
+</robot>
