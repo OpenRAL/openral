@@ -808,6 +808,8 @@ class TrackerSession:
         """
         self.positions.update(positions)
         left = self._leave_moved_station(stamp_ns)
+        if self._joints <= self.positions.keys():
+            self._joint_history.append((stamp_ns, dict(self.positions)))
         for joint, binder in self.binders.items():
             if joint in positions:  # the most open jaw before closure bounds a fallback
                 binder.observe_jaw(positions[joint])
