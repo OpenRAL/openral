@@ -494,6 +494,27 @@ def test_deploy_forwards_the_stations_declared_place_zones(
     assert not [a for a in _argv(bare, mode, {"object_tracking": "off"}) if "place_zones" in a]
 
 
+def test_deploy_forwards_the_scenes_success_conditions(tmp_path: Path) -> None:
+    """Issue #635: ``DeployScene.success_conditions`` (PickOrange: three oranges rest in the
+    plate, for either task prompt) reach the launch as ``success_conditions_json`` for the
+    runner; none declared, none sent."""
+    import yaml
+    from openral_core import SuccessCondition, success_condition_for_prompt
+    from pydantic import TypeAdapter
+
+    argv = _argv(_PICK_ORANGE, "sim", {})
+    (raw,) = [a.split(":=", 1)[1] for a in argv if a.startswith("success_conditions_json:=")]
+    declared = TypeAdapter(dict[str, SuccessCondition]).validate_json(raw)
+    condition = success_condition_for_prompt("Grab orange and place into plate", declared)
+    assert condition is not None and len(declared) == 2
+    assert (condition.object_label, condition.min_count) == ("orange", 3)
+    assert condition.region.frame_id == "base"
+    scene = yaml.safe_load(_PICK_ORANGE.read_text())
+    bare = tmp_path / "no_conditions.yaml"
+    bare.write_text(yaml.safe_dump({k: v for k, v in scene.items() if k != "success_conditions"}))
+    assert not [a for a in _argv(bare, "sim", {}) if "success_condition" in a]
+
+
 def _robot_yaml(scene: dict[str, Any]) -> str:
     return str(_REPO / "robots" / str(scene["robot_id"]) / "robot.yaml")
 
