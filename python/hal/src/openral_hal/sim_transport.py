@@ -190,13 +190,18 @@ class SimTransport:
 
         Returns:
             Dict with ``"position"``, ``"velocity"``, and ``"effort"`` keys,
-            each containing a ``list[float]`` of length ``n_joints``.
+            each containing a ``list[float]`` of length ``n_joints``, plus ``"name"``
+            when built with ``joint_names`` (as ``RosControlTransport`` always is), which
+            a HAL that matches by name (``GroupedRosControlHAL``) requires.
         """
-        return {
+        state: dict[str, object] = {
             "position": list(self._positions),
             "velocity": list(self._velocities),
             "effort": list(self._efforts),
         }
+        if self._joint_names is not None:
+            state["name"] = list(self._joint_names)
+        return state
 
     # -- ControllerStopSeam ---------------------------------------------------
 

@@ -7,7 +7,7 @@ scenes, the eval registry, the HAL itself) validates against. The
 time and auto-registers each one; `$OPENRAL_ROBOTS_DIR/<id>/robot.yaml` is
 looked up first, for out-of-tree manifests.
 
-There are 26 robot directories, each with a `robot.yaml` and most with a
+There are 27 robot directories, each with a `robot.yaml` and most with a
 `README.md` of provenance notes (kinematic source, MJCF wiring, sim-vs-real
 caveats). `hal.real` is the source of truth for real-hardware support:
 `null`/absent means sim-only (no HAL, no HIL tests, no physical rig).
@@ -39,6 +39,7 @@ from it (most arms below), and several embodiments (`aloha_agilex`, `gr1`,
 | `pusht_2d` | PushT 2-D pseudo-robot (lerobot PushT benchmark) | `pusht`, `lerobot` | yes — `fixed_robot="pusht_2d"` scene adapter (gym-pusht) | no (`hal.real` null) | [README.md](pusht_2d/README.md) |
 | `r1pro` | Galaxea R1 Pro mobile bimanual manipulator — the official 2026 BEHAVIOR-1K OmniGibson evaluator embodiment | `r1pro`, `mobile_base` | yes — `fixed_robot="r1pro"` BEHAVIOR scene adapter, out-of-process OmniGibson/Isaac Sim sidecar (`tools/behavior_scene_sidecar.py`), 61-D state / 23-D action | no (`hal.real` null) | [README.md](r1pro/README.md) |
 | `rizon4` | 7-DoF collaborative arm (Flexiv Rizon 4), no gripper | `rizon4`, `flexiv` | yes — derived `MujocoArmHAL` (mujoco_menagerie MJCF; class form `Rizon4MujocoHAL`) | no (`hal.real` null) | [README.md](rizon4/README.md) |
+| `rizon_dual` | Two Flexiv Rizon 4s arms on one column, driven as one 14-DoF robot (arms only; reference rig q5090) | `rizon_dual`, `rizon4s`, `flexiv`, `bimanual` | no (`hal.sim` null, no `sim:` block) | yes — `GroupedRosControlHAL`, config-only (upstream `flexiv_hardware` per arm, via `openral_hal_rizon`) | [README.md](rizon_dual/README.md) |
 | `sawyer` | 7-DoF collaborative arm (Rethink Robotics Sawyer) | `sawyer`, `rethink` | yes — `fixed_robot="sawyer"` scene adapter (MetaWorld) | yes — `SawyerRealHAL` (`intera_sdk`/`sawyer_robot` fork, BSD-3) | [README.md](sawyer/README.md) |
 | `so100_follower` | 6-DoF follower arm (LeRobot SO-100), serial — not `ros2_control` | `so100_follower`, `lerobot` | yes — derived `MujocoArmHAL` (`rd:so_arm100_mj_description` MJCF; `sim:` block) | yes — `SO100FollowerHAL` (serial, `/dev/ttyUSB0`) | [README.md](so100_follower/README.md) |
 | `so101_follower` | 6-DoF follower arm (LeRobot SO-101), serial — shares `SO100FollowerHAL` | `so101_follower`, `lerobot` | yes — derived `MujocoArmHAL` (`sim:` block) + `fixed_robot="so101_follower"` scene adapter (`so101_box`, MuJoCo tabletop arena) | yes — `SO100FollowerHAL` (serial, `/dev/ttyUSB0`) | [README.md](so101_follower/README.md) |

@@ -143,3 +143,118 @@ def test_openarm_stays_latched_when_reactivation_is_refused() -> None:
             node.destroy_node()
     finally:
         rclpy.try_shutdown()
+
+
+def _openarm_failing_after_left_arm(
+    switch_faults: dict[str, Exception] | None = None,
+) -> tuple[HAL, SimTransport, list[str]]:
+    """An OpenArm whose publish fails on every topic after the left arm's (first) one."""
+    from openral_hal.openarm_real import OpenArmRealHAL
+
+    hal = OpenArmRealHAL(require_can_links=False)
+    names = hal.controller_names()
+    transport = SimTransport(n_joints=16, controllers=names, switch_faults=switch_faults)
+    first = hal.command_topics()[0]
+
+    def publish(topic: str, msg: dict[str, object]) -> None:
+        if topic != first:
+            raise RuntimeError("publisher gone")
+        transport.publish(topic, msg)
+
+    hal.attach_transport(publish, transport.state)
+    hal.attach_controller_stop(transport)
+    hal.connect()
+    return cast(HAL, hal), transport, names
+
+
+def _joint_action() -> object:
+    from openral_core.schemas import Action, ControlMode
+
+    return Action(control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[[0.1] * 16])
+
+
+def test_a_partial_fan_out_latches_the_node_and_stops_every_controller() -> None:
+    """A send that reached one controller but not the rest is an e-stop, not a skipped tick."""
+    rclpy.init()
+    try:
+        node = ManifestHALLifecycleNode("openral_hal_openarm_partial_publish")
+        hal, transport, names = _openarm_failing_after_left_arm()
+        node._hal = hal
+        try:
+            assert node._send_action_traced(_joint_action(), source="test") is False
+            assert node._estopped
+            assert all(transport.controller_state(n) == "inactive" for n in names)
+            level, message, fields = node._heartbeat_status("openarm")
+            assert level == Level.ERROR and message == "estop latched"
+            assert fields["downstream_stop"] == "acknowledged"
+        finally:
+            node.destroy_node()
+    finally:
+        rclpy.try_shutdown()
+
+
+def test_a_partial_fan_out_with_a_refused_stop_reads_unacknowledged() -> None:
+    """The latch holds and the heartbeat says the downstream stop is unproven."""
+    rclpy.init()
+    try:
+        node = ManifestHALLifecycleNode("openral_hal_openarm_partial_publish_refused")
+        hal, _transport, _names = _openarm_failing_after_left_arm(
+            switch_faults={"deactivate": RuntimeError("controller_manager gone")}
+        )
+        node._hal = hal
+        try:
+            assert node._send_action_traced(_joint_action(), source="test") is False
+            assert node._estopped
+            _level, message, fields = node._heartbeat_status("openarm")
+            assert message == "estop latched"
+            assert fields["downstream_stop"] == "unacknowledged"
+        finally:
+            node.destroy_node()
+    finally:
+        rclpy.try_shutdown()
+
+
+def test_a_partial_fan_out_stops_the_hal_once() -> None:
+    """The node's latch re-runs the HAL stop, which is idempotent: one deactivate, report kept."""
+    rclpy.init()
+    try:
+        node = ManifestHALLifecycleNode("openral_hal_openarm_partial_publish_once")
+        hal, transport, _names = _openarm_failing_after_left_arm()
+        node._hal = hal
+        try:
+            node._send_action_traced(_joint_action(), source="test")
+            assert [op for op, _ in transport.switch_calls if op == "deactivate"] == ["deactivate"]
+            assert node._heartbeat_status("openarm")[2]["downstream_stop"] == "acknowledged"
+        finally:
+            node.destroy_node()
+    finally:
+        rclpy.try_shutdown()
+
+
+def test_a_failing_estop_publish_does_not_undo_the_latch() -> None:
+    """The graph-wide /openral/estop publish is best effort; the local latch holds anyway.
+
+    The publisher is a real one, destroyed under the node: its ``publish`` raises rclpy's
+    own handle error, the failure a shutting-down context produces.
+    """
+    from std_msgs.msg import Empty
+
+    rclpy.init()
+    try:
+        node = ManifestHALLifecycleNode("openral_hal_openarm_partial_publish_pub_fails")
+        hal, _transport, _names = _openarm_failing_after_left_arm()
+        node._hal = hal
+        dead = node.create_publisher(Empty, "/openral/estop", 10)
+        node.destroy_publisher(dead)
+        with pytest.raises(Exception):  # noqa: B017  # the failure this test relies on
+            dead.publish(Empty())
+        node._estop_pub = dead
+        try:
+            node._send_action_traced(_joint_action(), source="test")
+            assert node._estopped
+            assert node._heartbeat_status("openarm")[1] == "estop latched"
+        finally:
+            node._estop_pub = None
+            node.destroy_node()
+    finally:
+        rclpy.try_shutdown()

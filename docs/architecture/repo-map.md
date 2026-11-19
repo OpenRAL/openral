@@ -27,6 +27,7 @@ openral/                      ← THIS monorepo
 │  ├─ world_state/  (openral_world_state_ros) ← lifecycle node wrapping the aggregator ✓
 │  ├─ openral_hal_node/       ← the one manifest-driven HAL lifecycle node, every robot (`robot_yaml` picks it; node name `openral_hal_<robot_id>`) ✓
 │  ├─ openral_hal_openarm/    ← OpenArm real-HW bringup only (`real_bringup.launch.py`, via `hal.real_bringup`) ✓
+│  ├─ openral_hal_rizon/      ← dual Flexiv Rizon 4s real-HW bringup only (upstream `flexiv_hardware`, via `hal.real_bringup`)
 │  ├─ openral_reasoner_ros/   ← reasoner_node (LLM ReasonerToolCall dispatch) ✓
 │  ├─ openral_prompt_router/  ← prompt fan-in lifecycle node ✓
 │  ├─ openral_rskill_ros/      ← rskill_runner_node + ExecuteRskill action server ✓

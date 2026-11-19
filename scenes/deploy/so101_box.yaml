@@ -1,17 +1,24 @@
 # SO-101 follower arm in a 100×61.5×75 cm tabletop box — deploy playground.
 #
 # Env-only DeployScene (no task, no eval) — boots the full OpenRAL stack
-# (HAL + reasoner + safety kernel) for the SO-101 follower arm. Robot is
-# auto-resolved via ``SCENES.fixed_robot("so101_box") == "so101_follower"``;
-# the same so100 lifecycle node serves both so100 and so101 manifests
-# (issue #191 Phase 3b — manifest-driven, bare twin).
+# (HAL + reasoner + safety kernel) for the SO-101 follower arm on the generic
+# manifest-driven HAL node.
 #
 # Bare twin, explicitly: ``composition`` below makes ``deploy sim`` build the
 # arm's own ``MujocoArmHAL`` twin inside the composed box arena (a registered
 # scene id with no ``composition`` would scene-attach instead). Scene-attach is
-# not usable here: the so101_box rollout packs JOINT_POSITION as 5 arm joints,
-# so the SO-101's 6-wide (arm + gripper) actions are rejected. Before this
-# block existed ``deploy sim`` built the bare arm with no box at all.
+# not usable here yet; issue #669 tracks it. The so101_box rollout's ``step``
+# takes the SO-101's 6-wide joint-position action, but behind ``SimAttachedHAL``:
+#   * the default packer (robosuite layout) refuses a 6-wide JOINT_POSITION row,
+#     and an ungrouped arm or gripper step zeroes the other's target;
+#   * an idle step commands every joint to 0 rad (no ``idle_action`` hook);
+#   * the gripper is written and read (``read_state``) in MJCF radians, where
+#     the manifest and the twin use the [0, 1] jaw fraction (``sim.grippers``);
+#   * frames are keyed ``oak_top`` / ``wrist``, so the manifest's ``top`` sensor
+#     gets no frame and no CameraInfo;
+#   * one ``step`` is 17 x 2 ms = 34 ms against a 33.3 ms control period, and it
+#     is unchecked (the rollout declares no ``sim_dt_per_tick_s``).
+# Before this block existed ``deploy sim`` built the bare arm with no box at all.
 #
 # All ``BoxSceneOptions`` defaults apply (box geometry, camera poses, tube
 # and slotted-block dimensions). The reasoner picks the active rSkill at

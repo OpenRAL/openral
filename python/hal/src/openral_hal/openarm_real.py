@@ -68,14 +68,13 @@ from collections.abc import Callable
 
 import structlog
 from openral_core.can import preflight_can_links
-from openral_core.exceptions import ROSConfigError, ROSRuntimeError
-from openral_core.schemas import Action, JointState, RobotDescription
+from openral_core.exceptions import ROSConfigError
+from openral_core.schemas import RobotDescription
 
 from openral_hal._real_description import make_real_description
-from openral_hal._slot_group import GRIPPER_MODES, SlotGroupStager, compose_slot_group_action
 from openral_hal.openarm import OPENARM_DESCRIPTION
 from openral_hal.protocol import EStopRecovery, HALHealthReport
-from openral_hal.ros_control import ControllerKind, RosControlHAL
+from openral_hal.ros_control import GroupedRosControlHAL
 
 __all__ = [
     "OPENARM_REAL_DESCRIPTION",
@@ -98,12 +97,6 @@ _JOINT_STATE_TOPIC = "/joint_states"
 _LEFT_CAN_INTERFACE = "openarm_left"
 _RIGHT_CAN_INTERFACE = "openarm_right"
 
-# Index of each side's slice in the 16-DoF action vector.
-_LEFT_ARM_SLICE = slice(0, 7)
-_LEFT_GRIPPER_SLICE = slice(7, 8)
-_RIGHT_ARM_SLICE = slice(8, 15)
-_RIGHT_GRIPPER_SLICE = slice(15, 16)
-
 # `/sys/class/net` — a module constant so tests can point the preflight at a
 # real fixture tree. ARPHRD_CAN (280) is the `type` value marking a CAN link;
 # the same constant drives `openral_detect.probes.can`, which is the richer
@@ -117,7 +110,7 @@ _RIGHT_GRIPPER_SLICE = slice(15, 16)
 OPENARM_REAL_DESCRIPTION = make_real_description(OPENARM_DESCRIPTION, sdk_kind="open")
 
 
-class OpenArmRealHAL(RosControlHAL):
+class OpenArmRealHAL(GroupedRosControlHAL):
     """ros2_control-backed HAL adapter for the physical OpenArm v2.
 
     Args:
@@ -194,9 +187,24 @@ class OpenArmRealHAL(RosControlHAL):
                 f"bimanual manifest (7 arm + 1 gripper per side); "
                 f"'{desc.name}' has {len(desc.joints)}."
             )
+        # Logical (Skill-facing) names differ from ros2_control's URDF names here
+        # (`left_joint1` vs `openarm_left_joint1`); the manifest carries the URDF
+        # name in `sim_joint_name`, so there is exactly one copy of the mapping.
+        missing = [j.name for j in desc.joints if not j.sim_joint_name]
+        if missing:
+            raise ROSConfigError(
+                f"OpenArmRealHAL cannot map {missing} onto ros2_control: these "
+                f"joints of '{desc.name}' have no sim_joint_name. The OpenArm "
+                "manifest carries the URDF joint name in that field."
+            )
         super().__init__(
             desc,
-            controller_name=left_arm_controller,
+            groups=[
+                (left_arm_controller, 7),
+                (left_gripper_controller, 1),
+                (right_arm_controller, 7),
+                (right_gripper_controller, 1),
+            ],
             joint_state_topic=joint_state_topic,
             publish_fn=publish_fn,
             state_fn=state_fn,
@@ -206,96 +214,6 @@ class OpenArmRealHAL(RosControlHAL):
         self._right_can_interface = right_can_interface
         self._require_can_links = require_can_links
         self._can_health: dict[str, str] = {}
-
-        # ADR-0102 — buffers a slot-dispatched tick until every slot has passed
-        # safety, so the four controllers are commanded from one reassembled
-        # vector instead of from four partial ones.
-        self._slot_group = SlotGroupStager()
-
-        # Logical (Skill-facing) name → ros2_control (URDF) name.  Sourced from
-        # the manifest so there is exactly one copy of this mapping in the repo.
-        missing = [j.name for j in desc.joints if not j.sim_joint_name]
-        if missing:
-            raise ROSConfigError(
-                f"OpenArmRealHAL cannot map {missing} onto ros2_control: these "
-                f"joints of '{desc.name}' have no sim_joint_name. The OpenArm "
-                "manifest carries the URDF joint name in that field."
-            )
-        self._ros2_names: list[str] = [str(j.sim_joint_name) for j in desc.joints]
-
-        self._controller_names = [
-            left_arm_controller,
-            left_gripper_controller,
-            right_arm_controller,
-            right_gripper_controller,
-        ]
-        # (command topic, action slice, ros2_control joint names) per controller.
-        self._command_groups: tuple[tuple[str, slice, list[str]], ...] = (
-            (
-                f"/{left_arm_controller}/joint_trajectory",
-                _LEFT_ARM_SLICE,
-                self._ros2_names[_LEFT_ARM_SLICE],
-            ),
-            (
-                f"/{left_gripper_controller}/joint_trajectory",
-                _LEFT_GRIPPER_SLICE,
-                self._ros2_names[_LEFT_GRIPPER_SLICE],
-            ),
-            (
-                f"/{right_arm_controller}/joint_trajectory",
-                _RIGHT_ARM_SLICE,
-                self._ros2_names[_RIGHT_ARM_SLICE],
-            ),
-            (
-                f"/{right_gripper_controller}/joint_trajectory",
-                _RIGHT_GRIPPER_SLICE,
-                self._ros2_names[_RIGHT_GRIPPER_SLICE],
-            ),
-        )
-
-    # ── Introspection ─────────────────────────────────────────────────────────
-
-    def ros2_control_joint_names(self) -> list[str]:
-        """Return the ros2_control joint names in action-vector order.
-
-        Returns:
-            16 URDF joint names — left arm 1-7, left finger, right arm 1-7,
-            right finger.
-
-        Example:
-            >>> from openral_hal.openarm_real import OpenArmRealHAL
-            >>> names = OpenArmRealHAL(require_can_links=False).ros2_control_joint_names()
-            >>> len(names)
-            16
-            >>> names[15]
-            'openarm_right_finger_joint1'
-        """
-        return list(self._ros2_names)
-
-    def command_bindings(self) -> dict[str, ControllerKind]:
-        """Return the four command topics this adapter publishes to, with kinds.
-
-        All four are `JointTrajectoryController` instances — `openarm_bringup`
-        configures each gripper as a 1-DoF one rather than a gripper action
-        server, so the grippers take the same `trajectory_msgs/JointTrajectory`
-        the arms do.
-
-        Example:
-            >>> from openral_hal.openarm_real import OpenArmRealHAL
-            >>> OpenArmRealHAL(require_can_links=False).command_topics()[1]
-            '/left_gripper_controller/joint_trajectory'
-        """
-        return {topic: ControllerKind.JOINT_TRAJECTORY for topic, _, _ in self._command_groups}
-
-    def controller_names(self) -> list[str]:
-        """Return the four controllers ``estop`` deactivates, in fan-out order.
-
-        Example:
-            >>> from openral_hal.openarm_real import OpenArmRealHAL
-            >>> OpenArmRealHAL(require_can_links=False).controller_names()[1]
-            'left_gripper_controller'
-        """
-        return list(self._controller_names)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -329,226 +247,6 @@ class OpenArmRealHAL(RosControlHAL):
                 "the full bus report."
             ),
         )
-
-    # ── Hot path ──────────────────────────────────────────────────────────────
-
-    def read_state(self) -> JointState:
-        """Return the latest joint state, reordered into manifest order.
-
-        ``sensor_msgs/JointState`` carries no ordering guarantee, and the
-        four controllers publish into it independently, so positions must be
-        matched by name rather than by index.  The returned ``JointState`` is
-        always in ``description.joints`` order — the order a Skill's action
-        vector uses.
-
-        Raises:
-            ROSRuntimeError: If not connected, or if the incoming state is
-                missing joints the manifest declares.
-            ROSPerceptionStale: If the last reading exceeds the staleness
-                deadline.
-
-        Returns:
-            A 16-element ``JointState`` in manifest order.
-        """
-        state = super().read_state()
-        if self._state_fn is None:
-            # No subscriber wired: the base adapter returns a zeroed state,
-            # which is already in manifest order.
-            return state
-
-        raw = self._state_fn()
-        incoming = raw.get("name")
-        if not isinstance(incoming, list):
-            # A state dict with no names cannot be reordered; the base
-            # adapter's positional read is the only available interpretation.
-            return state
-
-        index_of = {str(n): i for i, n in enumerate(incoming)}
-        absent = [n for n in self._ros2_names if n not in index_of]
-        if absent:
-            raise ROSRuntimeError(
-                f"{self._joint_state_topic} is missing {len(absent)} joint(s) "
-                f"declared by '{self.description.name}': {absent}. Check that "
-                "every controller is active — each arm and each gripper "
-                "publishes its own joints."
-            )
-
-        def _reordered(key: str, *, absent: list[float]) -> list[float]:
-            values = raw.get(key)
-            if not isinstance(values, list) or len(values) != len(incoming):
-                return absent
-            return [float(values[index_of[n]]) for n in self._ros2_names]
-
-        zeros = [0.0] * len(self._ros2_names)
-        return JointState(
-            name=list(self._joint_names),
-            position=_reordered("position", absent=zeros),
-            velocity=_reordered("velocity", absent=zeros),
-            # An absent effort channel stays empty, never zero-filled: zeros
-            # would fake an effort reading that the driver never published.
-            effort=_reordered("effort", absent=[]),
-            stamp_ns=state.stamp_ns,
-        )
-
-    def send_action(self, action: Action) -> None:
-        """Fan one 16-DoF action out to the four ros2_control controllers.
-
-        The four messages are built before any is published, so a malformed
-        action cannot leave the arm half-commanded — one side moving while the
-        other holds an older setpoint.
-
-        Args:
-            action: A 16-DoF ``Action`` in ``description.joints`` order.
-
-        Raises:
-            ROSRuntimeError: If not connected.
-            ROSConfigError: If the control mode is unsupported or the joint
-                target dimensions do not match the 16-DoF layout.
-        """
-        self._require_connected("send_action")
-
-        # ADR-0102 — a slot-dispatched tick arrives as several typed actions
-        # (this contract: left arm / left gripper / right arm / right gripper),
-        # none of which is a whole-robot command on its own. Reassemble the
-        # tick and fall through to the single-vector publish below, so the
-        # all-or-nothing guarantee covers the composed group too.
-        group: list[Action] | None = None
-        if int(action.tick_group_size) > 1:
-            group = self._slot_group.stage(action)
-            if group is None:
-                return
-            log.debug(
-                "hal.send_action.slot_group",
-                robot=self.description.name,
-                slots=len(group),
-                tick=group[0].tick_index,
-                modes=[a.control_mode.value for a in group],
-            )
-            action = compose_slot_group_action(group, [j.name for j in self.description.joints])
-        else:
-            # Ungrouped ticked actions (starting-pose ramp, approach) share the
-            # watermark, so a restarted runner's renumbering is seen here too.
-            self._slot_group.admit(action)
-
-        self._validate_action(action)
-
-        if action.control_mode in GRIPPER_MODES:
-            # Reachable only outside a group — a lone gripper action. The four
-            # bimanual controllers are commanded from one 16-DoF vector, so
-            # there is nowhere to put it. Refuse loudly: the pre-ADR-0102
-            # behaviour fell through to the `joint_targets is None` return
-            # below and dropped the command silently, which on hardware is
-            # arms moving while the grippers never actuate.
-            raise ROSConfigError(
-                f"{type(self).__name__} cannot execute a standalone "
-                f"{action.control_mode.value} action: the bimanual controllers "
-                "are commanded as one 16-DoF joint vector, so a gripper command "
-                "is only placeable inside a slot group (tick_group_size > 1, "
-                "ADR-0102)."
-            )
-
-        if action.joint_targets is None:
-            log.debug("hal.send_action.empty", robot=self.description.name)
-            return
-
-        # Build every message first — publishing is all-or-nothing.
-        deadline = self.time_from_start_s(action)
-        outbound: list[tuple[str, dict[str, object]]] = []
-        for topic, span, names in self._command_groups:
-            outbound.append(
-                (
-                    topic,
-                    {
-                        "control_mode": action.control_mode,
-                        "horizon": action.horizon,
-                        "joint_names": names,
-                        "joint_targets": [list(step[span]) for step in action.joint_targets],
-                        "stamp_ns": action.stamp_ns,
-                        "time_from_start_s": deadline,
-                    },
-                )
-            )
-        for topic, msg in outbound:
-            self._publish_fn(topic, msg)
-        if group is not None:
-            self._slot_group.commit(group, applied=action)
-        else:
-            self._slot_group.commit_tick(action)
-
-        log.debug(
-            "hal.send_action",
-            robot=self.description.name,
-            control_mode=action.control_mode,
-            horizon=action.horizon,
-            controllers=len(outbound),
-        )
-
-    def disconnect(self) -> None:
-        """Close the connection, dropping any half-staged slot group.
-
-        Without the reset a slot staged before the disconnect would still be
-        buffered on reconnect, so the first tick after it would raise the
-        incomplete-group error against a tick nobody is waiting for.
-        """
-        self._slot_group.reset()
-        super().disconnect()
-
-    @property
-    def last_applied_action(self) -> Action | None:
-        """The command the robot was last actually given, as applied (``None`` = none yet).
-
-        For a slot group this is the composed full-dof ``JOINT_POSITION`` action, not any
-        one slot; set only once the apply succeeded, in step with ``last_committed_tick``.
-        The lifecycle node folds it into the grasp trigger, which must measure "short of
-        the command" against what the jaw was really told.
-        """
-        return self._slot_group.last_applied_action
-
-    @property
-    def last_committed_tick(self) -> int:
-        """Inference tick of the last slot group published (0 = none since disconnect).
-
-        Read by the HAL lifecycle node to acknowledge a grouped tick on
-        ``/openral/action_applied`` only once the whole group went out, rather
-        than by counting slots that reached ``send_action``.
-        """
-        return self._slot_group.last_committed_tick
-
-    @property
-    def last_committed_session(self) -> int:
-        """``runner_session_id`` of ``last_committed_tick`` (0 = none / session-less)."""
-        return self._slot_group.last_committed_session
-
-    def discard_staged_slots(self) -> int:
-        """Drop a half-staged slot group, keeping the committed watermark.
-
-        Called by the HAL lifecycle node on every ``/openral/estop`` latch and
-        ``/openral/estop_cleared`` — for any HAL, opted into the hardware estop
-        or not — so a tick cut short by a stop never outlives it into the next
-        goal. ``SlotGroupStager.discard`` semantics: a pre-stop tick replayed
-        afterwards is still refused as stale.
-
-        Returns:
-            How many staged slots were dropped.
-        """
-        return self._slot_group.discard()
-
-    def estop(self) -> None:
-        """Trigger an emergency stop, dropping any half-staged slot group.
-
-        ``SlotGroupStager.discard`` is the estop path (``reset``, which also clears the watermark,
-        is disconnect-only), and the base ``estop`` never routes through either. Without this
-        override a slot staged when the stop landed would survive the stop, and the first tick of
-        the resumed run would be spent raising the incomplete-group error against a tick from before
-        the e-stop. The committed watermark is kept: a pre-stop tick replayed after the stop is
-        still refused as stale. The downstream stop itself — deactivating all four controllers
-        through ``controller_manager`` — is the base implementation's.
-
-        Raises:
-            ROSEStopRequested: Always, from the base implementation.
-        """
-        self._slot_group.discard()
-        super().estop()
 
     # ── Diagnostics ───────────────────────────────────────────────────────────
 

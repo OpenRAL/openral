@@ -1,0 +1,28 @@
+# Pinned upstream sources for the dual Flexiv Rizon 4s real-hardware bringup
+# (`launch/real_bringup.launch.py`). Nothing here is vendored: import into a colcon
+# workspace's `src/`, build the RDK's non-ROS deps with its own upstream script, and
+# colcon-build the three ROS packages (README "Provisioning").
+#
+# The RDK line is set by the ARMS' controller software, not by upstream's newest tag:
+# Rizon robot software v3.11 accepts RDK 1.9.0 only (1.9.1-2.0.0 connect and are refused
+# as incompatible, 2.1.0 refuses the model). flexiv_ros2 jazzy-v1.9 and
+# flexiv_description jazzy-v1.9 are upstream's own pairing for RDK v1.9. Re-pin all
+# three together, and only after a read-only connect to both arms on the rig (an RDK
+# `Robot(serial)` + `states()`, never `Enable()`; the arms must answer at their own version).
+#
+# flexiv_ros2's dual interface (FlexivDualHardwareInterface) needs flexiv_drdk, whose
+# every tag drags a newer RDK; the bringup runs one FlexivHardwareInterface per arm
+# instead, so DRDK is not imported and flexiv_hardware builds without it.
+repositories:
+  flexiv_rdk:
+    type: git
+    url: https://github.com/flexivrobotics/flexiv_rdk.git
+    version: 57f6323d416f016d287a15347336b92ee4428973  # v1.9
+  flexiv_ros2:
+    type: git
+    url: https://github.com/flexivrobotics/flexiv_ros2.git
+    version: bcdfc334a063fec9f855a7bc153a738d8068a9e0  # jazzy-v1.9
+  flexiv_description:
+    type: git
+    url: https://github.com/flexivrobotics/flexiv_description.git
+    version: 892f5a1c63f5d5bc76840cc8446ef72391a0d1c5  # jazzy-v1.9
