@@ -213,7 +213,7 @@ from the System pane for raw topic inspection.
 | `GET /api/manifest` | The robot manifest (404 until the runtime sends one) |
 | `GET /api/state` | One-shot JSON snapshot (`manifest_rev` bumps when the manifest changes) |
 | `GET /api/stream[?images=0]` | Server-Sent Events; `images=0` drops camera thumbnails |
-| `GET /api/mission` | For programs: the mission (goal, the prompt's `correlation_id`, each task's status), the reasoner's last tick, `awaiting_operator` with the `question` it asked, and `stopped` / `estopped` / `latched`. A few hundred bytes |
+| `GET /api/mission` | For programs: the mission (goal, the prompt's `correlation_id`, each task's status), the reasoner's last tick, `awaiting_operator` with the `question` it asked, the last dashboard skill run by its `goal_id` (`skill_result`: `running`, then `finished` with `success` and `failure_reason`), and `stopped` / `estopped` / `latched`. A few hundred bytes |
 | `GET /api/mission/stream` | The same as Server-Sent Events, one event per change |
 | `GET /api/camera/{sensor}/snapshot.jpg` | Latest frame of one camera |
 | `POST /api/actions/{id}` | Run an action: body `{"args": {...}}` |

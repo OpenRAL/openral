@@ -250,8 +250,14 @@ async def _drain_skill_goal_stdout(
     captured_lines: list[str],
     goal_id: str,
     skill_id: str,
+    *,
+    store: TelemetryStore | None = None,
 ) -> None:
     """Drain remaining ``stdout`` after goal acceptance and audit-log the outcome.
+
+    With ``store``, the outcome also becomes ``topics.skill_result`` for this
+    ``goal_id`` (``TelemetryStore.set_skill_result``, #662); a drain that fails
+    records the goal as finished with no success, so a caller is never left waiting.
 
     Runs as a background ``asyncio.Task`` — must catch all exceptions and log
     them (never crash the event loop). Started by ``_skill_execute_response``
@@ -281,6 +287,17 @@ async def _drain_skill_goal_stdout(
             trace_id=trace_id,
             failure_reason=failure_reason,
         )
+        if store is not None:
+            store.set_skill_result(
+                _skill_result(
+                    goal_id,
+                    skill_id,
+                    "finished",
+                    success=success,
+                    failure_reason=failure_reason,
+                    trace_id=trace_id,
+                )
+            )
     except Exception as exc:  # background task must log, never crash
         _logger.warning(
             "dashboard_skill_drain_error",
@@ -288,6 +305,33 @@ async def _drain_skill_goal_stdout(
             skill_id=skill_id,
             error=str(exc),
         )
+        if store is not None:
+            store.set_skill_result(
+                _skill_result(
+                    goal_id, skill_id, "finished", success=False, failure_reason=f"drain: {exc}"
+                )
+            )
+
+
+def _skill_result(
+    goal_id: str,
+    skill_id: str,
+    state: str,
+    *,
+    success: bool | None = None,
+    failure_reason: str | None = None,
+    trace_id: str | None = None,
+) -> dict[str, Any]:
+    """One ``topics.skill_result`` record (``TelemetryStore.set_skill_result``)."""
+    return {
+        "goal_id": goal_id,
+        "skill_id": skill_id,
+        "state": state,
+        "success": success,
+        "failure_reason": failure_reason,
+        "trace_id": trace_id,
+        "ts_unix": time.time(),
+    }
 
 
 # ── Operator voice prompt (POST /api/transcribe) ──────────────────────────────
@@ -621,7 +665,9 @@ async def _estop_trigger_response() -> JSONResponse:
     return JSONResponse({"ok": True, "accepted": True}, status_code=200)
 
 
-async def _skill_execute_response(skill_id: str, goal_params_json: str, actor: str) -> JSONResponse:
+async def _skill_execute_response(
+    skill_id: str, goal_params_json: str, actor: str, store: TelemetryStore | None = None
+) -> JSONResponse:
     """Dispatch an ExecuteRskill action goal (guarded write-control; safety kernel disposes).
 
     Async accept-then-track: the endpoint returns as soon as the action server
@@ -738,8 +784,12 @@ async def _skill_execute_response(skill_id: str, goal_params_json: str, actor: s
         actor=actor,
     )
 
+    if store is not None:
+        store.set_skill_result(_skill_result(accepted_goal_id, skill_id, "running"))
     _in_background(
-        _drain_skill_goal_stdout(stdout, proc, captured_lines, accepted_goal_id, skill_id)
+        _drain_skill_goal_stdout(
+            stdout, proc, captured_lines, accepted_goal_id, skill_id, store=store
+        )
     )
 
     return JSONResponse(
@@ -965,7 +1015,9 @@ async def _run_action(  # noqa: PLR0911  # reason: one return per action kind / 
     rskill_id = action.id.removeprefix("skill:")
     await _announce_operator_action("skill_execute", principal, client_ip, rskill_id)
     actor = principal.sub or client_ip
-    return await _skill_execute_response(rskill_id, json.dumps(args) if args else "", actor)
+    return await _skill_execute_response(
+        rskill_id, json.dumps(args) if args else "", actor, app_state.store
+    )
 
 
 def mission_view(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -1012,6 +1064,8 @@ def mission_view(snapshot: dict[str, Any]) -> dict[str, Any]:
         # The robot said something to its operator and waits for a reply (#660). ``None``:
         # its openral predates the flag, or no tick yet. ``question``: what it said, when
         # free text may leave the host.
+        # The last skill run from the dashboard, by its ``goal_id`` (#662).
+        "skill_result": topics.get("skill_result"),
         "awaiting_operator": reasoner.get("awaiting_operator"),
         "question": reasoner.get("operator_question"),
         "stopped": estopped or latched,  # nothing moves until a person resets it

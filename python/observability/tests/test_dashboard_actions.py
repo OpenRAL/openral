@@ -104,7 +104,11 @@ def ros2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[[str], Pat
             "    elif mode == 'rejected':\n"
             "        print('Goal was rejected :(', flush=True); sys.exit(1)\n"
             "    print('Goal accepted with ID: test-123', flush=True)\n"
-            "    print('  success: True', flush=True)\n"
+            "    if mode == 'failed':\n"
+            "        print('  success: False', flush=True)\n"
+            "        print('  failure_reason: gripper missed the eraser', flush=True)\n"
+            "    else:\n"
+            "        print('  success: True', flush=True)\n"
             "elif sys.argv[1:3] == ['service', 'call']:\n"
             "    ok = mode == 'reset_ok'\n"
             "    print(f\"response: success={ok}, message=''\", flush=True)\n"
@@ -295,6 +299,41 @@ async def test_skill_dispatches_execute_rskill(
     (goal_call,) = [c for c in _calls(log) if c[:2] == ["action", "send_goal"]]
     assert json.loads(goal_call[-1])["rskill_id"] == _SKILL
     assert [(a["action"], a["detail"]) for a in _announced(log)] == [("skill_execute", _SKILL)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "success", "reason"),
+    [("accepted", True, None), ("failed", False, "gripper missed the eraser")],
+)
+async def test_a_skill_actions_outcome_is_kept_by_its_goal_id(
+    ros2: Callable[[str], Path],
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    success: bool,
+    reason: str | None,
+) -> None:
+    """#662: the caller that got ``goal_id`` back reads how that goal ended."""
+    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
+    ros2(mode)
+    store = TelemetryStore()
+    async with _client(store) as client:
+        await _with_manifest(client)
+        resp = await client.post(f"/api/actions/skill:{_SKILL}", json={"args": {}})
+        await _drain_background()
+        mission = (await client.get("/api/mission")).json()
+    assert resp.json()["goal_id"] == "test-123"
+    result = store.snapshot()["topics"]["skill_result"]
+    assert {
+        k: result[k] for k in ("goal_id", "skill_id", "state", "success", "failure_reason")
+    } == {
+        "goal_id": "test-123",
+        "skill_id": _SKILL,
+        "state": "finished",
+        "success": success,
+        "failure_reason": reason,
+    }
+    assert mission["skill_result"]["goal_id"] == "test-123"
 
 
 @pytest.mark.asyncio
