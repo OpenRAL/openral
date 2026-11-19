@@ -1,0 +1,33 @@
+# Two SO-101 follower arms facing each other across one table, in ONE MuJoCo
+# world (issue #666): a 3 cm cube sits between them, within reach of both, so a
+# hand-over goal can be tried. Each arm is a whole `openral deploy sim` graph on
+# its own ROS domain; both attach to the one physics process this command starts.
+#
+# Run::
+#
+#     openral deploy world --config scenes/worlds/so101_handover_table.yaml
+#
+# The SO-101 reaches toward -Y of its base, so `a` (yaw 0) and `b` (yaw 180) face
+# each other, 0.54 m apart. They are offset 0.2 m sideways so the two arms pass
+# beside each other when both are stretched out (the SO-101's zero pose); the
+# cube, at the table centre, is 0.29 m from each base (reach: 0.32 m).
+# ROS domains must be at least 2 apart; these two are below 102, where a domain's
+# RTPS ports stay clear of Linux's ephemeral port range.
+
+id: so101_handover_table
+arena_mjcf: assets/handover_table.xml
+robots:
+  - name: a
+    scene: ../deploy/so101_shared_table.yaml
+    base_xyz: [0.1, 0.27, 0.0]
+    base_yaw_deg: 0.0
+    ros_domain_id: 36
+    dashboard_port: 4336
+    foxglove_port: 8836
+  - name: b
+    scene: ../deploy/so101_shared_table.yaml
+    base_xyz: [-0.1, -0.27, 0.0]
+    base_yaw_deg: 180.0
+    ros_domain_id: 40
+    dashboard_port: 4340
+    foxglove_port: 8840

@@ -341,35 +341,7 @@ class MujocoArmHAL(HALBase):
                 "just sync --all-packages --group sim"
             ) from exc
 
-        # Generic camera rig: splice the manifest's declared RGB
-        # cameras into the MJCF when they are absent (a bare-arm twin ships
-        # none), so deploy sim renders them without a per-robot scene composer.
-        # Idempotent: a scene-attached / already-composed MJCF that already has
-        # the cameras passes through and we load the original path unchanged.
-        mjcf_path = self._mjcf_path
-        try:
-            from openral_hal._camera_rig import rig_cameras_into_mjcf
-
-            with open(self._mjcf_path) as fh:
-                rigged_xml, changed = rig_cameras_into_mjcf(
-                    fh.read(), list(self.description.sensors)
-                )
-            if changed:
-                # Write next to the source MJCF so its relative meshdir resolves.
-                rig_path = os.path.join(
-                    os.path.dirname(self._mjcf_path),
-                    f"{self.description.name}_camrig.xml",
-                )
-                with open(rig_path, "w") as fh:
-                    fh.write(rigged_xml)
-                mjcf_path = rig_path
-        except OSError as exc:
-            raise ROSConfigError(f"Could not read MJCF '{self._mjcf_path}': {exc}") from exc
-
-        try:
-            self._model = mj.MjModel.from_xml_path(mjcf_path)
-        except (OSError, ValueError) as exc:
-            raise ROSConfigError(f"Could not load MJCF '{mjcf_path}': {exc}") from exc
+        self._model = self._load_model(mj)
 
         if not self._gravity_enabled:
             self._model.opt.gravity[:] = 0.0
@@ -399,6 +371,41 @@ class MujocoArmHAL(HALBase):
             mjcf=self._mjcf_path,
             n_joints=len(self._joint_names),
         )
+
+    def _load_model(self, mj: Any) -> Any:  # noqa: ANN401  # reason: the mujoco module / MjModel
+        """Load the ``MjModel`` ``connect`` runs on (rigging the manifest's cameras in).
+
+        A seam: ``SharedWorldArmHAL`` composes its view of a shared world instead.
+        """
+        # Generic camera rig: splice the manifest's declared RGB
+        # cameras into the MJCF when they are absent (a bare-arm twin ships
+        # none), so deploy sim renders them without a per-robot scene composer.
+        # Idempotent: a scene-attached / already-composed MJCF that already has
+        # the cameras passes through and we load the original path unchanged.
+        mjcf_path = self._mjcf_path
+        try:
+            from openral_hal._camera_rig import rig_cameras_into_mjcf
+
+            with open(self._mjcf_path) as fh:
+                rigged_xml, changed = rig_cameras_into_mjcf(
+                    fh.read(), list(self.description.sensors)
+                )
+            if changed:
+                # Write next to the source MJCF so its relative meshdir resolves.
+                rig_path = os.path.join(
+                    os.path.dirname(self._mjcf_path),
+                    f"{self.description.name}_camrig.xml",
+                )
+                with open(rig_path, "w") as fh:
+                    fh.write(rigged_xml)
+                mjcf_path = rig_path
+        except OSError as exc:
+            raise ROSConfigError(f"Could not read MJCF '{self._mjcf_path}': {exc}") from exc
+
+        try:
+            return mj.MjModel.from_xml_path(mjcf_path)
+        except (OSError, ValueError) as exc:
+            raise ROSConfigError(f"Could not load MJCF '{mjcf_path}': {exc}") from exc
 
     def _resolve_time_base(self) -> None:
         """Make one ``send_action`` one control period of the robot (issue #358).
@@ -828,16 +835,13 @@ class MujocoArmHAL(HALBase):
         self._validate_action(action)
 
         assert self._data is not None and self._model is not None
-        import mujoco as mj  # reason: optional sim-only dep
 
         last_step = self._last_arm_targets(action)
         self._apply_arm_targets(last_step)
         if self._grippers_by_joint:
             self._apply_gripper_targets(last_step)
 
-        for _ in range(self._settle_steps):
-            self._per_step_update(last_step)
-            mj.mj_step(self._model, self._data)
+        self._step_physics(self._settle_steps, last_step)
         # Refresh the staleness clock so multi-thousand-step settles don't trip
         # a starvation warning on the next ``read_state``, and stamp the
         # idle-step hand-off so the SimSensorBridge yields to this real action.
@@ -993,7 +997,6 @@ class MujocoArmHAL(HALBase):
         """
         if not self._connected or self._data is None or self._model is None:
             return False
-        import mujoco as mj  # reason: optional sim-only dep
 
         # Advance a WALL-TIME slice, not a single physics step: one `mj_step`
         # per idle tick makes sim time crawl at `timestep * tick_rate`
@@ -1008,12 +1011,25 @@ class MujocoArmHAL(HALBase):
             timestep = float(self._model.opt.timestep)
             if timestep > 0:
                 steps = max(1, min(_IDLE_STEP_CAP, round(wall_dt_s / timestep)))
-        for _ in range(steps):
-            mj.mj_step(self._model, self._data)
+        self._step_physics(steps)
         self._last_state_time = time.monotonic()
         return True
 
     # ── Internal helpers ───────────────────────────────────────────────────────
+
+    def _step_physics(self, steps: int, targets: list[float] | None = None) -> None:
+        """Advance the world ``steps`` physics steps.
+
+        ``targets`` are a ``send_action``'s arm targets (``_per_step_update`` runs
+        before every step); ``None`` is an idle HOLD advance. A seam:
+        ``SharedWorldArmHAL`` asks the shared world to advance instead.
+        """
+        import mujoco as mj  # reason: optional sim-only dep
+
+        for _ in range(steps):
+            if targets is not None:
+                self._per_step_update(targets)
+            mj.mj_step(self._model, self._data)
 
     def _require_connected(self, operation: str) -> None:
         if not self._connected or self._data is None or self._model is None:

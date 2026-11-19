@@ -24,6 +24,21 @@ Sibling resources:
 - [`deployments/`](../deployments/) — retired; real deploys use
   `scenes/deploy/*.yaml` through `DeployScene`.
 
+## Shared worlds (`scenes/worlds/`)
+
+A `SharedWorldScene` puts several robots in **one** MuJoCo world: a shared
+arena (`arena_mjcf`: table, objects) and, per robot, a bare-twin `DeployScene`,
+its base pose in the world, and the ROS domain and ports of its own deploy
+graph. It is not a scene tier: each robot still runs an ordinary
+`openral deploy sim` on its `DeployScene`.
+
+```bash
+# Two SO-101 arms across one table, a cube between them (issue #666).
+openral deploy world --config scenes/worlds/so101_handover_table.yaml
+```
+
+See [`docs/reference/shared-world-sim.md`](../docs/reference/shared-world-sim.md).
+
 ## Choosing a tier
 
 | Question                                                                  | Tier              | Notes                                              |

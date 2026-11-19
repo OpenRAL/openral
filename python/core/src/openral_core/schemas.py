@@ -13749,6 +13749,104 @@ class BenchmarkScene(SimScene):
         return self
 
 
+# ─── Shared world: several robots in one MuJoCo world (issue #666) ───────────
+
+_FiniteFloat = Annotated[float, Field(allow_inf_nan=False)]
+
+
+class SharedWorldRobot(BaseModel):
+    """One robot of a ``SharedWorldScene``: a whole deploy graph in its own ROS domain.
+
+    Attributes:
+        name: The robot's name in the world (lowercase letters and digits); it
+            prefixes the robot's MJCF elements in every other robot's view.
+        scene: The robot's ``DeployScene`` YAML, relative to the world file. It
+            must build a bare MuJoCo twin (no ``composition``, unregistered
+            ``scene.id``); several robots may share one file.
+        base_xyz: Where the robot's MJCF origin sits in the world, metres.
+        base_yaw_deg: Its rotation about world +Z, degrees. Planar only, so
+            gravity is the same in every robot's base frame.
+        ros_domain_id: The ``ROS_DOMAIN_ID`` its graph runs on.
+        dashboard_port: Its dashboard port.
+        foxglove_port: Its Foxglove bridge port.
+
+    Example:
+        >>> SharedWorldRobot(
+        ...     name="a",
+        ...     scene="../deploy/so101_shared_table.yaml",
+        ...     ros_domain_id=36,
+        ...     dashboard_port=4336,
+        ...     foxglove_port=8836,
+        ... ).base_yaw_deg
+        0.0
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(pattern=r"^[a-z][a-z0-9]*$")
+    scene: str
+    base_xyz: tuple[_FiniteFloat, _FiniteFloat, _FiniteFloat] = (0.0, 0.0, 0.0)
+    base_yaw_deg: _FiniteFloat = 0.0
+    ros_domain_id: int = Field(ge=1, le=232)
+    dashboard_port: int = Field(ge=1024, le=65535)
+    foxglove_port: int = Field(ge=1024, le=65535)
+
+
+class SharedWorldScene(BaseModel):
+    """Several robots in ONE MuJoCo world, for ``openral deploy world`` (issue #666).
+
+    One physics process owns the world; each robot keeps its own unmodified
+    deploy graph on its own ROS domain, attached to that world. Sim only.
+
+    Attributes:
+        id: World id (used in logs and the run directory name).
+        arena_mjcf: The shared arena (table, objects, lights) as an MJCF file,
+            relative to the world file. Its frame is the world frame.
+        robots: The robots, at least two.
+        barrier_timeout_s: Wall seconds a commanding robot waits for another
+            commanding robot's step before the world advances without it (the
+            late robot's last targets are held and the timeout is logged). At
+            most 7 s: the waiting robot's HAL is blocked meanwhile, and its
+            graph's own action deadlines are 8 s.
+
+    Example:
+        >>> world = SharedWorldScene.from_yaml("scenes/worlds/so101_handover_table.yaml")
+        >>> [r.name for r in world.robots]
+        ['a', 'b']
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
+    arena_mjcf: str
+    robots: list[SharedWorldRobot] = Field(min_length=2)
+    barrier_timeout_s: float = Field(default=5.0, gt=0.0, le=7.0)
+
+    @model_validator(mode="after")
+    def _robots_do_not_collide(self) -> Self:
+        names = [r.name for r in self.robots]
+        if len(set(names)) != len(names):
+            raise ValueError(f"robot names must be unique, got {names}")
+        if {"robot0", "gripper0", "mobilebase0"} & set(names):
+            # `<name>_` prefixes the robot's bodies in its peers' models, and these are the
+            # robosuite body prefixes the sim bridge's render heuristics key on.
+            raise ValueError(f"robot names must not be robosuite body prefixes, got {names}")
+        ports = [p for r in self.robots for p in (r.dashboard_port, r.foxglove_port)]
+        if len(set(ports)) != len(ports):
+            raise ValueError(f"dashboard / foxglove ports must all differ, got {ports}")
+        domains = sorted(r.ros_domain_id for r in self.robots)
+        if any(b - a <= 1 for a, b in itertools.pairwise(domains)):
+            # fastdds_large_data.xml's discovery range (maxInitialPeersRange 128) spans
+            # more ports than one domain owns, so adjacent domains see each other.
+            raise ValueError(f"ros_domain_id values must be at least 2 apart, got {domains}")
+        return self
+
+    @classmethod
+    def from_yaml(cls, path: str) -> Self:
+        """Load and validate a shared-world YAML from disk."""
+        return _load_yaml_model(cls, path)
+
+
 # ─── Standalone protocol descriptor (eval suites are bare lists now) ─────────
 #
 # A benchmark suite is a bare ``list[BenchmarkScene]`` on disk and in memory;
