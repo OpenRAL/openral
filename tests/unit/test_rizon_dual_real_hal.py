@@ -22,6 +22,7 @@ What these pin down:
 from __future__ import annotations
 
 import importlib.util
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -30,7 +31,12 @@ import yaml
 
 pytest.importorskip("lerobot", reason="openral_hal imports lerobot at package import")
 
-from openral_core.exceptions import ROSConfigError, ROSEStopRequested, ROSRuntimeError
+from openral_core.exceptions import (
+    ROSConfigError,
+    ROSEStopRequested,
+    ROSPerceptionStale,
+    ROSRuntimeError,
+)
 from openral_core.schemas import Action, ControlMode, RobotDescription
 from openral_hal import build_hal
 from openral_hal.ros_control import GroupedRosControlHAL
@@ -229,3 +235,45 @@ def test_committed_urdf_keeps_every_link_inertia() -> None:
             assert link.find(tag) is None, f"{link.get('name')}: {tag} outside <inertial>"
     for inertial in inertials:
         assert [c.tag for c in inertial] == ["origin", "mass", "inertia"]
+
+
+def test_the_manifest_arms_the_frozen_arm_check(desc: RobotDescription) -> None:
+    assert _hal(desc)._frozen_state_limit_s == 0.5
+
+
+def test_an_arm_whose_state_stops_changing_is_refused(desc: RobotDescription) -> None:
+    """The right arm faults: its interface stops updating, the broadcaster republishes it."""
+    tick = [0]
+
+    def state() -> dict[str, object]:
+        tick[0] += 1
+        live = [1.0 + 1e-7 * tick[0]] * 7  # encoder noise: a live arm never repeats exactly
+        return {"name": LEFT + RIGHT, "position": live + [0.3] * 7, "velocity": [0.0] * 14}
+
+    hal = _hal(desc, state_fn=state, frozen_state_limit_s=0.05)
+    hal.connect()
+    hal.read_state()  # first sample of the frozen arm: the clock starts
+    time.sleep(0.06)
+    with pytest.raises(ROSPerceptionStale, match="right_arm_controller"):
+        hal.read_state()
+
+
+def test_a_live_arm_is_never_refused(desc: RobotDescription) -> None:
+    tick = [0]
+
+    def state() -> dict[str, object]:
+        tick[0] += 1
+        live = [1.0 + 1e-7 * tick[0]] * 14
+        return {"name": LEFT + RIGHT, "position": live, "velocity": [0.0] * 14}
+
+    hal = _hal(desc, state_fn=state, frozen_state_limit_s=0.05)
+    hal.connect()
+    for _ in range(4):
+        hal.read_state()
+        time.sleep(0.03)
+
+
+@pytest.mark.parametrize("limit", [0.0, -1.0])
+def test_a_non_positive_frozen_limit_is_refused(desc: RobotDescription, limit: float) -> None:
+    with pytest.raises(ROSConfigError, match="frozen_state_limit_s"):
+        _hal(desc, frozen_state_limit_s=limit)

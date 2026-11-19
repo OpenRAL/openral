@@ -253,6 +253,12 @@ hal:
       # controller names: the bringup's controllers yaml and spawner list are pinned to it
       # by tests/unit/test_rizon_dual_real_hal.py.
       groups: [["left_arm_controller", 7], ["right_arm_controller", 7]]
+      # FlexivHardwareInterface::read() returns OK and stops updating an arm that is not
+      # operational (faulted, E-stopped, link lost), so the broadcaster keeps that arm's
+      # last values flowing with fresh stamps. A live RDK reading never repeats exactly,
+      # so an arm whose joint state is bit-identical for this long has stopped reporting:
+      # read_state raises ROSPerceptionStale (provisional: the joint-state staleness limit).
+      frozen_state_limit_s: 0.5
 
 # The two arm mounts, verbatim from rizon_dual.urdf's left_/right_base_joint (world at
 # the column's foot): the kernel places both arm trees relative to `world` through these.

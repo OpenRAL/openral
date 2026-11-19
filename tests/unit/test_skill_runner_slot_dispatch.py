@@ -533,3 +533,29 @@ def test_gripper_position_slots_are_clamped_inside_the_end_effectors_command_ran
         cartesian_delta_scale=None,
     )
     assert actions[0].gripper[0] == pytest.approx(1.0 - 1e-3)
+
+
+def test_uncommanded_position_joints_are_padded_inside_their_limits(
+    runner_mod: ModuleType,
+) -> None:
+    """The kernel checks every joint of a JOINT_POSITION row against its position limits.
+
+    The dual Rizon's left joint 7 is limited to [-2.9671, -0.2231] (home ±90° on the rig),
+    so a right-arm slot padded with 0.0 there was refused at that index. Padding takes the
+    in-limit value nearest 0.0; every joint whose limits span zero still pads 0.0.
+    """
+    robot = RobotDescription.from_yaml(
+        str(Path(__file__).resolve().parents[2] / "robots" / "rizon_dual" / "robot.yaml")
+    )
+    right = [f"right_joint{i}" for i in range(1, 8)]
+    slots = [ActionSlot(range=(0, 6), control_mode=ControlMode.JOINT_POSITION, joint_names=right)]
+    (action,) = runner_mod._dispatch_slots(
+        slots, np.full(7, 0.5, dtype=np.float32), description=robot
+    )
+    row = action.joint_targets[0]
+    assert row[7:] == [0.5] * 7
+    assert row[6] == -0.2231  # left_joint7: its upper limit, the in-limit value nearest 0
+    assert row[:6] == [0.0] * 6
+    for value, joint in zip(row, robot.joints, strict=True):
+        lo, hi = joint.position_limits
+        assert lo <= value <= hi, joint.name

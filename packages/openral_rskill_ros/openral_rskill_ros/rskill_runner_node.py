@@ -5391,6 +5391,7 @@ def _pad_joint_payload(
     joint_names: list[str],
     name_to_idx: dict[str, int],
     n_dof_total: int,
+    fill: list[float] | None = None,
 ) -> list[float]:
     """Pad a sub-slot JOINT_* slice to full-dof so the kernel n_dof check passes.
 
@@ -5403,6 +5404,11 @@ def _pad_joint_payload(
     velocity bounds, so the kernel's per-joint validation still runs
     correctly on the active joints.
 
+    ``fill`` (one value per joint) replaces the zeros: a JOINT_POSITION row
+    is checked against every joint's position limits, uncommanded ones
+    included, so a joint whose limits exclude ``0.0`` (the dual Rizon's
+    joint 7) must be padded inside them (``_position_fill``).
+
     Falls back to the raw slice when ``joint_names`` is empty or no
     description is available (legacy single-surface joint dispatch
     where the caller already produced the full-dof payload).
@@ -5414,7 +5420,7 @@ def _pad_joint_payload(
             f"_pad_joint_payload: slice len {len(slice_values)} does not match "
             f"joint_names len {len(joint_names)}"
         )
-    padded = [0.0] * n_dof_total
+    padded = list(fill) if fill is not None else [0.0] * n_dof_total
     for i, name in enumerate(joint_names):
         idx = name_to_idx.get(name)
         if idx is None:
@@ -5424,6 +5430,19 @@ def _pad_joint_payload(
             )
         padded[idx] = slice_values[i]
     return padded
+
+
+def _position_fill(description: Any) -> list[float]:
+    """Per joint, the in-limit value nearest ``0.0`` — padding for uncommanded position joints.
+
+    ``0.0`` itself wherever the joint's ``position_limits`` admit it (or it declares
+    none), so every robot whose limits span zero pads exactly as before.
+    """
+    out: list[float] = []
+    for joint in description.joints:
+        limits = joint.position_limits
+        out.append(0.0 if limits is None else min(max(0.0, float(limits[0])), float(limits[1])))
+    return out
 
 
 def _slot_joint_names(slot: Any) -> list[str] | None:
@@ -5493,9 +5512,11 @@ def _dispatch_slots(  # noqa: PLR0912  # reason: one branch per ActionSlot contr
 
     joint_name_to_idx: dict[str, int] = {}
     n_dof_total: int = 0
+    position_fill: list[float] | None = None
     if description is not None:
         n_dof_total = len(description.joints)
         joint_name_to_idx = {j.name: i for i, j in enumerate(description.joints)}
+        position_fill = _position_fill(description)
 
     out: list[Action] = []
     for slot in slots:
@@ -5505,7 +5526,9 @@ def _dispatch_slots(  # noqa: PLR0912  # reason: one branch per ActionSlot contr
         sl = [float(v) for v in policy_action[lo : hi + 1].tolist()]
         mode = slot.control_mode
         if mode is ControlMode.JOINT_POSITION:
-            payload = _pad_joint_payload(sl, slot.joint_names, joint_name_to_idx, n_dof_total)
+            payload = _pad_joint_payload(
+                sl, slot.joint_names, joint_name_to_idx, n_dof_total, position_fill
+            )
             out.append(
                 Action(
                     control_mode=mode,

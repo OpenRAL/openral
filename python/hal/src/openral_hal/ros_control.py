@@ -924,9 +924,20 @@ class GroupedRosControlHAL(RosControlHAL):
             the counts must sum to the manifest's joint count.
         joint_state_topic / publish_fn / state_fn / staleness_limit_s: As
             ``RosControlHAL``.
+        frozen_state_limit_s: Opt-in frozen-group check. The staleness limit dates
+            a sample by its arrival, so a hardware interface that stops updating one
+            group's state interfaces (its arm faulted or E-stopped, its link lost)
+            yet still returns ``OK`` keeps that arm's last values flowing with fresh
+            stamps. With this set, a group whose positions and velocities stay
+            bit-identical for longer than this many seconds makes ``read_state``
+            raise ``ROSPerceptionStale``. Only for drives whose live encoder readings
+            never repeat exactly (the Flexiv RDK's do; a quantised encoder at rest
+            may not). ``None`` (default) turns it off.
 
     Raises:
-        ROSConfigError: If ``groups`` is empty or does not cover every joint.
+        ROSConfigError: If ``groups`` is empty, has a zero-width or repeated
+            controller, does not cover every joint, or ``frozen_state_limit_s`` is
+            not positive.
 
     Example:
         >>> from openral_hal.openarm_real import OpenArmRealHAL
@@ -943,8 +954,17 @@ class GroupedRosControlHAL(RosControlHAL):
         publish_fn: _PublishFn | None = None,
         state_fn: Callable[[], dict[str, object]] | None = None,
         staleness_limit_s: float | None = None,
+        frozen_state_limit_s: float | None = None,
     ) -> None:
         """Initialise the fan-out table; opens no connection."""
+        if frozen_state_limit_s is not None and not frozen_state_limit_s > 0.0:
+            raise ROSConfigError(
+                f"{type(self).__name__}: frozen_state_limit_s={frozen_state_limit_s!r} must "
+                "be a positive number of seconds (or None to turn the check off)."
+            )
+        self._frozen_state_limit_s = frozen_state_limit_s
+        # controller -> (its last positions + velocities, monotonic time first seen).
+        self._unchanged_since: dict[str, tuple[tuple[float, ...], float]] = {}
         names = [name for name, _ in groups]
         if (
             not groups
@@ -1025,15 +1045,43 @@ class GroupedRosControlHAL(RosControlHAL):
             return [float(values[index_of[n]]) for n in self._ros2_names]
 
         zeros = [0.0] * len(self._ros2_names)
+        position = _reordered("position", absent=zeros)
+        velocity = _reordered("velocity", absent=zeros)
+        if self._frozen_state_limit_s is not None:
+            self._refuse_a_frozen_group(position, velocity)
         return JointState(
             name=list(self._joint_names),
-            position=_reordered("position", absent=zeros),
-            velocity=_reordered("velocity", absent=zeros),
+            position=position,
+            velocity=velocity,
             # An absent effort channel stays empty, never zero-filled: zeros would
             # fake an effort reading the driver never published.
             effort=_reordered("effort", absent=[]),
             stamp_ns=stamp_ns,
         )
+
+    def _refuse_a_frozen_group(self, position: list[float], velocity: list[float]) -> None:
+        """Raise when one controller's joints have not changed for ``frozen_state_limit_s``.
+
+        Raises:
+            ROSPerceptionStale: Naming the frozen controller and for how long.
+        """
+        assert self._frozen_state_limit_s is not None  # invariant: caller checked
+        now = time.monotonic()
+        for topic, span, _names in self._command_groups:
+            controller = topic.split("/")[1]
+            key = (*position[span], *velocity[span])
+            seen = self._unchanged_since.get(controller)
+            if seen is None or seen[0] != key:
+                self._unchanged_since[controller] = (key, now)
+                continue
+            frozen_s = now - seen[1]
+            if frozen_s > self._frozen_state_limit_s:
+                raise ROSPerceptionStale(
+                    f"{controller}'s joint state has not changed for {frozen_s:.2f} s (limit "
+                    f"{self._frozen_state_limit_s} s): its hardware interface stopped "
+                    "updating (arm faulted or E-stopped, link lost) while the broadcaster "
+                    f"keeps republishing it on {self._joint_state_topic}."
+                )
 
     def send_action(self, action: Action) -> None:
         """Fan one action out to every controller, all or nothing.
@@ -1134,10 +1182,20 @@ class GroupedRosControlHAL(RosControlHAL):
             controllers=len(outbound),
         )
 
+    def connect(self) -> None:
+        """Open the connection; the frozen-group check starts from the first new sample."""
+        self._unchanged_since.clear()
+        super().connect()
+
     def disconnect(self) -> None:
         """Close the connection, dropping any half-staged slot group (and the watermark)."""
         self._slot_group.reset()
         super().disconnect()
+
+    def reset_estop(self) -> None:
+        """The base re-arm; the frozen-group check restarts from the next new sample."""
+        super().reset_estop()
+        self._unchanged_since.clear()
 
     @property
     def last_applied_action(self) -> Action | None:
