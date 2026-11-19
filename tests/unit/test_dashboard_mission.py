@@ -114,6 +114,15 @@ async def test_a_viewer_reads_the_mission_remotely(issuer: FakeIssuer, tmp_path:
     assert anonymous.status_code == 401
 
 
+async def _subscribed(store: TelemetryStore) -> None:
+    """Until the stream under test has subscribed: a publish before that is in its snapshot."""
+    for _ in range(500):
+        if store._subscribers:  # reason: test sync on the store's own state
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("the stream never subscribed")
+
+
 @pytest.mark.asyncio
 async def test_the_mission_stream_sends_only_changes(issuer: FakeIssuer, tmp_path: Path) -> None:
     store = TelemetryStore()
@@ -122,7 +131,7 @@ async def test_the_mission_stream_sends_only_changes(issuer: FakeIssuer, tmp_pat
     token = issuer.mint(iat=now, exp=now + 3)
 
     async def poke() -> None:
-        await asyncio.sleep(0.5)
+        await _subscribed(store)
         store.set_estopped(False)  # a publish that changes nothing in the view
         await asyncio.sleep(0.3)
         store.set_estopped(True)
@@ -152,6 +161,7 @@ async def test_a_busy_unchanged_stream_still_sends_keepalives(
     token = issuer.mint(iat=now, exp=now + 3)
 
     async def busy() -> None:
+        await _subscribed(store)
         for _ in range(25):  # unchanged view, a publish every 0.1 s: never a 0.3 s gap
             await asyncio.sleep(0.1)
             store.set_estopped(False)
