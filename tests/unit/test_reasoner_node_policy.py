@@ -372,3 +372,15 @@ def test_a_new_goal_forgets_the_old_conversation_but_a_reply_keeps_it(
 def test_the_first_goal_has_no_conversation_to_forget() -> None:
     for previous in (None, MissionState([])):
         assert not forgets_conversation(previous=previous, asked=False, metadata_json="")
+
+
+def test_a_reply_to_the_reasoners_question_keeps_an_unstarted_mission() -> None:
+    """#661: "use the sponge" answered "which item?" and must not replace "wipe the table"."""
+    fresh = MissionState(["wipe the table"])
+    assert should_rebuild_mission("dashboard", "", fresh)  # no question: a resend wins
+    assert not should_rebuild_mission("dashboard", "", fresh, answers_question=True)
+    assert should_rebuild_mission("dashboard", '{"new_goal": true}', fresh, answers_question=True)
+    done = MissionState(["wipe the table"])
+    done.complete_active("ok")
+    assert should_rebuild_mission("dashboard", "", done, answers_question=True)  # finished
+    assert not should_rebuild_mission("detector", "", None, answers_question=True)  # cascade

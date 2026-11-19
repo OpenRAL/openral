@@ -116,13 +116,7 @@ def forgets_conversation(*, previous: MissionState | None, asked: bool, metadata
     """
     if previous is None or previous.is_empty():
         return False
-    if not asked:
-        return True
-    try:
-        parsed = json.loads(metadata_json) if metadata_json else {}
-    except json.JSONDecodeError:
-        return False
-    return isinstance(parsed, dict) and parsed.get("new_goal") is True
+    return not asked or _marks_new_goal(metadata_json)
 
 
 def should_rebuild_mission(
@@ -131,6 +125,7 @@ def should_rebuild_mission(
     mission: MissionState | None,
     *,
     active_succeeded_unverified: bool = False,
+    answers_question: bool = False,
 ) -> bool:
     """Whether an inbound prompt replaces the mission queue.
 
@@ -150,7 +145,10 @@ def should_rebuild_mission(
     operator's next prompt is a new goal, not an aside the finished task resumes
     after. Queued tasks are never dropped this way, and the node clears the flag
     once the reasoner prompts the operator, so a reply to its question stays a
-    reply.
+    reply. ``answers_question``: the reasoner had asked its operator something
+    (``ContextRenderer.awaiting_operator``); then a prompt without ``new_goal`` is
+    the answer and keeps an unfinished mission, started or not ("use the sponge"
+    must not replace "wipe the table", #661).
 
     Example:
         >>> should_rebuild_mission("cli", "", None)
@@ -158,6 +156,8 @@ def should_rebuild_mission(
         >>> m = MissionState(["pick the bowl", "place it"])
         >>> should_rebuild_mission("cli", "", m)  # not started yet: resend wins
         True
+        >>> should_rebuild_mission("cli", "", m, answers_question=True)  # but not a reply
+        False
         >>> m.record_attempt(rskill_id="x")
         >>> should_rebuild_mission("cli", "", m)  # reply mid-mission: keep queue
         False
@@ -174,10 +174,19 @@ def should_rebuild_mission(
     """
     if source in CASCADE_PROMPT_SOURCES:
         return False
-    if mission is None or mission.is_empty() or mission.is_complete() or not mission.has_started():
+    if mission is None or mission.is_empty() or mission.is_complete():
+        return True
+    if answers_question:
+        return _marks_new_goal(metadata_json)
+    if not mission.has_started():
         return True
     if active_succeeded_unverified and not any(t.status == "pending" for t in mission.tasks):
         return True
+    return _marks_new_goal(metadata_json)
+
+
+def _marks_new_goal(metadata_json: str) -> bool:
+    """Whether a prompt's metadata carries a top-level ``"new_goal": true``."""
     if not metadata_json:
         return False
     try:

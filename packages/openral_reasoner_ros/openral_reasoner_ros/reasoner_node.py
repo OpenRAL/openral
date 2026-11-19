@@ -2478,6 +2478,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             msg.metadata_json,
             current,
             active_succeeded_unverified=succeeded_unverified,
+            answers_question=asked and is_operator_prompt(source),
         ):
             if succeeded_unverified and current_active is not None:
                 self.get_logger().info(
