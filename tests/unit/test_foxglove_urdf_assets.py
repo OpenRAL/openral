@@ -105,7 +105,8 @@ def test_the_deploy_launch_gives_the_bridge_the_overlay(overlay_cache: Path) -> 
     ]
     assert module._foxglove_asset_env(None) == {}
     text = LAUNCH.read_text(encoding="utf-8")
-    assert "additional_env=_foxglove_asset_env(robot_description_xml, robot_mesh_packages)" in text
+    call = text[text.index("additional_env=_foxglove_asset_env(") :][:160]
+    assert "robot_description_xml, {**robot_mesh_packages, **_sim_scene_package(hal_mode)}" in call
 
 
 def _load_launch(name: str) -> object:
