@@ -273,18 +273,24 @@ grasp / place declaration, so no region and no tracked key reach the kernel, whi
 in a hand stays checked and the kernel's attachment stream stays fresh (a stale one refuses
 every candidate, a base twist included). Either edge discards the previous station
 (`TrackerSession.leave_station`), including any segmenter / locator answer still in flight.
-So does a base that moves (a push, a creep, a twist no base skill announced): once the
-measured `base_joints` pose leaves the pose the station was entered at by more than 2 cm or
-0.02 rad (`STATION_MOTION_M` / `STATION_ROTATION_RAD` in `tracking_thresholds.yaml`, the
-safety kernel's station thresholds), the session discards the station, tracked or not, and
-logs `object_tracker.base_moved` / `object_tracker.station_reset transition=base_moved`;
-grids and depth frames stamped up to the move are refused, and the tracks are measured again
-from the new pose. A track is a base-frame box from where the base stood at its fit; kept
-across a move it would be compared with a fixed-frame box (a memory node's goal scope, a map
-zone) re-expressed where the base stands now, and a goal naming one memory node could miss
-its instance or bind the neighbour (issue #651). A goal's scope resolved at the old pose is
-unresolved again (matching nothing) until tf2 resolves it at the new one. A skill that moves
-the base and the arm together therefore re-measures its tracks every 2 cm of base travel.
+A base that moves while the node runs (a drive, a push, a creep) keeps its tracks (issue
+#651). Once the measured `base_joints` pose leaves the pose the tracks were measured at by more
+than 2 cm or 0.02 rad (`STATION_MOTION_M` / `STATION_ROTATION_RAD` in `tracking_thresholds.yaml`,
+the safety kernel's station thresholds), the session re-expresses every unheld base-frame
+record by the measured base motion: track boxes, hulls, centroids and surface cells, released
+and placed records, query priors and resolved memory-node scopes. It does this once, at the
+source, so association, `grasp_region` and the binder all read the moved state. Held payloads
+ride the hand. Grids, depth frames and requests from the old pose are refused or dropped and
+measured again. A track stays where it is in the world, so a goal naming one memory node keeps
+binding its instance after the move, without being detected again.
+
+The carry is odometry: a track carried further than 0.75 m or 0.8 rad since its last fit is
+dropped (`CARRY_MAX_M` / `CARRY_MAX_RAD`: at a 2 % drift, a calibration point, the box stays
+within the 1.5 cm extrinsic bound). Fail closed: a base pose that stops being measured, or a
+non-planar motion, drops every unheld track (`object_tracker.base_moved why=base_unmeasured`
+/ `base_measured` / `base_untrusted`). A carried box feeds `grasp_region` and the tracked
+object set like a measured one, odometry error included (see the PR's Safety-WG note). The
+runner's station switch still discards on each edge, as before.
 The switch replies `success=False` while the node is not ACTIVE. A place declaration naming a
 candidate set of same-slot map-frame zones (`zone_candidates_target_id`) resolves to the one
 whose box centre lies in the robot's reach (`zone_reach_center` / `zone_reach_radius_m`: the
