@@ -35,6 +35,7 @@ from openral_hal.peer_voxels import (
     peer_boxes,
     peer_geoms,
     peer_targets,
+    servo_target,
     swept_peer_boxes,
 )
 from openral_hal.shared_world import SharedWorldArmHAL, SharedWorldServer, robot_root_bodies
@@ -304,6 +305,7 @@ def test_each_robot_sees_its_peer_as_occupied_cells(table: _World) -> None:
     assert len(b_targets) == 6  # five joints and the jaw, each a position servo
     pan_qadr, pan_actuator = b_targets[0]
     assert pan_qadr == 6  # B's block follows A's six joints in A's view
+    assert servo_target(model, pan_actuator, 0.9) == pytest.approx(0.9)  # unit-gear kp servo
     state["ctrl"][pan_actuator] = 0.9
     swept = swept_peer_boxes(model, mj.MjData(model), state, b_geoms, b_targets, base)
     assert (occupancy_grid(swept, *ball)[2] & a_rest).any()

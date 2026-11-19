@@ -114,6 +114,8 @@ def test_the_kernel_reads_the_peers_over_its_coverage_ball() -> None:
     kernel = _kernel(entities)
     params = _kernel_params(kernel)
     assert params["world_voxel_enabled"] is True
+    # The peers move at arm speed: a peer grid is current for 0.2 s, not the octomap's 1 s.
+    assert params["world_voxel_deadline_ms"] == params["world_voxel_data_age_budget_ms"] == 200.0
     assert _remaps(kernel)["/openral/world_voxels"] == "/openral/peer_voxels"
     argv = _peer_producer(entities)
     assert argv is not None

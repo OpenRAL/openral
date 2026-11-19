@@ -75,6 +75,11 @@ def _robot_spec(mj: Any, description: RobotDescription) -> Any:
     floor = next((g for g in spec.geoms if g.name == "camrig_floor"), None)
     if floor is not None:
         spec.delete(floor)
+    if any(not b.name for b in spec.worldbody.bodies):
+        # A peer's links are found under its named top-level bodies (robot_root_bodies).
+        raise ROSConfigError(
+            f"shared world: robot {description.name!r} has an unnamed top-level MJCF body."
+        )
     if len(spec.worldbody.geoms):
         # Attached geoms of a robot's <worldbody> land on the world body, where nothing
         # tells them from the arena: its peers could not see them as part of it.
@@ -210,6 +215,9 @@ def open_view(
         descriptions = {n: RobotDescription.from_yaml(p) for n, p in hello["robot_yamls"].items()}
         spec, _ = compose_shared_world(world, Path(hello["arena_mjcf"]), descriptions, robot)
         return conn, world, descriptions, _compile(spec, world.id)
+    except (EOFError, OSError) as exc:
+        conn.close()
+        raise ROSRuntimeError(f"shared world at {address!r} went away: {exc}") from exc
     except BaseException:
         conn.close()
         raise

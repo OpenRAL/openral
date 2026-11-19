@@ -72,10 +72,15 @@ refused when stale). In a shared world that grid holds **the other robots**:
   cells of the coverage ball (the same ball, resolution and cell budget the
   launch gives the kernel). A cell is occupied whenever a peer box can touch it.
 - **Where a peer is going, too.** Each peer is rasterized where it is and at
-  poses up to the targets its position servos are driven to, so a peer
-  commanded into the space between the arms is occupied there before it moves.
-  The residual race is one control period: two robots commanded in the same
-  period are each checked against the other's state before that period.
+  poses up to the joint positions its position servos settle at (gain, gear and
+  `ctrlrange` included), sampled at most 0.05 rad apart and 25% past the target
+  (a P servo overshoots), so a peer commanded into the space between the arms is
+  occupied there before it moves.
+- **Tight freshness.** The kernel accepts a peer grid for 0.2 s of world time
+  (receipt deadline and data-age budget), four of `peer_voxels`' 20 Hz periods,
+  instead of the octomap's 1 s / 1.5 s. What remains is the race between two
+  robots commanded in the same instant, each checked against the other's last
+  grid: bounded by the peer's motion over those 0.2 s.
 - **Fail-closed.** Every grid is built from a fresh read of the world and is
   stamped with that world time (`source_stamp`). A non-finite pose withholds the
   grid. When the world stops answering, `peer_voxels` exits, the kernel's

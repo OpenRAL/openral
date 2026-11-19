@@ -502,8 +502,10 @@ def _world_voxel_max_cells(radius_m: float, resolution_m: float) -> int:
     fraction is at least a half, so the snap term is explicit (plus a hair of
     float slack: over-reserving costs memory, under-reserving is fail-open).
     """
-    per_axis = math.floor(2.0 * radius_m / resolution_m + 0.5 + 1e-9) + 1
-    return per_axis**3
+    from openral_hal.peer_voxels import cells_per_axis
+
+    # One formula for the kernel's reserve and the shared world's peer grid.
+    return cells_per_axis(radius_m, resolution_m) ** 3
 
 
 # The per-rig ``DeployRuntime`` fields ``openral deploy`` forwards as launch args.
@@ -1475,8 +1477,16 @@ def _poll_autostart(
     )
 
 
-#: The kernel's world grid in a shared world (``openral_hal.peer_voxels.PEER_VOXELS_TOPIC``).
-PEER_VOXELS_TOPIC = "/openral/peer_voxels"
+#: Receipt deadline and data-age budget of a shared world's peer grid, sim seconds: four
+#: of ``peer_voxels``' 20 Hz periods. A peer moves at most this long unseen.
+_PEER_GRID_BUDGET_S = 0.2
+
+
+def peer_voxels_topic() -> str:
+    """The kernel's world grid in a shared world (``openral_hal.peer_voxels``)."""
+    from openral_hal.peer_voxels import PEER_VOXELS_TOPIC
+
+    return PEER_VOXELS_TOPIC
 
 
 def _resolve_clock_origin(value: str) -> str:
@@ -3696,6 +3706,11 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             # How old the world behind a grid may be at check time (Entry 034).
             "world_voxel_data_age_budget_ms": rig.world_voxel_data_age_budget_s * 1000.0,
         }
+        if shared_world:
+            # The peers move at arm speed (the octomap's world mostly does not): a peer
+            # grid is current for a few of its 20 Hz periods, never the octomap's second.
+            kernel_params["world_voxel_deadline_ms"] = _PEER_GRID_BUDGET_S * 1000.0
+            kernel_params["world_voxel_data_age_budget_ms"] = _PEER_GRID_BUDGET_S * 1000.0
 
     kernel_params = {**kernel_params, **_collision_scale_params()}
     # ADR-0121: a provider takes over the moved in-tree rules (never both at once).
@@ -3801,7 +3816,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         # A shared world's peers are the kernel's world grid, on their own topic so the
         # other /openral/world_voxels readers (object lift, tracker, attachment barrier)
         # never take two arms for a perceived map.
-        + ([("/openral/world_voxels", PEER_VOXELS_TOPIC)] if shared_world else []),
+        + ([("/openral/world_voxels", peer_voxels_topic())] if shared_world else []),
         additional_env={**otel_env, **enclave_env(KERNEL_ENCLAVE)},
         output="screen",
     )
@@ -6464,7 +6479,8 @@ def generate_launch_description() -> LaunchDescription:
             description=(
                 "The Unix socket of a shared MuJoCo world (`openral deploy world`, issue "
                 "#666). Non-empty: openral_hal.peer_voxels publishes the other robots' "
-                "links on /openral/world_voxels and the kernel's world check reads them. "
+                "links on /openral/peer_voxels, the kernel's world grid (remapped for the "
+                "kernel only), with tight freshness bounds. "
                 "Sim only; refused with enable_octomap. Empty (default) = off."
             ),
         ),

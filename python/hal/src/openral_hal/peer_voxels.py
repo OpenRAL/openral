@@ -39,19 +39,25 @@ from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 __all__ = [
     "PEER_VOXELS_TOPIC",
     "PeerBox",
+    "cells_per_axis",
     "main",
     "occupancy_grid",
+    "own_base_body",
     "peer_boxes",
     "peer_geoms",
     "peer_targets",
+    "servo_target",
     "swept_peer_boxes",
 ]
 
 #: The kernel's world grid in a shared world (its ``/openral/world_voxels`` is remapped here).
 PEER_VOXELS_TOPIC = "/openral/peer_voxels"
 
-#: Poses sampled from where a peer is to the targets it is driven to (both ends included).
-_SWEEP_SAMPLES = 5
+#: Largest joint step between two swept poses, rad (or m for a slide joint).
+_SWEEP_STEP = 0.05
+#: How far past its target a peer is swept: a P servo overshoots (the SO-101 elbow
+#: commanded +0.8 rad peaks 17% past it in this sim), so 25% more of the move.
+_SWEEP_OVERSHOOT = 1.25
 
 
 class PeerBox(NamedTuple):
@@ -66,6 +72,18 @@ class PeerBox(NamedTuple):
     centre: NDArray[np.float64]
     rotation: NDArray[np.float64]
     half_extents: NDArray[np.float64]
+
+
+def cells_per_axis(radius_m: float, resolution_m: float) -> int:
+    """Cells per axis of the grid around a coverage ball: the kernel's budget is its cube.
+
+    The deploy launch's ``_world_voxel_max_cells`` is this, cubed.
+
+    Example:
+        >>> cells_per_axis(0.2, 0.05)
+        9
+    """
+    return math.floor(2.0 * radius_m / resolution_m + 0.5 + 1e-9) + 1
 
 
 def occupancy_grid(
@@ -93,7 +111,7 @@ def occupancy_grid(
         >>> shape, int(cells.sum())
         ((9, 9, 9), 27)
     """
-    n = math.floor(2.0 * radius_m / resolution_m + 0.5 + 1e-9) + 1
+    n = cells_per_axis(radius_m, resolution_m)
     origin = np.asarray(centre, dtype=np.float64) - n * resolution_m / 2.0
     grid = np.zeros((n, n, n), dtype=np.uint8)  # indexed [z, y, x]: x fastest when flattened
     grow = resolution_m * math.sqrt(3.0) / 2.0
@@ -136,8 +154,8 @@ def peer_targets(model: Any, peer_roots: set[str]) -> list[tuple[int, int]]:
 
     A position servo is a joint-transmission actuator with an affine bias whose
     position term is negative (MuJoCo's ``<position>`` and the SO-ARM ``general``
-    servos): its ``ctrl`` is the joint target. Other actuators are left out, so their
-    joints are taken where they are, not swept.
+    servos); ``servo_target`` gives the joint position it drives to. Other actuators
+    are left out, so their joints are taken where they are, not swept.
     """
     import mujoco as mj
 
@@ -153,6 +171,24 @@ def peer_targets(model: Any, peer_roots: set[str]) -> list[tuple[int, int]]:
         if servo and model.actuator_biasprm[u, 1] < 0:
             out.append((int(model.jnt_qposadr[joint]), u))
     return out
+
+
+def servo_target(model: Any, actuator: int, ctrl: float) -> float:
+    """The joint position a position servo settles at for ``ctrl``.
+
+    Equilibrium of ``gain * ctrl + b0 + b1 * length = 0`` (``length = gear * q``),
+    with ``ctrl`` clamped to ``ctrlrange`` when the actuator is ``ctrllimited``.
+
+    Example:
+        >>> servo_target(model, 6, 0.9)  # doctest: +SKIP
+        0.9
+    """
+    if model.actuator_ctrllimited[actuator]:
+        low, high = model.actuator_ctrlrange[actuator]
+        ctrl = min(max(ctrl, float(low)), float(high))
+    gain = float(model.actuator_gainprm[actuator, 0])
+    b0, b1 = float(model.actuator_biasprm[actuator, 0]), float(model.actuator_biasprm[actuator, 1])
+    return -(gain * ctrl + b0) / b1 / float(model.actuator_gear[actuator, 0])
 
 
 def peer_boxes(model: Any, data: Any, geoms: NDArray[np.int64], base_body: int) -> list[PeerBox]:
@@ -181,22 +217,43 @@ def swept_peer_boxes(
 ) -> list[PeerBox]:
     """The peers' boxes where they are AND along the way to their servo targets.
 
-    ``state`` is a world read in this robot's view (``qpos``, ``ctrl``). A peer
-    commanded into the space between the arms is occupied there before it arrives.
-    ``data`` is scratch: its kinematics are overwritten.
+    ``state`` is a world read in this robot's view (``qpos``, ``ctrl``). Poses are
+    sampled at most ``_SWEEP_STEP`` apart per joint, up to ``_SWEEP_OVERSHOOT`` of
+    the move, so a peer commanded into the space between the arms is occupied there
+    before it arrives. ``data`` is scratch: its kinematics are overwritten.
     """
     import mujoco as mj
 
     current = np.asarray(state["qpos"], dtype=np.float64)
     goal = current.copy()
     for qadr, u in targets:
-        goal[qadr] = state["ctrl"][u]
+        goal[qadr] = servo_target(model, u, float(state["ctrl"][u]))
+    reach = _SWEEP_OVERSHOOT * (goal - current)
+    samples = int(np.ceil(np.max(np.abs(reach), initial=0.0) / _SWEEP_STEP)) + 1
     boxes: list[PeerBox] = []
-    for f in np.linspace(0.0, 1.0, _SWEEP_SAMPLES):
-        data.qpos[:] = current + f * (goal - current)
+    for f in np.linspace(0.0, 1.0, samples):
+        data.qpos[:] = current + f * reach
         mj.mj_kinematics(model, data)
         boxes += peer_boxes(model, data, geoms, base_body)
     return boxes
+
+
+def own_base_body(model: Any, base_frame: str, own_roots: set[str]) -> int:
+    """The body this robot's ``base_frame`` names in its own view, never a peer's or the arena's.
+
+    The body named ``base_frame`` when it is one of this robot's own (under
+    ``own_roots``), else this robot's single root body.
+
+    Raises:
+        ROSConfigError: Neither exists (the grid's frame would be a guess).
+    """
+    roots = {int(model.body(name).id) for name in own_roots}
+    for b in range(int(model.nbody)):
+        if model.body(b).name == base_frame and int(model.body_rootid[b]) in roots:
+            return b
+    if len(roots) == 1:
+        return next(iter(roots))
+    raise ROSConfigError(f"peer_voxels: no own body for base frame {base_frame!r}")
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -241,9 +298,9 @@ def main(argv: list[str] | None = None) -> None:
     import mujoco as mj
     import rclpy
     from openral_msgs.msg import OccupancyVoxels
+    from rclpy.executors import ExternalShutdownException
     from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 
-    from openral_hal.depth_cloud import resolve_base_frame_body_name
     from openral_hal.shared_world import _ask, open_view, robot_root_bodies
 
     args = _parse_args(argv)
@@ -253,10 +310,10 @@ def main(argv: list[str] | None = None) -> None:
     roots = set().union(*(robot_root_bodies(p, descriptions[p], view=args.robot) for p in peers))
     geoms = peer_geoms(model, roots)
     targets = peer_targets(model, roots)
-    base_name = resolve_base_frame_body_name(model, description=descriptions[args.robot])
-    if base_name is None:
-        raise ROSConfigError(f"peer_voxels: no body for {args.frame!r} in {args.robot!r}'s view")
-    base_body = int(model.body(base_name).id)
+    base_body = own_base_body(
+        model, args.frame, robot_root_bodies(args.robot, descriptions[args.robot], view=args.robot)
+    )
+    base_name = model.body(base_body).name
 
     rclpy.init()
     node = rclpy.create_node(f"openral_peer_voxels_{args.robot}")
@@ -286,6 +343,8 @@ def main(argv: list[str] | None = None) -> None:
             else:
                 pub.publish(_voxels_msg(OccupancyVoxels(), grid, args, float(state["time"])))
             rclpy.spin_once(node, timeout_sec=max(0.0, period - (time.monotonic() - started)))
+    except (KeyboardInterrupt, ExternalShutdownException):
+        return  # the graph is shutting down: a clean exit, not a lost peer source
     except (EOFError, OSError, ROSConfigError) as exc:
         node.get_logger().error(
             f"peer_voxels: shared world at {args.world!r} went away ({exc}): robot "
@@ -295,8 +354,7 @@ def main(argv: list[str] | None = None) -> None:
     finally:
         conn.close()
         node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == "__main__":
