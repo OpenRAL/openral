@@ -630,9 +630,10 @@ REASONER_API_KEY_ENV: str = "OPENRAL_REASONER_API_KEY"
 REASONER_DIALECT_ENV: str = "OPENRAL_REASONER_DIALECT"
 REASONER_MAX_TOKENS_ENV: str = "OPENRAL_REASONER_MAX_TOKENS"
 REASONER_TIMEOUT_ENV: str = "OPENRAL_REASONER_TIMEOUT_S"
-# Timeout of an openai-dialect client's requests until its endpoint first replies
-# (#665): a cold local model takes longer to load than the per-call timeout, and
-# a server such as Ollama abandons the load when the client hangs up, so every
+# Read timeout of an openai-dialect client's requests while its model may be
+# loading (#665) — until the endpoint first replies, and again after a timeout:
+# a cold local model takes longer to load than the per-call timeout, and a
+# server such as Ollama abandons the load when the client hangs up, so every
 # tick timed out and the model never loaded. By default it applies to every
 # endpoint that is not a known cloud one (``_first_call_timeout_s``).
 REASONER_FIRST_CALL_TIMEOUT_ENV: str = "OPENRAL_REASONER_FIRST_CALL_TIMEOUT_S"
@@ -1018,10 +1019,11 @@ def build_tool_use_client_from_env() -> ToolUseClient:
     * ``OPENRAL_REASONER_{MAX_TOKENS,TIMEOUT_S}`` (optional) — override the
       registry defaults.
     * ``OPENRAL_REASONER_FIRST_CALL_TIMEOUT_S`` (optional, openai dialect) — the
-      timeout of each request until the endpoint first replies, so a cold local
-      model can load. Default 120 s on a bare URL, a local named endpoint
-      (``ollama`` / ``vllm``) or a locally hosted curated model, and off on a
-      cloud endpoint; at or below the per-call timeout it changes nothing.
+      read timeout of each request until the endpoint first replies, and again
+      after a request times out, so a cold local model can load. Default 120 s
+      on a bare URL, a local named endpoint (``ollama`` / ``vllm``) or a
+      locally hosted curated model, and off on a cloud endpoint; at or below
+      the per-call timeout it changes nothing.
     * ``OPENRAL_REASONER_TOOL_CHOICE`` (escape hatch only) — overrides the
       ``tool_choice`` of an uncurated model on a bare URL (openai dialect) or
       on the anthropic dialect (``auto``; ``required`` is sent as Anthropic
@@ -1061,6 +1063,7 @@ def build_tool_use_client_from_env() -> ToolUseClient:
     # Validated on every path, so a bad value fails at build even where it
     # would be ignored.
     tool_choice = parse_reasoner_tool_choice(os.environ.get(REASONER_TOOL_CHOICE_ENV))
+    _first_call_timeout_s(known_cloud=True)  # the anthropic dialect never reads it
     entry = REASONER_MODELS.get(model_key)
     if entry is None:
         return _build_uncurated_model(model_key, tool_choice)
@@ -2379,13 +2382,14 @@ class OpenAICompatibleToolUseClient:
         base_url: Endpoint base URL. Defaults to
             ``https://api.openai.com/v1`` when ``None``.
         timeout_s: Per-call wall-clock timeout in seconds. Defaults to 10 s.
-        first_call_timeout_s: Timeout of each request until the endpoint first
-            replies, when longer than ``timeout_s`` (#665): a cold local model
-            loads on its first request, and a client that hangs up at
-            ``timeout_s`` makes the server abandon the load, every tick. Logged
-            once as ``reasoner.llm.first_call_timeout``. After the first reply
-            every request is bound by ``timeout_s``; a model the server unloads
-            later reloads under ``timeout_s``.
+        first_call_timeout_s: Read timeout of each request while the model may
+            be loading, when longer than ``timeout_s`` (#665): until the
+            endpoint first replies, and again after a request times out. A
+            cold local model loads on a request, and a client that hangs up at
+            ``timeout_s`` makes the server abandon the load, every tick.
+            Logged as ``reasoner.llm.first_call_timeout``. Off by default
+            (``0.0``); ``build_tool_use_client_from_env`` turns it on for
+            endpoints that are not a known cloud one.
         tool_choice: OpenAI ``tool_choice`` mode. ``"required"`` (the default)
             forces exactly one tool call per tick — the reasoner's contract.
             Some endpoints (the HF router) reject ``"required"`` and only honour
@@ -2416,7 +2420,7 @@ class OpenAICompatibleToolUseClient:
         api_key: str | None = None,
         base_url: str | None = None,
         timeout_s: float = 10.0,
-        first_call_timeout_s: float = DEFAULT_FIRST_CALL_TIMEOUT_S,
+        first_call_timeout_s: float = 0.0,
         tool_choice: str = "required",
         max_tokens: int | None = None,
         max_tokens_param: str = "max_tokens",
@@ -2483,10 +2487,32 @@ class OpenAICompatibleToolUseClient:
         return self._sdk_client
 
     def _send(self, create: Callable[..., Any], **request: Any) -> Any:  # noqa: ANN401  # reason: provider SDK boundary — an SDK ``create`` and its response
-        """One SDK request; until the endpoint first replies, under ``first_call_timeout_s``."""
-        if not self._cold:
-            return create(**request)
-        response = create(timeout=self._first_call_timeout_s, **request)
+        """One SDK request; while the model may be loading, read under ``first_call_timeout_s``.
+
+        That is until the endpoint first replies, and again after a request
+        times out: a server that unloaded an idle model (Ollama's
+        ``keep_alive``) reloads it on the next request, and hanging up at
+        ``timeout_s`` would abandon that load on every tick, as at start-up.
+        Only the read timeout is raised; connecting stays under ``timeout_s``.
+        """
+        from openai import APITimeoutError, Timeout  # noqa: PLC0415  # reason: optional cloud dep
+
+        loading = self._cold
+        if loading:
+            request["timeout"] = Timeout(self._timeout_s, read=self._first_call_timeout_s)
+        try:
+            response = create(**request)
+        except APITimeoutError:
+            if not loading and self._first_call_timeout_s > self._timeout_s:
+                self._cold = True
+                log.warning(
+                    "reasoner.llm.first_call_timeout",
+                    model=self.model_id,
+                    timeout_s=self._first_call_timeout_s,
+                    steady_timeout_s=self._timeout_s,
+                    reason="a request timed out; the next one waits for a model reload",
+                )
+            raise
         self._cold = False
         return response
 

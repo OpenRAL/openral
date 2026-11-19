@@ -309,20 +309,22 @@ The env contract is:
   (below) — a ceiling hit driven by a growing prompt wants context management,
   not a longer timeout.
 - `OPENRAL_REASONER_FIRST_CALL_TIMEOUT_S` — optional, openai dialect only. The
-  timeout of each request until the endpoint first replies: a cold local model
-  loads on its first request, and a server such as Ollama abandons the load
-  when the client hangs up, so with only the per-call timeout (10 s on a bare
-  URL) every tick timed out and the model never loaded (#665). Default
-  **120 s** on a bare URL, on the `ollama` / `vllm` named endpoints and for a
-  locally hosted curated model; off on a cloud endpoint (a named endpoint that
-  takes a key, or a curated cloud model's own endpoint), which has no model to
-  load. Setting it applies it anywhere. The client logs
-  `reasoner.llm.first_call_timeout` when it starts under it; after the first
-  reply `OPENRAL_REASONER_TIMEOUT_S` bounds every request again. Raise it for a
-  model that takes longer than two minutes to load; a value at or below the
-  per-call timeout turns it off. A model the server unloads later (Ollama's
-  `keep_alive`, memory pressure) reloads under the per-call timeout, so keep it
-  loaded or raise `OPENRAL_REASONER_TIMEOUT_S`.
+  read timeout of each request while the model may be loading: a cold local
+  model loads on a request, and a server such as Ollama abandons the load when
+  the client hangs up, so with only the per-call timeout (10 s on a bare URL)
+  every tick timed out and the model never loaded (#665). It applies until the
+  endpoint first replies, and again after a request times out (the server may
+  have unloaded an idle model, Ollama's `keep_alive`); once a reply arrives,
+  `OPENRAL_REASONER_TIMEOUT_S` bounds every request again. Default **120 s** on
+  a bare URL, on the `ollama` / `vllm` named endpoints and for a locally hosted
+  curated model; off on a cloud endpoint (a named endpoint that takes a key, or
+  a curated cloud model's own endpoint), which has no model to load. Setting it
+  applies it anywhere; a value at or below the per-call timeout turns it off.
+  Logged as `reasoner.llm.first_call_timeout` (info at start, warning when a
+  timeout turns it back on). The SDK still retries a timed-out request twice,
+  so a server that never answers holds a tick for three times this long: raise
+  it for a model that needs more than two minutes to load rather than relying
+  on the retries.
 - `OPENRAL_REASONER_MAX_SKILL_TOOLS` — optional per-tick cap on skill tools.
   The reasoner ranks the palette's skills against the active mission task and
   any pending operator prompts by keyword overlap and offers at most `k` (#494).
