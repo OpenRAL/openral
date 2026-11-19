@@ -320,6 +320,27 @@ def test_deploy_sim_object_detector_manifest_selects_vlm() -> None:
     assert "enable_object_detector:=true" in joined
 
 
+def test_deploy_sim_object_detector_manifest_uses_its_own_onnx(tmp_path: Path) -> None:
+    """A manifest-only ONNX detector runs the model.onnx beside its manifest, not R18's."""
+    skill = tmp_path / "rtdetr-v2-r50vd"
+    skill.mkdir()
+    manifest = skill / "rskill.yaml"
+    manifest.write_text((_REPO_ROOT / "rskills" / "rtdetr-v2-r50vd" / "rskill.yaml").read_text())
+    (skill / "model.onnx").write_bytes(b"onnx")
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        object_detector_manifest=str(manifest),
+    )
+    assert invocation.object_detector_onnx == (skill / "model.onnx").resolve()
+    assert f"object_detector_onnx:={(skill / 'model.onnx').resolve()}" in " ".join(
+        invocation.argv_template
+    )
+
+
 def test_deploy_sim_reward_monitor_forwarded() -> None:
     """``--enable-reward-monitor`` forwards the leg + overrides into the argv.
 
@@ -3547,15 +3568,24 @@ def test_preflight_preload_rskill_resolves_an_in_tree_name_before_the_hub(
 
 def test_preflight_preload_rskill_reads_a_hub_id_at_its_pinned_revision(
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A Hub-only id is read at the scene's pinned revision: the real revision
     resolves, and one that does not exist warns — the default branch would have
     resolved, so the warning proves the pin reached the fetch."""
+    import openral_sim.policy_deps as _policy_deps
+
     huggingface_hub = pytest.importorskip("huggingface_hub")
     try:
-        huggingface_hub.HfApi().model_info(_HUB_ONLY_RSKILL, revision=_HUB_ONLY_REVISION)
+        info = huggingface_hub.HfApi(token=False).model_info(
+            _HUB_ONLY_RSKILL, revision=_HUB_ONLY_REVISION
+        )
     except Exception as exc:  # any Hub / network failure means skip
         pytest.skip(f"Hub unreachable: {exc}")
+    if info.private or info.gated:
+        pytest.skip(f"{_HUB_ONLY_RSKILL} is no longer public and ungated")
+    # This test is about the revision pin, not whether the policy imports here.
+    monkeypatch.setattr(_policy_deps, "can_import_policy_manifest", lambda _m: (True, None))
 
     _preflight_preload_rskill(_HUB_ONLY_RSKILL, _HUB_ONLY_REVISION)
     assert "does not resolve" not in capsys.readouterr().out

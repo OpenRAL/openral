@@ -104,6 +104,7 @@ embodiment-agnostic.**
 | `locateanything-3b-nf4` | detector (open-vocab VLM) |
 | `omdet-turbo-indoor` / `omdet-turbo-locator` | detector (open-vocab) |
 | `rtdetr-coco-r18` | detector (ONNX, `local://`) |
+| `rtdetr-v2-r50vd` | detector (ONNX, `local://`) |
 | `qwen35-4b-nf4` | vlm |
 | `robometer-4b` / `topreward-qwen3vl-4b-nf4` | reward |
 | `rskill-sam2_1-any-grasped_object_mask-bf16` | segmenter (SAM 2.1) |

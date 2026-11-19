@@ -197,12 +197,12 @@ python tools/rskill_publisher.py rskills/pi05-pick-cube/ --publish
 python tools/rskill_publisher.py rskills/pi05-pick-cube/ --publish --bump-revision
 ```
 
-- **Repos are created private** unless you pass `--public`. Any licence may
-  be public: a non-commercial skill stays refused at load time without
-  `OPENRAL_ALLOW_NONCOMMERCIAL=1`. `--gated` (exclusive with `--public`) publishes a
-  premium rSkill: a public repo whose files sit behind Hugging Face manual
-  access approval, set and verified before any upload; allowed for
-  commercial or `proprietary` licences.
+- **Repos are created private** unless you pass `--public`. Visibility has no
+  licence gate; the manifest's licence still binds: a commercial deployment
+  (`OPENRAL_COMMERCIAL_DEPLOYMENT=1`) refuses a non-commercial skill unless
+  `OPENRAL_ALLOW_NONCOMMERCIAL=1`. `--gated` (exclusive with `--public`)
+  publishes a premium rSkill: a public repo whose files sit behind Hugging Face
+  manual access approval, set and verified before any upload.
 - **Provenance is not yet signed.** Sigstore signing/verification is the
   *planned* control but is **not implemented**. Until it lands,
   `rSkill.from_pretrained` / `from_yaml` emit an `rskill.unverified_provenance`

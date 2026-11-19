@@ -26,7 +26,7 @@ Unknown contract or license facts are blockers. Do not infer them from package n
 | `openral rskill new` | Preferred scaffold command when CLI is available | Supports HF introspection and family defaults |
 | `tools/rskill_scaffolder.py` | Standalone scaffold wrapper | Use `--out-dir rskills/<id>` explicitly |
 | `tools/quantize_rskill.py` | One-shot quantize + optional upload helper | Use `--skip-upload` first unless upload is intended |
-| `tools/rskill_publisher.py` | Validate and publish local rSkill folders | Dry-run by default; private repos unless `--public` (any licence) or `--gated` (commercial or `proprietary`) |
+| `tools/rskill_publisher.py` | Validate and publish local rSkill folders | Dry-run by default; private repos unless `--public` or `--gated` (any licence) |
 | `openral rskill check` | Compatibility check for installed/in-tree rSkills | Use with `--robot` when checking a target robot |
 | `openral sim run` | Produces real sim evidence and summaries | Pair scene config with `--rskill` |
 
@@ -120,9 +120,8 @@ Before publication:
 - README passes doc validator and has no template sentinels.
 - Eval artifacts are real or clearly labeled as unreproduced paper values.
 - License and provenance warnings are visible in README/manifest.
-- Repo is private, unless `--public` (any licence; the loader still refuses a
-  non-commercial skill without `OPENRAL_ALLOW_NONCOMMERCIAL=1`), or
-  `--gated` (manual HF access approval) and the license is commercial or `proprietary`.
+- Repo is private, unless `--public` or `--gated` (manual HF access approval);
+  either takes any licence, and the manifest's licence still binds: a commercial deployment (`OPENRAL_COMMERCIAL_DEPLOYMENT=1`) refuses a non-commercial skill unless `OPENRAL_ALLOW_NONCOMMERCIAL=1`.
 - Upstream `weights_uri` is pinned when appropriate.
 - Docs and tests travel with any code/schema changes.
 

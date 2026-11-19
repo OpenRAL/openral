@@ -10,11 +10,11 @@ Usage
     # Publish as private (the default):
     uv run python tools/rskill_publisher.py rskills/smolvla-libero/ --publish
 
-    # Publish as PUBLIC (only allowed for commercially-licensed weights):
+    # Publish as PUBLIC (any licence):
     uv run python tools/rskill_publisher.py rskills/rtdetr-coco-r18/ --publish --public
 
     # Publish as a GATED premium (OpenRAL Pro) rSkill: public repo, manual
-    # access approval on the Hub (commercial or proprietary licences only):
+    # access approval on the Hub (any licence):
     uv run python tools/rskill_publisher.py rskills/<dir>/ --publish --gated
 
     # Pin upstream weights to a specific commit SHA and then publish:
@@ -37,13 +37,14 @@ to ``nf4``); ``<owner>/rskill-<model>-<robot>-<task>`` for
 ``expected_repo_name``); hard-fails dry-run and ``--publish`` unless
 ``--fix-name``.
 
-Design constraints: private by default; ``--public`` is allowed for any
-licence (a non-commercial skill is still refused at load time without
-``OPENRAL_ALLOW_NONCOMMERCIAL=1``, CLAUDE.md §1.9) and is re-verified against
-the API post-``create_repo``. ``--gated`` (exclusive with ``--public``)
+Design constraints: private by default. Visibility carries no licence gate:
+publishing grants no rights beyond the weights' own licence, which travels in
+the manifest and is enforced by the loader in a commercial deployment
+(``OPENRAL_COMMERCIAL_DEPLOYMENT=1`` refuses a non-commercial skill unless
+``OPENRAL_ALLOW_NONCOMMERCIAL=1``, CLAUDE.md §1.9). ``--public`` is re-verified
+against the API post-``create_repo``. ``--gated`` (exclusive with ``--public``)
 creates a public repo, sets Hub gating to ``manual`` approval *before any file
-is uploaded* and verifies it; allowed for commercial or ``proprietary``
-licences. Hugging Face gating is the only enforcement — no entitlement check
+is uploaded* and verifies it. Hugging Face gating is the only enforcement — no entitlement check
 lives in this code. A pre-existing repo that is private, or ungated with files
 in it, is refused rather than changed. Requires an HF token with
 ``repo.write`` scope. Validates ``openral_core.schemas.RSkillManifest``
@@ -90,34 +91,6 @@ log = structlog.get_logger(__name__)
 
 # Files that must be present in a valid rSkill directory.
 _REQUIRED_FILES = ["rskill.yaml"]
-
-
-def gated_visibility_error(manifest: RSkillManifest, gated: bool) -> str | None:  # type: ignore[name-defined]  # noqa: F821
-    """Return an error message if ``--gated`` is not allowed, else ``None``.
-
-    A gated repo is publicly listed (only its files sit behind Hub access
-    approval), so it is allowed for commercially-licensed weights and for the
-    ``proprietary`` posture (premium rSkills), and refused for every research-only
-    or non-commercial posture. Pure (no network) so it fails fast before any HF call.
-
-    Args:
-        manifest: The validated rSkill manifest.
-        gated: Whether ``--gated`` was requested.
-
-    Returns:
-        ``None`` when the request is allowed; otherwise an explanatory string.
-    """
-    from openral_core.schemas import RSkillLicensePosture
-
-    if not gated or manifest.is_commercial_use_allowed:
-        return None
-    if manifest.license is RSkillLicensePosture.PROPRIETARY:
-        return None
-    return (
-        f"--gated refused: {manifest.name!r} has license {manifest.license.value!r}; "
-        "a gated repo is publicly listed, so only commercially-licensed or "
-        "'proprietary' weights may be gated (CLAUDE.md §1.9). Publish privately instead."
-    )
 
 
 def _validate_docs(skill_dir: Path, manifest: RSkillManifest) -> DocValidationReport:  # type: ignore[name-defined]  # noqa: F821
@@ -504,9 +477,7 @@ def _publish(
         manifest: Validated manifest (name used as the HF repo ID).
         token: HF API token with ``repo.write`` scope.
         public: When ``True`` create/verify a **public** repo; otherwise private.
-            The caller (``main``) only passes ``True`` after the license gate.
         gated: When ``True`` create a public repo with **manual** access approval.
-            The caller only passes ``True`` after ``gated_visibility_error``.
 
     Returns:
         The HF Hub URL of the published repo.
@@ -598,8 +569,8 @@ def main() -> None:
     """
     parser = argparse.ArgumentParser(
         description="Validate and publish a local rSkill directory to the HF Hub "
-        "(private by default; --public for commercially-licensed weights; --gated for "
-        "premium rSkills behind Hub access approval).",
+        "(private by default; --public for anyone; --gated for premium rSkills behind "
+        "Hub access approval).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -620,8 +591,8 @@ def main() -> None:
         action="store_true",
         default=False,
         help=(
-            "Create/verify a PUBLIC repo instead of private. Any licence; a "
-            "non-commercial skill stays refused at load time (§9)."
+            "Create/verify a PUBLIC repo instead of private. Any licence; the "
+            "manifest's licence still binds users (§1.9)."
         ),
     )
     visibility_group.add_argument(
@@ -630,8 +601,7 @@ def main() -> None:
         default=False,
         help=(
             "Create a PUBLIC repo with MANUAL access approval (premium rSkills). "
-            "Gating is set and verified before any upload. Only allowed for "
-            "commercially-licensed or 'proprietary' weights."
+            "Gating is set and verified before any upload. Any licence."
         ),
     )
     parser.add_argument(
@@ -676,12 +646,6 @@ def main() -> None:
 
     # ── Validate README + manifest documentation (CLAUDE.md §3 rSkill packaging) ───
     doc_report = _validate_docs(skill_dir, manifest)
-
-    # ── License gate for --gated (CLAUDE.md §1.9), before any network call ──────
-    gated_error = gated_visibility_error(manifest, args.gated)
-    if gated_error:
-        log.error("rskill_publisher.gated_refused", error=gated_error)
-        sys.exit(1)
 
     visibility = "gated (manual approval)" if args.gated else "public" if args.public else "private"
 

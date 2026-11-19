@@ -35,7 +35,7 @@ same lookup is available programmatically as
 
 **Gated (OpenRAL Pro) rSkills.** `tools/rskill_publisher.py --publish --gated`
 publishes a premium rSkill to a public repo with Hugging Face **manual** access
-approval (commercial or `proprietary` licences only); the Hub's gating is the
+approval (any licence); the Hub's gating is the
 only enforcement. When you lack access, `rskill search` lists the repo from
 its public model card and marks it `Pro (request access)`, and `rskill
 install` / `rSkill.from_pretrained` fail with

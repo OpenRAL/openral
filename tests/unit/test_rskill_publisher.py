@@ -319,7 +319,7 @@ def test_main_public_dry_run_accepts_non_commercial_skill(
     publisher: types.ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # --public carries no licence gate: a non-commercial skill dry-runs cleanly.
-    # The loader refuses it at activation without OPENRAL_ALLOW_NONCOMMERCIAL=1.
+    # Its licence binds at load time: a commercial deployment refuses it.
     nc_manifest = _VALID_MANIFEST_YAML.replace(
         "license: apache-2.0", "license: rlwrld_non_commercial"
     )
@@ -541,51 +541,14 @@ def test_enforce_repo_name_accepts_canonical_playbook(
 # ── --gated (premium rSkills behind HF manual access approval) ──────────────
 
 
-@pytest.mark.parametrize(
-    "posture", ["apache-2.0", "mit", "bsd", "nvidia_open_model", "proprietary"]
-)
-def test_gated_visibility_error_allows_commercial_and_proprietary(
-    publisher: types.ModuleType, tmp_path: Path, posture: str
-) -> None:
-    text = _VALID_MANIFEST_YAML.replace("license: apache-2.0", f"license: {posture}")
-    manifest = publisher._validate_manifest(_write_skill_dir(tmp_path, manifest_text=text))
-    assert publisher.gated_visibility_error(manifest, gated=True) is None
-
-
-@pytest.mark.parametrize(
-    "posture",
-    [
-        "permissive_research",
-        "nvidia_non_commercial",
-        "rlwrld_non_commercial",
-        "cc-by-nc-sa-4.0",
-        "unknown",
-    ],
-)
-def test_gated_visibility_error_refuses_research_and_non_commercial(
-    publisher: types.ModuleType, tmp_path: Path, posture: str
-) -> None:
-    text = _VALID_MANIFEST_YAML.replace("license: apache-2.0", f"license: {posture}")
-    manifest = publisher._validate_manifest(_write_skill_dir(tmp_path, manifest_text=text))
-    err = publisher.gated_visibility_error(manifest, gated=True)
-    assert err is not None and "--gated refused" in err and posture in err
-    assert publisher.gated_visibility_error(manifest, gated=False) is None
-
-
-def test_main_gated_on_refused_posture_exits_before_network(
+def test_main_gated_dry_run_accepts_non_commercial_skill(
     publisher: types.ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # --gated carries no licence gate either: it is never more exposed than --public.
     text = _VALID_MANIFEST_YAML.replace("license: apache-2.0", "license: permissive_research")
     skill_dir = _write_skill_dir(tmp_path, manifest_text=text)
-    monkeypatch.delenv("HF_TOKEN", raising=False)
-    monkeypatch.setattr(sys, "argv", ["rskill_publisher", str(skill_dir), "--publish", "--gated"])
-    with (
-        patch.object(publisher, "_publish") as publish,
-        pytest.raises(SystemExit) as excinfo,
-    ):
-        publisher.main()
-    assert excinfo.value.code == 1
-    publish.assert_not_called()
+    monkeypatch.setattr(sys, "argv", ["rskill_publisher", str(skill_dir), "--gated"])
+    publisher.main()  # no SystemExit
 
 
 def test_gated_and_public_are_mutually_exclusive(

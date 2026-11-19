@@ -1,7 +1,7 @@
 ---
 name: rtdetr-v2-r50vd
 description: >-
-  S1 object detector. Capabilities: detect on person, cup, bottle, bowl, chair, table. RT-DETRv2 object detector, ResNet-50vd backbone, trained on COCO 2017 (80 categories). ONNX runtime; perception producer that runs on the camera tee and publishes ObjectsMetadata to /openral/perception/objects. Improved baseline with bag-of-freebies and selective multi-scale features. Reference latency ~30 ms GPU / ~70 ms CPU. Apache-2.0 weights mirrored from PekingU/rtdetr_v2_r50vd. See ADR-0037 for the detector kind contract. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
+  S1 object detector. Capabilities: detect on person, cup, bottle, bowl, chair, table. RT-DETRv2 object detector, ResNet-50vd backbone, trained on COCO 2017 (80 categories). ONNX runtime; perception producer that runs on the camera tee and publishes ObjectsMetadata to /openral/perception/objects. Improved baseline with bag-of-freebies and selective multi-scale features. Apache-2.0 weights mirrored from PekingU/rtdetr_v2_r50vd. See ADR-0037 for the detector kind contract. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
 metadata:
   openral_rskill: true            # generated discovery view of an rSkill
   schema_version: 0.1
@@ -36,7 +36,7 @@ metadata:
 
 ## What it is
 
-An OpenRAL **object detector** (`role: s1`, `kind: detector`). RT-DETRv2 object detector, ResNet-50vd backbone, trained on COCO 2017 (80 categories). ONNX runtime; perception producer that runs on the camera tee and publishes ObjectsMetadata to /openral/perception/objects. Improved baseline with bag-of-freebies and selective multi-scale features. Reference latency ~30 ms GPU / ~70 ms CPU. Apache-2.0 weights mirrored from PekingU/rtdetr_v2_r50vd. See ADR-0037 for the detector kind contract.
+An OpenRAL **object detector** (`role: s1`, `kind: detector`). RT-DETRv2 object detector, ResNet-50vd backbone, trained on COCO 2017 (80 categories). ONNX runtime; perception producer that runs on the camera tee and publishes ObjectsMetadata to /openral/perception/objects. Improved baseline with bag-of-freebies and selective multi-scale features. Apache-2.0 weights mirrored from PekingU/rtdetr_v2_r50vd. See ADR-0037 for the detector kind contract.
 
 ## Capabilities
 

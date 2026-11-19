@@ -36,6 +36,8 @@ weights_uri: "local://rskills/rtdetr-v2-r50vd"
 
 chunk_size: 1
 latency_budget:
+  # GPU budget (CUDA EP or the Pro TensorRT tier). The CPU tier misses it
+  # (median 372 ms measured on a loaded 20-thread laptop CPU, README Latency).
   per_chunk_ms: 50.0
 
 detector:
@@ -134,7 +136,7 @@ description: >
   (80 categories). ONNX runtime; perception producer that runs on the
   camera tee and publishes ObjectsMetadata to /openral/perception/objects.
   Improved baseline with bag-of-freebies and selective multi-scale features.
-  Reference latency ~30 ms GPU / ~70 ms CPU. Apache-2.0 weights mirrored
+  Apache-2.0 weights mirrored
   from PekingU/rtdetr_v2_r50vd. See ADR-0037 for the detector kind contract.
 
 actions:

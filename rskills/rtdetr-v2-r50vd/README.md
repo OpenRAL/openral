@@ -25,9 +25,8 @@ openral:
   description: RT-DETRv2 object detector, ResNet-50vd backbone, trained on COCO 2017
     (80 categories). ONNX runtime; perception producer that runs on the camera tee
     and publishes ObjectsMetadata to /openral/perception/objects. Improved baseline
-    with bag-of-freebies and selective multi-scale features. Reference latency ~30
-    ms GPU / ~70 ms CPU. Apache-2.0 weights mirrored from PekingU/rtdetr_v2_r50vd.
-    See ADR-0037 for the detector kind contract.
+    with bag-of-freebies and selective multi-scale features. Apache-2.0 weights mirrored
+    from PekingU/rtdetr_v2_r50vd. See ADR-0037 for the detector kind contract.
   model_family: null
   min_vram_gb: 0.7
   latency_ms: 50.0
@@ -72,8 +71,8 @@ extraction, a discrete sampling operator, and improved training strategies.
 ## Supported robots / embodiments
 
 This detector is **embodiment-agnostic**: it requires only an RGB camera of at
-least 640×480 and emits `ObjectsMetadata`. All known embodiment tags are
-declared in the manifest; the `sensors_required` entry sets `modality: rgb`
+least 640×480 and emits `ObjectsMetadata`. The manifest declares the
+`embodiment_tags: ["any"]` wildcard; the `sensors_required` entry sets `modality: rgb`
 with no `vla_feature_key`, so the loader accepts any RGB camera stream
 regardless of its key name.
 
@@ -90,23 +89,24 @@ The detector emits **no** `Action` chunks and has no proprioception
 
 ## Latency
 
-| Host                | dtype                    | Latency (ms) | Throughput |
-|---------------------|--------------------------|-------------|------------|
-| NVIDIA RTX 3090     | fp16 (TensorRT)          | ~25          | ~40 fps    |
-| NVIDIA RTX 4090     | fp16 (TensorRT)          | ~18          | ~55 fps    |
-| Intel i7-13700K     | fp32 (onnxruntime)       | ~70          | ~14 fps    |
+| Host | Runtime | Median latency (ms) |
+|------|---------|---------------------|
+| Intel Core Ultra 7 255HX (20 threads, shared machine under load) | onnxruntime CPU, fp32 | 372 (R18 on the same run: 146) |
 
-Budget declared in manifest: `per_chunk_ms: 50.0`.
+Measured 2026-11-19, 640×640 input, 30 runs after 5 warm-up. No GPU
+measurement yet. The manifest's `per_chunk_ms: 50.0` is a GPU budget (CUDA
+or the OpenRAL Pro TensorRT tier); the CPU tier does not meet it. The
+detector is a background producer, so a slow tier lowers its publish rate
+rather than blocking the action loop.
 
 ## VRAM
 
 | dtype | VRAM   |
 |-------|--------|
 | fp32  | ~700 MB |
-| fp16 (TensorRT) | ~350 MB |
 
-The shipped weights are fp32 (`dtype: fp32`). The fp16 rows are reference
-numbers for a TensorRT fp16 engine; the shipped skill runs fp32.
+The shipped weights are fp32 (`dtype: fp32`), and the OpenRAL Pro TensorRT
+tier builds an fp32 engine from them (it passes no reduced precision).
 
 ## Accuracy (COCO val2017)
 
@@ -251,7 +251,7 @@ ball, kite, baseball bat, baseball glove, skateboard, surfboard, tennis racket
 | `license` | `apache-2.0` |
 | `role` | `s1` |
 | `kind` | `detector` (ADR-0037 perception producer) |
-| `embodiment_tags` | all 17 canonical embodiment tags (any robot with RGB camera) |
+| `embodiment_tags` | `["any"]` (any robot with an RGB camera) |
 | `runtime` / `quantization.dtype` | `onnx` / `fp32` |
 | `weights_uri` | `local://rskills/rtdetr-v2-r50vd` |
 | `latency_budget.per_chunk_ms` | `50.0` |
