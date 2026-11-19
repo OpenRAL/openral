@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render ``robots/rizon_dual/rizon_dual.urdf`` from this package's xacro — the only way to make it.
+"""Render ``robots/rizon_dual/rizon_dual.urdf`` from ``openral_hal_rizon``'s xacro (the only way).
 
 Three steps over plain ``xacro`` output (``ros2_control:=false``, the committed mounting):
 
@@ -17,8 +17,8 @@ After a re-render, re-lower the collision model (robots/rizon_dual/README.md).
 
 Usage::
 
-    python3 packages/openral_hal_rizon/render_urdf.py           # rewrite the committed URDF
-    python3 packages/openral_hal_rizon/render_urdf.py --check   # exit 1 if it would change
+    python3 tools/render_rizon_dual_urdf.py           # rewrite the committed URDF
+    python3 tools/render_rizon_dual_urdf.py --check   # exit 1 if it would change
 """
 
 from __future__ import annotations
@@ -29,8 +29,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-REPO = HERE.parents[1]
+REPO = Path(__file__).resolve().parents[1]
+HERE = REPO / "packages" / "openral_hal_rizon"
 XACRO = HERE / "urdf" / "rizon_dual.urdf.xacro"
 MOUNTING = HERE / "config" / "rizon_dual_mounting.yaml"
 OUT = REPO / "robots" / "rizon_dual" / "rizon_dual.urdf"

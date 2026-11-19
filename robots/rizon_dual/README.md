@@ -18,7 +18,7 @@ the 180°-rolled mount, right arm `Rizon4s-063618`, robot software v3.11).
   [`flexiv_description`](https://github.com/flexivrobotics/flexiv_description) `jazzy-v1.9`
   (`Rizon4s`), composed by `packages/openral_hal_rizon/urdf/rizon_dual.urdf.xacro`.
   `rizon_dual.urdf` is that xacro rendered with `ros2_control:=false` by
-  `python3 packages/openral_hal_rizon/render_urdf.py` (with the provisioned
+  `python3 tools/render_rizon_dual_urdf.py` (with the provisioned
   `~/flexiv_ws` sourced): meshes become `rd:rizon4_description` refs (`robot_descriptions`'
   Flexiv clone, byte-identical for Rizon4s), and each link's bare `origin`/`mass`/`inertia`
   is wrapped in `<inertial>` (flexiv_description jazzy-v1.9's `get_inertias` emits them

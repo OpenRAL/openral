@@ -178,19 +178,6 @@ _Real-hardware ros2_control bringup for the dual Flexiv Rizon 4s (`robots/rizon_
 - `_CONTROLLERS` (L40) — `joint_state_broadcaster`, `left_arm_controller`, `right_arm_controller`; the arm names must match the manifest's `hal.parameters.defaults.groups` (pinned by `tests/unit/test_rizon_dual_real_hal.py`).
 - `generate_launch_description() -> LaunchDescription` (L61) — Refuses a networked ROS graph (`require_host_confined_real_bringup`), then starts `robot_state_publisher` on `urdf/rizon_dual.urdf.xacro` (`ros2_control:=true`: upstream `flexiv_description` kinematics + one upstream `FlexivHardwareInterface` per arm), `ros2_control_node` with `config/rizon_dual_controllers.yaml` (1 kHz) and the three spawners. Args: `robot_sn_left`, `robot_sn_right`, `mounting_file`. Activation enables both arms (brakes released; the controllers hold the measured pose).
 
-### `packages/openral_hal_rizon/render_urdf.py`
-_Renders `robots/rizon_dual/rizon_dual.urdf` from `urdf/rizon_dual.urdf.xacro` (`ros2_control:=false`, the committed mounting) — the only way to regenerate it. Needs `xacro` and the pinned `flexiv_description` on the ament path; standard library only._
-
-- `HERE` (L32) — This package's directory.
-- `REPO` (L33) — The repo root.
-- `XACRO` (L34) — `urdf/rizon_dual.urdf.xacro`.
-- `MOUNTING` (L35) — `config/rizon_dual_mounting.yaml`, the committed mounting.
-- `OUT` (L36) — `robots/rizon_dual/rizon_dual.urdf`.
-- `HEADER` (L38) — The provenance comment the committed URDF opens with.
-- `portable(xacro_xml) -> str` (L49) — Over plain xacro output: `package://flexiv_description/` mesh refs → `rd:rizon4_description:`, each link's bare `origin`/`mass`/`inertia` wrapped in `<inertial>` (upstream `get_inertias` emits them unwrapped), the header prepended.
-- `render() -> str` (L62) — Runs `xacro` and `portable` on its output.
-- `main() -> int` (L73) — Writes the committed URDF, or `--check` exits 1 when it would change (reproduced byte-for-byte on q5090, 2026-11-19).
-
 ### `packages/openral_hal_unitree/launch/real_bringup.launch.py`
 
 _Bringup package (plus the guarded safety-controller plugin below): the Unitree hg HAL node is the generic `openral_hal_node` running `openral_hal.unitree_real:UnitreeHgRealHAL`; `robots/g1/robot.yaml` reaches this file through `hal.real_bringup`._

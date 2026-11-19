@@ -23,7 +23,7 @@ GroupedRosControlHAL → /left_arm_controller, /right_arm_controller (JointTraje
 | `config/rizon_dual_mounting.yaml` | The reference rig's mounts (`flexiv_description`'s mounting schema). |
 | `launch/real_bringup.launch.py` | `robot_state_publisher` + `ros2_control_node` + spawners, behind the host-confined-graph check. |
 | `deps.repos`, `provision_flexiv.sh` | Pins and the one-shot build of the upstream stack. |
-| `render_urdf.py` | Renders `robots/rizon_dual/rizon_dual.urdf` from the xacro (`--check` to verify); the only way to regenerate it. |
+| `tools/render_rizon_dual_urdf.py` (repo) | Renders `robots/rizon_dual/rizon_dual.urdf` from the xacro (`--check` to verify); the only way to regenerate it. |
 
 ## Provisioning (once per host)
 
