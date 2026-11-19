@@ -22,6 +22,7 @@ Gated on ``OPENRAL_TEST_ROS_LIVE=1``, listed in ``scripts/ros_live_tests.sh``.
 from __future__ import annotations
 
 import os
+import re
 import select
 import shutil
 import signal
@@ -52,12 +53,15 @@ pytestmark = pytest.mark.skipif(
 _DEFAULT_LOW = "33"
 _LOW_ENV = "OPENRAL_TEST_ADJACENT_DOMAIN_LOW"
 
-#: Two nodes and the probe each map the profile's 16 MiB segment, plus slack.
-_SHM_NEEDED_BYTES = 4 * 16 * 1024 * 1024
+#: Two nodes and the probe each map the profile's 16 MiB segment.
+_SHM_NEEDED_BYTES = 3 * 16 * 1024 * 1024
+#: Probes of each domain before the 128 control is taken as "no leak seen" (loaded CI runners).
+_CONTROL_PROBES = 3
 _READY_TIMEOUT_S = 30.0
 
 _NODE = """
 import sys, time, rclpy
+from rclpy.executors import ExternalShutdownException
 rclpy.init()
 node = rclpy.create_node(sys.argv[1])
 print("up", flush=True)
@@ -65,7 +69,7 @@ deadline = time.monotonic() + 180.0
 try:
     while time.monotonic() < deadline:
         rclpy.spin_once(node, timeout_sec=0.2)
-except KeyboardInterrupt:
+except (KeyboardInterrupt, ExternalShutdownException):
     pass
 node.destroy_node()
 rclpy.try_shutdown()
@@ -98,9 +102,16 @@ def _nodes_on(env: dict[str, str]) -> list[str]:
     return [str(n) for n in found["nodes"]]
 
 
-def _nodes_seen(low: str, high: str, profile: Path | None) -> tuple[list[str], list[str]]:
-    """Node names the guard's probe reads on each domain, with one node up on each."""
-    low_env, high_env = _sim_env(low, profile), _sim_env(high, profile)
+def _nodes_seen(
+    low: str, high: str, low_profile: Path | None, *, probes: int = 1
+) -> tuple[list[str], list[str]]:
+    """Node names the guard's probe reads on each domain, with one node up on each.
+
+    Only the lower domain takes ``low_profile``: the higher one keeps the shipped
+    profile, so nothing here reaches past ``high``. With ``probes`` above 1 the
+    domains are re-read until a foreign node shows or the probes run out.
+    """
+    low_env, high_env = _sim_env(low, low_profile), _sim_env(high, None)
     procs: list[subprocess.Popen[str]] = []
     try:
         # The higher domain first: its node takes participant id 0 there, the port a
@@ -115,7 +126,11 @@ def _nodes_seen(low: str, high: str, profile: Path | None) -> tuple[list[str], l
             assert ready, f"{name} did not start within {_READY_TIMEOUT_S} s"
             assert proc.stdout.readline().strip() == "up", f"{name} did not start"
         time.sleep(1.0)
-        return _nodes_on(low_env), _nodes_on(high_env)
+        for _ in range(probes):
+            on_low, on_high = _nodes_on(low_env), _nodes_on(high_env)
+            if len(on_low) + len(on_high) > len(procs):
+                break
+        return on_low, on_high
     finally:
         # SIGINT first: a killed Fast DDS participant leaves its /dev/shm segment behind.
         for proc in procs:
@@ -145,8 +160,10 @@ def test_shipped_profile_keeps_adjacent_domains_apart(tmp_path: Path) -> None:
 
     # The rig can see a leak: the range the profile shipped with before #664.
     wide = tmp_path / "wide.xml"
-    text = FASTDDS_LARGE_DATA_PROFILE.read_text()
-    assert text.count("<maxInitialPeersRange>120<") == 1
-    wide.write_text(text.replace("<maxInitialPeersRange>120<", "<maxInitialPeersRange>128<"))
-    on_low, on_high = _nodes_seen(low, high, wide)
+    text, replaced = re.subn(
+        r"(<maxInitialPeersRange>)\d+", r"\g<1>128", FASTDDS_LARGE_DATA_PROFILE.read_text()
+    )
+    assert replaced == 1
+    wide.write_text(text)
+    on_low, on_high = _nodes_seen(low, high, wide, probes=_CONTROL_PROBES)
     assert "/openral_test_domain_high" in on_low or "/openral_test_low" in on_high

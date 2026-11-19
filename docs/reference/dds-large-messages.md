@@ -167,8 +167,7 @@ each domain owns 250 ports and participant id 125 of domain N is participant id 
 N+1. A range of 128 therefore announced a graph on domain N to the first three participants
 of domain N+1. The two graphs merged, and a second `openral deploy sim` one domain up was
 refused as an occupied graph (issue #664; found with sims on domains 31 and 32). 120 keeps
-ids 0-119, whose last port is one below the next domain's first. It is also the most
-participants one domain can hold before its own ports run into the next one's.
+ids 0-119, whose last port is one below the next domain's first.
 
 Measured on Jazzy (2026-11-19), one node on domain 127 and one on 126, both under the
 profile with the range set as shown, `LOCALHOST` discovery:
@@ -180,14 +179,15 @@ profile with the range set as shown, `LOCALHOST` discovery:
 | 125, 121, 120 | its own domain's node only |
 
 `tests/integration/test_adjacent_domain_isolation_live.py` runs this against the shipped
-profile. The measurements are `LOCALHOST` to `LOCALHOST`; 120 rather than 125 because ids
-120-124 fall on the next domain's multicast ports, which a `SUBNET` graph listens on.
+profile. The measurements are `LOCALHOST` to `LOCALHOST`; 120 rather than 125 because id
+120's ports are the next domain's two multicast ports, which a `SUBNET` graph listens on
+(not measured).
 
-Adjacent domains can still leak on Fast DDS, and the occupied-graph refusal names the three
-ways: a graph started by an OpenRAL from before the fix, a profile of your own
-(`FASTRTPS_DEFAULT_PROFILES_FILE`) with a range above 120, or more than 120 participants in
-one domain. Keep such graphs at least two domains apart, or bring the range down: a range
-of 128 reaches one domain up, and each further 250 ports of range reaches one more.
+Adjacent domains can still leak, and the occupied-graph refusal names the two ways: a graph
+started by an OpenRAL from before the fix, or under a profile of your own
+(`FASTRTPS_DEFAULT_PROFILES_FILE`) with a range above 120. Restart that graph with the
+range at 120, or keep the two at least two domains apart: a range of 128 reaches one domain
+up, and one more for every further 125.
 
 ## Reproduce
 

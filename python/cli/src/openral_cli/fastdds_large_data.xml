@@ -50,8 +50,7 @@
         7400 + 250 * domain + 10 + 2 * id (+1), so ids 0-119 end one port below the next
         domain's block and id 125 IS the next domain's id 0. At 128 a sim on domain N
         announced itself to the first three participants of domain N+1, the two graphs
-        merged and the second sim was refused as an occupied graph. 120 is also the most
-        participants a domain holds before its own ports run into the next one's.
+        merged and the second sim was refused as an occupied graph.
       -->
       <maxInitialPeersRange>120</maxInitialPeersRange>
     </transport_descriptor>
