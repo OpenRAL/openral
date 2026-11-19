@@ -2403,16 +2403,18 @@ def _sim_scene_package(hal_mode: str) -> dict[str, pathlib.Path]:
     return {SIM_SCENE_PACKAGE: root}
 
 
-_RELATIVE_MESH = re.compile(r'(filename=")(?![A-Za-z][\w+.-]*:|/)([^"]+)(")')
+# A local mesh path: relative, or absolute (an expanded `rd:` mesh); never a URI.
+_LOCAL_MESH = re.compile(r'(filename=")(?![A-Za-z][\w+.-]*:)([^"]+)(")')
 
 
 def _robot_mesh_package(
     urdf_xml: str, urdf_dir: pathlib.Path
 ) -> tuple[str, dict[str, pathlib.Path]]:
-    """``urdf_xml`` with its relative mesh paths as ``package://`` URIs; and that package.
+    """``urdf_xml`` with its local mesh paths as ``package://`` URIs; and that package.
 
     A manifest's own URDF names its meshes relative to itself (``assets/base.stl``,
-    ``../meshes/link.stl``). ``robot_state_publisher`` doesn't care, but a 3D viewer asks
+    ``../meshes/link.stl``), or absolute once ``_portable_robot_description`` expanded its
+    ``rd:`` refs. ``robot_state_publisher`` doesn't care, but a 3D viewer asks
     ``foxglove_bridge`` for each mesh by URI, and the bridge serves ``package://`` only,
     never with ``..`` (topics.py ``ASSET_URI_ALLOWLIST``): with relative paths Lichtblick
     drew TF axes, no robot. The package holds links to the referenced files only, under
@@ -2421,7 +2423,7 @@ def _robot_mesh_package(
     two robots in same-named folders don't share one. The bridge's ament overlay
     registers it (``_foxglove_asset_env``). Any failure leaves the URDF as it was.
     """
-    refs = {m[2] for m in _RELATIVE_MESH.finditer(urdf_xml)}
+    refs = {m[2] for m in _LOCAL_MESH.finditer(urdf_xml)}
     files = {r: (urdf_dir / r).resolve() for r in refs}
     files = {r: f for r, f in files.items() if f.is_file()}
     if not files:
@@ -2448,16 +2450,18 @@ def _robot_mesh_package(
     except OSError as exc:
         print(f"[deploy_e2e] foxglove: URDF meshes will not load: {exc!r}", flush=True)
         return urdf_xml, {}
-    xml = _RELATIVE_MESH.sub(lambda m: f"{m[1]}{uris.get(m[2], m[2])}{m[3]}", urdf_xml)
+    xml = _LOCAL_MESH.sub(lambda m: f"{m[1]}{uris.get(m[2], m[2])}{m[3]}", urdf_xml)
     return xml, {pkg: root}
 
 
 def _portable_robot_description(urdf_xml: str) -> str:
-    """``urdf_xml`` with its ``rd:<module>:<relpath>`` meshes as ``file://`` URIs.
+    """``urdf_xml`` with its ``rd:<module>:<relpath>`` meshes as absolute paths.
 
     A vendored URDF names its meshes ``rd:`` (``openral_core.assets.expand_rd_mesh_refs``),
-    a scheme no ROS tool knows: ``foxglove_bridge``'s ``resource_retriever`` would
-    refuse every mesh. ``file://`` it serves. Only clones already in the
+    a scheme no ROS tool knows. ``robot_state_publisher`` takes an absolute path, and
+    ``_robot_mesh_package`` then serves it to the bridge as ``package://``: the bridge's
+    ``ASSET_URI_ALLOWLIST`` admits ``package://`` only, so the ``file://`` URIs this used
+    to write were refused and every ``rd:`` robot drew bare links. Only clones already in the
     ``robot_descriptions`` cache are read (``cached_only``): a launch never clones, so a
     viz convenience can neither hang nor take the graph down. Left as is, and printed,
     when a clone is not cached (any earlier use of the module on this host fills it).
@@ -2465,7 +2469,7 @@ def _portable_robot_description(urdf_xml: str) -> str:
     from openral_core.assets import AssetRefError, expand_rd_mesh_refs
 
     try:
-        return expand_rd_mesh_refs(urdf_xml, prefix="file://", cached_only=True)
+        return expand_rd_mesh_refs(urdf_xml, cached_only=True)
     except AssetRefError as exc:
         print(f"[deploy_e2e] foxglove: rd: URDF meshes will not load: {exc!r}", flush=True)
         return urdf_xml
