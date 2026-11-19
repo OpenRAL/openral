@@ -60,6 +60,7 @@ def test_mission_view_is_small_and_carries_the_mission() -> None:
         ],
     }  # fmt: skip
     assert view["reasoner"]["tool"] == "emit_prompt" and view["reasoner"]["tick_idx"] == 4
+    assert (view["awaiting_operator"], view["question"]) == (None, None)  # an older openral
     assert (view["stopped"], view["estopped"], view["latched"]) == (False, False, False)
     assert view["latch_reason"] is None  # a reason only while latched
     assert len(json.dumps(view)) < 1000

@@ -973,8 +973,8 @@ def mission_view(snapshot: dict[str, Any]) -> dict[str, Any]:
 
     ``GET /api/mission`` and ``/api/mission/stream`` (#659): the mission (its goal, the
     correlation id of the prompt that started it, each task's status), the reasoner's last
-    tick, and whether the robot is stopped. ``/api/state`` carries the same facts among
-    camera thumbnails, events and metrics.
+    tick, whether it waits on its operator, and whether the robot is stopped. ``/api/state``
+    carries the same facts among camera thumbnails, events and metrics.
 
     Example:
         >>> v = mission_view({"topics": {"safety_status": {"latched": True}}})
@@ -1009,6 +1009,11 @@ def mission_view(snapshot: dict[str, Any]) -> dict[str, Any]:
             k: reasoner.get(k)
             for k in ("ts_unix", "tick_idx", "tool", "rskill_id", "error_kind", "message")
         },
+        # The robot said something to its operator and waits for a reply (#660). ``None``:
+        # its openral predates the flag, or no tick yet. ``question``: what it said, when
+        # free text may leave the host.
+        "awaiting_operator": reasoner.get("awaiting_operator"),
+        "question": reasoner.get("operator_question"),
         "stopped": estopped or latched,  # nothing moves until a person resets it
         "estopped": estopped,
         "latched": latched,

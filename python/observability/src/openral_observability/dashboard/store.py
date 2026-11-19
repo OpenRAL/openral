@@ -1431,6 +1431,8 @@ class TelemetryStore:
                 "inflight_skill": attrs.get(semconv.REASONER_INFLIGHT_SKILL),
                 "inflight_state": attrs.get(semconv.REASONER_INFLIGHT_STATE),
                 "message": attrs.get(semconv.REASONER_MESSAGE),
+                "awaiting_operator": attrs.get(semconv.REASONER_AWAITING_OPERATOR),
+                "operator_question": attrs.get(semconv.REASONER_OPERATOR_QUESTION),
                 "detail": _reasoner_detail(attrs),
             }
         )

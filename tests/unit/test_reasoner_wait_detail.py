@@ -203,3 +203,86 @@ def test_non_prompt_tick_has_no_message(exporter: InMemorySpanExporter) -> None:
     core.tick(world_state=None, renderer=renderer, palette=ToolPalette())
     (span,) = exporter.get_finished_spans()
     assert _ingest(span)["message"] is None
+
+
+# ── waiting on the operator (#660) ───────────────────────────────────────────
+
+
+def test_a_tick_that_asks_the_operator_says_it_is_waiting(exporter: InMemorySpanExporter) -> None:
+    """The asking tick and every later one carry the flag and the question, until answered."""
+    from openral_observability.dashboard.app import mission_view
+
+    renderer = ContextRenderer()
+    renderer.append_prompt(PromptRecord(text="pick the block", metadata_json="", stamp_ns=0))
+    question = "Which block: the left one or the right one?"
+    core = ReasonerCore(
+        client=FakeToolUseClient(
+            responses=[
+                WaitTool(rationale="looking"),
+                EmitPromptTool(
+                    target_topic="/openral/prompt", text=question, rationale="ambiguous"
+                ),
+                WaitTool(rationale="waiting for the operator"),
+                WaitTool(rationale="answered"),
+            ]
+        ),
+        min_interval_s=0.0,
+    )
+
+    def tick(stamp: int) -> dict[str, object]:
+        renderer.append_prompt(
+            PromptRecord(text=f"event {stamp}", metadata_json="", stamp_ns=stamp)
+        )
+        core.tick(world_state=None, renderer=renderer, palette=ToolPalette())
+        return _ingest(exporter.get_finished_spans()[-1])
+
+    before = tick(1)
+    assert (before["awaiting_operator"], before["operator_question"]) == (False, None)
+    asking = tick(2)  # the node has not dispatched yet: the tick itself says it
+    assert (asking["awaiting_operator"], asking["operator_question"]) == (True, question)
+    renderer.awaiting_operator = question  # the node, at dispatch
+    waiting = tick(3)
+    assert (waiting["awaiting_operator"], waiting["operator_question"]) == (True, question)
+    view = mission_view({"topics": {"reasoner": waiting}})
+    assert (view["awaiting_operator"], view["question"]) == (True, question)
+    renderer.awaiting_operator = None  # the node, on the operator's reply
+    after = tick(4)
+    assert (after["awaiting_operator"], after["operator_question"]) == (False, None)
+
+
+def test_a_machine_cascade_prompt_is_not_a_question_to_the_operator(
+    exporter: InMemorySpanExporter,
+) -> None:
+    renderer = ContextRenderer()
+    renderer.append_prompt(PromptRecord(text="pick the block", metadata_json="", stamp_ns=0))
+    core = ReasonerCore(
+        client=FakeToolUseClient(
+            responses=[
+                EmitPromptTool(target_topic="/openral/prompt_in/auto", text="next", rationale="r")
+            ]
+        ),
+        min_interval_s=0.0,
+    )
+    core.tick(world_state=None, renderer=renderer, palette=ToolPalette())
+    assert _ingest(exporter.get_finished_spans()[-1])["awaiting_operator"] is False
+
+
+def test_the_question_stays_on_host_without_consent(
+    exporter: InMemorySpanExporter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The flag always leaves; the question's text only where free text may (§3)."""
+    from openral_observability import _sdk
+
+    monkeypatch.setattr(_sdk, "_endpoint", "https://otlp.example.com:4318")
+    monkeypatch.delenv("OPENRAL_TELEMETRY_TEXT_CONSENT", raising=False)
+    renderer = ContextRenderer()
+    renderer.append_prompt(PromptRecord(text="pick the block", metadata_json="", stamp_ns=0))
+    renderer.awaiting_operator = "Which block?"
+    core = ReasonerCore(
+        client=FakeToolUseClient(responses=[WaitTool(rationale="waiting")]), min_interval_s=0.0
+    )
+    core.tick(world_state=None, renderer=renderer, palette=ToolPalette())
+    (span,) = exporter.get_finished_spans()
+    assert span.attributes is not None
+    assert span.attributes[semconv.REASONER_AWAITING_OPERATOR] is True
+    assert semconv.REASONER_OPERATOR_QUESTION not in span.attributes
