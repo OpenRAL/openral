@@ -12,8 +12,9 @@ Two real ``rclpy`` nodes, one per domain, under the real sim scope
 occupancy guard's own probe (``_dds_scope._scan_graph``). The same rig under a copy
 of the profile at 128 must show the leak, or the first half proves nothing.
 
-Nodes only — nothing is published, so a robot that happens to live on one of the
-two domains sees two extra node names and no data.
+The nodes carry no publisher or subscriber of their own (only what every ``rclpy``
+node has: ``/rosout``, ``/parameter_events``, its parameter services), discovery is
+host-only, and the test skips when either domain already has a node on it.
 
 Gated on ``OPENRAL_TEST_ROS_LIVE=1``, listed in ``scripts/ros_live_tests.sh``.
 """
@@ -21,6 +22,9 @@ Gated on ``OPENRAL_TEST_ROS_LIVE=1``, listed in ``scripts/ros_live_tests.sh``.
 from __future__ import annotations
 
 import os
+import select
+import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -34,45 +38,69 @@ from openral_cli.deploy_sim import (
     apply_fastdds_large_data_profile,
 )
 
+from tests.integration._ros_pkg import ros_pkg_available
+
 _LIVE_ROS = bool(os.getenv("OPENRAL_TEST_ROS_LIVE"))
 pytestmark = pytest.mark.skipif(
     not _LIVE_ROS,
     reason="live rclpy graph — set OPENRAL_TEST_ROS_LIVE=1 and source install/setup.bash first.",
 )
 
-#: Adjacent, in the robot hash's free range (10-49 minus 42), away from the test domains.
-#: ``OPENRAL_TEST_ADJACENT_DOMAIN_LOW`` moves the pair on a host where 46/47 are in use.
-_LOW = os.getenv("OPENRAL_TEST_ADJACENT_DOMAIN_LOW", "46")
-_HIGH = str(int(_LOW) + 1)
+#: The lower of the two adjacent domains. 33 and 34 are in the robot hash's free range
+#: (10-49 minus 42) and no in-tree robot's derived domain. On a shared host
+#: ``OPENRAL_TEST_ADJACENT_DOMAIN_LOW`` moves the pair (read in the test, not at import).
+_DEFAULT_LOW = "33"
+_LOW_ENV = "OPENRAL_TEST_ADJACENT_DOMAIN_LOW"
+
+#: Two nodes and the probe each map the profile's 16 MiB segment, plus slack.
+_SHM_NEEDED_BYTES = 4 * 16 * 1024 * 1024
+_READY_TIMEOUT_S = 30.0
 
 _NODE = """
 import sys, time, rclpy
 rclpy.init()
 node = rclpy.create_node(sys.argv[1])
 print("up", flush=True)
-deadline = time.monotonic() + 60.0
-while time.monotonic() < deadline:
-    rclpy.spin_once(node, timeout_sec=0.2)
+deadline = time.monotonic() + 180.0
+try:
+    while time.monotonic() < deadline:
+        rclpy.spin_once(node, timeout_sec=0.2)
+except KeyboardInterrupt:
+    pass
+node.destroy_node()
+rclpy.try_shutdown()
 """
 
 
 def _sim_env(domain: str, profile: Path | None) -> dict[str, str]:
     """What ``openral deploy sim`` launches under, on ``domain``, on Fast DDS."""
     env = os.environ.copy()
-    for name in ("ROS_LOCALHOST_ONLY", "ROS_STATIC_PEERS", "ROS_DISCOVERY_SERVER"):
+    for name in (
+        "ROS_LOCALHOST_ONLY",
+        "ROS_STATIC_PEERS",
+        "ROS_DISCOVERY_SERVER",
+        "OPENRAL_ALLOW_NETWORK_ROS",  # with it, SUBNET below would stay SUBNET
+    ):
         env.pop(name, None)
     env["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "SUBNET"  # what setup.bash exports
     env["ROS_DOMAIN_ID"] = domain
     env["RMW_IMPLEMENTATION"] = "rmw_fastrtps_cpp"  # the profile is Fast DDS's
     env[FASTDDS_PROFILES_ENV] = "" if profile is None else str(profile)
     _dds_scope.confine_sim_scope(env)
+    assert env["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "LOCALHOST"
     apply_fastdds_large_data_profile(env)
     return env
 
 
-def _nodes_seen(profile: Path | None) -> tuple[list[str], list[str]]:
-    """Node names the guard's probe reads on ``_LOW`` and on ``_HIGH``, one node up on each."""
-    low_env, high_env = _sim_env(_LOW, profile), _sim_env(_HIGH, profile)
+def _nodes_on(env: dict[str, str]) -> list[str]:
+    found = _dds_scope._scan_graph(env)
+    assert isinstance(found, dict), f"graph probe failed: {found!r}"
+    return [str(n) for n in found["nodes"]]
+
+
+def _nodes_seen(low: str, high: str, profile: Path | None) -> tuple[list[str], list[str]]:
+    """Node names the guard's probe reads on each domain, with one node up on each."""
+    low_env, high_env = _sim_env(low, profile), _sim_env(high, profile)
     procs: list[subprocess.Popen[str]] = []
     try:
         # The higher domain first: its node takes participant id 0 there, the port a
@@ -83,29 +111,42 @@ def _nodes_seen(profile: Path | None) -> tuple[list[str], list[str]]:
             )
             procs.append(proc)
             assert proc.stdout is not None
+            ready, _, _ = select.select([proc.stdout], [], [], _READY_TIMEOUT_S)
+            assert ready, f"{name} did not start within {_READY_TIMEOUT_S} s"
             assert proc.stdout.readline().strip() == "up", f"{name} did not start"
         time.sleep(1.0)
-        seen = []
-        for env in (low_env, high_env):
-            found = _dds_scope._scan_graph(env)
-            assert isinstance(found, dict), f"graph probe failed: {found!r}"
-            seen.append([str(n) for n in found["nodes"]])
-        return seen[0], seen[1]
+        return _nodes_on(low_env), _nodes_on(high_env)
     finally:
+        # SIGINT first: a killed Fast DDS participant leaves its /dev/shm segment behind.
         for proc in procs:
-            proc.kill()
-            proc.wait()
+            proc.send_signal(signal.SIGINT)
+        for proc in procs:
+            try:
+                proc.wait(timeout=10.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
 
 
 def test_shipped_profile_keeps_adjacent_domains_apart(tmp_path: Path) -> None:
-    low, high = _nodes_seen(None)
-    assert low == ["/openral_test_low"]
-    assert high == ["/openral_test_domain_high"]
+    if not ros_pkg_available("rmw_fastrtps_cpp"):
+        pytest.skip("rmw_fastrtps_cpp is not installed; the profile under test is Fast DDS's")
+    if shutil.disk_usage("/dev/shm").free < _SHM_NEEDED_BYTES:
+        pytest.skip("/dev/shm too small for three Fast DDS participants with 16 MiB segments")
+    low = os.getenv(_LOW_ENV, "").strip() or _DEFAULT_LOW
+    high = str(int(low) + 1)
+    for domain in (low, high):
+        if occupants := _nodes_on(_sim_env(domain, None)):
+            pytest.skip(f"ROS_DOMAIN_ID={domain} is in use ({occupants[:3]}); set {_LOW_ENV}")
+
+    on_low, on_high = _nodes_seen(low, high, None)
+    assert on_low == ["/openral_test_low"]
+    assert on_high == ["/openral_test_domain_high"]
 
     # The rig can see a leak: the range the profile shipped with before #664.
     wide = tmp_path / "wide.xml"
     text = FASTDDS_LARGE_DATA_PROFILE.read_text()
     assert text.count("<maxInitialPeersRange>120<") == 1
     wide.write_text(text.replace("<maxInitialPeersRange>120<", "<maxInitialPeersRange>128<"))
-    low, high = _nodes_seen(wide)
-    assert "/openral_test_domain_high" in low or "/openral_test_low" in high
+    on_low, on_high = _nodes_seen(low, high, wide)
+    assert "/openral_test_domain_high" in on_low or "/openral_test_low" in on_high

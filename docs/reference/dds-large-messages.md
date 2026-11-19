@@ -152,7 +152,7 @@ Measured on Jazzy (2026-11-16) with 60 one-node processes, each serving one serv
 |---|---|
 | Shipped before this change | processes 1-30 only; none of 34-60 |
 | `maxInitialPeersRange` 128 (shipped until #664) | all 60 |
-| `maxInitialPeersRange` 120 | all 60 |
+| `maxInitialPeersRange` 120 (re-measured 2026-11-19) | all 60 |
 | `SUBNET` discovery, no profile | all 60 |
 
 A deploy sim graph is about 50 processes, and Nav2 starts last. Its `bt_navigator` never found
@@ -180,10 +180,14 @@ profile with the range set as shown, `LOCALHOST` discovery:
 | 125, 121, 120 | its own domain's node only |
 
 `tests/integration/test_adjacent_domain_isolation_live.py` runs this against the shipped
-profile. Two things still leak between adjacent domains, and the occupied-graph refusal
-names them: a graph started by an OpenRAL from before the fix, or under a profile of your
-own (`FASTRTPS_DEFAULT_PROFILES_FILE`) with a range above 125. Keep those at least two
-domains apart.
+profile. The measurements are `LOCALHOST` to `LOCALHOST`; 120 rather than 125 because ids
+120-124 fall on the next domain's multicast ports, which a `SUBNET` graph listens on.
+
+Adjacent domains can still leak on Fast DDS, and the occupied-graph refusal names the three
+ways: a graph started by an OpenRAL from before the fix, a profile of your own
+(`FASTRTPS_DEFAULT_PROFILES_FILE`) with a range above 120, or more than 120 participants in
+one domain. Keep such graphs at least two domains apart, or bring the range down: a range
+of 128 reaches one domain up, and each further 250 ports of range reaches one more.
 
 ## Reproduce
 

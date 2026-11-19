@@ -436,6 +436,18 @@ class TestGraphOccupancyGuard:
         assert "next ROS_DOMAIN_ID up or down" in message
         assert "at least 2 domains apart" in message
 
+    def test_the_adjacent_domain_hint_is_fast_dds_only(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The deploy profile is not applied on Cyclone, so the hint would misdirect there."""
+        monkeypatch.setattr(_dds_scope, "_scan_graph", lambda _env: self._ROBOT_GRAPH)
+        with pytest.raises(ROSConfigError) as excinfo:
+            _dds_scope.assert_graph_unoccupied(
+                {"RMW_IMPLEMENTATION": "rmw_cyclonedds_cpp"}, hal_mode="sim"
+            )
+        assert "next ROS_DOMAIN_ID" not in str(excinfo.value)
+        assert "different host or ROS_DOMAIN_ID" in str(excinfo.value)
+
     def test_a_real_robot_refuses_to_start_beside_an_existing_graph(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
