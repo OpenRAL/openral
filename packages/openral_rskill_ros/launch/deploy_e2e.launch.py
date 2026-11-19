@@ -2957,6 +2957,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     preload_prompt = LaunchConfiguration("preload_prompt").perform(context)
     place_declaration_json = LaunchConfiguration("place_declaration_json").perform(context)
     grasp_declaration_json = LaunchConfiguration("grasp_declaration_json").perform(context)
+    success_conditions_json = LaunchConfiguration("success_conditions_json").perform(context)
     object_queries_json = LaunchConfiguration("object_queries_json").perform(context)
     place_zones_json = LaunchConfiguration("place_zones_json").perform(context)
     nav_goals_json = LaunchConfiguration("nav_goals_json").perform(context)
@@ -4222,6 +4223,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 "place_declaration_json": place_declaration_json,
                 # Grasp-phase sibling (real pick-and-place design §2.1).
                 "grasp_declaration_json": grasp_declaration_json,
+                # Issue #635: the scene's SuccessCondition s by prompt; "" = none.
+                "success_conditions_json": success_conditions_json,
                 # Issue #418: the scene task's standing ObjectQuery s; inert while the
                 # runner's object_tracking is "off".
                 "object_queries_json": object_queries_json,
@@ -5937,6 +5940,15 @@ def generate_launch_description() -> LaunchDescription:
                 "Serialized openral_core.GraspDeclaration (real pick-and-place "
                 "design §2.1) the skill_runner scopes to each goal it "
                 "dispatches. Empty = no declaration, no grasp exemption."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "success_conditions_json",
+            default_value="",
+            description=(
+                "Serialized {prompt: openral_core.SuccessCondition} (issue #635): the "
+                "skill_runner judges a goal by the one its prompt names, unless the goal "
+                "carries its own. Empty = none: a policy run's task outcome is unknown."
             ),
         ),
         DeclareLaunchArgument(

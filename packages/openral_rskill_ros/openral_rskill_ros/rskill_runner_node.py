@@ -49,11 +49,16 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, cast, runtime_check
 import structlog
 from openral_core import (
     POLICY_KINDS,
+    SuccessCondition,
+    TaskOutcome,
+    TaskVerdict,
     required_vla_camera_slots,
     sensor_name_to_slot,
+    success_condition_for_prompt,
 )
-from openral_core.exceptions import ROSConfigError
+from openral_core.exceptions import ROSConfigError, ROSError, ROSSafetyViolation
 from openral_core.schemas import ControlMode, JointType
+from openral_core.success import SuccessJudge
 from openral_observability.failure_bus import drop_reason_label
 from openral_rskill.execution_budget import (
     DEFAULT_CLOCK_STALL_S,
@@ -686,6 +691,10 @@ if _ROS2_AVAILABLE:
             # design §2.1) — the scene's `grasp_declaration`, serialised, same
             # precedence as the place one (the goal's own wins). Empty = none.
             self.declare_parameter("grasp_declaration_json", "")
+            # Issue #635 — the scene's `success_conditions` ({prompt: SuccessCondition}),
+            # serialised. A goal is judged by its own condition, else by the one its
+            # prompt names here. Empty = none declared.
+            self.declare_parameter("success_conditions_json", "")
             # Approach-armed grasp target (real pick-and-place design §2.2): with
             # no declaration from the goal or the scene, arm a goal-scope one —
             # no target, no search box, every gripper hand's contact links — so
@@ -824,6 +833,11 @@ if _ROS2_AVAILABLE:
             # Issue #418: the newest /openral/tracked_objects set (TrackedObjectSet), or
             # ``None``; read by the grounding wait.
             self._tracked_set: Any = None
+            # Issue #635, per goal: the judge of its declared SuccessCondition (None:
+            # none declared) and what else completed the goal ("skill" | "checker").
+            self._goal_success_judge: SuccessJudge | None = None
+            self._goal_task_outcome: TaskOutcome | None = None  # the one that ended the loop
+            self._goal_completed_by = ""
             # Why the execution budget last lapsed (true elapsed + kind), so an
             # aborted goal's failure_reason can quote the overrun.
             self._last_deadline_miss: BudgetMiss | None = None
@@ -1138,8 +1152,8 @@ if _ROS2_AVAILABLE:
             from openral_msgs.msg import ObjectQuery as _ObjectQueryMsg
 
             self._object_query_msg_cls: Any = _ObjectQueryMsg
-            # Issue #418: the tracker's set, for the grounding wait (QoS as published),
-            # and its query escalations (an exhausted one ends the goal it belongs to).
+            # Issue #418: the tracker's query escalations (an exhausted one ends the goal
+            # it belongs to).
             if tracking != "off":
                 from openral_msgs.msg import FailureTrigger as _FailureTriggerMsg
 
@@ -1153,18 +1167,21 @@ if _ROS2_AVAILABLE:
                         depth=50,
                     ),
                 )
-                from openral_msgs.msg import TrackedObjectSet as _TrackedObjectSetMsg
+            # The tracker's set: the grounding wait reads the newest, and every
+            # publication feeds the running goal's success judge (issue #635), so it is
+            # subscribed in every tracking mode (a goal may carry its own condition).
+            from openral_msgs.msg import TrackedObjectSet as _TrackedObjectSetMsg
 
-                self._tracked_sub = self.create_subscription(
-                    _TrackedObjectSetMsg,
-                    "/openral/tracked_objects",
-                    self._on_tracked_objects,
-                    QoSProfile(
-                        reliability=QoSReliabilityPolicy.RELIABLE,
-                        durability=QoSDurabilityPolicy.VOLATILE,
-                        depth=1,
-                    ),
-                )
+            self._tracked_sub = self.create_subscription(
+                _TrackedObjectSetMsg,
+                "/openral/tracked_objects",
+                self._on_tracked_objects,
+                QoSProfile(
+                    reliability=QoSReliabilityPolicy.RELIABLE,
+                    durability=QoSDurabilityPolicy.VOLATILE,
+                    depth=1,
+                ),
+            )
             self._grasp_declaration_pub = self.create_publisher(
                 _GraspDeclarationMsg,
                 "/openral/grasp_declaration",
@@ -1676,13 +1693,18 @@ if _ROS2_AVAILABLE:
                 self._goal_evidence = None
                 self._explained_drop = None
                 self._goal_outcome_summary = ""
+                self._goal_success_judge = None
+                self._goal_task_outcome = None
+                self._goal_completed_by = ""
                 self._grasp_hand_note = ""
                 self._goal_started_monotonic = time.monotonic()
             # Reward-gate signal: this instruction is now executing.
             self._publish_active_task(req.prompt)
 
             result = ExecuteRskill.Result()
-            with rskill_span("rskill.execute", rskill_id=rskill_id) as span:
+            with self._task_outcome_stamped(
+                rskill_span("rskill.execute", rskill_id=rskill_id), result
+            ) as span:
                 # Stamp the trace id on the result before any early-return
                 # path so the caller can correlate even on failure.
                 from openral_observability import propagation
@@ -1696,6 +1718,9 @@ if _ROS2_AVAILABLE:
                         raise ROSConfigError(
                             f"ExecuteRskill.deadline_s must be finite; got {deadline_s!r}."
                         )
+                    condition = self._resolve_success_condition(req)
+                    if condition is not None:
+                        self._goal_success_judge = SuccessJudge(condition)
                     # ADR-0097 — arm this goal's place declaration once the trace
                     # exists, so the declaration carries the id an incident review
                     # would look it up by. Every terminal path below runs through
@@ -2339,6 +2364,7 @@ if _ROS2_AVAILABLE:
                 if self._cancel_requested or goal_handle.is_cancel_requested:
                     return "cancelled"
                 if self._complete_requested:  # logged by `_on_complete`
+                    self._goal_completed_by = "checker"
                     return "completed"
                 if self._deadline_lapsed(budget, chunk_index) or self._grasp_declaration_lapsing(
                     chunk_index
@@ -2346,6 +2372,10 @@ if _ROS2_AVAILABLE:
                     return "deadline"
 
                 snapshot = self._aggregator.snapshot()
+                # Issue #635: once the goal's `end_on_success` condition has settled the
+                # policy is done, so the goal ends here instead of on its budget.
+                if self._success_condition_met(snapshot.tracked_objects):
+                    return "completed"
                 # Wrap inference so the Inference card and the rskill.id /
                 # rskill.role identity latches both populate. The store's
                 # `_HEADLINE_FAMILIES` maps `rskill.chunk_inference`
@@ -2385,6 +2415,7 @@ if _ROS2_AVAILABLE:
                             f"rskill={self._active_skill_id}: {completion!s}"
                         )
                         self._goal_outcome_summary = str(completion)[:_OUTCOME_SUMMARY_MAX_CHARS]
+                        self._goal_completed_by = "skill"
                         inf_span.set_attribute("rskill.completion", "goal_satisfied")
                         return "completed"
                     # ``step()`` may return a single ``Action``
@@ -3328,6 +3359,148 @@ if _ROS2_AVAILABLE:
             except ValueError as exc:  # pydantic.ValidationError; a bad set grounds nothing
                 self.get_logger().error(f"rskill_runner.tracked_objects_rejected: {exc!s}")
                 self._tracked_set = None
+            # Issue #635: every set the tracker publishes (its heartbeat too) is evidence
+            # for the running goal's success condition, whatever the policy's tick rate.
+            judge = self._goal_success_judge
+            if judge is not None:
+                judge.observe(self._tracked_set)
+
+        def _resolve_success_condition(self, request: Any) -> SuccessCondition | None:
+            """The success condition in force for this goal, or ``None`` (issue #635).
+
+            The goal's own typed condition wins; else the one the deploy scene declares
+            for this goal's prompt (``success_conditions_json``,
+            ``success_condition_for_prompt``). A goal with another prompt — a wrapped
+            Nav2 move, a different task — is judged by none.
+
+            Raises:
+                ROSConfigError: The supplied condition does not validate. A dispatcher
+                    that said what success is never silently gets a run judged by nothing.
+            """
+            from pydantic import TypeAdapter
+
+            try:
+                if bool(getattr(request, "success_condition_valid", False)):
+                    return SuccessCondition.from_idl(request.success_condition)
+                raw = self.get_parameter("success_conditions_json")
+                text = raw.get_parameter_value().string_value
+                if not text:
+                    return None
+                declared = TypeAdapter(dict[str, SuccessCondition]).validate_json(text)
+                condition = success_condition_for_prompt(str(request.prompt), declared)
+                if condition is None:
+                    self.get_logger().info(
+                        f"rskill_runner.success_condition_unmatched: the scene declares "
+                        f"conditions for {sorted(declared)}, none for this goal's prompt "
+                        f"{str(request.prompt)!r}; its task outcome is not judged"
+                    )
+                return condition
+            except (ValueError, TypeError) as exc:
+                raise ROSConfigError(
+                    f"the supplied success condition does not validate, so the goal is "
+                    f"refused: {exc!s}"
+                ) from exc
+
+        def _success_condition_met(self, tracked: Any) -> bool:
+            """True once a goal's ``end_on_success`` condition has settled (latched for the Result).
+
+            The goal's ``SuccessJudge`` is fed by ``_on_tracked_objects``. ``tracked`` is
+            the world-state snapshot's set: ``None`` (no tracker, or its set went stale)
+            decides nothing. False with no condition declared, or one that only labels
+            the result.
+            """
+            judge = self._goal_success_judge
+            if judge is None or tracked is None or not judge.condition.end_on_success:
+                return False
+            judged = judge.outcome()
+            if judged.verdict is not TaskVerdict.SUCCEEDED:
+                return False
+            # The verdict that ends the goal is the one its Result reports.
+            self._goal_task_outcome = judged
+            self.get_logger().info(
+                f"rskill_runner.success_condition_met rskill={self._active_skill_id}: "
+                f"{judged.reason}"
+            )
+            return True
+
+        @contextlib.contextmanager
+        def _task_outcome_stamped(self, span_cm: Any, result: Any) -> Any:
+            """Enter ``span_cm`` and, as the goal's body leaves it, stamp ``result``'s task outcome.
+
+            Every terminal path of ``_execute_locked`` returns from inside the
+            ``rskill.execute`` span, so this is the one place all of them pass with the
+            span still open (an escaping exception, e.g. ``ROSSafetyViolation``, has no
+            result to stamp).
+            """
+            with span_cm as span:
+                yield span
+                self._stamp_task_outcome(result, span)
+
+        def _stamp_task_outcome(self, result: Any, span: Any) -> None:
+            """Write the goal's ``TaskOutcome`` on its result, its span and the log (issue #635).
+
+            A declared ``SuccessCondition`` decides, judged once more now, at goal end
+            (``SuccessJudge``). With none declared, a goal the skill itself or a
+            completion check ended is ``succeeded`` by that source; anything else is
+            ``unknown`` — never a silent success.
+            """
+            from openral_msgs.action import ExecuteRskill
+
+            outcome = self._goal_task_outcome
+            judge = self._goal_success_judge
+            if outcome is None and judge is not None and self._aggregator is not None:
+                # A run that ended on its budget, a stop or a cancel is judged on what the
+                # tracker holds now. The goal is already finalized: a judge that cannot
+                # run must not cost the caller its Result, so it reads unknown.
+                try:
+                    if self._aggregator.snapshot().tracked_objects is None:
+                        judge.observe(None)  # no tracker, or its set went stale
+                    outcome = judge.outcome()
+                except ROSSafetyViolation:
+                    raise
+                except (ROSError, ValueError) as exc:
+                    self.get_logger().error(f"rskill_runner.task_outcome_unjudged: {exc!s}")
+                    outcome = TaskOutcome(
+                        verdict=TaskVerdict.UNKNOWN,
+                        source="success_condition",
+                        reason=f"the success condition could not be judged: {exc!s}"[
+                            : TaskOutcome.MAX_REASON_CHARS
+                        ],
+                    )
+            undecided = outcome is None or outcome.verdict is TaskVerdict.UNKNOWN
+            if undecided and result.success and self._goal_completed_by:
+                # The skill itself, or a completion check, said the goal is done, and no
+                # condition refutes it (one that perception could not decide is named).
+                said = (
+                    "the skill reported its goal satisfied"
+                    if self._goal_completed_by == "skill"
+                    else "a completion check ended the goal (/openral/rskill/complete)"
+                )
+                if outcome is not None:
+                    said = f"{said}; its success condition was undecided: {outcome.reason}"
+                outcome = TaskOutcome(
+                    verdict=TaskVerdict.SUCCEEDED,
+                    source=self._goal_completed_by,
+                    reason=said[: TaskOutcome.MAX_REASON_CHARS],
+                )
+            if outcome is None:
+                outcome = TaskOutcome(
+                    verdict=TaskVerdict.UNKNOWN, reason="no success condition judged this run"
+                )
+            kinds = ExecuteRskill.Result
+            result.task_outcome = {
+                TaskVerdict.SUCCEEDED: kinds.TASK_SUCCEEDED,
+                TaskVerdict.FAILED: kinds.TASK_FAILED,
+                TaskVerdict.UNKNOWN: kinds.TASK_UNKNOWN,
+            }[outcome.verdict]
+            result.task_outcome_json = outcome.model_dump_json()
+            span.set_attribute("rskill.task_outcome", outcome.verdict.value)
+            span.set_attribute("rskill.task_outcome.source", outcome.source)
+            span.set_attribute("rskill.task_outcome.reason", outcome.reason)
+            self.get_logger().info(
+                f"rskill_runner.task_outcome verdict={outcome.verdict.value} "
+                f"source={outcome.source} success={bool(result.success)} reason={outcome.reason}"
+            )
 
         def _on_world_state_failure(self, msg: Any) -> None:
             """End the goal whose object query the tracker exhausted (issue #418).

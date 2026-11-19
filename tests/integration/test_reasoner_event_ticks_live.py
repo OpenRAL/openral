@@ -105,8 +105,14 @@ def test_a_safety_latch_with_no_failure_trigger_reaches_the_llm() -> None:
     assert "## SAFETY\nLATCHED reason=drop_external_estop (dashboard E-STOP)" in context, context
 
 
-def _run_one_goal(*, succeed: bool, responses: list[Any]) -> tuple[Any, list[Any]]:
-    """Prompt → execute_rskill → the server succeeds or aborts; spin until it settles."""
+def _run_one_goal(
+    *, succeed: bool, responses: list[Any], task_outcome: Any = None
+) -> tuple[Any, list[Any]]:
+    """Prompt → execute_rskill → the server succeeds or aborts; spin until it settles.
+
+    ``task_outcome`` (an ``openral_core.TaskOutcome``) rides the Result as the runner
+    stamps it (issue #635).
+    """
     import rclpy
     from openral_msgs.action import ExecuteRskill
     from openral_msgs.msg import FailureTrigger, PromptStamped
@@ -148,6 +154,8 @@ def _run_one_goal(*, succeed: bool, responses: list[Any]) -> tuple[Any, list[Any
             result.success = succeed
             result.failure_reason = "" if succeed else "gripper slipped"
             result.trace_id = "00-trace-events"
+            if task_outcome is not None:
+                result.task_outcome_json = task_outcome.model_dump_json()
             if succeed:
                 goal_handle.succeed()
             else:
@@ -200,6 +208,33 @@ def test_a_skill_success_reaches_the_llm_without_waiting_for_a_beat() -> None:
     )
     assert client.calls == 2, f"expected dispatch + one result tick, got {client.calls}"
     assert f"[ok] skill={_SKILL}" in client.traces[1].context_text
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+@pytest.mark.parametrize("succeed", [True, False], ids=["ok", "failed"])
+def test_the_runners_task_outcome_is_on_the_skills_execution_line(succeed: bool) -> None:
+    """Issue #635: the LLM reads the task verdict, its source and reason, on either line."""
+    from openral_core import ExecuteRskillTool, TaskOutcome, TaskVerdict, WaitTool
+
+    outcome = TaskOutcome(
+        verdict=TaskVerdict.SUCCEEDED if succeed else TaskVerdict.FAILED,
+        source="success_condition",
+        reason=(
+            "1 of 1 'cube' rest released in the region (1.0 s)"
+            if succeed
+            else "0 of 1 'cube' rest in the region; trk:1 is held"
+        ),
+    )
+    client, _ = _run_one_goal(
+        succeed=succeed,
+        responses=[ExecuteRskillTool(rskill_id=_SKILL, prompt="go"), WaitTool(), WaitTool()],
+        task_outcome=outcome,
+    )
+    [line] = [ln for ln in client.traces[1].context_text.splitlines() if f"skill={_SKILL}" in ln]
+    assert ("[ok]" if succeed else "[failed]") in line, line
+    assert f"task_outcome={outcome.verdict.value} (success_condition): {outcome.reason}" in line, (
+        line
+    )
 
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)

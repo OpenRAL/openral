@@ -86,5 +86,10 @@ def test_profile_lets_every_process_of_a_deploy_graph_discover_the_others() -> N
         for d in root.iterfind("f:transport_descriptors/f:transport_descriptor", _NS)
         if d.findtext("f:type", namespaces=_NS) == "UDPv4"
     )
+    reach = int(udp.findtext("f:maxInitialPeersRange", namespaces=_NS) or 0)
     # Twice the largest deploy sim graph seen (48 launch processes + sidecar + helpers).
-    assert int(udp.findtext("f:maxInitialPeersRange", namespaces=_NS) or 0) >= 100
+    assert reach >= 100
+    # ... and not into the next ROS_DOMAIN_ID (#664). RTPS well-known ports: a domain
+    # owns 250 from 7400 + 250 * domain; participant ``i`` listens on +10 + 2 * i and
+    # +11 + 2 * i. The last id announced to must end below the next domain's first port.
+    assert 11 + 2 * (reach - 1) < 250

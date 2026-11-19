@@ -163,6 +163,134 @@ def test_replaying_a_real_episode_places_the_cube_on_the_marker(episode: int) ->
         r.close()
 
 
+# Step of episode 0 at which the cube is lifted and carried (grasped by step 474, released
+# at 631 on this replay).
+_CARRY_STEP = 550
+
+
+def _judge_replay(episode: int, *, budget_steps: int | None = None) -> tuple[Any, dict[str, Any]]:
+    """Replay a real episode and judge it by the scene's ``SuccessCondition`` (issue #635).
+
+    The condition is the one the scene file declares for the task's prompt, re-centred on
+    the marker this episode's own frames measured (as the replay's layout is). The judge is
+    the runner's (``openral_core.success.SuccessJudge``), fed one ``TrackedObjectSet`` per
+    step, stamped with sim time. This MuJoCo scene has no object tracker in the loop, so
+    the set is written from the simulator's state: the cube's pose in ``base_link``,
+    ``bound`` while a finger touches it. (The real tracker feeding the judge:
+    ``tests/integration/test_object_tracker_node_live.py``.) Stops as a deployed run does:
+    when the condition has settled, or on ``budget_steps``.
+
+    Returns:
+        The final ``TaskOutcome`` and the simulator's own grading ``info`` at that step.
+    """
+    from openral_core import (
+        FitKind,
+        ObjectRole,
+        PlaceRegion,
+        Pose6D,
+        TaskVerdict,
+        TrackedObject,
+        TrackedObjectSet,
+        TrackStatus,
+        success_condition_for_prompt,
+    )
+    from openral_core.success import SuccessJudge
+
+    ep = np.load(_ROOT / "tests" / "unit" / "fixtures" / f"metal_pick_place_ep{episode:02d}.npz")
+    cube, target = (tuple(float(v) for v in ep[k]) for k in ("cube_xy", "target_xy"))
+    scene = SimScene.from_yaml(str(_ROOT / "scenes" / "sim" / "makermods_metal_pick_place.yaml"))
+    declared = success_condition_for_prompt(scene.task.instruction, scene.success_conditions)
+    assert declared is not None
+    centre = (target[0], target[1], declared.region.pose.xyz[2])
+    pose = declared.region.pose.model_copy(update={"xyz": centre})
+    judge = SuccessJudge(
+        declared.model_copy(update={"region": declared.region.model_copy(update={"pose": pose})})
+    )
+    frame = declared.region.frame_id
+    r = _rollout(
+        size=(64, 48),
+        layout="ep",
+        layouts={"ep": [cube, target]},
+        spawn_jitter_m=0.0,
+        cube_yaw_jitter_deg=0.0,
+        cube_yaw_deg=float(ep["cube_yaw_deg"]),
+        leader_arm="hidden",
+        top_background="render",
+        initial_joint_positions=[float(v) for v in ep["state"][0]],
+    )
+
+    def tracked() -> TrackedObjectSet:
+        _, data = r.mujoco_handles()
+        held = r._touches_fingers()
+        stamp = r.sim_time_ns() or 0
+        xyz = tuple(float(v) for v in data.xpos[r._cube_body])
+        link_pose = Pose6D(xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="link6")
+        track = TrackedObject(
+            object_id="trk:1",
+            epoch=0,
+            label="cube",
+            role=ObjectRole.TARGET,
+            declaration_key="obj:cube@0",
+            status=TrackStatus.BOUND if held else TrackStatus.CONFIRMED,
+            box=PlaceRegion(
+                frame_id=frame,
+                pose=Pose6D(xyz=xyz, quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=frame),
+                half_extents=(0.0125, 0.0125, 0.0125),
+            ),
+            fit_kind=FitKind.SILHOUETTE_CONE,
+            support_z=0.003,
+            support_ref="map",
+            floor_z=0.03,
+            visible_cells=1,
+            occupied_cells=1,
+            last_fit_stamp_ns=stamp,
+            last_confirmed_stamp_ns=stamp,
+            bound_hand="joint8" if held else None,
+            attach_link="link6" if held else None,
+            pose_in_link=link_pose if held else None,
+        )
+        return TrackedObjectSet(frame_id=frame, stamp_ns=stamp, revision=stamp, objects=[track])
+
+    try:
+        r.reset(seed=0)
+        for action in ep["action"][:budget_steps]:
+            res = r.step(action)
+            judge.observe(tracked())
+            if judge.outcome().verdict is TaskVerdict.SUCCEEDED:
+                break
+        return judge.outcome(), dict(res.info)
+    finally:
+        r.close()
+
+
+@pytest.mark.skipif(
+    os.environ.get("MUJOCO_GL") == "osmesa",
+    reason="replays render every step: too slow on OSMesa; runs with a hardware renderer",
+)
+def test_a_run_is_judged_succeeded_or_failed_from_world_state() -> None:
+    """Issue #635: one run graded success and one graded failure, from world-state evidence."""
+    from openral_core import TaskVerdict
+
+    # The whole episode: the cube is placed and released; the condition settles and the
+    # run ends early, a success the simulator's own grade agrees with.
+    placed, info = _judge_replay(0)
+    assert placed.verdict is TaskVerdict.SUCCEEDED, placed
+    assert placed.source == "success_condition" and placed.object_ids == ("trk:1",)
+    assert (placed.resting, placed.required) == (1, 1) and placed.held_s >= 1.0
+    assert info["placement_grade"] == "complete" and info["cube_marker_distance_m"] < 0.02
+
+    # The same policy cut off mid-carry (a run that ends on its budget): the cube is in
+    # the gripper, so the run failed -- and the simulator grades it "fail" too.
+    carried, info = _judge_replay(0, budget_steps=_CARRY_STEP)
+    assert carried.verdict is TaskVerdict.FAILED and "trk:1 is held" in carried.reason, carried
+    assert info["lifted"] and info["placement_grade"] == "fail"
+
+    # Cut off before the grasp: the cube still lies where it started, outside the region.
+    untouched, info = _judge_replay(0, budget_steps=30)
+    assert untouched.verdict is TaskVerdict.FAILED, untouched
+    assert "trk:1 is outside it" in untouched.reason and not info["lifted"]
+
+
 def test_world_render_rings_the_marker_but_the_policy_view_does_not() -> None:
     r = _rollout()
     try:

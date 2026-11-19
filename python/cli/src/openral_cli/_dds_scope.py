@@ -369,6 +369,15 @@ def assert_graph_unoccupied(env: dict[str, str], *, hal_mode: str) -> None:
     )
     other = "real hardware" if _looks_like_hardware(nodes) else "another robot"
     launching = "a simulation" if hal_mode == "sim" else "a real robot"
+    # #664. Said whatever this launch's RMW is: the leak comes from the other graph's reach.
+    adjacent = (
+        "The other graph may be on the next ROS_DOMAIN_ID up or down, not this "
+        "one: a Fast DDS graph's localhost discovery runs into the next domain's "
+        "ports when it was started by an OpenRAL from before the #664 fix, or "
+        "under a Fast DDS profile of its own with maxInitialPeersRange above 120. "
+        "Restart that graph on a fixed OpenRAL or with the range at 120, or keep "
+        "the two at least 2 domains apart. "
+    )
     raise ROSConfigError(
         f"/joint_states already has {len(publishers)} publisher(s) on this ROS "
         f"graph ({owners}) — you are about to start {launching} on a graph that "
@@ -381,7 +390,7 @@ def assert_graph_unoccupied(env: dict[str, str], *, hal_mode: str) -> None:
         f"2026-09-05 a sim silently consumed a live OpenArm's joint states this "
         f"way for ten rounds (#227).\n"
         f"There is no env var that waives this. Run the simulation on a "
-        f"different host or ROS_DOMAIN_ID, or stop the other graph. If the "
+        f"different host or ROS_DOMAIN_ID, or stop the other graph. {adjacent}If the "
         f"other publisher is the vendor ros2_control graph for the robot you "
         f"are launching, do not start it by hand — deploy_e2e.launch.py starts "
         f"it under hal_mode:=real (the manifest's hal.real_bringup).",
