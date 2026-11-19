@@ -25,6 +25,8 @@ from openral_reasoner.mission import (
 
 __all__ = [
     "CASCADE_PROMPT_SOURCES",
+    "OPERATOR_PROMPT_TOPIC",
+    "is_operator_prompt",
     "prompt_correlation_id",
     "should_rebuild_mission",
     "task_step_without_verifier",
@@ -39,6 +41,27 @@ __all__ = [
 CASCADE_PROMPT_SOURCES: frozenset[str] = frozenset(
     {"spatial_memory", "detector", "scene_vlm", "reward_monitor", "memory", "mission"}
 )
+
+
+# Where the reasoner speaks to its operator (``EmitPromptTool``, the hand-off). Its other
+# prompt topic, the router's ``/openral/prompt_in/auto``, is the machine cascade.
+OPERATOR_PROMPT_TOPIC = "/openral/prompt"
+
+
+def is_operator_prompt(source: str) -> bool:
+    """Whether a prompt from ``source`` is a person's, or their program's.
+
+    Such a prompt answers whatever the reasoner last said to its operator.
+    Not the reasoner's own query results (``CASCADE_PROMPT_SOURCES``) and not the machine
+    cascade (``auto``). An unnamed source counts: it came from outside.
+
+    Example:
+        >>> is_operator_prompt("dashboard"), is_operator_prompt("cli"), is_operator_prompt("")
+        (True, True, True)
+        >>> is_operator_prompt("detector"), is_operator_prompt("auto")
+        (False, False)
+    """
+    return source not in CASCADE_PROMPT_SOURCES and source != "auto"
 
 
 CORRELATION_ID_RE = re.compile(CORRELATION_ID_PATTERN)

@@ -837,6 +837,10 @@ class ContextRenderer:
         # since the last successful tick the LLM call is wasted
         # ("heartbeat_idle").
         self._seq: int = 0
+        # What the reasoner last said to its operator that no operator prompt has answered
+        # yet (a question, a hand-off); ``None`` when it is not waiting on them. Set and
+        # cleared by the reasoner node; stamped on each tick span (#660).
+        self.awaiting_operator: str | None = None
 
     # ── static robot self-model ─────────────────────────────────────────────
 

@@ -34,6 +34,7 @@ from openral_observability.propagation import current_traceparent
 from opentelemetry.trace import Span, use_span
 
 from openral_reasoner.context import ContextRenderer, PromptRecord
+from openral_reasoner.node_policy import OPERATOR_PROMPT_TOPIC
 from openral_reasoner.palette import ToolPalette
 from openral_reasoner.skill_subset import SkillSubset, select_skill_subset
 from openral_reasoner.tool_use import DEFAULT_SYSTEM_PROMPT, ToolUseClient
@@ -61,6 +62,18 @@ def _stamp_mission(span: Span, renderer: ContextRenderer) -> None:
     mission = renderer.mission
     if mission is not None and not mission.is_empty():
         span.set_attribute(semconv.REASONER_MISSION_JSON, json.dumps(mission.to_summary()))
+    _stamp_awaiting_operator(span, renderer.awaiting_operator)
+
+
+def _stamp_awaiting_operator(span: Span, said: str | None) -> None:
+    """Stamp whether the reasoner waits on its operator, and (host gate) what it said.
+
+    A program following the robot reads this to tell "the robot asked a question and is
+    waiting" from a status line (#660).
+    """
+    span.set_attribute(semconv.REASONER_AWAITING_OPERATOR, said is not None)
+    if said and free_text_may_leave_host():
+        span.set_attribute(semconv.REASONER_OPERATOR_QUESTION, said[: semconv.REASONER_MESSAGE_MAX])
 
 
 def _stamp_rationale(span: Span, call: ReasonerToolCall) -> None:
@@ -843,6 +856,9 @@ class ReasonerCore:
         arms its hold; any other call ends one.
         """
         _stamp_rationale(span, call)
+        if isinstance(call, EmitPromptTool) and call.target_topic == OPERATOR_PROMPT_TOPIC:
+            # This tick speaks to the operator: say so on its own span, not only the next one.
+            _stamp_awaiting_operator(span, call.text)
         self._llm_errors = 0
         self._llm_retry_at = None
         if isinstance(call, WaitTool):

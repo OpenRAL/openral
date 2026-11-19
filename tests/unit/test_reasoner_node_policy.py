@@ -17,6 +17,7 @@ from openral_reasoner import MissionState
 from openral_reasoner.mission import DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_TASK_DISPATCHES
 from openral_reasoner.node_policy import (
     CASCADE_PROMPT_SOURCES,
+    is_operator_prompt,
     prompt_correlation_id,
     should_rebuild_mission,
     task_step_without_verifier,
@@ -332,3 +333,16 @@ def test_a_mission_keeps_its_correlation_id_through_summary_and_resume() -> None
     # A mission saved before the id existed, or started with none, has none.
     assert MissionState.from_state_dict({"goal": "x", "tasks": []}).correlation_id is None
     assert MissionState.from_prompt("pick").to_summary()["correlation_id"] is None
+
+
+# ── is_operator_prompt (#660) ────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("source", ["cli", "dashboard", "voice", ""])
+def test_a_persons_prompt_answers_the_reasoners_question(source: str) -> None:
+    assert is_operator_prompt(source)
+
+
+@pytest.mark.parametrize("source", [*sorted(CASCADE_PROMPT_SOURCES), "auto"])
+def test_the_reasoners_own_cascade_does_not_answer_its_question(source: str) -> None:
+    assert not is_operator_prompt(source)

@@ -161,6 +161,8 @@ from openral_reasoner.mission import (
 )
 from openral_reasoner.node_policy import (
     CASCADE_PROMPT_SOURCES,
+    OPERATOR_PROMPT_TOPIC,
+    is_operator_prompt,
     prompt_correlation_id,
     should_rebuild_mission,
     task_step_without_verifier,
@@ -2446,6 +2448,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         if str(getattr(msg.header, "frame_id", "") or "") == self.get_name():
             return
         source = str(getattr(msg.header, "frame_id", "") or "")
+        if is_operator_prompt(source):
+            # The operator spoke: whatever the reasoner asked them is answered (#660).
+            self._renderer.awaiting_operator = None
         self._renderer.append_prompt(
             PromptRecord(
                 text=msg.text,
@@ -3993,7 +3998,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         )
         # The operator's reply arrives as a bare PROMPTS line; keep what was said
         # to them in context so the reply reads as an answer to it.
-        if call.target_topic == "/openral/prompt":
+        if call.target_topic == OPERATOR_PROMPT_TOPIC:
+            self._renderer.awaiting_operator = call.text
             self._note_outcome(
                 "emit_prompt", f"said to the operator: {call.text[:300]}", ok=True, wake=False
             )
@@ -7017,6 +7023,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         msg.text = text
         msg.metadata_json = json.dumps({"source": "openral_reasoner", "handoff": True})
         self._prompt_pub.publish(msg)
+        self._renderer.awaiting_operator = text
         self._note_outcome("emit_prompt", f"said to the operator: {text}", ok=True, wake=False)
 
     def _task_key(self) -> tuple[int, str | None]:

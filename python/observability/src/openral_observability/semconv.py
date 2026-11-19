@@ -266,6 +266,11 @@ REASONER_MESSAGE: Final[str] = "reasoner.message"
 """An ``emit_prompt`` call's prompt ``text``, capped at ``REASONER_MESSAGE_MAX`` chars, so
 the console folds only identical prompts. Same host gate as the rationale."""
 REASONER_MESSAGE_MAX: Final[int] = 300
+REASONER_AWAITING_OPERATOR: Final[str] = "reasoner.awaiting_operator"
+"""True while the reasoner has said something to its operator (an ``emit_prompt`` on
+``/openral/prompt``, or a hand-off) that no operator prompt has answered yet (#660)."""
+REASONER_OPERATOR_QUESTION: Final[str] = "reasoner.operator_question"
+"""What it said, capped at ``REASONER_MESSAGE_MAX`` chars. Same host gate as the rationale."""
 REASONER_INFLIGHT_SKILL: Final[str] = "reasoner.inflight_skill"
 """rskill_id of the ``execute_rskill`` goal in flight when the tick ran; absent when idle."""
 REASONER_INFLIGHT_STATE: Final[str] = "reasoner.inflight_state"
