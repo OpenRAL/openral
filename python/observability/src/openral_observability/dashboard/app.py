@@ -487,7 +487,11 @@ async def _transcribe_response(audio: bytes) -> JSONResponse:
 
 
 async def _prompt_response(
-    text: str, correlation_id: str | None = None, *, new_goal: bool = False
+    text: str,
+    correlation_id: str | None = None,
+    *,
+    new_goal: bool = False,
+    publisher: Any = None,
 ) -> JSONResponse:
     """Publish an operator prompt via ``openral prompt``.
 
@@ -500,10 +504,21 @@ async def _prompt_response(
     priority 100) matches the CLI exactly. The console script is ``openral``,
     the single entry point.
     """
+    correlation_id = correlation_id or uuid.uuid4().hex
+    # The dashboard's persistent publisher, matched since launch (openral#679): a shell-out
+    # per prompt races discovery and sometimes lost a prompt it reported sent.
+    if publisher is not None and getattr(publisher, "prompts", False):
+        metadata: dict[str, object] = {"source_dashboard": True, "correlation_id": correlation_id}
+        if new_goal:
+            metadata["new_goal"] = True
+        matched = publisher.prompt(text, json.dumps(metadata, sort_keys=True))
+        if matched == 0:
+            return _error(503, "no prompt router on the robot's graph: the reasoner isn't running")
+        if matched is not None:
+            return JSONResponse({"ok": True, "correlation_id": correlation_id, "matched": matched})
     openral = shutil.which("openral")
     if openral is None:
         return _error(503, "`openral` not on PATH; source the workspace install first")
-    correlation_id = correlation_id or uuid.uuid4().hex
     proc = await asyncio.create_subprocess_exec(
         openral,
         "prompt",
@@ -1035,7 +1050,9 @@ async def _run_action(  # noqa: PLR0911  # reason: one return per action kind / 
             isinstance(correlation_id, str) and re.fullmatch(CORRELATION_ID_PATTERN, correlation_id)
         ):
             return _error(400, "invalid args: 'correlation_id' is not a well-formed id")
-        return await _prompt_response(text, correlation_id, new_goal=args.get("new_goal") is True)
+        return await _prompt_response(
+            text, correlation_id, new_goal=args.get("new_goal") is True, publisher=app_state.estop
+        )
     rskill_id = action.id.removeprefix("skill:")
     await _announce_operator_action("skill_execute", principal, client_ip, rskill_id)
     actor = principal.sub or client_ip

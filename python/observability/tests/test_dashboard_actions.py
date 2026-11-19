@@ -482,3 +482,46 @@ def test_a_manifest_cannot_lower_an_action_under_operator(monkeypatch: pytest.Mo
         assert _action_refusal(lowered, operator) is None
     stop = ManifestAction(id="estop", kind="estop", label="E-STOP", min_role="viewer", remote=True)
     assert _action_refusal(stop, viewer) is None
+
+
+class _FakePromptNode:
+    """The dashboard's persistent publisher, as the prompt path uses it (openral#679)."""
+
+    def __init__(self, matched: int | None) -> None:
+        self.prompts = matched is not None
+        self.matched = matched
+        self.sent: list[tuple[str, dict[str, object]]] = []
+
+    def prompt(self, text: str, metadata_json: str) -> int | None:
+        if self.matched:
+            self.sent.append((text, json.loads(metadata_json)))
+        return self.matched
+
+
+@pytest.mark.asyncio
+async def test_prompts_go_through_the_persistent_publisher(
+    ros2: Callable[[str], Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """openral#679: no shell-out when the dashboard's node carries prompts."""
+    log = ros2("accepted")
+
+    async def send(node: _FakePromptNode, args: dict[str, object]) -> httpx.Response:
+        app = create_app(TelemetryStore())
+        app.state.estop = node  # the persistent node server.py creates at launch
+        transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 50000))
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:4318") as c:
+            await _with_manifest(c)
+            return await c.post("/api/actions/prompt", json={"args": args})
+
+    node = _FakePromptNode(matched=2)
+    resp = await send(node, {"text": "pick", "correlation_id": "f:1", "new_goal": True})
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "correlation_id": "f:1", "matched": 2}
+    assert node.sent == [
+        ("pick", {"source_dashboard": True, "correlation_id": "f:1", "new_goal": True})
+    ]
+    # No prompt router on the graph: an error, never "sent".
+    none = await send(_FakePromptNode(matched=0), {"text": "pick"})
+    assert none.status_code == 503
+    assert "prompt router" in none.json()["error"]
+    assert not [c for c in _calls(log) if c[:1] == ["prompt"]]  # the CLI never ran
