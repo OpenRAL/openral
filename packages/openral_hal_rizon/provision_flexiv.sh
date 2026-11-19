@@ -88,6 +88,9 @@ cmake --build "$WS/build_rdk" --target install -j"$JOBS"
 # there for flexiv_hardware; flexiv_msgs keeps ROS's own (its type supports must match the RMW).
 cd "$WS"
 colcon build --packages-select flexiv_msgs flexiv_description --cmake-args -DBUILD_TESTING=OFF
+# flexiv_hardware links the dual interface whenever it finds a flexiv_drdk; one already
+# installed on the host (it needs a newer RDK than the arms accept) must not be picked up.
 CMAKE_PREFIX_PATH="$DDS:$RDK:$CMAKE_PREFIX_PATH" colcon build --packages-select flexiv_hardware \
-  --cmake-clean-cache --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+  --cmake-clean-cache --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+  -DCMAKE_DISABLE_FIND_PACKAGE_flexiv_drdk=TRUE
 echo "Flexiv stack ready: source $WS/install/setup.bash"

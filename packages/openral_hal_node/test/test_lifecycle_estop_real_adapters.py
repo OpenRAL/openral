@@ -232,18 +232,23 @@ def test_a_partial_fan_out_stops_the_hal_once() -> None:
 
 
 def test_a_failing_estop_publish_does_not_undo_the_latch() -> None:
-    """The graph-wide /openral/estop publish is best effort; the local latch holds anyway."""
+    """The graph-wide /openral/estop publish is best effort; the local latch holds anyway.
 
-    class _BrokenPublisher:
-        def publish(self, _msg: object) -> None:
-            raise RuntimeError("context shut down")
+    The publisher is a real one, destroyed under the node: its ``publish`` raises rclpy's
+    own handle error, the failure a shutting-down context produces.
+    """
+    from std_msgs.msg import Empty
 
     rclpy.init()
     try:
         node = ManifestHALLifecycleNode("openral_hal_openarm_partial_publish_pub_fails")
         hal, _transport, _names = _openarm_failing_after_left_arm()
         node._hal = hal
-        node._estop_pub = _BrokenPublisher()
+        dead = node.create_publisher(Empty, "/openral/estop", 10)
+        node.destroy_publisher(dead)
+        with pytest.raises(Exception):  # noqa: B017  # the failure this test relies on
+            dead.publish(Empty())
+        node._estop_pub = dead
         try:
             node._send_action_traced(_joint_action(), source="test")
             assert node._estopped

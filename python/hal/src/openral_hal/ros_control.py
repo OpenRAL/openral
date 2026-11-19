@@ -432,6 +432,12 @@ class RosControlHAL(HALBase):
         self._stop_timeout_s = stop_timeout_s
         self._stop_seam: ControllerStopSeam | None = None
         self._last_stop_report: DownstreamStopReport | None = None
+        # Set once `reset_estop` starts a re-arm and cleared only when it succeeds: a
+        # re-arm that failed half-way may have activated controllers, so the stored stop
+        # acknowledgement no longer proves they are stopped (see `estop`). The listing of
+        # that failed attempt, when it came back, says which controllers stayed inactive.
+        self._rearm_unconfirmed = False
+        self._rearm_listing: Mapping[str, str] = MappingProxyType({})
 
         self._connected: bool = False
         self._last_state_time: float = 0.0
@@ -732,13 +738,23 @@ class RosControlHAL(HALBase):
         latch after the HAL's own stop) re-raises with the stored report instead of
         re-deactivating controllers that are already inactive, which a STRICT
         ``controller_manager`` switch refuses — that would overwrite an acknowledged
-        report with an unacknowledged one. An unacknowledged stop is always retried.
+        report with an unacknowledged one. An unacknowledged stop is always retried, and
+        so is one after a re-arm that failed (``reset_estop`` raised): that attempt may
+        have activated controllers. Its listing, when it came back, narrows the retry to
+        the controllers not listed inactive, so a STRICT switch is not asked to
+        deactivate inactive ones; without a listing all are retried, and a STRICT
+        refusal then reads unacknowledged — the conservative report.
 
         Raises:
             ROSEStopRequested: Always.
         """
         done = self._last_stop_report
-        if not self._connected and done is not None and done.stopped:
+        if (
+            not self._connected
+            and done is not None
+            and done.stopped
+            and not self._rearm_unconfirmed
+        ):
             raise ROSEStopRequested(
                 f"Emergency stop on robot '{self.description.name}': already stopped "
                 f"(downstream stop acknowledged: {done.detail})."
@@ -747,6 +763,9 @@ class RosControlHAL(HALBase):
         self._connected = False
         report = self._stop_downstream()
         self._last_stop_report = report
+        if report.stopped:  # a confirmed stop supersedes a failed re-arm
+            self._rearm_unconfirmed = False
+            self._rearm_listing = MappingProxyType({})
         verdict = "acknowledged" if report.stopped else "NOT acknowledged"
         raise ROSEStopRequested(
             f"Emergency stop triggered on robot '{self.description.name}' "
@@ -756,6 +775,9 @@ class RosControlHAL(HALBase):
     def _stop_downstream(self) -> DownstreamStopReport:
         """Deactivate the controllers, run the vendor stop, and report both."""
         names = tuple(self.controller_names())
+        if self._rearm_unconfirmed and self._rearm_listing:
+            # A failed re-arm listed these: retry only those not confirmed inactive.
+            names = tuple(n for n in names if self._rearm_listing.get(n) != "inactive")
         seam = self._stop_seam
         if seam is None:
             log.critical(
@@ -778,7 +800,16 @@ class RosControlHAL(HALBase):
         # the report instead, never swallowed.
         problems: list[str] = []
         try:
-            switch = self._stop_switch(seam, names)
+            switch = (
+                self._stop_switch(seam, names)
+                if names
+                else ControllerSwitchReport(
+                    ok=True,
+                    controllers=(),
+                    states=self._rearm_listing,
+                    detail="every controller listed inactive after the failed re-arm",
+                )
+            )
         except Exception as exc:  # reason: a seam fault must land in the report, not escape estop()
             switch = ControllerSwitchReport(
                 ok=False, controllers=names, detail=f"{type(exc).__name__}: {exc}"
@@ -868,9 +899,12 @@ class RosControlHAL(HALBase):
                 "controllers cannot be re-activated."
             )
         names = tuple(self.controller_names())
+        self._rearm_unconfirmed = True
+        self._rearm_listing = MappingProxyType({})
         self._vendor_reset(seam)
         switch = seam.activate_controllers(names, timeout_s=self._stop_timeout_s)
         if not switch.ok:
+            self._rearm_listing = MappingProxyType(dict(switch.states))
             raise ROSRuntimeError(
                 f"{type(self).__name__}.reset_estop(): controller re-activation not "
                 f"acknowledged: {switch.detail}"
@@ -881,6 +915,8 @@ class RosControlHAL(HALBase):
         self._connected = True
         self._last_state_time = time.monotonic()
         self._last_stop_report = None
+        self._rearm_unconfirmed = False
+        self._rearm_listing = MappingProxyType({})
 
     # ── Internal helpers ───────────────────────────────────────────────────────
 
@@ -1014,7 +1050,8 @@ class GroupedRosControlHAL(RosControlHAL):
 
         Raises:
             ROSRuntimeError: If not connected, or if the incoming state carries no
-                joint names or is missing joints the manifest declares.
+                joint names, is missing joints the manifest declares, or has no
+                position for every name.
             ROSPerceptionStale: If the last reading exceeds the staleness deadline.
         """
         if self._state_fn is None:
@@ -1044,6 +1081,13 @@ class GroupedRosControlHAL(RosControlHAL):
                 return absent
             return [float(values[index_of[n]]) for n in self._ros2_names]
 
+        positions = raw.get("position")
+        if not isinstance(positions, list) or len(positions) != len(incoming):
+            raise ROSRuntimeError(
+                f"{self._joint_state_topic} sample has {len(incoming)} names but "
+                f"{len(positions) if isinstance(positions, list) else 'no'} positions: a "
+                "measured pose is never filled in."
+            )
         zeros = [0.0] * len(self._ros2_names)
         position = _reordered("position", absent=zeros)
         velocity = _reordered("velocity", absent=zeros)
@@ -1058,6 +1102,39 @@ class GroupedRosControlHAL(RosControlHAL):
             effort=_reordered("effort", absent=[]),
             stamp_ns=stamp_ns,
         )
+
+    def _commanded_groups(self, action: Action) -> tuple[tuple[str, slice, list[str]], ...]:
+        """The controllers ``action`` commands: all of them, or those its ``joint_names`` cover.
+
+        A row padded to full width that names only some joints (a one-arm slot dispatched
+        without a group, ``tick_group_size`` 1) carries filler at the others: publishing
+        it would drive the unnamed arm to the filler. Only controllers whose joints are
+        all named are commanded; the rest keep their current trajectory.
+
+        Raises:
+            ROSConfigError: If a controller's joints are named only in part, or none is.
+        """
+        if not action.joint_names:
+            return self._command_groups
+        named = set(action.joint_names)
+        manifest = [j.name for j in self.description.joints]
+        out: list[tuple[str, slice, list[str]]] = []
+        for topic, span, names in self._command_groups:
+            covered = [n in named for n in manifest[span]]
+            if all(covered):
+                out.append((topic, span, names))
+            elif any(covered):
+                raise ROSConfigError(
+                    f"{type(self).__name__}: action names only part of {topic}'s joints "
+                    f"({[n for n, c in zip(manifest[span], covered, strict=True) if c]}); "
+                    "a controller is commanded whole or not at all."
+                )
+        if not out:
+            raise ROSConfigError(
+                f"{type(self).__name__}: action joint_names {sorted(named)} cover no "
+                f"controller of '{self.description.name}'."
+            )
+        return tuple(out)
 
     def _refuse_a_frozen_group(self, position: list[float], velocity: list[float]) -> None:
         """Raise when one controller's joints have not changed for ``frozen_state_limit_s``.
@@ -1139,6 +1216,7 @@ class GroupedRosControlHAL(RosControlHAL):
             return
 
         deadline = self.time_from_start_s(action)
+        groups = self._commanded_groups(action)
         outbound = [
             (
                 topic,
@@ -1151,7 +1229,7 @@ class GroupedRosControlHAL(RosControlHAL):
                     "time_from_start_s": deadline,
                 },
             )
-            for topic, span, names in self._command_groups
+            for topic, span, names in groups
         ]
         for sent, (topic, msg) in enumerate(outbound):
             try:

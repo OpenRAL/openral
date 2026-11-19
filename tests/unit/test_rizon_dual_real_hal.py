@@ -277,3 +277,47 @@ def test_a_live_arm_is_never_refused(desc: RobotDescription) -> None:
 def test_a_non_positive_frozen_limit_is_refused(desc: RobotDescription, limit: float) -> None:
     with pytest.raises(ROSConfigError, match="frozen_state_limit_s"):
         _hal(desc, frozen_state_limit_s=limit)
+
+
+def test_a_one_arm_action_reaches_only_that_arms_controller(desc: RobotDescription) -> None:
+    """An ungrouped row padded to 14 that names the right arm must never drive the left."""
+    sent: list[tuple[str, dict[str, object]]] = []
+    hal = _hal(desc, publish_fn=lambda t, m: sent.append((t, m)))
+    hal.connect()
+    hal.send_action(
+        Action(
+            control_mode=ControlMode.JOINT_POSITION,
+            horizon=1,
+            joint_targets=[[-0.2231] * 7 + [0.5] * 7],  # left part is padding
+            joint_names=RIGHT,
+        )
+    )
+    assert [t for t, _ in sent] == ["/right_arm_controller/joint_trajectory"]
+    assert sent[0][1]["joint_targets"] == [[0.5] * 7]
+
+
+def test_a_controller_named_only_in_part_is_refused(desc: RobotDescription) -> None:
+    sent: list[object] = []
+    hal = _hal(desc, publish_fn=lambda t, m: sent.append(t))
+    hal.connect()
+    with pytest.raises(ROSConfigError, match="whole or not at all"):
+        hal.send_action(
+            Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                horizon=1,
+                joint_targets=[[0.0] * 14],
+                joint_names=[*RIGHT, "left_joint1"],
+            )
+        )
+    assert sent == []
+
+
+@pytest.mark.parametrize("positions", [[], [0.0] * 13])
+def test_a_sample_without_a_full_position_array_is_refused(
+    desc: RobotDescription, positions: list[float]
+) -> None:
+    raw = {"name": LEFT + RIGHT, "position": positions, "velocity": [0.0] * 14}
+    hal = _hal(desc, state_fn=lambda: raw)
+    hal.connect()
+    with pytest.raises(ROSRuntimeError, match="positions"):
+        hal.read_state()
