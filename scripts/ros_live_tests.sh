@@ -68,6 +68,8 @@ TARGETS=(
     # ADR-0102 slot rows on the real OpenArm model: a row's uncommanded joints
     # are checked at their measured pose, never the zero padding.
     tests/integration/test_safety_kernel_slot_row_measured_fill.py
+    # A one-arm dual-Rizon slot row passes the position check only with in-limit padding.
+    tests/integration/test_safety_kernel_rizon_slot_padding.py
     # Issue #356: the torso is in the OpenArm model; a hand folded into the
     # shoulder block is refused as a self hit naming openarm_body_link0, and
     # the rest pose (pedestals inside the torso, SRDF-exempt) is accepted.

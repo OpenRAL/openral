@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>openral_hal_rizon</name>
+  <version>0.1.0</version>
+  <description>
+    Real-hardware bringup for two Flexiv Rizon 4s arms driven as one robot: a dual-arm
+    xacro over upstream flexiv_description, one upstream flexiv_hardware
+    FlexivHardwareInterface per arm, and the controller config. The HAL node itself is
+    the generic openral_hal_node; robots/rizon_dual/robot.yaml reaches this launch
+    through hal.real_bringup.
+  </description>
+  <maintainer email="contact@openral.com">OpenRAL Contributors</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- flexiv_description / flexiv_hardware are provisioned out-of-tree from deps.repos. -->
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>joint_state_broadcaster</exec_depend>
+  <exec_depend>joint_trajectory_controller</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>xacro</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

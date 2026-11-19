@@ -1028,3 +1028,16 @@ _Writes the USD assets of the two MakerMods Metal Isaac example scenes (`scenes/
 - `marker_usda(o) -> str` (L409) — The target sticker, visual only.
 - `cube_table_usda(o) -> str` (L428) — Desk, wall, floor, the wall pipes: the scene's environment.
 - `main() -> None` (L455) — Writes both asset folders (USDA + baked textures).
+
+### `tools/render_rizon_dual_urdf.py`
+_Renders `robots/rizon_dual/rizon_dual.urdf` from `packages/openral_hal_rizon/urdf/rizon_dual.urdf.xacro` (`ros2_control:=false`, the committed mounting) — the only way to regenerate it. Needs `xacro` and the pinned `flexiv_description` on the ament path; standard library only._
+
+- `HERE` (L33) — This package's directory.
+- `REPO` (L32) — The repo root.
+- `XACRO` (L34) — `urdf/rizon_dual.urdf.xacro`.
+- `MOUNTING` (L35) — `config/rizon_dual_mounting.yaml`, the committed mounting.
+- `OUT` (L36) — `robots/rizon_dual/rizon_dual.urdf`.
+- `HEADER` (L38) — The provenance comment the committed URDF opens with.
+- `portable(xacro_xml) -> str` (L49) — Over plain xacro output: `package://flexiv_description/` mesh refs → `rd:rizon4_description:`, each link's bare `origin`/`mass`/`inertia` wrapped in `<inertial>` (upstream `get_inertias` emits them unwrapped), the header prepended.
+- `render() -> str` (L62) — Runs `xacro` and `portable` on its output.
+- `main() -> int` (L73) — Writes the committed URDF, or `--check` exits 1 when it would change (reproduced byte-for-byte on q5090, 2026-11-19).

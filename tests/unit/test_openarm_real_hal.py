@@ -887,3 +887,36 @@ class TestSlotGroupDispatch:
         manifest = RobotDescription.from_yaml(str(OPENARM_MANIFEST))
         declared = set(manifest.capabilities.supported_control_modes)
         assert {"joint_position", "gripper_position"} <= declared
+
+
+def test_a_failed_rearm_lets_the_next_estop_stop_what_it_activated() -> None:
+    """A re-arm that activated three of four controllers, then failed, voids the old ack.
+
+    The next ``estop`` must deactivate those three again (not reuse the earlier
+    acknowledgement), and must not ask a STRICT switch to deactivate the one the failed
+    re-arm's listing shows still inactive.
+    """
+    from openral_core.exceptions import ROSEStopRequested, ROSRuntimeError
+    from openral_hal.openarm_real import OpenArmRealHAL
+    from openral_hal.sim_transport import SimTransport
+
+    hal = OpenArmRealHAL(require_can_links=False)
+    names = hal.controller_names()
+    stuck = names[1]
+    transport = SimTransport(n_joints=16, controllers=names, activation_faults={stuck: 1})
+    hal.attach_transport(transport.publish, transport.state)
+    hal.attach_controller_stop(transport)
+    hal.connect()
+    with pytest.raises(ROSEStopRequested):
+        hal.estop()
+    with pytest.raises(ROSRuntimeError):
+        hal.reset_estop()
+    assert transport.controller_state(stuck) == "inactive"
+    assert [transport.controller_state(n) for n in names if n != stuck] == ["active"] * 3
+    with pytest.raises(ROSEStopRequested, match="acknowledged"):
+        hal.estop()
+    deactivations = [names_ for op, names_ in transport.switch_calls if op == "deactivate"]
+    assert deactivations[-1] == tuple(n for n in names if n != stuck)
+    assert all(transport.controller_state(n) == "inactive" for n in names)
+    report = hal.last_stop_report
+    assert report is not None and report.stopped

@@ -166,3 +166,44 @@ def test_the_composite_publishes_its_own_urdf_joint_states(amr: RobotDescription
     assert not vendor_publishes_urdf_joint_states(amr, mode="real")
     openarm = RobotDescription.from_yaml(str(_ROBOTS / "openarm" / "robot.yaml"))
     assert vendor_publishes_urdf_joint_states(openarm, mode="real")
+
+
+def test_a_part_that_stops_itself_mid_send_stops_the_whole_robot(amr: RobotDescription) -> None:
+    """The OpenArm part publishes its left arm, then a later controller's publish fails.
+
+    The part stops its own controllers and raises; the composite must then stop every
+    part, not let the error out as one part's affair. The arm's second ``estop`` (from
+    the composite) is idempotent: one deactivate, the acknowledged report kept.
+    """
+    from openral_core import Action, ControlMode
+    from openral_hal import build_hal
+    from openral_hal.openarm_real import OpenArmRealHAL
+    from openral_hal.sim_transport import SimTransport
+
+    real = build_hal(amr, mode="real", transport={"require_can_links": False})
+    assert isinstance(real, ComposedHAL)
+    arm = next(p for p in real._parts if isinstance(p, OpenArmRealHAL))
+    transport = SimTransport(n_joints=16, controllers=arm.controller_names())
+    first = arm.command_topics()[0]
+
+    def publish(topic: str, msg: dict[str, object]) -> None:
+        if topic != first:
+            raise RuntimeError("publisher gone")
+        transport.publish(topic, msg)
+
+    arm.attach_transport(publish, transport.state)
+    arm.attach_controller_stop(transport)
+    arm.connect()
+    names = [j.name for j in arm.description.joints]
+    with pytest.raises(ROSEStopRequested, match=f"robot '{amr.name}'"):  # the composite's
+        real.send_action(
+            Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                horizon=1,
+                joint_targets=[[0.1] * len(names)],
+                joint_names=names,
+            )
+        )
+    assert [op for op, _ in transport.switch_calls if op == "deactivate"] == ["deactivate"]
+    report = arm.last_stop_report
+    assert report is not None and report.stopped
