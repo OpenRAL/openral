@@ -498,21 +498,19 @@ _Query-time joiner for rosbag2 (mcap) ↔ OTel spans. Backs `openral replay` + `
 ### `tools/rskill_publisher.py`
 _Package and publish a local rSkill directory to the HF Hub._
 
-- `_REPO_ROOT: Path` (L68) — Repo root, derived from `__file__`.
-- `_REQUIRED_FILES: list[str]` (L91) — `["rskill.yaml"]`, the minimum a directory must contain to be a candidate rSkill.
-- `public_visibility_error(manifest, public) -> str | None` (L94) — License gate (pure, no network): returns an error string when `--public` is requested for a non-commercial-licensed skill, so `main` can fail fast before any HF call.
-- `gated_visibility_error(manifest, gated) -> str | None` — `--gated` license gate (pure, no network): allowed for commercially-licensed or `proprietary` weights, refused for every research/non-commercial/unknown posture. (L119)
-- `_resolve_token(token_arg) -> str` — Prefer CLI arg, fall back to env. (L167)
-- `_validate_manifest(skill_dir) -> RSkillManifest` (L186)
+- `_REPO_ROOT: Path` (L70) — Repo root, derived from `__file__`.
+- `_REQUIRED_FILES: list[str]` (L93) — `["rskill.yaml"]`, the minimum a directory must contain to be a candidate rSkill.
+- `_resolve_token(token_arg) -> str` — Prefer CLI arg, fall back to env. (L116)
+- `_validate_manifest(skill_dir) -> RSkillManifest` (L135)
 - `_validate_docs(skill_dir, manifest) -> DocValidationReport` — Print + return the README / manifest documentation report via `_rskill_doc_validator.validate_rskill_docs`. Runs in both dry-run and `--publish` paths; the caller decides whether to exit on errors.
 - `_rewrite_manifest_name(manifest_path, old_name, new_name) -> None` — Rewrite the top-level `name:` value of `rskill.yaml` in place (column-0 line only, so nested `name:` keys are untouched; preserves quotes + trailing comment). Exits 1 if the line isn't found exactly once. Backs `--fix-name`.
 - `_enforce_repo_name(skill_dir, manifest, *, fix_name) -> RSkillManifest` — Enforces the ratified rSkill naming grammar; no kind is exempt. `fix_name=True` rewrites to the expected name and reloads, `fix_name=False` hard-fails printing the suggested name.
-- `_bump_revision(manifest_path, weights_uri_base, token) -> str` — Resolve latest weights commit, patch `rskill.yaml`. (L374)
-- `_ensure_private(api, repo_id) -> None` — Abort if the repo is public. (L425)
+- `_bump_revision(manifest_path, weights_uri_base, token) -> str` — Resolve latest weights commit, patch `rskill.yaml`. (L323)
+- `_ensure_private(api, repo_id) -> None` — Abort if the repo is public. (L374)
 - `_ensure_public(api, repo_id) -> None` — The `--public` counterpart: abort if the (reused) repo is private, so a `--public` publish never lands in a private repo.
 - `_ensure_gated(api, repo_id) -> None` — The `--gated` gate: sets `gated="manual"` via `update_repo_settings` before any upload and re-verifies via `model_info` (manual + not private); refuses a reused repo that is private or ungated with files in it.
 - `_publish(skill_dir, manifest, token, *, public=False, gated=False) -> str` — Create the HF repo (private unless `public`/`gated`) and upload; runs the matching visibility gate (`_ensure_gated` / `_ensure_public` / `_ensure_private`) after `create_repo`.
-- `main() -> None` (L617) — Entry point: validate manifest → enforce repo name → validate task space → validate docs → license-visibility gates → optional `--bump-revision` → `--publish` (private unless `--public` or `--gated`, mutually exclusive).
+- `main() -> None` (L564) — Entry point: validate manifest → enforce repo name → validate task space → validate docs → license-visibility gates → optional `--bump-revision` → `--publish` (private unless `--public` or `--gated`, mutually exclusive).
 
 ### `tools/cloud_transport_probe.py`
 
@@ -1028,3 +1026,16 @@ _Writes the USD assets of the two MakerMods Metal Isaac example scenes (`scenes/
 - `marker_usda(o) -> str` (L409) — The target sticker, visual only.
 - `cube_table_usda(o) -> str` (L428) — Desk, wall, floor, the wall pipes: the scene's environment.
 - `main() -> None` (L455) — Writes both asset folders (USDA + baked textures).
+
+### `tools/render_rizon_dual_urdf.py`
+_Renders `robots/rizon_dual/rizon_dual.urdf` from `packages/openral_hal_rizon/urdf/rizon_dual.urdf.xacro` (`ros2_control:=false`, the committed mounting) — the only way to regenerate it. Needs `xacro` and the pinned `flexiv_description` on the ament path; standard library only._
+
+- `HERE` (L33) — This package's directory.
+- `REPO` (L32) — The repo root.
+- `XACRO` (L34) — `urdf/rizon_dual.urdf.xacro`.
+- `MOUNTING` (L35) — `config/rizon_dual_mounting.yaml`, the committed mounting.
+- `OUT` (L36) — `robots/rizon_dual/rizon_dual.urdf`.
+- `HEADER` (L38) — The provenance comment the committed URDF opens with.
+- `portable(xacro_xml) -> str` (L49) — Over plain xacro output: `package://flexiv_description/` mesh refs → `rd:rizon4_description:`, each link's bare `origin`/`mass`/`inertia` wrapped in `<inertial>` (upstream `get_inertias` emits them unwrapped), the header prepended.
+- `render() -> str` (L62) — Runs `xacro` and `portable` on its output.
+- `main() -> int` (L73) — Writes the committed URDF, or `--check` exits 1 when it would change (reproduced byte-for-byte on q5090, 2026-11-19).

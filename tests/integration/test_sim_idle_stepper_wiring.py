@@ -185,8 +185,7 @@ def test_idle_stepper_yields_under_active_action_stream(
 
     hal.idle_step = _counting_idle_step  # test spy over the real method (hal is Any here)
 
-    # so101_box exposes 6 arm joints (all role "unknown") — a 6-wide
-    # JOINT_POSITION row is a valid real action for this manifest.
+    # SimAttachedHAL's default packer takes the non-gripper joints: 5 for the SO-101.
     n_arm = sum(
         1
         for j in hal.description.joints

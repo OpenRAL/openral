@@ -720,6 +720,14 @@ const LAYERS = [
         outputs: ["controller_manager + openarm_hardware (C++)", "/joint_states (joint_state_broadcaster)"],
       },
       {
+        title: "ROS pkg · hal_rizon (real bringup)",
+        pkg: "packages/openral_hal_rizon",
+        status: "yellow",
+        desc: "Bringup-only package for two Flexiv Rizon 4s driven as one robot (robots/rizon_dual) — no HAL node of its own (it runs openral_hal_node). Ships urdf/rizon_dual.urdf.xacro (upstream flexiv_description's rizon_robot macro twice on one world, plus one upstream flexiv_hardware/FlexivHardwareInterface ros2_control block per arm — not upstream's FlexivDualHardwareInterface, which needs a flexiv_drdk incompatible with the arms' RDK 1.9.0), config/ (1 kHz controller_manager, one JointTrajectoryController per arm; the reference rig's mounting), launch/real_bringup.launch.py, the pinned deps.repos and provision_flexiv.sh (builds the upstream stack against system Jazzy, bundling a private static Fast-DDS 2.14.5/Fast-CDR 2.2.5 the vendor RDK .a needs). Driven config-only by openral_hal.ros_control:GroupedRosControlHAL (groups in the manifest). Yellow: enable + hold verified under deploy run on q5090 and the robot is visible on dev.openral.com, but no trajectory has been sent, there is no HIL test, and the collision model and thresholds await Safety-WG review.",
+        inputs: ["hal.real_bringup (robot manifest)"],
+        outputs: ["controller_manager + 2 x FlexivHardwareInterface (C++)", "/joint_states (joint_state_broadcaster)"],
+      },
+      {
         title: "HAL · Unitree G1 (sim, MuJoCo)",
         pkg: "python/hal · g1.py",
         status: "green",

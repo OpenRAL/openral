@@ -232,7 +232,8 @@ def test_the_hal_node_raises_estop_on_a_fault() -> None:
         )
         got: list[int] = []
         listener.create_subscription(Empty, "/openral/estop", lambda _m: got.append(1), qos)
-        node._arm_tracking_watch(qos)
+        node._estop_pub = node.create_publisher(Empty, "/openral/estop", qos)  # configure's
+        node._arm_tracking_watch()
         assert node._tracking is not None
         node._tracking.observe_command(_command(["left_joint4"], [0.5]))
         names = [j.name for j in node._hal.description.joints]
@@ -257,7 +258,6 @@ def test_the_hal_node_refuses_a_bad_tracking_window(window: float) -> None:
     from openral_core.exceptions import ROSConfigError
     from openral_hal.lifecycle import _ManifestHALLifecycleNode
     from rclpy.parameter import Parameter
-    from rclpy.qos import QoSProfile
 
     node = _ManifestHALLifecycleNode(
         "t_tracking_bad_window",
@@ -270,7 +270,7 @@ def test_the_hal_node_refuses_a_bad_tracking_window(window: float) -> None:
     try:
         node._hal = node._create_hal()
         with pytest.raises(ROSConfigError, match="tracking_fault_window_s"):
-            node._arm_tracking_watch(QoSProfile(depth=10))
+            node._arm_tracking_watch()
         assert node._tracking is None
     finally:
         node.destroy_node()

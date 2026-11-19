@@ -55,6 +55,7 @@ from openral_core.exceptions import (
 from openral_core.schemas import Action, JointState, RobotDescription
 
 from openral_hal._base import HALBase, _raw_floats, resolve_staleness_limit_s
+from openral_hal._slot_group import GRIPPER_MODES, SlotGroupStager, compose_slot_group_action
 from openral_hal.protocol import EStopRecovery
 
 __all__ = [
@@ -65,6 +66,7 @@ __all__ = [
     "ControllerSwitchReport",
     "DownstreamStopReport",
     "DownstreamStopReporting",
+    "GroupedRosControlHAL",
     "RosControlHAL",
     "TriggerReport",
 ]
@@ -430,6 +432,12 @@ class RosControlHAL(HALBase):
         self._stop_timeout_s = stop_timeout_s
         self._stop_seam: ControllerStopSeam | None = None
         self._last_stop_report: DownstreamStopReport | None = None
+        # Set once `reset_estop` starts a re-arm and cleared only when it succeeds: a
+        # re-arm that failed half-way may have activated controllers, so the stored stop
+        # acknowledgement no longer proves they are stopped (see `estop`). The listing of
+        # that failed attempt, when it came back, says which controllers stayed inactive.
+        self._rearm_unconfirmed = False
+        self._rearm_listing: Mapping[str, str] = MappingProxyType({})
 
         self._connected: bool = False
         self._last_state_time: float = 0.0
@@ -604,6 +612,27 @@ class RosControlHAL(HALBase):
         Returns:
             Latest ``JointState`` for all joints in ``description.joints``.
         """
+        stamp_ns = self._fresh_sample_stamp_ns()
+        n = len(self._joint_names)
+        raw: dict[str, object] = {}
+        if self._state_fn is not None:
+            raw = self._state_fn()
+
+        return JointState(
+            name=self._joint_names,
+            position=_raw_floats(raw, "position", n),
+            velocity=_raw_floats(raw, "velocity", n),
+            effort=_raw_floats(raw, "effort", n),
+            stamp_ns=stamp_ns,
+        )
+
+    def _fresh_sample_stamp_ns(self) -> int:
+        """When the newest joint state arrived (ns), after the connection + staleness checks.
+
+        Raises:
+            ROSRuntimeError: If not connected.
+            ROSPerceptionStale: If the last reading is older than ``staleness_limit_s``.
+        """
         self._require_connected("read_state")
         # With a transport attached, age is measured from the arrival of the
         # newest joint state — the only thing that actually says whether the
@@ -622,22 +651,10 @@ class RosControlHAL(HALBase):
             raise ROSPerceptionStale(
                 f"Joint state is {age:.3f} s old (limit {self._staleness_limit_s} s)."
             )
-
-        n = len(self._joint_names)
-        raw: dict[str, object] = {}
-        if self._state_fn is not None:
-            raw = self._state_fn()
-
-        return JointState(
-            name=self._joint_names,
-            position=_raw_floats(raw, "position", n),
-            velocity=_raw_floats(raw, "velocity", n),
-            effort=_raw_floats(raw, "effort", n),
-            # When the sample arrived, not when it was read: a consumer that pairs
-            # joint states with other sensors by stamp (the robot self-filter's
-            # skew check) must see how old the sample really is.
-            stamp_ns=int(time.time_ns()) - int(max(sample_age_s, 0.0) * 1e9),
-        )
+        # When the sample arrived, not when it was read: a consumer that pairs joint
+        # states with other sensors by stamp (the robot self-filter's skew check) must
+        # see how old the sample really is.
+        return int(time.time_ns()) - int(max(sample_age_s, 0.0) * 1e9)
 
     def send_action(self, action: Action) -> None:
         """Forward an action chunk to the ros2_control joint trajectory controller.
@@ -716,13 +733,39 @@ class RosControlHAL(HALBase):
         bare callables) the report says so and ``stopped`` is ``False`` — a
         local latch is never reported as a downstream stop.
 
+        Idempotent once acknowledged: a second ``estop()`` before ``reset_estop`` (a
+        composed robot stopping every part after one part stopped itself, or the node's
+        latch after the HAL's own stop) re-raises with the stored report instead of
+        re-deactivating controllers that are already inactive, which a STRICT
+        ``controller_manager`` switch refuses — that would overwrite an acknowledged
+        report with an unacknowledged one. An unacknowledged stop is always retried, and
+        so is one after a re-arm that failed (``reset_estop`` raised): that attempt may
+        have activated controllers. Its listing, when it came back, narrows the retry to
+        the controllers not listed inactive, so a STRICT switch is not asked to
+        deactivate inactive ones; without a listing all are retried, and a STRICT
+        refusal then reads unacknowledged — the conservative report.
+
         Raises:
             ROSEStopRequested: Always.
         """
+        done = self._last_stop_report
+        if (
+            not self._connected
+            and done is not None
+            and done.stopped
+            and not self._rearm_unconfirmed
+        ):
+            raise ROSEStopRequested(
+                f"Emergency stop on robot '{self.description.name}': already stopped "
+                f"(downstream stop acknowledged: {done.detail})."
+            )
         log.critical("hal.estop", robot=self.description.name, controllers=self.controller_names())
         self._connected = False
         report = self._stop_downstream()
         self._last_stop_report = report
+        if report.stopped:  # a confirmed stop supersedes a failed re-arm
+            self._rearm_unconfirmed = False
+            self._rearm_listing = MappingProxyType({})
         verdict = "acknowledged" if report.stopped else "NOT acknowledged"
         raise ROSEStopRequested(
             f"Emergency stop triggered on robot '{self.description.name}' "
@@ -732,6 +775,9 @@ class RosControlHAL(HALBase):
     def _stop_downstream(self) -> DownstreamStopReport:
         """Deactivate the controllers, run the vendor stop, and report both."""
         names = tuple(self.controller_names())
+        if self._rearm_unconfirmed and self._rearm_listing:
+            # A failed re-arm listed these: retry only those not confirmed inactive.
+            names = tuple(n for n in names if self._rearm_listing.get(n) != "inactive")
         seam = self._stop_seam
         if seam is None:
             log.critical(
@@ -754,7 +800,16 @@ class RosControlHAL(HALBase):
         # the report instead, never swallowed.
         problems: list[str] = []
         try:
-            switch = self._stop_switch(seam, names)
+            switch = (
+                self._stop_switch(seam, names)
+                if names
+                else ControllerSwitchReport(
+                    ok=True,
+                    controllers=(),
+                    states=self._rearm_listing,
+                    detail="every controller listed inactive after the failed re-arm",
+                )
+            )
         except Exception as exc:  # reason: a seam fault must land in the report, not escape estop()
             switch = ControllerSwitchReport(
                 ok=False, controllers=names, detail=f"{type(exc).__name__}: {exc}"
@@ -844,9 +899,12 @@ class RosControlHAL(HALBase):
                 "controllers cannot be re-activated."
             )
         names = tuple(self.controller_names())
+        self._rearm_unconfirmed = True
+        self._rearm_listing = MappingProxyType({})
         self._vendor_reset(seam)
         switch = seam.activate_controllers(names, timeout_s=self._stop_timeout_s)
         if not switch.ok:
+            self._rearm_listing = MappingProxyType(dict(switch.states))
             raise ROSRuntimeError(
                 f"{type(self).__name__}.reset_estop(): controller re-activation not "
                 f"acknowledged: {switch.detail}"
@@ -857,6 +915,8 @@ class RosControlHAL(HALBase):
         self._connected = True
         self._last_state_time = time.monotonic()
         self._last_stop_report = None
+        self._rearm_unconfirmed = False
+        self._rearm_listing = MappingProxyType({})
 
     # ── Internal helpers ───────────────────────────────────────────────────────
 
@@ -869,3 +929,381 @@ class RosControlHAL(HALBase):
                 f"'{self.description.name}'."
             )
         self._validate_action_dims(action, len(self._joint_names))
+
+
+class GroupedRosControlHAL(RosControlHAL):
+    """``RosControlHAL`` whose joints are split across several trajectory controllers.
+
+    A bimanual ros2_control arm (the OpenArm's arm + gripper per side, the dual
+    Rizon's one controller per arm) commands one action vector through several
+    ``JointTrajectoryController`` instances. This base owns that fan-out, so each
+    robot declares only its ``groups`` — ``(controller_name, n_joints)`` in
+    action-vector order — and its own preflight. Three properties hold for every
+    subclass:
+
+    * **All or nothing.** ``send_action`` builds every controller's message before
+      publishing any, so a malformed action cannot leave one arm on a new chunk and
+      the other on a stale one.
+    * **Named, not positional.** Each message carries its own ``joint_names``, and
+      ``read_state`` matches ``/joint_states`` by name, raising on a missing joint
+      rather than zero-filling it (``sensor_msgs/JointState`` has no order, and each
+      controller's joints arrive independently).
+    * **Slot groups (ADR-0102).** A slot-dispatched tick is staged until every slot
+      passed safety and is published as one reassembled vector.
+
+    ros2_control joint names come from each joint's ``sim_joint_name`` (the URDF
+    name), or its manifest ``name`` where the two agree.
+
+    Args:
+        description: The robot manifest.
+        groups: ``(controller_name, n_joints)`` per controller, in action order;
+            the counts must sum to the manifest's joint count.
+        joint_state_topic / publish_fn / state_fn / staleness_limit_s: As
+            ``RosControlHAL``.
+        frozen_state_limit_s: Opt-in frozen-group check. The staleness limit dates
+            a sample by its arrival, so a hardware interface that stops updating one
+            group's state interfaces (its arm faulted or E-stopped, its link lost)
+            yet still returns ``OK`` keeps that arm's last values flowing with fresh
+            stamps. With this set, a group whose positions and velocities stay
+            bit-identical for longer than this many seconds makes ``read_state``
+            raise ``ROSPerceptionStale``. Only for drives whose live encoder readings
+            never repeat exactly (the Flexiv RDK's do; a quantised encoder at rest
+            may not). ``None`` (default) turns it off.
+
+    Raises:
+        ROSConfigError: If ``groups`` is empty, has a zero-width or repeated
+            controller, does not cover every joint, or ``frozen_state_limit_s`` is
+            not positive.
+
+    Example:
+        >>> from openral_hal.openarm_real import OpenArmRealHAL
+        >>> OpenArmRealHAL(require_can_links=False).command_topics()[2]
+        '/right_joint_trajectory_controller/joint_trajectory'
+    """
+
+    def __init__(
+        self,
+        description: RobotDescription,
+        *,
+        groups: Sequence[tuple[str, int]],
+        joint_state_topic: str = "/joint_states",
+        publish_fn: _PublishFn | None = None,
+        state_fn: Callable[[], dict[str, object]] | None = None,
+        staleness_limit_s: float | None = None,
+        frozen_state_limit_s: float | None = None,
+    ) -> None:
+        """Initialise the fan-out table; opens no connection."""
+        if frozen_state_limit_s is not None and not frozen_state_limit_s > 0.0:
+            raise ROSConfigError(
+                f"{type(self).__name__}: frozen_state_limit_s={frozen_state_limit_s!r} must "
+                "be a positive number of seconds (or None to turn the check off)."
+            )
+        self._frozen_state_limit_s = frozen_state_limit_s
+        # controller -> (its last positions + velocities, monotonic time first seen).
+        self._unchanged_since: dict[str, tuple[tuple[float, ...], float]] = {}
+        names = [name for name, _ in groups]
+        if (
+            not groups
+            or any(n <= 0 for _, n in groups)
+            or len(set(names)) != len(names)
+            or sum(n for _, n in groups) != len(description.joints)
+        ):
+            raise ROSConfigError(
+                f"{type(self).__name__}: controller groups {list(groups)} must be distinct "
+                f"controllers of at least one joint each, covering the "
+                f"{len(description.joints)} joints of '{description.name}' exactly."
+            )
+        super().__init__(
+            description,
+            controller_name=groups[0][0],
+            joint_state_topic=joint_state_topic,
+            publish_fn=publish_fn,
+            state_fn=state_fn,
+            staleness_limit_s=staleness_limit_s,
+        )
+        self._ros2_names: list[str] = [str(j.sim_joint_name or j.name) for j in description.joints]
+        self._controller_names = names
+        # (command topic, action slice, ros2_control joint names) per controller.
+        table: list[tuple[str, slice, list[str]]] = []
+        start = 0
+        for name, n in groups:
+            span = slice(start, start + n)
+            table.append((f"/{name}/joint_trajectory", span, self._ros2_names[span]))
+            start += n
+        self._command_groups: tuple[tuple[str, slice, list[str]], ...] = tuple(table)
+        self._slot_group = SlotGroupStager()
+
+    def ros2_control_joint_names(self) -> list[str]:
+        """Return the ros2_control joint names in action-vector order."""
+        return list(self._ros2_names)
+
+    def command_bindings(self) -> dict[str, ControllerKind]:
+        """Return every controller's ``joint_trajectory`` topic, in fan-out order."""
+        return {topic: ControllerKind.JOINT_TRAJECTORY for topic, _, _ in self._command_groups}
+
+    def controller_names(self) -> list[str]:
+        """Return every controller ``estop`` deactivates, in fan-out order."""
+        return list(self._controller_names)
+
+    def read_state(self) -> JointState:
+        """Return the latest joint state, matched by name into manifest order.
+
+        Raises:
+            ROSRuntimeError: If not connected, or if the incoming state carries no
+                joint names, is missing joints the manifest declares, or has no
+                position for every name.
+            ROSPerceptionStale: If the last reading exceeds the staleness deadline.
+        """
+        if self._state_fn is None:
+            # No subscriber wired: the base returns a zeroed state in manifest order.
+            return super().read_state()
+        stamp_ns = self._fresh_sample_stamp_ns()
+        raw = self._state_fn()  # one sample: the freshness check above is its own
+        incoming = raw.get("name")
+        if not isinstance(incoming, list):
+            raise ROSRuntimeError(
+                f"{self._joint_state_topic} sample carries no joint names: "
+                f"{type(self).__name__} matches joints by name, never by position."
+            )
+
+        index_of = {str(n): i for i, n in enumerate(incoming)}
+        absent = [n for n in self._ros2_names if n not in index_of]
+        if absent:
+            raise ROSRuntimeError(
+                f"{self._joint_state_topic} is missing {len(absent)} joint(s) "
+                f"declared by '{self.description.name}': {absent}. Check that every "
+                "controller is active — each publishes its own joints."
+            )
+
+        def _reordered(key: str, *, absent: list[float]) -> list[float]:
+            values = raw.get(key)
+            if not isinstance(values, list) or len(values) != len(incoming):
+                return absent
+            return [float(values[index_of[n]]) for n in self._ros2_names]
+
+        positions = raw.get("position")
+        if not isinstance(positions, list) or len(positions) != len(incoming):
+            raise ROSRuntimeError(
+                f"{self._joint_state_topic} sample has {len(incoming)} names but "
+                f"{len(positions) if isinstance(positions, list) else 'no'} positions: a "
+                "measured pose is never filled in."
+            )
+        zeros = [0.0] * len(self._ros2_names)
+        position = _reordered("position", absent=zeros)
+        velocity = _reordered("velocity", absent=zeros)
+        if self._frozen_state_limit_s is not None:
+            self._refuse_a_frozen_group(position, velocity)
+        return JointState(
+            name=list(self._joint_names),
+            position=position,
+            velocity=velocity,
+            # An absent effort channel stays empty, never zero-filled: zeros would
+            # fake an effort reading the driver never published.
+            effort=_reordered("effort", absent=[]),
+            stamp_ns=stamp_ns,
+        )
+
+    def _refuse_a_partial_action(self, action: Action) -> None:
+        """Refuse an action that does not command every controller.
+
+        A row whose ``joint_names`` cover only some joints (a one-arm slot dispatched
+        without a group, ``tick_group_size`` 1) is padded to full width with filler:
+        publishing it would drive the unnamed arm to the filler, and skipping the unnamed
+        controller would leave it running an earlier trajectory beside the new command.
+        Neither is a command anyone checked, so a partial command must arrive as a slot
+        group (ADR-0102), which composes every controller's target before publishing.
+
+        Raises:
+            ROSConfigError: If ``joint_names`` leaves any of the robot's joints unnamed.
+        """
+        if not action.joint_names:
+            return
+        unnamed = [j.name for j in self.description.joints if j.name not in set(action.joint_names)]
+        if unnamed:
+            raise ROSConfigError(
+                f"{type(self).__name__}: an ungrouped action must command every controller; "
+                f"it leaves {unnamed} unnamed. Send a partial command as a slot group "
+                "(tick_group_size > 1, ADR-0102)."
+            )
+
+    def _refuse_a_frozen_group(self, position: list[float], velocity: list[float]) -> None:
+        """Raise when one controller's joints have not changed for ``frozen_state_limit_s``.
+
+        Raises:
+            ROSPerceptionStale: Naming the frozen controller and for how long.
+        """
+        assert self._frozen_state_limit_s is not None  # invariant: caller checked
+        now = time.monotonic()
+        for topic, span, _names in self._command_groups:
+            controller = topic.split("/")[1]
+            key = (*position[span], *velocity[span])
+            seen = self._unchanged_since.get(controller)
+            if seen is None or seen[0] != key:
+                self._unchanged_since[controller] = (key, now)
+                continue
+            frozen_s = now - seen[1]
+            if frozen_s > self._frozen_state_limit_s:
+                raise ROSPerceptionStale(
+                    f"{controller}'s joint state has not changed for {frozen_s:.2f} s (limit "
+                    f"{self._frozen_state_limit_s} s): its hardware interface stopped "
+                    "updating (arm faulted or E-stopped, link lost) while the broadcaster "
+                    f"keeps republishing it on {self._joint_state_topic}."
+                )
+
+    def send_action(self, action: Action) -> None:
+        """Fan one action out to every controller, all or nothing.
+
+        Every message is built and validated before the first publish. A publish that
+        fails after an earlier controller already took its target cannot be undone, so
+        it stops every controller instead (``estop``) and the tick is never committed.
+
+        Raises:
+            ROSEStopRequested: If a later controller's publish fails after an earlier
+                one succeeded.
+            ROSRuntimeError: If not connected.
+            ROSConfigError: If the control mode is unsupported, the target width
+                does not match the manifest, or a gripper action arrives outside a
+                slot group.
+        """
+        self._require_connected("send_action")
+
+        # ADR-0102: a slot-dispatched tick arrives as several typed actions, none a
+        # whole-robot command on its own. Reassemble it and fall through to the
+        # single-vector publish, so the all-or-nothing guarantee covers the group.
+        group: list[Action] | None = None
+        if int(action.tick_group_size) > 1:
+            group = self._slot_group.stage(action)
+            if group is None:
+                return
+            log.debug(
+                "hal.send_action.slot_group",
+                robot=self.description.name,
+                slots=len(group),
+                tick=group[0].tick_index,
+                modes=[a.control_mode.value for a in group],
+            )
+            action = compose_slot_group_action(group, [j.name for j in self.description.joints])
+        else:
+            # Ungrouped ticked actions (starting-pose ramp, approach) share the
+            # watermark, so a restarted runner's renumbering is seen here too.
+            self._slot_group.admit(action)
+
+        self._validate_action(action)
+
+        if action.control_mode in GRIPPER_MODES:
+            # A lone gripper action: the controllers are commanded from one joint
+            # vector, so there is nowhere to put it. Refuse loudly — dropping it
+            # would move the arms while the grippers never actuate.
+            raise ROSConfigError(
+                f"{type(self).__name__} cannot execute a standalone "
+                f"{action.control_mode.value} action: its controllers are commanded as "
+                "one joint vector, so a gripper command is only placeable inside a slot "
+                "group (tick_group_size > 1, ADR-0102)."
+            )
+
+        if action.joint_targets is None:
+            log.debug("hal.send_action.empty", robot=self.description.name)
+            return
+
+        self._refuse_a_partial_action(action)
+        deadline = self.time_from_start_s(action)
+        outbound = [
+            (
+                topic,
+                {
+                    "control_mode": action.control_mode,
+                    "horizon": action.horizon,
+                    "joint_names": names,
+                    "joint_targets": [list(step[span]) for step in action.joint_targets],
+                    "stamp_ns": action.stamp_ns,
+                    "time_from_start_s": deadline,
+                },
+            )
+            for topic, span, names in self._command_groups
+        ]
+        for sent, (topic, msg) in enumerate(outbound):
+            try:
+                self._publish_fn(topic, msg)
+            except Exception as exc:  # reason: a partial publish must stop every controller
+                if sent == 0:
+                    raise  # nothing reached a controller: an ordinary refused tick
+                # An earlier controller already holds the new target and this one does
+                # not: the arms are commanded inconsistently. Stop every controller
+                # (raises ROSEStopRequested) rather than leave a half-applied tick.
+                log.critical(
+                    "hal.send_action.partial_publish",
+                    robot=self.description.name,
+                    published=[t for t, _ in outbound[:sent]],
+                    failed=topic,
+                    error=repr(exc),
+                )
+                self.estop()
+        if group is not None:
+            self._slot_group.commit(group, applied=action)
+        else:
+            self._slot_group.commit_tick(action)
+        log.debug(
+            "hal.send_action",
+            robot=self.description.name,
+            control_mode=action.control_mode,
+            horizon=action.horizon,
+            controllers=len(outbound),
+        )
+
+    def connect(self) -> None:
+        """Open the connection; the frozen-group check starts from the first new sample."""
+        self._unchanged_since.clear()
+        super().connect()
+
+    def disconnect(self) -> None:
+        """Close the connection, dropping any half-staged slot group (and the watermark)."""
+        self._slot_group.reset()
+        super().disconnect()
+
+    def reset_estop(self) -> None:
+        """The base re-arm; the frozen-group check restarts from the next new sample."""
+        super().reset_estop()
+        self._unchanged_since.clear()
+
+    @property
+    def last_applied_action(self) -> Action | None:
+        """The command the robot was last actually given (``None`` = none yet).
+
+        For a slot group this is the composed full-dof ``JOINT_POSITION`` action; set
+        only once the apply succeeded, in step with ``last_committed_tick``. The
+        lifecycle node folds it into the grasp trigger.
+        """
+        return self._slot_group.last_applied_action
+
+    @property
+    def last_committed_tick(self) -> int:
+        """Inference tick of the last slot group published (0 = none since disconnect)."""
+        return self._slot_group.last_committed_tick
+
+    @property
+    def last_committed_session(self) -> int:
+        """``runner_session_id`` of ``last_committed_tick`` (0 = none / session-less)."""
+        return self._slot_group.last_committed_session
+
+    def discard_staged_slots(self) -> int:
+        """Drop a half-staged slot group, keeping the committed watermark.
+
+        Called by the HAL lifecycle node on every ``/openral/estop`` latch and
+        ``/openral/estop_cleared``, so a tick cut short by a stop never outlives it.
+
+        Returns:
+            How many staged slots were dropped.
+        """
+        return self._slot_group.discard()
+
+    def estop(self) -> None:
+        """Drop any half-staged slot group, then the base stop (deactivate every controller).
+
+        The committed watermark is kept: a pre-stop tick replayed after the stop is
+        still refused as stale.
+
+        Raises:
+            ROSEStopRequested: Always, from the base implementation.
+        """
+        self._slot_group.discard()
+        super().estop()
