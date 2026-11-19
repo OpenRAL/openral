@@ -1211,11 +1211,11 @@ _Detector boxes + segmenter masks drawn over the camera tiles. Same shape as `sa
 ### `python/observability/src/openral_observability/dashboard/estop_publisher.py`
 _Persistent ROS 2 e-stop publisher for the dashboard (safety-critical) — the dashboard's first rclpy publisher. One publisher created at dashboard startup so DDS discovery happens once; a later press publishes instantly instead of racing a fresh subprocess's discovery._
 
-- `class EstopPublisher` — Creates the node + `/openral/estop` + `/openral/estop_cleared` publishers immediately at RELIABLE/VOLATILE/depth-10 QoS, matching the HAL/kernel/runner subscriptions; degrades to inert (callers fall back to the shell-out path) when rclpy/ROS is unavailable. (L30) It also holds the operator-prompt publisher on `/openral/prompt_in/dashboard` (`prompt(text, metadata_json)` returns the subscribers reached, 0 with no prompt router, `None` without `openral_msgs`); the `prompt` action uses it before the `openral prompt` shell-out (#679).
-  - `available(self) -> bool` (L98) — True when the persistent publisher is live (rclpy + ROS present).
-  - `trigger(self) -> bool` (L102) — Publish `/openral/estop` instantly. Returns `False` if unavailable.
-  - `clear(self) -> bool` (L106) — Publish `/openral/estop_cleared` instantly. Returns `False` if unavailable.
-  - `close(self) -> None` (L144) — Tear down the node + executor; shut down rclpy only if we started it.
+- `class EstopPublisher` — Creates the node + `/openral/estop` + `/openral/estop_cleared` publishers immediately at RELIABLE/VOLATILE/depth-10 QoS, matching the HAL/kernel/runner subscriptions; degrades to inert (callers fall back to the shell-out path) when rclpy/ROS is unavailable. (L46) It also holds the operator-prompt publisher on `/openral/prompt_in/dashboard` (`prompt(text, metadata_json)` returns the subscribers reached, 0 with no prompt router, `None` without `openral_msgs`); the `prompt` action uses it before the `openral prompt` shell-out (#679).
+  - `available(self) -> bool` (L116) — True when the persistent publisher is live (rclpy + ROS present).
+  - `trigger(self) -> bool` (L120) — Publish `/openral/estop` instantly. Returns `False` if unavailable.
+  - `clear(self) -> bool` (L124) — Publish `/openral/estop_cleared` instantly. Returns `False` if unavailable.
+  - `close(self) -> None` (L165) — Tear down the node + executor; shut down rclpy only if we started it.
 
 ### `python/observability/src/openral_observability/dashboard/safety_status_subscriber.py`
 _The dashboard's first rclpy subscriber: one node created at launch, spun on a daemon thread, inert-but-harmless without rclpy / the `openral_msgs` overlay. Read-only: no publisher, no service client, no authority over the robot._

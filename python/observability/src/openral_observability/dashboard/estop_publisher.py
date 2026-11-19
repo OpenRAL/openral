@@ -27,12 +27,30 @@ from typing import Any
 from openral_observability.rclpy_spin import spin_executor_until_shutdown
 
 
+def routers_subscribed(infos: Any, router_node: str) -> int:
+    """How many of a topic's subscriptions belong to ``router_node`` (by node name).
+
+    Example:
+        >>> from types import SimpleNamespace as N
+        >>> routers_subscribed(
+        ...     [N(node_name="openral_prompt_router"), N(node_name="ros2cli_123")],
+        ...     "openral_prompt_router",
+        ... )
+        1
+        >>> routers_subscribed([N(node_name="rosbag2_recorder")], "openral_prompt_router")
+        0
+    """
+    return sum(1 for i in infos or [] if getattr(i, "node_name", "") == router_node)
+
+
 class EstopPublisher:
     """A launch-time-created, always-matched publisher for the e-stop topics."""
 
     ESTOP_TOPIC = "/openral/estop"
     CLEARED_TOPIC = "/openral/estop_cleared"
     PROMPT_TOPIC = "/openral/prompt_in/dashboard"
+    # The node that forwards the dashboard's prompts to the reasoner (openral_prompt_router).
+    ROUTER_NODE = "openral_prompt_router"
 
     def __init__(self) -> None:
         """Create the node + publishers now (at launch) so discovery happens early."""
@@ -115,12 +133,15 @@ class EstopPublisher:
     def prompt(self, text: str, metadata_json: str) -> int | None:
         """Publish one operator prompt on the dashboard's prompt-router input.
 
-        Returns how many subscribers it reached (0: no prompt router on the graph, so nothing will
-        act on it), or ``None`` when this node carries no prompts (use the shell-out).
+        Returns how many prompt routers it reached (0: none on the graph, so nothing will act on
+        it), or ``None`` when this node carries no prompts (use the shell-out). Only the router's
+        subscription counts: a bag recorder or ``ros2 topic echo`` on the topic forwards nothing.
         """
         if self._prompt_pub is None or self._prompt_cls is None or self._node is None:
             return None
-        matched = int(self._prompt_pub.get_subscription_count())
+        matched = routers_subscribed(
+            self._node.get_subscriptions_info_by_topic(self.PROMPT_TOPIC), self.ROUTER_NODE
+        )
         if matched == 0:
             return 0
         msg = self._prompt_cls()
