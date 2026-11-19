@@ -378,3 +378,17 @@ def test_append_prompt_returns_the_record_as_stored() -> None:
     r = ContextRenderer()
     stored = r.append_prompt(PromptRecord(text="go", metadata_json='{"priority": 100}', stamp_ns=0))
     assert stored.priority == 100 and r.prompts[0] is stored
+
+
+def test_forget_conversation_keeps_the_new_goal_when_a_full_buffer_evicted_it() -> None:
+    from openral_reasoner.context import ContextRenderer, PromptRecord
+
+    r = ContextRenderer(buffer_size=2)
+    for i in range(2):
+        r.append_prompt(
+            PromptRecord(text=f"old {i}", metadata_json='{"priority": 100}', stamp_ns=i)
+        )
+    new = r.append_prompt(PromptRecord(text="pick up the orange", metadata_json="", stamp_ns=9))
+    assert new not in r.prompts  # evicted on arrival: lower priority than a full buffer
+    r.forget_conversation(keep=new)
+    assert [p.text for p in r.prompts] == ["pick up the orange"]

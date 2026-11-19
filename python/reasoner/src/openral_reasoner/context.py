@@ -1230,7 +1230,8 @@ class ContextRenderer:
             >>> [p.text for p in r.prompts], r.awaiting_operator
             (['pick the orange'], None)
         """
-        self._prompts = [rec for rec in self._prompts if rec is keep]
+        # Just the new goal's own prompt, even when a full buffer evicted it on arrival.
+        self._prompts = [keep] if keep is not None else []
         kept = [rec for rec in self._executions if rec.rskill_id != "(emit_prompt)"]
         if len(kept) != len(self._executions):
             self._executions.clear()
