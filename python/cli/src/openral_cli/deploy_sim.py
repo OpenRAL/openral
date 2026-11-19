@@ -2043,6 +2043,12 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # A robot of a shared MuJoCo world (`openral deploy world` binds its HAL with these
     # two keys): the launch also feeds its kernel the peers (openral_hal.peer_voxels).
     if hal_params.get("shared_world"):
+        if enable_octomap:
+            # Refused by the launch too; said here first, with the remedy.
+            raise ROSConfigError(
+                "a shared-world robot runs with its octomap leg off (the other robots are "
+                "its kernel's world grid): pass `-- --no-enable-octomap` to `deploy world`."
+            )
         argv_template.append(f"shared_world:={hal_params['shared_world']}")
         argv_template.append(f"shared_world_robot:={hal_params.get('shared_world_robot', '')}")
     # resolve the reward-monitor manifest from the VLA pairing when

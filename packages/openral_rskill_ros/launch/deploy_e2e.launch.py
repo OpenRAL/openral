@@ -1475,6 +1475,10 @@ def _poll_autostart(
     )
 
 
+#: The kernel's world grid in a shared world (``openral_hal.peer_voxels.PEER_VOXELS_TOPIC``).
+PEER_VOXELS_TOPIC = "/openral/peer_voxels"
+
+
 def _resolve_clock_origin(value: str) -> str:
     """Resolve the OpenRAL clock authority origin forwarded by the CLI.
 
@@ -3228,6 +3232,15 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # ``host_wall`` keeps every node on system time. There is no operator-facing
     # ROS time toggle to drift from the authority.
     clock_origin = _resolve_clock_origin(LaunchConfiguration("clock_origin").perform(context))
+    if shared_world and clock_origin != "simulation":
+        from openral_core.exceptions import ROSConfigError
+
+        # The peers' grid is stamped with world (sim) time; on another clock its data
+        # age reads as decades and the kernel refuses every command, unexplained.
+        raise ROSConfigError(
+            f"shared_world={shared_world!r} needs clock_origin=simulation (got "
+            f"{clock_origin!r}): the peers are stamped with the shared world's time."
+        )
     use_sim_time = clock_origin == "simulation"
     # Startup operator prompt set by --initial-task or /openral/prompt. When
     # non-empty, prompt_router_node publishes it onto /openral/prompt at
@@ -3687,6 +3700,20 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     kernel_params = {**kernel_params, **_collision_scale_params()}
     # ADR-0121: a provider takes over the moved in-tree rules (never both at once).
     kernel_params = _hand_rules_to_provider(kernel_params)
+    relaxing = sorted(
+        k
+        for k in ("grasp_allowance_enabled", "workspace_contact_enabled", "exemption_provider")
+        if kernel_params.get(k)
+    )
+    if shared_world and relaxing:
+        from openral_core.exceptions import ROSConfigError
+
+        # Those rules tolerate contact with grid cells near the hand; in a shared world
+        # the cells are the other robot, which they were never measured against.
+        raise ROSConfigError(
+            f"shared_world={shared_world!r} with {relaxing}: the kernel would tolerate "
+            "hand contact with the other robot's cells. Turn them off for a shared world."
+        )
 
     # Run identity for the dashboard's Identity card. These
     # ride as OTLP resource attributes on every node so run mode / id /
@@ -3770,7 +3797,11 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         # HAL's manifest-named `~/joint_states` (or the scene's override).
         remappings=(
             [("/joint_states", runtime_joint_states_topic)] if runtime_joint_states_topic else []
-        ),
+        )
+        # A shared world's peers are the kernel's world grid, on their own topic so the
+        # other /openral/world_voxels readers (object lift, tracker, attachment barrier)
+        # never take two arms for a perceived map.
+        + ([("/openral/world_voxels", PEER_VOXELS_TOPIC)] if shared_world else []),
         additional_env={**otel_env, **enclave_env(KERNEL_ENCLAVE)},
         output="screen",
     )
@@ -5055,7 +5086,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
 
     if shared_world:
         assert coverage is not None  # reason: computed whenever shared_world
-        # The peers' links as occupied cells in THIS robot's base frame, over the same
+        # The peers' links as occupied cells in THIS robot's base frame (PEER_VOXELS_TOPIC,
+        # the kernel's world grid), over the same
         # coverage ball the kernel reserves cells for. It exits when the world stops
         # answering, and the kernel then refuses every command (fail-closed).
         extra_nodes.append(
@@ -5079,6 +5111,18 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 ],
                 name="openral_peer_voxels",
                 output="screen",
+            )
+        )
+        extra_nodes.append(
+            RegisterEventHandler(
+                OnProcessExit(
+                    target_action=extra_nodes[-1],
+                    on_exit=_shutdown_unless_clean(
+                        "the shared world's peer producer",
+                        "This robot's kernel no longer sees the other robots, so the graph "
+                        "shuts down instead of standing with every command refused.",
+                    ),
+                )
             )
         )
 

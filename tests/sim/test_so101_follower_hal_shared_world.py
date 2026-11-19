@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -30,8 +30,14 @@ import numpy as np
 from openral_core import Action, ControlMode, RobotDescription, SharedWorldScene
 from openral_core.exceptions import ROSConfigError, ROSEStopRequested
 from openral_hal import build_hal
-from openral_hal.peer_voxels import PeerBox, mujoco_peer_boxes, occupancy_grid
-from openral_hal.shared_world import SharedWorldArmHAL, SharedWorldServer
+from openral_hal.peer_voxels import (
+    occupancy_grid,
+    peer_boxes,
+    peer_geoms,
+    peer_targets,
+    swept_peer_boxes,
+)
+from openral_hal.shared_world import SharedWorldArmHAL, SharedWorldServer, robot_root_bodies
 
 pytestmark = [
     pytest.mark.sim,
@@ -243,34 +249,26 @@ def test_a_stopped_or_silent_robot_neither_moves_on_nor_freezes_the_world(
         served.close()
 
 
-def _collision_geoms(model: Any, keep: Callable[[str], bool]) -> list[int]:
-    """Collision geoms (a contype or conaffinity) whose body name ``keep`` accepts."""
-    return [
-        g
-        for g in range(model.ngeom)
-        if (model.geom_contype[g] or model.geom_conaffinity[g])
-        and keep(model.body(int(model.geom_bodyid[g])).name)
-    ]
-
-
 def test_each_robot_sees_its_peer_as_occupied_cells(table: _World) -> None:
     """The peer's collision geoms, in this robot's base frame, are occupied cells.
 
     And the cells catch the collision the issue is about: A panned +0.9 rad from rest
-    puts A's own geoms into cells B occupies; A panned -0.4 rad stays clear.
+    puts A's own geoms into cells B occupies; A panned -0.4 rad stays clear. A peer
+    being driven towards A is occupied along the way before it moves.
     """
     import mujoco as mj
 
+    so101 = RobotDescription.from_yaml(ROBOT_YAML)
     ball = ((0.0, -0.2, 0.15), 0.45, 0.015)  # (centre, radius, cell): covers both arms
     resolution = ball[2]
     for name, peer in (("a", "b"), ("b", "a")):
         model, data = table.hals[name].mujoco_handles()  # type: ignore[misc]
-        peer_geoms = _collision_geoms(model, lambda body, p=peer: body.startswith(f"{p}_"))
-        boxes = mujoco_peer_boxes(model, data, [peer])
-        assert len(boxes) == len(peer_geoms) == 13  # the SO-101's collision meshes
+        geoms = peer_geoms(model, robot_root_bodies(peer, so101, view=name))
+        assert len(geoms) == 13  # the SO-101's collision meshes
+        boxes = peer_boxes(model, data, geoms, int(model.body("base").id))
         origin, (n, _, _), cells = occupancy_grid(boxes, *ball)
         occupied = cells.reshape(n, n, n)
-        for g in peer_geoms:  # every vertex of every peer collision mesh is in an occupied cell
+        for g in geoms:  # every vertex of every peer collision mesh is in an occupied cell
             mesh = int(model.geom_dataid[g])
             start, count = int(model.mesh_vertadr[mesh]), int(model.mesh_vertnum[mesh])
             points = model.mesh_vert[start : start + count] @ data.geom_xmat[g].reshape(3, 3).T
@@ -280,27 +278,35 @@ def test_each_robot_sees_its_peer_as_occupied_cells(table: _World) -> None:
             assert occupied[index[inside, 2], index[inside, 1], index[inside, 0]].all()
 
     model, data = table.hals["a"].mujoco_handles()  # type: ignore[misc]
-    peer_cells = occupancy_grid(mujoco_peer_boxes(model, data, ["b"]), *ball)[2]
-    own = _collision_geoms(model, lambda body: not body.startswith("b_") and body != "world")
-    own = [g for g in own if model.body(int(model.geom_bodyid[g])).name != "handover_cube"]
+    base = int(model.body("base").id)
+    b_roots = robot_root_bodies("b", so101, view="a")
+    b_geoms = peer_geoms(model, b_roots)
+    own = peer_geoms(model, robot_root_bodies("a", so101, view="a"))  # A's own links
 
-    def overlap(pan: float) -> int:
+    def cells_of(geoms: Any, qpos: Any) -> Any:
         probe = mj.MjData(model)
-        probe.qpos[:] = data.qpos
-        probe.qpos[0] = pan
+        probe.qpos[:] = qpos
         mj.mj_kinematics(model, probe)
-        mine = [
-            PeerBox(
-                probe.geom_xpos[g] + probe.geom_xmat[g].reshape(3, 3) @ model.geom_aabb[g][:3],
-                probe.geom_xmat[g].reshape(3, 3),
-                model.geom_aabb[g][3:],
-            )
-            for g in own
-        ]
-        return int((occupancy_grid(mine, *ball)[2] & peer_cells).sum())
+        return occupancy_grid(peer_boxes(model, probe, geoms, base), *ball)[2]
 
-    assert overlap(-0.4) == 0
-    assert overlap(0.9) > 0
+    b_now = cells_of(b_geoms, data.qpos)
+    for pan, hits in ((-0.4, False), (0.9, True)):
+        a_moved = np.array(data.qpos)
+        a_moved[0] = pan
+        assert bool((cells_of(own, a_moved) & b_now).any()) is hits
+
+    # B commanded to pan 0.9 rad towards A (its servo target), still at rest:
+    # A's links at rest are clear of where B is, not of where B is going.
+    a_rest = cells_of(own, data.qpos)
+    assert not (a_rest & b_now).any()
+    state = {"qpos": list(data.qpos), "ctrl": list(data.ctrl)}
+    b_targets = peer_targets(model, b_roots)
+    assert len(b_targets) == 6  # five joints and the jaw, each a position servo
+    pan_qadr, pan_actuator = b_targets[0]
+    assert pan_qadr == 6  # B's block follows A's six joints in A's view
+    state["ctrl"][pan_actuator] = 0.9
+    swept = swept_peer_boxes(model, mj.MjData(model), state, b_geoms, b_targets, base)
+    assert (occupancy_grid(swept, *ball)[2] & a_rest).any()
 
 
 def test_an_arena_that_breaks_a_robot_view_is_refused_at_startup(tmp_path: Path) -> None:

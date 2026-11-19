@@ -41,7 +41,13 @@ from openral_core.geometry import yaw_to_quat_wxyz
 from openral_hal._camera_rig import rig_cameras_into_mjcf
 from openral_hal._mujoco_arm import _IDLE_STEP_CAP, MujocoArmHAL, _resolve_mjcf_path
 
-__all__ = ["SharedWorldArmHAL", "SharedWorldServer", "compose_shared_world"]
+__all__ = [
+    "SharedWorldArmHAL",
+    "SharedWorldServer",
+    "compose_shared_world",
+    "open_view",
+    "robot_root_bodies",
+]
 
 log = structlog.get_logger(__name__)
 
@@ -69,6 +75,13 @@ def _robot_spec(mj: Any, description: RobotDescription) -> Any:
     floor = next((g for g in spec.geoms if g.name == "camrig_floor"), None)
     if floor is not None:
         spec.delete(floor)
+    if len(spec.worldbody.geoms):
+        # Attached geoms of a robot's <worldbody> land on the world body, where nothing
+        # tells them from the arena: its peers could not see them as part of it.
+        raise ROSConfigError(
+            f"shared world: robot {description.name!r} has geoms directly in its MJCF "
+            "<worldbody> (a pedestal, a plate); put them in a body of the robot."
+        )
     if any(j.type not in (mj.mjtJoint.mjJNT_HINGE, mj.mjtJoint.mjJNT_SLIDE) for j in spec.joints):
         raise ROSConfigError(
             f"shared world: robot {description.name!r} has a free or ball joint; only "
@@ -147,6 +160,59 @@ def compose_shared_world(
         raise ROSConfigError(f"shared world: could not load arena {arena_mjcf}: {exc}") from exc
     spec.attach(arena, frame=frame((0.0, 0.0, 0.0), 0.0), prefix="")
     return spec, blocks
+
+
+def robot_root_bodies(robot: str, description: RobotDescription, *, view: str | None) -> set[str]:
+    """The names, in a composed model, of ``robot``'s top-level bodies.
+
+    Unprefixed in that robot's own view, ``<robot>_…`` everywhere else; a peer's
+    links are exactly the bodies under these (``body_rootid``).
+
+    Example:
+        >>> robot_root_bodies("b", so101, view="a")  # doctest: +SKIP
+        {'b_base'}
+    """
+    import mujoco as mj  # reason: optional sim-only dep
+
+    prefix = "" if robot == view else f"{robot}_"
+    return {f"{prefix}{b.name}" for b in _robot_spec(mj, description).worldbody.bodies}
+
+
+def _ask(conn: Connection, msg: dict[str, object]) -> dict[str, Any]:
+    """One request / reply on a world connection; a refusal is a ``ROSConfigError``."""
+    conn.send_bytes(json.dumps(msg).encode())
+    reply: dict[str, Any] = json.loads(conn.recv_bytes())
+    if not reply["ok"]:
+        raise ROSConfigError(str(reply["error"]))
+    return reply
+
+
+def open_view(
+    address: str, robot: str
+) -> tuple[Connection, SharedWorldScene, dict[str, RobotDescription], Any]:
+    """Connect to a shared world and compile ``robot``'s view of it.
+
+    Returns:
+        ``(connection, world, manifests by robot name, compiled view model)``.
+
+    Raises:
+        ROSConfigError: No world at ``address``, or the view does not compose.
+    """
+    try:
+        conn = Client(address, family="AF_UNIX")
+    except OSError as exc:
+        raise ROSConfigError(
+            f"no shared world at {address!r} ({exc}); `openral deploy world` starts one."
+        ) from exc
+    try:
+        hello = _ask(conn, {"op": "hello"})
+        world = SharedWorldScene.model_validate(hello["world"])
+        descriptions = {n: RobotDescription.from_yaml(p) for n, p in hello["robot_yamls"].items()}
+        spec, _ = compose_shared_world(world, Path(hello["arena_mjcf"]), descriptions, robot)
+        return conn, world, descriptions, _compile(spec, world.id)
+    except BaseException:
+        conn.close()
+        raise
 
 
 def _compile(spec: Any, world_id: str) -> Any:
@@ -602,20 +668,9 @@ class SharedWorldArmHAL(MujocoArmHAL):
         )
 
     def _load_model(self, mj: Any) -> Any:
-        try:
-            self._conn = Client(self._world_address, family="AF_UNIX")
-        except OSError as exc:
-            raise ROSConfigError(
-                f"no shared world at {self._world_address!r} ({exc}); "
-                "`openral deploy world` starts one."
-            ) from exc
-        hello = self._request({"op": "hello"})
-        world = SharedWorldScene.model_validate(hello["world"])
-        descriptions = {n: RobotDescription.from_yaml(p) for n, p in hello["robot_yamls"].items()}
-        spec, _ = compose_shared_world(
-            world, Path(hello["arena_mjcf"]), descriptions, self._world_robot
-        )
-        return _compile(spec, world.id)
+        del mj  # the view is composed by open_view
+        self._conn, _, _, model = open_view(self._world_address, self._world_robot)
+        return model
 
     def _step_physics(self, steps: int, targets: list[float] | None = None) -> None:
         """Ask the world to advance: a commanded period (``targets``) or an idle step."""
@@ -632,15 +687,11 @@ class SharedWorldArmHAL(MujocoArmHAL):
             if conn is None:
                 raise ROSRuntimeError("SharedWorldArmHAL: not attached to a shared world.")
             try:
-                conn.send_bytes(json.dumps(msg).encode())
-                reply: dict[str, Any] = json.loads(conn.recv_bytes())
+                return _ask(conn, msg)
             except (EOFError, OSError) as exc:
                 raise ROSRuntimeError(
                     f"shared world at {self._world_address!r} went away: {exc}"
                 ) from exc
-        if not reply["ok"]:
-            raise ROSConfigError(str(reply["error"]))
-        return reply
 
     def _sync(self, state: dict[str, Any]) -> None:
         """Copy the world's state into the mirror."""
