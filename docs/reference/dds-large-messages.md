@@ -139,7 +139,7 @@ client (an operator's `ros2 lifecycle get`) could have held its only thread for 
 
 ### Localhost discovery reach
 
-The profile also sets `maxInitialPeersRange` to 128 on the UDP transport.
+The profile also sets `maxInitialPeersRange` to 120 on the UDP transport.
 
 With `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` there is no multicast. A participant announces
 itself only to the unicast ports of the first N participant ids on the host, so two
@@ -151,13 +151,39 @@ Measured on Jazzy (2026-11-16) with 60 one-node processes, each serving one serv
 | Profile | Services found |
 |---|---|
 | Shipped before this change | processes 1-30 only; none of 34-60 |
-| `maxInitialPeersRange` 128 | all 60 |
+| `maxInitialPeersRange` 128 (shipped until #664) | all 60 |
+| `maxInitialPeersRange` 120 | all 60 |
 | `SUBNET` discovery, no profile | all 60 |
 
 A deploy sim graph is about 50 processes, and Nav2 starts last. Its `bt_navigator` never found
 `planner_server` or `behavior_server`, `lifecycle_manager_navigation` aborted the bring-up, and
 every navigate goal was rejected as "action server inactive". The same blind spot explains
 lifecycle replies that never arrived.
+
+#### Why 120 and not more: adjacent domains
+
+A participant's unicast ports are `7400 + 250 × domain + 10 + 2 × id` and the one after, so
+each domain owns 250 ports and participant id 125 of domain N is participant id 0 of domain
+N+1. A range of 128 therefore announced a graph on domain N to the first three participants
+of domain N+1. The two graphs merged, and a second `openral deploy sim` one domain up was
+refused as an occupied graph (issue #664; found with sims on domains 31 and 32). 120 keeps
+ids 0-119, whose last port is one below the next domain's first. It is also the most
+participants one domain can hold before its own ports run into the next one's.
+
+Measured on Jazzy (2026-11-19), one node on domain 127 and one on 126, both under the
+profile with the range set as shown, `LOCALHOST` discovery:
+
+| `maxInitialPeersRange` | Nodes a probe on each domain sees |
+|---|---|
+| 128 | both nodes, on both domains |
+| 126 | both nodes, on domain 126 |
+| 125, 121, 120 | its own domain's node only |
+
+`tests/integration/test_adjacent_domain_isolation_live.py` runs this against the shipped
+profile. Two things still leak between adjacent domains, and the occupied-graph refusal
+names them: a graph started by an OpenRAL from before the fix, or under a profile of your
+own (`FASTRTPS_DEFAULT_PROFILES_FILE`) with a range above 125. Keep those at least two
+domains apart.
 
 ## Reproduce
 

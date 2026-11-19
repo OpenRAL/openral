@@ -113,7 +113,7 @@ discovered the already-active `behavior_server`'s `spin` server within
 `wait_for_service_timeout`; a healthy run finds it in 80 ms. The cause was DDS discovery, not
 Nav2: with localhost-only discovery the deploy Fast DDS profile reached only the first ~32
 participants of a ~50-process graph, and Nav2 starts last. The profile now sets
-`maxInitialPeersRange` 128, and a 60-process probe that found 30 services now finds all 60
+`maxInitialPeersRange` 120, and a 60-process probe that found 30 services now finds all 60
 (`docs/reference/dds-large-messages.md`, "Localhost discovery reach"). The timeout is also
 30 s now (`config/*.yaml`), so a slow but working discovery does not abort the bring-up.
 
