@@ -862,7 +862,9 @@ if _ROS2_AVAILABLE:
             self.declare_parameter("tracking_fault_tolerance_rad", 0.05)
             self.declare_parameter("tracking_fault_tolerance_m", 0.01)
             self._tracking: Any = None
-            self._tracking_estop_pub: Any = None
+            # /openral/estop out of this node: the tracking watch's fault and an e-stop
+            # the HAL raised from send_action, so the whole graph stops with it.
+            self._estop_pub: Any = None
             self._init_self_filter_period_handoff()
             self.get_logger().info(f"{node_name} HAL node initialised.")
 
@@ -1303,6 +1305,7 @@ if _ROS2_AVAILABLE:
             self._estop_sub = self.create_subscription(
                 Empty, "/openral/estop", self._on_estop, estop_qos
             )
+            self._estop_pub = self.create_publisher(Empty, "/openral/estop", estop_qos)
             # Reset-cleared broadcast (symmetric to /openral/estop). The estop
             # TRIGGER is a topic every node latches on, but reset was a
             # kernel-only service, so the HAL stayed latched after
@@ -1312,7 +1315,7 @@ if _ROS2_AVAILABLE:
             self._estop_reset_sub = self.create_subscription(
                 Empty, "/openral/estop_cleared", self._on_estop_cleared, estop_qos
             )
-            self._arm_tracking_watch(estop_qos)
+            self._arm_tracking_watch()
             rate_hz: float = (
                 self.get_parameter("publish_rate_hz").get_parameter_value().double_value
             )
@@ -1370,9 +1373,9 @@ if _ROS2_AVAILABLE:
             if self._estop_reset_sub is not None:
                 self.destroy_subscription(self._estop_reset_sub)
                 self._estop_reset_sub = None
-            if self._tracking_estop_pub is not None:
-                self.destroy_publisher(self._tracking_estop_pub)
-                self._tracking_estop_pub = None
+            if self._estop_pub is not None:
+                self.destroy_publisher(self._estop_pub)
+                self._estop_pub = None
             self._tracking = None
             if self._action_applied_pub is not None:
                 self.destroy_publisher(self._action_applied_pub)
@@ -1737,8 +1740,8 @@ if _ROS2_AVAILABLE:
                 self._policy_state_pub.publish(policy_msg)
                 self._policy_state_last_frame = frame
 
-        def _arm_tracking_watch(self, estop_qos: Any) -> None:  # noqa: ANN401  # reason: rclpy QoSProfile, imported on the ROS path only
-            """Build the `TrackingWatch` + its /openral/estop publisher when the window is > 0.
+        def _arm_tracking_watch(self) -> None:
+            """Build the `TrackingWatch` when the window is > 0 (it raises on ``_estop_pub``).
 
             Raises:
                 ROSConfigError: The window is negative, non-finite or not a number, or a
@@ -1761,8 +1764,6 @@ if _ROS2_AVAILABLE:
                         "commanded joint that does not follow will not raise the e-stop"
                     )
                 return
-            from std_msgs.msg import Empty
-
             from openral_hal._tracking_watch import TrackingWatch
 
             assert self._hal is not None  # invariant: configure built it
@@ -1777,7 +1778,6 @@ if _ROS2_AVAILABLE:
                 )
             except (TypeError, ValueError) as exc:
                 raise ROSConfigError(f"tracking watch parameters refused: {exc}") from exc
-            self._tracking_estop_pub = self.create_publisher(Empty, "/openral/estop", estop_qos)
             self.get_logger().info(
                 f"hal.tracking_watch armed window_s={float(window_s)} tolerance_rad={tolerance} "
                 f"tolerance_m={tolerance_m} joints={sorted(self._tracking.watched)}"
@@ -1823,7 +1823,8 @@ if _ROS2_AVAILABLE:
             from std_msgs.msg import Empty
 
             self._tracking.clear()
-            self._tracking_estop_pub.publish(Empty())
+            if self._estop_pub is not None:  # created by configure, before the watch arms
+                self._estop_pub.publish(Empty())
             # Latch here too: never depend on this node receiving its own publication.
             self._on_estop(None)
 
@@ -2030,11 +2031,12 @@ if _ROS2_AVAILABLE:
             """A refused ``send_action``: skip the tick, or latch an e-stop the HAL raised.
 
             ``ROSEStopRequested`` from ``send_action`` means the HAL stopped itself
-            mid-send (a ``GroupedRosControlHAL`` fan-out that reached some controllers
-            but not all): an e-stop, never a skipped tick. Latching it here makes the
-            heartbeat report it (with the HAL's own downstream stop report: the HAL is not
-            stopped a second time) and drops every later command; ``/openral/estop``
-            carries it to the rest of the graph when this node has that publisher, best
+            mid-send (a ``GroupedRosControlHAL`` or ``ComposedHAL`` fan-out that reached
+            some controllers but not all): an e-stop, never a skipped tick. It runs the
+            node's full e-stop (``_on_estop``): the whole HAL's ``estop`` too, so a
+            composed robot's other parts stop with the one that failed (an already-stopped
+            ros2_control part keeps its acknowledged report, ``RosControlHAL.estop`` being
+            idempotent). ``/openral/estop`` then carries it to the rest of the graph, best
             effort. Any other typed error skips the tick with a warning.
             """
             from openral_core.exceptions import ROSEStopRequested
@@ -2045,14 +2047,13 @@ if _ROS2_AVAILABLE:
             self.get_logger().fatal(
                 f"send_action ({source}) e-stopped the HAL: {exc} {self._downstream_stop_fields()}"
             )
-            # Latch first, without a second HAL stop (it keeps the HAL's own report);
-            # the graph-wide publish is best-effort and must not undo the latch.
-            self._latch_estop(invoke_hal=False)
-            if self._tracking_estop_pub is not None:
+            # Latch first; the graph-wide publish is best effort and must not undo it.
+            self._on_estop(None)
+            if self._estop_pub is not None:
                 from std_msgs.msg import Empty
 
                 try:
-                    self._tracking_estop_pub.publish(Empty())
+                    self._estop_pub.publish(Empty())
                 except Exception as pub_exc:  # reason: the local latch already holds
                     self.get_logger().error(f"/openral/estop publish failed: {pub_exc}")
 
@@ -2135,16 +2136,6 @@ if _ROS2_AVAILABLE:
 
         def _on_estop(self, _msg: object) -> None:
             """Latch and invoke downstream stop for HALs that explicitly opt in."""
-            self._latch_estop(invoke_hal=True)
-
-        def _latch_estop(self, *, invoke_hal: bool) -> None:
-            """Latch, stop (``invoke_hal``: the HAL's own ``estop``), then report.
-
-            ``invoke_hal=False`` is for a stop the HAL already performed itself: a second
-            ``estop()`` would re-deactivate controllers that are already inactive, which a
-            STRICT ``controller_manager`` switch refuses, overwriting an acknowledged
-            report with an unacknowledged one.
-            """
             if self._estopped:
                 return
             self._estopped = True
@@ -2161,8 +2152,7 @@ if _ROS2_AVAILABLE:
             # (the early return in `_invoke_hal_estop`) — an uncounted e-stop
             # is exactly the blind spot this exists to close.
             try:
-                if invoke_hal:
-                    self._invoke_hal_estop()
+                self._invoke_hal_estop()
             finally:
                 self._discard_staged_slots("estop")
                 self._emit_estop_telemetry()

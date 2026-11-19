@@ -1,7 +1,7 @@
 r"""Real-hardware ros2_control bringup for the dual Flexiv Rizon 4s.
 
-``RizonDualRealHAL`` (``python/hal/src/openral_hal/flexiv_rizon_real.py``) only publishes
-to two already-running ``JointTrajectoryController``s; this launch starts that C++ graph
+The HAL (``GroupedRosControlHAL``, configured by ``robots/rizon_dual/robot.yaml``) only
+publishes to two already-running ``JointTrajectoryController``s; this launch starts that C++ graph
 (CLAUDE.md §1.5): ``robot_state_publisher`` with this package's xacro (upstream
 ``flexiv_description`` kinematics + one upstream ``FlexivHardwareInterface`` per arm),
 ``controller_manager`` at 1 kHz, and the three spawners. ``openral deploy run`` includes it
@@ -36,7 +36,7 @@ from launch_ros.substitutions import FindPackageShare
 # The reference rig's arms (q5090 cell): left on the 180-deg-rolled mount.
 _ROBOT_SN_LEFT = "Rizon4s-063642"
 _ROBOT_SN_RIGHT = "Rizon4s-063618"
-# Must match RizonDualRealHAL's defaults.
+# Must match the manifest's hal.parameters.defaults.groups (tests/unit/test_rizon_dual_real_hal.py).
 _CONTROLLERS = ("joint_state_broadcaster", "left_arm_controller", "right_arm_controller")
 
 

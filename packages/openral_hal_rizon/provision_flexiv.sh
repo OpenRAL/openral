@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Build the upstream Flexiv stack the dual-Rizon bringup loads, against system ROS 2 Jazzy,
-# into one colcon workspace (default ~/flexiv_ws). Idempotent: re-run after a re-pin.
+# into one colcon workspace (default ~/flexiv_ws). Idempotent: re-run after a re-pin. The
+# slow prebuilt products are stamped with what they were built for (the RDK commit; the
+# private DDS tags), so a re-pin rebuilds them and an unchanged pin skips them.
 #
 #   bash packages/openral_hal_rizon/provision_flexiv.sh [workspace]
 #   source <workspace>/install/setup.bash   # before `openral deploy run`
@@ -26,6 +28,10 @@ WS=$(cd "${1:-$HOME/flexiv_ws}" && pwd)  # absolute: the RDK's installer runs fr
 RDK=$WS/rdk_install
 DDS=$WS/dds_install
 JOBS=$(nproc)
+# The Fast-CDR the vendor RDK `.a` is compiled against (2.2.5, bundled by Fast-DDS 2.14.5).
+# Re-check both whenever deps.repos moves the RDK to another release.
+FASTDDS_TAG=v2.14.5
+MEMORY_TAG=v0.7-3
 mkdir -p "$WS/src" "$WS/third"
 # shellcheck source=/dev/null
 source /opt/ros/jazzy/setup.bash
@@ -46,26 +52,32 @@ done
 vcs import "$WS/src" < "$HERE/deps.repos"
 touch "$WS/src/flexiv_rdk/COLCON_IGNORE"
 
-if [ ! -f "$RDK/lib/libRBDyn.so" ]; then
+built_for() { [ "$(cat "$1" 2>/dev/null)" = "$2" ]; }  # stamp file, expected content
+
+RDK_SHA=$(git -C "$WS/src/flexiv_rdk" rev-parse HEAD)
+if ! built_for "$RDK/.openral-deps" "$RDK_SHA"; then
+  rm -rf "$RDK"
   # flexiv_rdk/third*/ is upstream's third-party dir (the glob keeps codespell off its name).
   (cd "$WS"/src/flexiv_rdk/third*/ && bash build_and_install_dependencies_not_in_ros2.sh "$RDK" "$JOBS")
+  echo "$RDK_SHA" > "$RDK/.openral-deps"
 fi
 
 STATIC=(-DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DDS" -DCMAKE_PREFIX_PATH="$DDS"
   -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_CXX_VISIBILITY_PRESET=hidden
   -DCMAKE_VISIBILITY_INLINES_HIDDEN=ON -DBUILD_TESTING=OFF)
-if [ ! -d "$DDS/lib/foonathan_memory" ]; then
-  [ -d "$WS/third/memory" ] || git clone -q --depth 1 --branch v0.7-3 https://github.com/foonathan/memory.git "$WS/third/memory"
+DDS_KEY="fastdds=$FASTDDS_TAG memory=$MEMORY_TAG"
+if ! built_for "$DDS/.openral-build" "$DDS_KEY"; then
+  rm -rf "$DDS" "$WS/third/memory" "$WS/third/Fast-DDS"
+  git clone -q --depth 1 --branch "$MEMORY_TAG" https://github.com/foonathan/memory.git "$WS/third/memory"
   cmake -S "$WS/third/memory" -B "$WS/third/memory/build" "${STATIC[@]}" \
     -DFOONATHAN_MEMORY_BUILD_EXAMPLES=OFF -DFOONATHAN_MEMORY_BUILD_TESTS=OFF
   cmake --build "$WS/third/memory/build" --target install -j"$JOBS"
-fi
-if [ ! -f "$DDS/lib/libfastrtps.a" ]; then
-  [ -d "$WS/third/Fast-DDS" ] || git clone -q --depth 1 --branch v2.14.5 --recurse-submodules \
+  git clone -q --depth 1 --branch "$FASTDDS_TAG" --recurse-submodules \
     --shallow-submodules https://github.com/eProsima/Fast-DDS.git "$WS/third/Fast-DDS"
   cmake -S "$WS/third/Fast-DDS" -B "$WS/third/Fast-DDS/build" "${STATIC[@]}" -DTHIRDPARTY=FORCE \
     -DCOMPILE_EXAMPLES=OFF -DSECURITY=OFF -DBUILD_DOCUMENTATION=OFF
   cmake --build "$WS/third/Fast-DDS/build" --target install -j"$JOBS"
+  echo "$DDS_KEY" > "$DDS/.openral-build"
 fi
 
 cmake -S "$WS/src/flexiv_rdk" -B "$WS/build_rdk" -DCMAKE_BUILD_TYPE=Release \

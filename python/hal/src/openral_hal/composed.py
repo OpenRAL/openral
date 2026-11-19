@@ -461,14 +461,30 @@ class ComposedHAL:
     def _dispatch(self, shares: list[tuple[int, Action]]) -> None:
         """Ask every part that can refuse (``check_action``) first, then send all.
 
-        A held lift or a twist-only base then refuses before any part has moved.
+        A held lift or a twist-only base then refuses before any part has moved. A send
+        that fails once a part has already taken its share (or a part that stopped
+        itself mid-send, ``ROSEStopRequested``) leaves the robot commanded
+        inconsistently, so every part is stopped (``estop``, which raises
+        ``ROSEStopRequested``) rather than the tick half-applied.
         """
         for i, sub in shares:
             check = getattr(self._parts[i], "check_action", None)
             if check is not None:
                 check(sub)
-        for i, sub in shares:
-            self._parts[i].send_action(sub)
+        for sent, (i, sub) in enumerate(shares):
+            try:
+                self._parts[i].send_action(sub)
+            except Exception as exc:  # reason: a partial dispatch must stop every part
+                if sent == 0 and not isinstance(exc, ROSEStopRequested):
+                    raise  # nothing reached a part: an ordinary refused tick
+                log.critical(
+                    "hal.composed.partial_dispatch",
+                    robot=self.description.name,
+                    sent=[type(self._parts[j]).__name__ for j, _ in shares[:sent]],
+                    failed=type(self._parts[i]).__name__,
+                    error=repr(exc),
+                )
+                self.estop()
 
     def _split(self, action: Action) -> list[tuple[int, Action]]:
         mode = action.control_mode

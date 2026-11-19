@@ -241,14 +241,18 @@ action_spec:
 
 hal:
   sim: null
-  real: "openral_hal.flexiv_rizon_real:RizonDualRealHAL"
+  # Config-only: the generic grouped ros2_control HAL, one JointTrajectoryController per
+  # arm. estop deactivates both (each arm then holds its last NRT target); recovery stays
+  # RESTART_REQUIRED (the base default) until an in-place re-arm is exercised on the rig.
+  real: "openral_hal.ros_control:GroupedRosControlHAL"
   # controller_manager + 2 x upstream FlexivHardwareInterface (C++, 1 kHz, §1.5).
   real_bringup: "openral_hal_rizon:real_bringup.launch.py"
   parameters:
     defaults:
-      # Must match packages/openral_hal_rizon/config/rizon_dual_controllers.yaml.
-      left_arm_controller: "left_arm_controller"
-      right_arm_controller: "right_arm_controller"
+      # (controller, joints) in action order: left 0..6, right 7..13. The one copy of the
+      # controller names: the bringup's controllers yaml and spawner list are pinned to it
+      # by tests/unit/test_rizon_dual_real_hal.py.
+      groups: [["left_arm_controller", 7], ["right_arm_controller", 7]]
 
 # The two arm mounts, verbatim from rizon_dual.urdf's left_/right_base_joint (world at
 # the column's foot): the kernel places both arm trees relative to `world` through these.

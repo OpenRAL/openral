@@ -606,6 +606,27 @@ class RosControlHAL(HALBase):
         Returns:
             Latest ``JointState`` for all joints in ``description.joints``.
         """
+        stamp_ns = self._fresh_sample_stamp_ns()
+        n = len(self._joint_names)
+        raw: dict[str, object] = {}
+        if self._state_fn is not None:
+            raw = self._state_fn()
+
+        return JointState(
+            name=self._joint_names,
+            position=_raw_floats(raw, "position", n),
+            velocity=_raw_floats(raw, "velocity", n),
+            effort=_raw_floats(raw, "effort", n),
+            stamp_ns=stamp_ns,
+        )
+
+    def _fresh_sample_stamp_ns(self) -> int:
+        """When the newest joint state arrived (ns), after the connection + staleness checks.
+
+        Raises:
+            ROSRuntimeError: If not connected.
+            ROSPerceptionStale: If the last reading is older than ``staleness_limit_s``.
+        """
         self._require_connected("read_state")
         # With a transport attached, age is measured from the arrival of the
         # newest joint state — the only thing that actually says whether the
@@ -624,22 +645,10 @@ class RosControlHAL(HALBase):
             raise ROSPerceptionStale(
                 f"Joint state is {age:.3f} s old (limit {self._staleness_limit_s} s)."
             )
-
-        n = len(self._joint_names)
-        raw: dict[str, object] = {}
-        if self._state_fn is not None:
-            raw = self._state_fn()
-
-        return JointState(
-            name=self._joint_names,
-            position=_raw_floats(raw, "position", n),
-            velocity=_raw_floats(raw, "velocity", n),
-            effort=_raw_floats(raw, "effort", n),
-            # When the sample arrived, not when it was read: a consumer that pairs
-            # joint states with other sensors by stamp (the robot self-filter's
-            # skew check) must see how old the sample really is.
-            stamp_ns=int(time.time_ns()) - int(max(sample_age_s, 0.0) * 1e9),
-        )
+        # When the sample arrived, not when it was read: a consumer that pairs joint
+        # states with other sensors by stamp (the robot self-filter's skew check) must
+        # see how old the sample really is.
+        return int(time.time_ns()) - int(max(sample_age_s, 0.0) * 1e9)
 
     def send_action(self, action: Action) -> None:
         """Forward an action chunk to the ros2_control joint trajectory controller.
@@ -718,9 +727,22 @@ class RosControlHAL(HALBase):
         bare callables) the report says so and ``stopped`` is ``False`` — a
         local latch is never reported as a downstream stop.
 
+        Idempotent once acknowledged: a second ``estop()`` before ``reset_estop`` (a
+        composed robot stopping every part after one part stopped itself, or the node's
+        latch after the HAL's own stop) re-raises with the stored report instead of
+        re-deactivating controllers that are already inactive, which a STRICT
+        ``controller_manager`` switch refuses — that would overwrite an acknowledged
+        report with an unacknowledged one. An unacknowledged stop is always retried.
+
         Raises:
             ROSEStopRequested: Always.
         """
+        done = self._last_stop_report
+        if not self._connected and done is not None and done.stopped:
+            raise ROSEStopRequested(
+                f"Emergency stop on robot '{self.description.name}': already stopped "
+                f"(downstream stop acknowledged: {done.detail})."
+            )
         log.critical("hal.estop", robot=self.description.name, controllers=self.controller_names())
         self._connected = False
         report = self._stop_downstream()
@@ -923,9 +945,16 @@ class GroupedRosControlHAL(RosControlHAL):
         staleness_limit_s: float | None = None,
     ) -> None:
         """Initialise the fan-out table; opens no connection."""
-        if not groups or sum(n for _, n in groups) != len(description.joints):
+        names = [name for name, _ in groups]
+        if (
+            not groups
+            or any(n <= 0 for _, n in groups)
+            or len(set(names)) != len(names)
+            or sum(n for _, n in groups) != len(description.joints)
+        ):
             raise ROSConfigError(
-                f"{type(self).__name__}: controller groups {list(groups)} must cover the "
+                f"{type(self).__name__}: controller groups {list(groups)} must be distinct "
+                f"controllers of at least one joint each, covering the "
                 f"{len(description.joints)} joints of '{description.name}' exactly."
             )
         super().__init__(
@@ -937,7 +966,7 @@ class GroupedRosControlHAL(RosControlHAL):
             staleness_limit_s=staleness_limit_s,
         )
         self._ros2_names: list[str] = [str(j.sim_joint_name or j.name) for j in description.joints]
-        self._controller_names = [name for name, _ in groups]
+        self._controller_names = names
         # (command topic, action slice, ros2_control joint names) per controller.
         table: list[tuple[str, slice, list[str]]] = []
         start = 0
@@ -964,19 +993,21 @@ class GroupedRosControlHAL(RosControlHAL):
         """Return the latest joint state, matched by name into manifest order.
 
         Raises:
-            ROSRuntimeError: If not connected, or if the incoming state is missing
-                joints the manifest declares.
+            ROSRuntimeError: If not connected, or if the incoming state carries no
+                joint names or is missing joints the manifest declares.
             ROSPerceptionStale: If the last reading exceeds the staleness deadline.
         """
-        state = super().read_state()
         if self._state_fn is None:
             # No subscriber wired: the base returns a zeroed state in manifest order.
-            return state
-        raw = self._state_fn()
+            return super().read_state()
+        stamp_ns = self._fresh_sample_stamp_ns()
+        raw = self._state_fn()  # one sample: the freshness check above is its own
         incoming = raw.get("name")
         if not isinstance(incoming, list):
-            # Without names there is nothing to match; the positional read stands.
-            return state
+            raise ROSRuntimeError(
+                f"{self._joint_state_topic} sample carries no joint names: "
+                f"{type(self).__name__} matches joints by name, never by position."
+            )
 
         index_of = {str(n): i for i, n in enumerate(incoming)}
         absent = [n for n in self._ros2_names if n not in index_of]
@@ -1001,7 +1032,7 @@ class GroupedRosControlHAL(RosControlHAL):
             # An absent effort channel stays empty, never zero-filled: zeros would
             # fake an effort reading the driver never published.
             effort=_reordered("effort", absent=[]),
-            stamp_ns=state.stamp_ns,
+            stamp_ns=stamp_ns,
         )
 
     def send_action(self, action: Action) -> None:
@@ -1077,7 +1108,7 @@ class GroupedRosControlHAL(RosControlHAL):
         for sent, (topic, msg) in enumerate(outbound):
             try:
                 self._publish_fn(topic, msg)
-            except Exception:
+            except Exception as exc:  # reason: a partial publish must stop every controller
                 if sent == 0:
                     raise  # nothing reached a controller: an ordinary refused tick
                 # An earlier controller already holds the new target and this one does
@@ -1088,6 +1119,7 @@ class GroupedRosControlHAL(RosControlHAL):
                     robot=self.description.name,
                     published=[t for t, _ in outbound[:sent]],
                     failed=topic,
+                    error=repr(exc),
                 )
                 self.estop()
         if group is not None:

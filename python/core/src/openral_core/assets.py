@@ -24,7 +24,7 @@ mesh reference inside a vendored URDF, for the description packages OpenRAL
 fetches itself as pinned clones (``openral_hal.ros_package_overlay``).
 ``expand_rd_mesh_refs`` turns a vendored URDF's ``rd:<module>:<relpath>`` mesh
 refs into absolute paths for a consumer that does not know the scheme (the
-Isaac URDF importer, ``foxglove_bridge``'s ``resource_retriever``).
+Isaac URDF importer, and the deploy launch's viewer description).
 """
 
 from __future__ import annotations
@@ -188,7 +188,7 @@ def _git_local_only() -> Iterator[None]:
             os.environ["GIT_ALLOW_PROTOCOL"] = previous
 
 
-def expand_rd_mesh_refs(urdf_xml: str, *, prefix: str = "", cached_only: bool = False) -> str:
+def expand_rd_mesh_refs(urdf_xml: str, *, cached_only: bool = False) -> str:
     """``urdf_xml`` with every ``filename="rd:<module>:<relpath>"`` made an absolute path.
 
     Vendored URDFs (``openral robot vendor-urdf``) name their meshes
@@ -199,8 +199,6 @@ def expand_rd_mesh_refs(urdf_xml: str, *, prefix: str = "", cached_only: bool = 
 
     Args:
         urdf_xml: The URDF text.
-        prefix: Prepended to each absolute path (``"file://"`` for a
-            ``resource_retriever`` consumer).
         cached_only: Never clone or fetch: a module whose pinned clone is not
             already in the ``robot_descriptions`` cache raises ``AssetFetchError``
             at once (``GIT_ALLOW_PROTOCOL=file`` while importing). For a caller with
@@ -229,7 +227,7 @@ def expand_rd_mesh_refs(urdf_xml: str, *, prefix: str = "", cached_only: bool = 
         path = Path(str(mod.REPOSITORY_PATH)) / rel
         if not path.is_file():
             raise AssetRefError(f"rd:{module}:{rel}: {path!s} is not a file in the pinned clone")
-        return f'filename="{prefix}{path}"'
+        return f'filename="{path}"'
 
     return _RD_MESH_REF.sub(expand, urdf_xml)
 

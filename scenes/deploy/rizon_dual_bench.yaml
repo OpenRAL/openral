@@ -5,7 +5,8 @@
 # `deploy run` includes `openral_hal_rizon`'s real_bringup.launch.py: one upstream
 # FlexivHardwareInterface per arm. Activation ENABLES BOTH ARMS (brakes released, servo
 # on); the trajectory controllers then hold the measured pose, so nothing moves until a
-# trajectory arrives. Keep each arm's E-stop in reach. Needs the upstream Flexiv packages
+# trajectory arrives. Keep each arm's E-stop in reach. Stopping the deploy does NOT disable
+# the arms (upstream Robot::Stop() leaves them enabled): disable them or press the E-stops. Needs the upstream Flexiv packages
 # sourced (packages/openral_hal_rizon/README.md "Provisioning") and each arm in Remote
 # mode (Ethernet) on its controller.
 #

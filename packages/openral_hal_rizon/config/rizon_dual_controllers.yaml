@@ -1,7 +1,7 @@
 # Controllers for the dual Rizon 4s, shaped on upstream flexiv_ros2 jazzy-v1.9
 # flexiv_bringup/config/rizon_dual_controllers.yaml: 1 kHz (the RDK's own loop rate),
 # one JointTrajectoryController per arm claiming position command + position/velocity
-# state. Controller names are RizonDualRealHAL's defaults. Upstream's gpio_controller
+# state. Controller names are the manifest's hal.parameters.defaults.groups. Upstream's gpio_controller
 # and flexiv_robot_states_broadcaster are left out: nothing in OpenRAL reads them.
 controller_manager:
   ros__parameters:
