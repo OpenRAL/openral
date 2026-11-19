@@ -49,6 +49,27 @@ task:
   max_steps: 900
   success_key: is_success
 
+# What success means for the task's prompt, as a predicate over world state (issue #635,
+# openral_core.SuccessCondition): the cube rests, released, with its centre over the
+# layout-A marker for one second. No CLI path reads it here: `openral sim run` grades from
+# simulator state (task.success_key), and this scene has no deploy twin yet. It is the
+# condition the #635 sim and runner tests judge a replayed episode by
+# (tests/sim/test_makermods_metal_hal_metal_pick_place.py); a deploy scene's conditions are
+# forwarded to the rSkill runner (scenes/deploy/isaac_leisaac_pick_orange.yaml). The box is the marker
+# (0.278, 0.076 in base_link) widened by spawn_jitter_m, at the resting cube's height.
+success_conditions:
+  "Pick up the cube and place it at the marked location":
+    object_label: cube
+    region:
+      frame_id: base_link
+      pose:
+        xyz: [0.278, 0.076, 0.0155]
+        quat_xyzw: [0.0, 0.0, 0.0, 1.0]
+        frame_id: base_link
+      half_extents: [0.035, 0.035, 0.02]
+    settle_s: 1.0
+    end_on_success: true
+
 seed: 0
 n_episodes: 1
 record_video: true
