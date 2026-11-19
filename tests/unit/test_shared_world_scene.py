@@ -6,13 +6,16 @@ manifests it names.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
+import numpy as np
 import pytest
 from openral_cli.deploy_world import robot_deploy_argv, world_robot_yamls
 from openral_core import RobotDescription, SharedWorldScene
 from openral_core.exceptions import ROSConfigError
 from openral_hal import build_hal
+from openral_hal.peer_voxels import PeerBox, occupancy_grid
 from pydantic import ValidationError
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -102,3 +105,49 @@ def test_build_hal_refuses_shared_world_off_the_bare_sim_twin() -> None:
     assert h1.hal.sim is not None  # a class-based sim HAL: not a manifest-derived twin
     with pytest.raises(ROSConfigError, match="shared_world"):
         build_hal(h1, mode="sim", transport=transport)
+
+
+def test_a_shared_world_robot_launch_feeds_its_kernel_the_peers() -> None:
+    """The HAL binding `deploy world` passes also turns on the launch's peer producer."""
+    from openral_cli.deploy_sim import resolve_launch_invocation
+
+    config = REPO_ROOT / "scenes" / "deploy" / "so101_shared_table.yaml"
+    invocation = resolve_launch_invocation(
+        config=config,
+        robot_override=None,
+        dashboard_port=4336,
+        reset_to_pose_service=None,
+        hal_param_overrides={"shared_world": "/tmp/w.sock", "shared_world_robot": "a"},
+    )
+    argv = invocation.argv_template
+    assert "shared_world:=/tmp/w.sock" in argv
+    assert "shared_world_robot:=a" in argv
+    assert "enable_octomap:=false" in argv  # the peers are the only voxel producer
+    plain = resolve_launch_invocation(
+        config=config, robot_override=None, dashboard_port=4336, reset_to_pose_service=None
+    )
+    assert not any(a.startswith("shared_world") for a in plain.argv_template)
+
+
+def test_the_peer_grid_covers_every_cell_a_box_touches() -> None:
+    """Conservative rasterization: a cell any part of a rotated box enters is occupied."""
+    angle = math.radians(30.0)
+    c, s = math.cos(angle), math.sin(angle)
+    rotation = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+    box = PeerBox(np.array([0.12, -0.07, 0.05]), rotation, np.array([0.04, 0.01, 0.02]))
+    resolution = 0.015
+    origin, (sx, sy, sz), cells = occupancy_grid([box], (0.0, 0.0, 0.1), 0.3, resolution)
+    assert sx == sy == sz == math.floor(2 * 0.3 / resolution + 0.5) + 1  # the kernel's reserve
+    occupied = cells.reshape(sz, sy, sx)
+    rng = np.random.default_rng(0)
+    points = (rng.uniform(-1.0, 1.0, (5000, 3)) * box.half_extents) @ rotation.T + box.centre
+    index = np.floor((points - origin) / resolution).astype(int)
+    assert occupied[index[:, 2], index[:, 1], index[:, 0]].all()
+    # ... and it stays local: nothing beyond the box's own reach plus a cell diagonal.
+    zz, yy, xx = np.nonzero(occupied)
+    centres = origin + (np.stack([xx, yy, zz], axis=1) + 0.5) * resolution
+    reach = np.linalg.norm(box.half_extents) + resolution * math.sqrt(3.0)
+    assert (np.linalg.norm(centres - box.centre, axis=1) <= reach + 1e-9).all()
+    # A box beyond the ball's grid adds nothing.
+    far = PeerBox(np.array([5.0, 0.0, 0.0]), np.eye(3), np.array([0.1, 0.1, 0.1]))
+    assert occupancy_grid([far], (0.0, 0.0, 0.1), 0.3, resolution)[2].sum() == 0

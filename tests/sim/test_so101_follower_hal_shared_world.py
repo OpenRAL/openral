@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -29,6 +30,7 @@ import numpy as np
 from openral_core import Action, ControlMode, RobotDescription, SharedWorldScene
 from openral_core.exceptions import ROSConfigError, ROSEStopRequested
 from openral_hal import build_hal
+from openral_hal.peer_voxels import PeerBox, mujoco_peer_boxes, occupancy_grid
 from openral_hal.shared_world import SharedWorldArmHAL, SharedWorldServer
 
 pytestmark = [
@@ -239,6 +241,66 @@ def test_a_stopped_or_silent_robot_neither_moves_on_nor_freezes_the_world(
         assert 0.05 < advanced < 0.2  # the 0.1 s that passed, not a capped fast-forward
     finally:
         served.close()
+
+
+def _collision_geoms(model: Any, keep: Callable[[str], bool]) -> list[int]:
+    """Collision geoms (a contype or conaffinity) whose body name ``keep`` accepts."""
+    return [
+        g
+        for g in range(model.ngeom)
+        if (model.geom_contype[g] or model.geom_conaffinity[g])
+        and keep(model.body(int(model.geom_bodyid[g])).name)
+    ]
+
+
+def test_each_robot_sees_its_peer_as_occupied_cells(table: _World) -> None:
+    """The peer's collision geoms, in this robot's base frame, are occupied cells.
+
+    And the cells catch the collision the issue is about: A panned +0.9 rad from rest
+    puts A's own geoms into cells B occupies; A panned -0.4 rad stays clear.
+    """
+    import mujoco as mj
+
+    ball = ((0.0, -0.2, 0.15), 0.45, 0.015)  # (centre, radius, cell): covers both arms
+    resolution = ball[2]
+    for name, peer in (("a", "b"), ("b", "a")):
+        model, data = table.hals[name].mujoco_handles()  # type: ignore[misc]
+        peer_geoms = _collision_geoms(model, lambda body, p=peer: body.startswith(f"{p}_"))
+        boxes = mujoco_peer_boxes(model, data, [peer])
+        assert len(boxes) == len(peer_geoms) == 13  # the SO-101's collision meshes
+        origin, (n, _, _), cells = occupancy_grid(boxes, *ball)
+        occupied = cells.reshape(n, n, n)
+        for g in peer_geoms:  # every vertex of every peer collision mesh is in an occupied cell
+            mesh = int(model.geom_dataid[g])
+            start, count = int(model.mesh_vertadr[mesh]), int(model.mesh_vertnum[mesh])
+            points = model.mesh_vert[start : start + count] @ data.geom_xmat[g].reshape(3, 3).T
+            index = np.floor((points + data.geom_xpos[g] - origin) / resolution).astype(int)
+            inside = np.all((index >= 0) & (index < n), axis=1)
+            assert inside.any()
+            assert occupied[index[inside, 2], index[inside, 1], index[inside, 0]].all()
+
+    model, data = table.hals["a"].mujoco_handles()  # type: ignore[misc]
+    peer_cells = occupancy_grid(mujoco_peer_boxes(model, data, ["b"]), *ball)[2]
+    own = _collision_geoms(model, lambda body: not body.startswith("b_") and body != "world")
+    own = [g for g in own if model.body(int(model.geom_bodyid[g])).name != "handover_cube"]
+
+    def overlap(pan: float) -> int:
+        probe = mj.MjData(model)
+        probe.qpos[:] = data.qpos
+        probe.qpos[0] = pan
+        mj.mj_kinematics(model, probe)
+        mine = [
+            PeerBox(
+                probe.geom_xpos[g] + probe.geom_xmat[g].reshape(3, 3) @ model.geom_aabb[g][:3],
+                probe.geom_xmat[g].reshape(3, 3),
+                model.geom_aabb[g][3:],
+            )
+            for g in own
+        ]
+        return int((occupancy_grid(mine, *ball)[2] & peer_cells).sum())
+
+    assert overlap(-0.4) == 0
+    assert overlap(0.9) > 0
 
 
 def test_an_arena_that_breaks_a_robot_view_is_refused_at_startup(tmp_path: Path) -> None:
