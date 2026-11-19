@@ -1256,6 +1256,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     foxglove_port: int = 8765,
     initial_task_prompt: str | None = None,
     runtime_overrides: dict[str, object] | None = None,
+    rskill_auto_install: bool = False,
 ) -> LaunchInvocation:
     """Resolve every input into the ``ros2 launch`` argv to execute.
 
@@ -1268,6 +1269,11 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     sentinel the caller substitutes after writing the ephemeral HAL params
     YAML. No envelope file is ever written — the launch reads ``robot_yaml``
     and feeds the kernel via ROS params.
+
+    ``rskill_auto_install`` installs the robot's openral.com rSkill list right after
+    the account settings apply (``openral_cli.rskill_install.auto_install_rskills``);
+    ``deploy run`` / ``deploy sim`` pass it unless ``--no-rskill-install`` or
+    ``--dry-run``.
     """
     from openral_core import (  # reason: defer schema import
         ROBOT_UNIT_ENV,
@@ -1486,6 +1492,12 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     from openral_cli.robot import apply_reasoner_settings
 
     apply_reasoner_settings(echo=_console.print)
+    if rskill_auto_install:
+        # The robot's openral.com rSkill list, installed before the reasoner's palette is
+        # built; a skipped or failed one never stops the deploy.
+        from openral_cli.rskill_install import auto_install_rskills
+
+        auto_install_rskills(echo=_console.print)
     resolve_unit_identity(robot_yaml, scene_unit, required=hal_mode == "real")
     # The same selection `resolve_sensor_overlays` made; `None` only for a robot without
     # `units/` on a real deploy (it refuses otherwise). The extrinsic preflight reads that
@@ -4340,6 +4352,15 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
             "without writing the HAL params temp file or shelling out."
         ),
     ),
+    rskill_install: bool = typer.Option(
+        True,
+        "--rskill-install/--no-rskill-install",
+        help=(
+            "Install the rSkills on this robot's openral.com list (OPENRAL_RSKILLS) that "
+            "aren't installed yet, permissive licences only (default on; "
+            "OPENRAL_RSKILL_AUTO_INSTALL=0 also turns it off)."
+        ),
+    ),
 ) -> None:
     r"""Boot the full ROS graph against a robot's digital-twin HAL.
 
@@ -4382,6 +4403,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
             enable_foxglove=foxglove,
             foxglove_port=foxglove_port,
             initial_task_prompt=initial_task,
+            rskill_auto_install=rskill_install and not dry_run,
         )
     except ROSConfigError as exc:
         _console.print(f"[red]config error:[/red] {exc}")

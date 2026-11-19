@@ -1871,20 +1871,13 @@ def rskill_install(
     console.print(f"[bold]openral rskill install[/bold] — fetching [cyan]{hub_id}[/cyan] …")
 
     # ── Step 1: fetch manifest only (to surface license before downloading weights)
+    from openral_cli.rskill_install import PERMISSIVE_RSKILL_LICENSES, fetch_rskill_manifest
+
     try:
-        from huggingface_hub import hf_hub_download
-        from openral_core.schemas import RSkillManifest
+        manifest = fetch_rskill_manifest(hub_id, revision or None)
     except ImportError as exc:
         console.print(f"[red]Missing dependency:[/red] {exc}")
         raise typer.Exit(code=1)  # noqa: B904
-
-    try:
-        manifest_path = hf_hub_download(
-            repo_id=hub_id,
-            filename="rskill.yaml",
-            revision=revision or None,
-        )
-        manifest = RSkillManifest.from_yaml(manifest_path)
     except Exception as exc:  # reason: surface any download/parse error to user
         gated_err = gated_repo_error(hub_id, exc)
         if gated_err is not None:
@@ -1899,8 +1892,7 @@ def rskill_install(
     # ── Step 2: display license + confirm if non-permissive
     _display_license_banner(manifest.name, manifest.license.value, manifest.version, console)
 
-    _permissive = {"apache-2.0", "mit", "bsd"}
-    if manifest.license.value not in _permissive and not yes:
+    if manifest.license.value not in PERMISSIVE_RSKILL_LICENSES and not yes:
         confirmed = typer.confirm("Proceed with installation?", default=False)
         if not confirmed:
             console.print("[yellow]Aborted.[/yellow]")
@@ -4164,6 +4156,15 @@ def deploy_run(
         "--dry-run",
         help="Print the resolved real-mode launch argv and exit without shelling out.",
     ),
+    rskill_install: bool = typer.Option(
+        True,
+        "--rskill-install/--no-rskill-install",
+        help=(
+            "Install the rSkills on this robot's openral.com list (OPENRAL_RSKILLS) that "
+            "aren't installed yet, permissive licences only (default on; "
+            "OPENRAL_RSKILL_AUTO_INSTALL=0 also turns it off)."
+        ),
+    ),
 ) -> None:
     """Run an rSkill on REAL hardware via the production ROS graph.
 
@@ -4219,6 +4220,7 @@ def deploy_run(
             initial_task_prompt=initial_task,
             enable_reward_monitor=enable_reward_monitor,
             reward_monitor_manifest=reward_monitor_manifest,
+            rskill_auto_install=rskill_install and not dry_run,
         )
     except (ROSConfigError, ROSCapabilityMismatch) as exc:
         console.print(f"[red]deploy run:[/red] {exc}")

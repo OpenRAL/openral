@@ -157,6 +157,19 @@ the robot at every deploy start: the link stored the robot's own credential
 (`settings.json`, 0600) for offline starts, and puts them in the environment. A variable
 already set on the robot wins.
 
+**The robot's rSkills.** A robot's **Robot settings** page on openral.com lists the
+rSkills it may run (`OPENRAL_RSKILLS`, comma-separated Hugging Face repo ids such as
+`OpenRAL/rskill-smolvla-so101-eraser_place-bf16`): the reasoner offers only those. At
+`openral deploy run` / `deploy sim` start, right after the account settings apply and
+before the reasoner starts, the robot installs each listed rSkill it doesn't have yet,
+one at a time, printing one line per rSkill (`installing …`, `installed`, `already
+installed`, or `skipped` and why). Only Apache-2.0 / MIT / BSD rSkills install on their
+own; a proprietary or non-commercial one is skipped with the `openral rskill install
+<id>` to run by hand (it asks you to accept the licence). A gated OpenRAL Pro rSkill this
+robot's Hugging Face token can't read (401/403) says to request access on Hugging Face.
+No failure (offline, Hub down, a bad manifest) stops the deploy: it starts with what is
+installed. `--no-rskill-install` or `OPENRAL_RSKILL_AUTO_INSTALL=0` turns this off.
+
 **Settings in the console.** The console's left pane (⋯ next to your name → **Settings**)
 edits the reasoner's Anthropic, OpenAI, OpenRouter and Ollama API keys and its model in place.
 A model can be chosen once one of its keys is set: GPT runs on the OpenAI key (OpenAI's own
