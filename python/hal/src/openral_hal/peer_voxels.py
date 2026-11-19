@@ -29,6 +29,8 @@ from __future__ import annotations
 import argparse
 import array
 import math
+import signal
+import threading
 import time
 from typing import Any, NamedTuple
 
@@ -300,6 +302,7 @@ def main(argv: list[str] | None = None) -> None:
     from openral_msgs.msg import OccupancyVoxels
     from rclpy.executors import ExternalShutdownException
     from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+    from rclpy.signals import SignalHandlerOptions
 
     from openral_hal.shared_world import _ask, open_view, robot_root_bodies
 
@@ -315,7 +318,12 @@ def main(argv: list[str] | None = None) -> None:
     )
     base_name = model.body(base_body).name
 
-    rclpy.init()
+    # SIGINT / SIGTERM (the launch's teardown) end the loop and the process exits 0;
+    # only a lost world (exit 1) or a crash is a failure the launch shuts the graph on.
+    stop = threading.Event()
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(signum, lambda *_: stop.set())
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
     node = rclpy.create_node(f"openral_peer_voxels_{args.robot}")
     # The kernel's world-grid subscription: RELIABLE, VOLATILE, keep last 1.
     qos = QoSProfile(
@@ -331,7 +339,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     period = 1.0 / args.rate_hz
     try:
-        while rclpy.ok():
+        while rclpy.ok() and not stop.is_set():
             started = time.monotonic()
             # Every grid comes from a fresh read: an unanswered read ends the loop.
             state = _ask(conn, {"op": "observe", "robot": args.robot})
@@ -343,7 +351,7 @@ def main(argv: list[str] | None = None) -> None:
             else:
                 pub.publish(_voxels_msg(OccupancyVoxels(), grid, args, float(state["time"])))
             rclpy.spin_once(node, timeout_sec=max(0.0, period - (time.monotonic() - started)))
-    except (KeyboardInterrupt, ExternalShutdownException):
+    except ExternalShutdownException:
         return  # the graph is shutting down: a clean exit, not a lost peer source
     except (EOFError, OSError, ROSConfigError) as exc:
         node.get_logger().error(
