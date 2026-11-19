@@ -273,6 +273,15 @@ grasp / place declaration, so no region and no tracked key reach the kernel, whi
 in a hand stays checked and the kernel's attachment stream stays fresh (a stale one refuses
 every candidate, a base twist included). Either edge discards the previous station
 (`TrackerSession.leave_station`), including any segmenter / locator answer still in flight.
+So does a base that moves while the perception is on (a push, a creep, a twist no base skill
+announced): once the measured `base_joints` pose leaves the pose the tracks were measured at
+by more than 2 cm or 0.02 rad (`STATION_MOTION_M` / `STATION_ROTATION_RAD`, the safety
+kernel's station thresholds), the session discards the station and logs
+`object_tracker.base_moved` / `object_tracker.station_reset transition=base_moved`, and the
+tracks are measured again from the new pose. A track is a base-frame box from where the base
+stood at its fit; kept across a move it would be compared with a fixed-frame box (a memory
+node's goal scope, a map zone) re-expressed where the base stands now, and a goal naming one
+memory node could miss its instance or bind the neighbour (issue #651).
 The switch replies `success=False` while the node is not ACTIVE. A place declaration naming a
 candidate set of same-slot map-frame zones (`zone_candidates_target_id`) resolves to the one
 whose box centre lies in the robot's reach (`zone_reach_center` / `zone_reach_radius_m`: the
