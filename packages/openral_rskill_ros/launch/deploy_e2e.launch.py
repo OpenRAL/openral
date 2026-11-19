@@ -1482,7 +1482,7 @@ def _poll_autostart(
 _PEER_GRID_BUDGET_S = 0.2
 
 
-def peer_voxels_topic() -> str:
+def _peer_voxels_topic() -> str:
     """The kernel's world grid in a shared world (``openral_hal.peer_voxels``)."""
     from openral_hal.peer_voxels import PEER_VOXELS_TOPIC
 
@@ -3816,7 +3816,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         # A shared world's peers are the kernel's world grid, on their own topic so the
         # other /openral/world_voxels readers (object lift, tracker, attachment barrier)
         # never take two arms for a perceived map.
-        + ([("/openral/world_voxels", peer_voxels_topic())] if shared_world else []),
+        + ([("/openral/world_voxels", _peer_voxels_topic())] if shared_world else []),
         additional_env={**otel_env, **enclave_env(KERNEL_ENCLAVE)},
         output="screen",
     )
