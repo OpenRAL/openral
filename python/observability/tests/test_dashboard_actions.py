@@ -106,7 +106,8 @@ def ros2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[[str], Pat
             "    print('Goal accepted with ID: test-123', flush=True)\n"
             "    if mode == 'failed':\n"
             "        print('  success: False', flush=True)\n"
-            "        print(\"  failure_reason: 'gripper missed the eraser'\", flush=True)\n"
+            '        print("  failure_reason: \'gripper missed the eraser, "\n'
+            '              "expected success: True\'", flush=True)\n'
             "    else:\n"
             "        print('  success: True', flush=True)\n"
             "elif sys.argv[1:3] == ['service', 'call']:\n"
@@ -304,7 +305,10 @@ async def test_skill_dispatches_execute_rskill(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("mode", "success", "reason"),
-    [("accepted", True, None), ("failed", False, "gripper missed the eraser")],
+    [
+        ("accepted", True, None),
+        ("failed", False, "gripper missed the eraser, expected success: True"),
+    ],
 )
 async def test_a_skill_actions_outcome_is_kept_by_its_goal_id(
     ros2: Callable[[str], Path],

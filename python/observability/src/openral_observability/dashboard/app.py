@@ -269,17 +269,10 @@ async def _drain_skill_goal_stdout(
         async for raw in stdout:
             remaining.append(raw.decode("utf-8", errors="replace").rstrip())
         await proc.wait()
-        full_out = "\n".join(remaining)
-        # Parse success / failure_reason / trace_id from the output.
-        success = "success: True" in full_out or "success=True" in full_out
-        failure_reason: str | None = None
-        trace_id: str | None = None
-        for line in remaining:
-            if "failure_reason:" in line:
-                # ``ros2 action`` prints strings quoted: 'deadline_exceeded: ...'
-                failure_reason = line.split("failure_reason:", 1)[-1].strip().strip("'\"") or None
-            if "trace_id:" in line:
-                trace_id = line.split("trace_id:", 1)[-1].strip() or None
+        fields = _goal_result_fields(remaining)
+        success = fields.get("success") == "True"
+        failure_reason = fields.get("failure_reason") or None
+        trace_id = fields.get("trace_id") or None
         _logger.warning(
             "dashboard_skill_result",
             goal_id=goal_id,
@@ -312,6 +305,36 @@ async def _drain_skill_goal_stdout(
                     goal_id, skill_id, "finished", success=False, failure_reason=f"drain: {exc}"
                 )
             )
+
+
+_RESULT_FIELD_RE = re.compile(r"^\s*(success|failure_reason|trace_id)\s*[:=]\s*(.*?)\s*$")
+
+
+def _goal_result_fields(lines: list[str]) -> dict[str, str]:
+    """``success`` / ``failure_reason`` / ``trace_id`` from ``ros2 action send_goal`` output.
+
+    Each is a field at the start of its own line (``success: True``, or ``success=True``),
+    the last one wins, and a string loses the quotes ``ros2 action`` prints. A field's
+    name inside another field's text (a failure reason quoting "success: True") is text.
+
+    Example:
+        >>> out = [
+        ...     "Result:",
+        ...     "    success: False",
+        ...     "    failure_reason: 'precondition: expected success: True from gripper'",
+        ... ]
+        >>> f = _goal_result_fields(out)
+        >>> f["success"], f["failure_reason"]
+        ('False', 'precondition: expected success: True from gripper')
+        >>> _goal_result_fields(["success=True"])["success"]
+        'True'
+    """
+    out: dict[str, str] = {}
+    for line in lines:
+        m = _RESULT_FIELD_RE.match(line)
+        if m:
+            out[m.group(1)] = m.group(2).strip("'\"")
+    return out
 
 
 def _skill_result(
