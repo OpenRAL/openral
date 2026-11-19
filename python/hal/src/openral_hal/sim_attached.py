@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import time
 from collections.abc import Callable
@@ -51,7 +50,7 @@ from openral_core import (
     RobotDescription,
     check_time_base,
 )
-from openral_core.exceptions import ROSConfigError, ROSError, ROSRuntimeError, ROSSafetyViolation
+from openral_core.exceptions import ROSConfigError, ROSError, ROSRuntimeError
 from openral_core.schemas import Action, ControlMode, JointState
 
 from openral_hal._mujoco_arm import joint_actuator_effort
@@ -94,6 +93,8 @@ _EVENT_TIME_BASE = "sim.time_base"
 if TYPE_CHECKING:
     from openral_core import IntrinsicsPinhole
     from openral_sim.rollout import SimRollout
+
+    from openral_hal.sim_scene import SceneCache
 
 
 def _task_success_logger() -> Any:  # noqa: ANN401  # reason: structlog's BoundLogger is untyped
@@ -503,8 +504,8 @@ class SimAttachedHAL:
     # defaults; instances rebind them.
     _held_twist: tuple[float, float, float] | None = None
     _held_twist_until_ns: int = 0
-    #: ``/openral/viz/sim_scene``'s payload once connect exported it (Isaac only).
-    sim_scene: dict[str, object] | None = None
+    #: The Sim scene export per scene source (``export_sim_scene``), made on first use.
+    _scene_cache: SceneCache | None = None
 
     def __init__(
         self,
@@ -695,60 +696,37 @@ class SimAttachedHAL:
         if self._env_action_dim is None:
             self._env_action_dim = self._probe_env_action_dim()
         self._check_time_base()
-        failed = str((self.sim_scene or {}).get("note", "")).startswith("export failed")
-        if (self.sim_scene is None or failed) and hasattr(self._env, "scene_mesh"):
-            self.sim_scene = self._export_sim_scene()  # a failed export retries next connect
 
-    def _export_sim_scene(self) -> dict[str, object]:
-        """What ``/openral/viz/sim_scene`` carries: the static scene GLB's URI, or why not.
+    def export_sim_scene(self) -> dict[str, object] | None:
+        """``/openral/viz/sim_scene``'s payload for the live scene, or ``None`` (no exporter).
 
-        Asks the env (the Isaac sidecar, at its reset pose) for the GLB and, once the reply
-        checks out, writes it as ``<sha12>.glb`` into ``SIM_SCENE_PACKAGE`` (registered with
-        foxglove_bridge by deploy_e2e). GLBs no deploy has written for a week are removed;
-        a running deploy's file is never touched, since deploys may share the cache.
-        ``{"uri", "bytes", "triangles"}`` or ``{"note"}``; an export failure is a note,
-        never a failed connect: the layer is a viewer convenience (platform#133). A
-        ``ROSSafetyViolation`` is never turned into a note. The export's summary line goes
-        to structlog (``sim.scene_export``).
+        The Isaac sidecar's ``scene_mesh``, else ``mujoco_scene_mesh`` on the env's live
+        model in the frame ``odom_from_base`` names, through a ``SceneCache``: exported on
+        the first call (the lifecycle node latches the topic at configure), again after a
+        reset that composed a new ``MjModel`` (an unpinned RoboCasa kitchen) or a failed
+        export. Never raises but ``ROSSafetyViolation`` (``write_sim_scene``).
         """
-        import hashlib  # noqa: PLC0415  # reason: sim only
-
-        from openral_hal.ros_package_overlay import (  # noqa: PLC0415  # reason: sim only
-            SIM_SCENE_LIMIT_BYTES,
-            SIM_SCENE_PACKAGE,
-            sim_scene_package_root,
+        from openral_hal.sim_scene import (  # noqa: PLC0415  # reason: sim only
+            SceneCache,
+            mujoco_scene_mesh,
+            odom_from_base,
         )
 
-        week_s = 7 * 24 * 3600.0
-        try:
-            out = self._env.scene_mesh(SIM_SCENE_LIMIT_BYTES)  # type: ignore[attr-defined]  # reason: Isaac only, hasattr-gated in connect
-            structlog.get_logger(__name__).info("sim.scene_export", detail=out.get("log"))
-            glb, triangles = out.get("glb"), out.get("triangles")
-            if glb is None:
-                return {"note": str(out.get("note") or "no static scene")}
-            if not isinstance(glb, bytes) or type(triangles) is not int or triangles < 0:
-                return {"note": "export failed: the sidecar sent a malformed scene"}
-            name = f"{hashlib.sha256(glb).hexdigest()[:12]}.glb"
-            root = sim_scene_package_root()
-            now = time.time()
-            for old in root.glob("*.glb"):
-                if old.name != name and now - old.stat().st_mtime > week_s:
-                    old.unlink(missing_ok=True)  # ponytail: age-based; per-deploy dirs if needed
-            dest = root / name
-            if not dest.exists():
-                tmp = root / f".{name}.{os.getpid()}.tmp"
-                tmp.write_bytes(glb)
-                tmp.replace(dest)
-            os.utime(dest)  # in use again: keeps it out of the week-old sweep
-        except ROSSafetyViolation:
-            raise
-        except Exception as exc:  # reason: viz only, see docstring
-            return {"note": f"export failed: {type(exc).__name__}: {exc}"}
-        return {
-            "uri": f"package://{SIM_SCENE_PACKAGE}/{name}",
-            "bytes": len(glb),
-            "triangles": triangles,
-        }
+        if self._scene_cache is None:
+            self._scene_cache = SceneCache()
+        isaac = getattr(self._env, "scene_mesh", None)
+        if callable(isaac):
+            return self._scene_cache.get(self._env, isaac)
+        handles = self._mujoco_handles()
+        if handles is None:
+            return None
+        model, data = handles
+        return self._scene_cache.get(
+            model,
+            lambda limit: mujoco_scene_mesh(
+                model, data, self.description, limit, odom_from_base(self)
+            ),
+        )
 
     def _check_time_base(self) -> None:
         """Refuse an env whose step is not one control period of the robot.

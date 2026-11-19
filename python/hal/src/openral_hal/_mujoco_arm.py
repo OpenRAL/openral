@@ -59,6 +59,8 @@ from openral_hal._slot_group import SlotGroupStager, compose_slot_group_action
 if TYPE_CHECKING:
     import mujoco
 
+    from openral_hal.sim_scene import SceneCache
+
 __all__ = ["MujocoArmHAL"]
 
 
@@ -289,6 +291,8 @@ class MujocoArmHAL(HALBase):
         self._starvation_warned: bool = False
         self._model: mujoco.MjModel | None = None
         self._data: mujoco.MjData | None = None
+        #: The Sim scene export per loaded model (``export_sim_scene``), made on first use.
+        self._scene_cache: SceneCache | None = None
         # Lazily-created offscreen renderers for read_images() (issue #191
         # Phase 3b), keyed by (height, width). One renderer per distinct camera
         # resolution so every camera renders at ITS OWN declared intrinsics
@@ -481,6 +485,7 @@ class MujocoArmHAL(HALBase):
         self._close_renderers()
         self._model = None
         self._data = None
+        self._scene_cache = None  # holds the model: release it too
         self._connected = False
 
     def _close_renderers(self) -> None:
@@ -489,6 +494,27 @@ class MujocoArmHAL(HALBase):
                 with contextlib.suppress(Exception):
                     renderer.close()
             self._renderers.clear()
+
+    def export_sim_scene(self) -> dict[str, object] | None:
+        """``/openral/viz/sim_scene``'s payload for the loaded scene, or ``None`` before connect.
+
+        ``sim_scene.mujoco_scene_mesh`` on the live model, cached per model
+        (``SceneCache``); called by the lifecycle node when it latches the topic, so a
+        connect outside a deploy (tests, ``sim run``) exports nothing (platform#139).
+        """
+        from openral_hal.sim_scene import SceneCache, mujoco_scene_mesh, odom_from_base
+
+        model, data = self._model, self._data
+        if model is None or data is None:
+            return None
+        if self._scene_cache is None:
+            self._scene_cache = SceneCache()
+        return self._scene_cache.get(
+            model,
+            lambda limit: mujoco_scene_mesh(
+                model, data, self.description, limit, odom_from_base(self)
+            ),
+        )
 
     def mujoco_handles(self) -> tuple[Any, Any] | None:
         """Expose the live MuJoCo ``(model, data)`` for the bare-twin arm.
@@ -925,6 +951,7 @@ class MujocoArmHAL(HALBase):
         self._close_renderers()
         self._model = None
         self._data = None
+        self._scene_cache = None  # holds the model: release it too
         self._connected = False
         raise ROSEStopRequested(f"Emergency stop triggered on robot '{self.description.name}'.")
 
