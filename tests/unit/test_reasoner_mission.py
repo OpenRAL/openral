@@ -342,3 +342,53 @@ def test_populated_queue_keeps_the_operator_goal() -> None:
     m = MissionState(["navigate to shelf S3", "restock lower slot 1"], goal=seed.goal)
     assert m.to_summary()["goal"] == "go to shelf S3 and restock lower slot 1"
     assert [t["depth"] for t in _summary_tasks(m)] == [0, 0]
+
+
+def test_forget_conversation_drops_the_old_goals_words_but_keeps_skill_outcomes() -> None:
+    """#661: in the fleet spike a robot asked about the previous goal's "left block"."""
+    from openral_reasoner.context import ContextRenderer, ExecutionEventRecord, PromptRecord
+
+    r = ContextRenderer()
+    r.append_execution(
+        ExecutionEventRecord(
+            rskill_id="OpenRAL/rskill-pick", outcome="ok", summary="picked", reflection=None,
+            stamp_ns=0,
+        )
+    )  # fmt: skip
+    r.append_execution(
+        ExecutionEventRecord(
+            rskill_id="(emit_prompt)", outcome="ok",
+            summary="said to the operator: the left block or the right block?", reflection=None,
+            stamp_ns=1,
+        )
+    )  # fmt: skip
+    r.append_prompt(PromptRecord(text="the left one", metadata_json="", stamp_ns=2))
+    new = r.append_prompt(PromptRecord(text="pick up the orange", metadata_json="", stamp_ns=3))
+    r.awaiting_operator = "the left block or the right block?"
+    r.forget_conversation(keep=new)
+    text = r.render(world_state=None)
+    assert "block" not in text and "the left one" not in text
+    assert "pick up the orange" in text and "OpenRAL/rskill-pick" in text
+    assert r.awaiting_operator is None
+
+
+def test_append_prompt_returns_the_record_as_stored() -> None:
+    from openral_reasoner.context import ContextRenderer, PromptRecord
+
+    r = ContextRenderer()
+    stored = r.append_prompt(PromptRecord(text="go", metadata_json='{"priority": 100}', stamp_ns=0))
+    assert stored.priority == 100 and r.prompts[0] is stored
+
+
+def test_forget_conversation_keeps_the_new_goal_when_a_full_buffer_evicted_it() -> None:
+    from openral_reasoner.context import ContextRenderer, PromptRecord
+
+    r = ContextRenderer(buffer_size=2)
+    for i in range(2):
+        r.append_prompt(
+            PromptRecord(text=f"old {i}", metadata_json='{"priority": 100}', stamp_ns=i)
+        )
+    new = r.append_prompt(PromptRecord(text="pick up the orange", metadata_json="", stamp_ns=9))
+    assert new not in r.prompts  # evicted on arrival: lower priority than a full buffer
+    r.forget_conversation(keep=new)
+    assert [p.text for p in r.prompts] == ["pick up the orange"]

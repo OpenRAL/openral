@@ -733,7 +733,7 @@ class ContextRenderer:
 
     Example:
         >>> r = ContextRenderer()
-        >>> r.append_prompt(PromptRecord(text="pick the cube", metadata_json="", stamp_ns=0))
+        >>> _ = r.append_prompt(PromptRecord(text="pick the cube", metadata_json="", stamp_ns=0))
         >>> "pick the cube" in r.render(world_state=None)
         True
     """
@@ -1209,6 +1209,35 @@ class ContextRenderer:
         self._perception.append(record)
         self._seq += 1
 
+    def forget_conversation(self, *, keep: PromptRecord | None = None) -> None:
+        """Drop the previous goal's operator exchange when a new goal replaces it (#661).
+
+        Removes every queued prompt but ``keep`` (the new goal's own), what the reasoner
+        said to its operator (``(emit_prompt)`` lines in ``## EXECUTION``), and the
+        unanswered question (``awaiting_operator``). Skill outcomes and failures stay: they
+        describe the robot and the scene, not the old goal's words. In the fleet spike a
+        robot given "pick up the orange" asked about "the left block or the right block",
+        the previous goal's words.
+
+        Example:
+            >>> r = ContextRenderer()
+            >>> old = PromptRecord(text="pick the block", metadata_json="", stamp_ns=0)
+            >>> new = PromptRecord(text="pick the orange", metadata_json="", stamp_ns=1)
+            >>> _ = r.append_prompt(old)
+            >>> new = r.append_prompt(new)
+            >>> r.awaiting_operator = "Which block?"
+            >>> r.forget_conversation(keep=new)
+            >>> [p.text for p in r.prompts], r.awaiting_operator
+            (['pick the orange'], None)
+        """
+        # Just the new goal's own prompt, even when a full buffer evicted it on arrival.
+        self._prompts = [keep] if keep is not None else []
+        kept = [rec for rec in self._executions if rec.rskill_id != "(emit_prompt)"]
+        if len(kept) != len(self._executions):
+            self._executions.clear()
+            self._executions.extend(kept)
+        self.awaiting_operator = None
+
     def clear_failures(self) -> None:
         """Drop accumulated failure + skill-execution records.
 
@@ -1225,8 +1254,8 @@ class ContextRenderer:
             self._grasp_misses.clear()
             self._seq += 1
 
-    def append_prompt(self, record: PromptRecord) -> None:
-        """Push an operator prompt onto the rolling buffer.
+    def append_prompt(self, record: PromptRecord) -> PromptRecord:
+        """Push an operator prompt onto the rolling buffer; return the record as stored.
 
         Priority resolution:
 
@@ -1265,6 +1294,7 @@ class ContextRenderer:
         while len(self._prompts) > self._buffer_size:
             self._prompts.pop()
         self._seq += 1
+        return resolved
 
     # ── rendering ───────────────────────────────────────────────────────────
 

@@ -324,8 +324,10 @@ DEFAULT_SYSTEM_PROMPT: str = (
     "sensor's GStreamer pipeline at runtime), lifecycle_transition "
     "(drive a peer ROS node through configure / activate / deactivate / "
     "cleanup), emit_prompt (publish a PromptStamped onto /openral/prompt "
-    "or /openral/prompt_in/auto, the only two topics it accepts — used to "
-    "message the operator or trigger a cascade), and "
+    "or /openral/prompt_in/auto, the only two topics it accepts: "
+    "/openral/prompt to say something to the operator, such as a question, "
+    "and /openral/prompt_in/auto only to queue a follow-up instruction to "
+    "yourself; a question to the operator always goes on /openral/prompt), and "
     "wait (deliberately do nothing until something happens). "
     # ── When the right action is no action ────────────────────────────
     "When the snapshot shows a dispatched skill still in flight and "

@@ -26,6 +26,7 @@ from openral_reasoner.mission import (
 __all__ = [
     "CASCADE_PROMPT_SOURCES",
     "OPERATOR_PROMPT_TOPIC",
+    "forgets_conversation",
     "is_operator_prompt",
     "prompt_correlation_id",
     "should_rebuild_mission",
@@ -94,12 +95,37 @@ def prompt_correlation_id(metadata_json: str) -> str | None:
     return value if isinstance(value, str) and CORRELATION_ID_RE.fullmatch(value) else None
 
 
+def forgets_conversation(*, previous: MissionState | None, asked: bool, metadata_json: str) -> bool:
+    """Whether a prompt that starts a new mission also drops the old goal's conversation.
+
+    Called only once ``should_rebuild_mission`` said yes (#661). Yes when there was a
+    previous goal, unless the reasoner had asked its operator something and this prompt
+    is not marked ``new_goal``: a mission that has not started is replaced by any prompt,
+    and a reply to "which block?" means nothing without the question.
+
+    Example:
+        >>> m = MissionState(["pick the block"])
+        >>> forgets_conversation(previous=m, asked=False, metadata_json="")
+        True
+        >>> forgets_conversation(previous=m, asked=True, metadata_json="")  # the reply
+        False
+        >>> forgets_conversation(previous=m, asked=True, metadata_json='{"new_goal": true}')
+        True
+        >>> forgets_conversation(previous=None, asked=False, metadata_json="")
+        False
+    """
+    if previous is None or previous.is_empty():
+        return False
+    return not asked or _marks_new_goal(metadata_json)
+
+
 def should_rebuild_mission(
     source: str,
     metadata_json: str,
     mission: MissionState | None,
     *,
     active_succeeded_unverified: bool = False,
+    answers_question: bool = False,
 ) -> bool:
     """Whether an inbound prompt replaces the mission queue.
 
@@ -119,7 +145,10 @@ def should_rebuild_mission(
     operator's next prompt is a new goal, not an aside the finished task resumes
     after. Queued tasks are never dropped this way, and the node clears the flag
     once the reasoner prompts the operator, so a reply to its question stays a
-    reply.
+    reply. ``answers_question``: the reasoner had asked its operator something
+    (``ContextRenderer.awaiting_operator``); then a prompt without ``new_goal`` is
+    the answer and keeps an unfinished mission, started or not ("use the sponge"
+    must not replace "wipe the table", #661).
 
     Example:
         >>> should_rebuild_mission("cli", "", None)
@@ -127,6 +156,8 @@ def should_rebuild_mission(
         >>> m = MissionState(["pick the bowl", "place it"])
         >>> should_rebuild_mission("cli", "", m)  # not started yet: resend wins
         True
+        >>> should_rebuild_mission("cli", "", m, answers_question=True)  # but not a reply
+        False
         >>> m.record_attempt(rskill_id="x")
         >>> should_rebuild_mission("cli", "", m)  # reply mid-mission: keep queue
         False
@@ -143,10 +174,19 @@ def should_rebuild_mission(
     """
     if source in CASCADE_PROMPT_SOURCES:
         return False
-    if mission is None or mission.is_empty() or mission.is_complete() or not mission.has_started():
+    if mission is None or mission.is_empty() or mission.is_complete():
+        return True
+    if answers_question:
+        return _marks_new_goal(metadata_json)
+    if not mission.has_started():
         return True
     if active_succeeded_unverified and not any(t.status == "pending" for t in mission.tasks):
         return True
+    return _marks_new_goal(metadata_json)
+
+
+def _marks_new_goal(metadata_json: str) -> bool:
+    """Whether a prompt's metadata carries a top-level ``"new_goal": true``."""
     if not metadata_json:
         return False
     try:
