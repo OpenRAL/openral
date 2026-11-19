@@ -1002,6 +1002,28 @@ def test_a_base_move_that_cannot_be_trusted_drops_the_tracks() -> None:
     assert change is not None and change.why == "clock_reset" and change.dropped == [reset]
 
 
+def test_tracks_from_before_the_first_base_sample_are_not_trusted() -> None:
+    """A track measured before the base pose was ever measured: how far the base moved since is
+    unknown, so the first sample drops it (fail closed) instead of anchoring under it. With
+    nothing tracked the first sample only anchors. The station is the manifest's base chain:
+    rooted above ``base_x`` on the AMR; a fixed arm has none."""
+    from openral_world_state.object_tracker.session import _station_of
+
+    d = RobotDescription.from_yaml("robots/openamrobot_v2/robot.yaml")
+    assert _station_of(d).root == "world" and _station_of(d).joints == (
+        "base_x",
+        "base_y",
+        "base_yaw",
+    )
+    arm = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    assert _station_of(arm).joints == ()
+    s = TrackerSession(d, cell_m=RES, grounding_wait_s=3.0, params=TrackerParams())
+    early = _mint(s, np.array([0.5, 0.0, 0.4]))
+    change = s.on_joint_state({"base_x": 0.0, "base_y": 0.0, "base_yaw": 0.0}, 1)
+    assert change is not None and change.why == "base_measured" and change.dropped == [early]
+    assert s.on_joint_state({"base_x": 0.0}, 2) is None, "a sample without every base joint"
+
+
 def test_an_object_on_the_robot_rides_the_base() -> None:
     """On a mobile base a box declared in the base frame is on the robot (the restock tote on
     the lift): a track centred in the grasp declaration's base-frame ``search_box`` moves with

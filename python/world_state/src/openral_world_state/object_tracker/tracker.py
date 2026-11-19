@@ -727,6 +727,7 @@ class ObjectTracker:
         self,
         t_new_old: NDArray[np.float64],
         carried: Set[str],
+        riders: Set[str] = frozenset(),
         *,
         keep_records: bool,
     ) -> None:
@@ -741,7 +742,7 @@ class ObjectTracker:
         the odometry budget). Per-camera views, growth votes, surface models, prompted seed
         cells and in-flight / pending requests were taken from the old pose and are dropped:
         cheap to measure again. A track not in ``carried`` (a held payload, an object riding the
-        robot) is untouched.
+        robot) is untouched, and so are its let-go and placed records (``riders``).
         """
         frame = self.store.frame_id
         rot, shift = t_new_old[:3, :3], t_new_old[:3, 3]
@@ -767,12 +768,15 @@ class ObjectTracker:
             self.surface_models.retain({t.object_id for t in self.store.all()} - set(carried))
         if keep_records:
             for oid, entry in self._let_go.items():
-                if entry is not None:
+                if entry is not None and oid not in riders:
                     self._let_go[oid] = (_rebase_track(entry[0], t_new_old, frame), *entry[1:])
-            self._placed = {k: rebase_box(b, t_new_old, frame) for k, b in self._placed.items()}
+            self._placed = {
+                k: b if k in riders else rebase_box(b, t_new_old, frame)
+                for k, b in self._placed.items()
+            }
         else:
-            self._let_go.clear()
-            self._placed.clear()
+            self._let_go = {k: v for k, v in self._let_go.items() if k in riders}
+            self._placed = {k: v for k, v in self._placed.items() if k in riders}
         self._prompted.clear()
         self._sched.abandon()
         self._pending = []
@@ -819,7 +823,8 @@ class ObjectTracker:
         if grid is not None:
             self._cells_grid = grid
             for oid, centres in self._carried_cells.items():
-                if self.store.get(oid) is not None:  # carried cells, on this grid's lattice
+                # Carried cells, on this grid's lattice; cells measured since win.
+                if self.store.get(oid) is not None and oid not in self._cells:
                     self._cells[oid] = surface_cells(grid, centres)
             self._carried_cells.clear()
         bound_fits: list[tuple[str, ContainingFit]] = []

@@ -1096,7 +1096,13 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             self._station_left(transition, *self.session.leave_station())
 
         def _station_left(
-            self, transition: str, dropped: list[str], released: list[str], *, carried: int = 0
+            self,
+            transition: str,
+            dropped: list[str],
+            released: list[str],
+            *,
+            carried: int = 0,
+            clear_frames: bool = True,
         ) -> None:
             """The node's half of a station change (``TrackerSession.leave_station``, a base move).
 
@@ -1109,8 +1115,9 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             assert self.session is not None
             self._issued_frame = None
             self._drop_abandoned()
-            for cam in self._cams.values():
-                cam.pending.clear()
+            if clear_frames:  # a carry keeps queued frames: `_feed` refuses the old ones
+                for cam in self._cams.values():
+                    cam.pending.clear()
             self._answers.clear()
             quiet = transition == "base_moved" and not dropped and not released
             (self.get_logger().debug if quiet else self.get_logger().info)(
@@ -1214,7 +1221,11 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 # discarded them (fail closed). Either way what is queued or in flight is about
                 # the old pose. With the station perception off nothing is: no reset to log.
                 self._station_left(
-                    change.why, change.dropped, change.released, carried=len(change.carried)
+                    change.why,
+                    change.dropped,
+                    change.released,
+                    carried=len(change.carried),
+                    clear_frames=change.why != "base_moved",
                 )
             self._publish_attachment()
 
