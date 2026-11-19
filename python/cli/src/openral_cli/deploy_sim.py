@@ -2040,6 +2040,11 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         argv_template.append(f"object_detector_manifest:={resolved_object_detector_manifest}")
     if object_detector_query:
         argv_template.append(f"object_detector_query:={object_detector_query}")
+    # A robot of a shared MuJoCo world (`openral deploy world` binds its HAL with these
+    # two keys): the launch also feeds its kernel the peers (openral_hal.peer_voxels).
+    if hal_params.get("shared_world"):
+        argv_template.append(f"shared_world:={hal_params['shared_world']}")
+        argv_template.append(f"shared_world_robot:={hal_params.get('shared_world_robot', '')}")
     # resolve the reward-monitor manifest from the VLA pairing when
     # the operator did not pin one. ``deploy sim`` does not preselect a VLA, so the
     # default is derived from the capability-matched VLA palette's

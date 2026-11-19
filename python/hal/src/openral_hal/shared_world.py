@@ -293,6 +293,8 @@ class SharedWorldServer:
                 try:
                     if msg["op"] == "hello":
                         reply: dict[str, object] = self._hello
+                    elif msg["op"] == "observe":  # a reader (peer_voxels), never attached
+                        reply = self._observe(msg)
                     elif msg["op"] == "join" and robot is None:
                         reply = self._join(msg)
                         robot = str(msg["robot"])
@@ -345,6 +347,14 @@ class SharedWorldServer:
                 self._last_advance = time.monotonic()  # wall time starts with the first robot
             self._attached.add(robot)
             log.info("shared_world.joined", world=self._world.id, robot=robot)
+            return self._state(robot)
+
+    def _observe(self, msg: dict[str, Any]) -> dict[str, object]:
+        """The world's current state in ``msg["robot"]``'s view, for a reader that never steps."""
+        robot = str(msg["robot"])
+        with self._cond:
+            if robot not in self._joints:
+                raise ROSConfigError(f"no robot {robot!r} (robots: {sorted(self._joints)})")
             return self._state(robot)
 
     def _step(self, robot: str, msg: dict[str, Any]) -> dict[str, object]:
