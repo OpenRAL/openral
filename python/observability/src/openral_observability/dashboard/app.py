@@ -276,7 +276,8 @@ async def _drain_skill_goal_stdout(
         trace_id: str | None = None
         for line in remaining:
             if "failure_reason:" in line:
-                failure_reason = line.split("failure_reason:", 1)[-1].strip() or None
+                # ``ros2 action`` prints strings quoted: 'deadline_exceeded: ...'
+                failure_reason = line.split("failure_reason:", 1)[-1].strip().strip("'\"") or None
             if "trace_id:" in line:
                 trace_id = line.split("trace_id:", 1)[-1].strip() or None
         _logger.warning(

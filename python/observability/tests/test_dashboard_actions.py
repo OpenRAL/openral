@@ -106,7 +106,7 @@ def ros2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[[str], Pat
             "    print('Goal accepted with ID: test-123', flush=True)\n"
             "    if mode == 'failed':\n"
             "        print('  success: False', flush=True)\n"
-            "        print('  failure_reason: gripper missed the eraser', flush=True)\n"
+            "        print(\"  failure_reason: 'gripper missed the eraser'\", flush=True)\n"
             "    else:\n"
             "        print('  success: True', flush=True)\n"
             "elif sys.argv[1:3] == ['service', 'call']:\n"
