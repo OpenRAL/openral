@@ -17,6 +17,7 @@ from openral_reasoner import MissionState
 from openral_reasoner.mission import DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_TASK_DISPATCHES
 from openral_reasoner.node_policy import (
     CASCADE_PROMPT_SOURCES,
+    forgets_conversation,
     is_operator_prompt,
     prompt_correlation_id,
     should_rebuild_mission,
@@ -346,3 +347,28 @@ def test_a_persons_prompt_answers_the_reasoners_question(source: str) -> None:
 @pytest.mark.parametrize("source", [*sorted(CASCADE_PROMPT_SOURCES), "auto"])
 def test_the_reasoners_own_cascade_does_not_answer_its_question(source: str) -> None:
     assert not is_operator_prompt(source)
+
+
+# ── forgets_conversation (#661) ──────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("asked", "metadata", "expected"),
+    [
+        (False, "", True),  # a new goal after the old one
+        (True, "", False),  # the reply to the robot's question
+        (True, '{"new_goal": true}', True),  # the operator says it is a new goal
+        (True, '{"new_goal": "yes"}', False),
+        (True, "not json", False),
+    ],
+)
+def test_a_new_goal_forgets_the_old_conversation_but_a_reply_keeps_it(
+    asked: bool, metadata: str, expected: bool
+) -> None:
+    previous = MissionState(["pick the block"])
+    assert forgets_conversation(previous=previous, asked=asked, metadata_json=metadata) is expected
+
+
+def test_the_first_goal_has_no_conversation_to_forget() -> None:
+    for previous in (None, MissionState([])):
+        assert not forgets_conversation(previous=previous, asked=False, metadata_json="")

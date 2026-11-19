@@ -26,6 +26,7 @@ from openral_reasoner.mission import (
 __all__ = [
     "CASCADE_PROMPT_SOURCES",
     "OPERATOR_PROMPT_TOPIC",
+    "forgets_conversation",
     "is_operator_prompt",
     "prompt_correlation_id",
     "should_rebuild_mission",
@@ -92,6 +93,36 @@ def prompt_correlation_id(metadata_json: str) -> str | None:
         return None
     value = parsed.get("correlation_id") if isinstance(parsed, dict) else None
     return value if isinstance(value, str) and CORRELATION_ID_RE.fullmatch(value) else None
+
+
+def forgets_conversation(*, previous: MissionState | None, asked: bool, metadata_json: str) -> bool:
+    """Whether a prompt that starts a new mission also drops the old goal's conversation.
+
+    Called only once ``should_rebuild_mission`` said yes (#661). Yes when there was a
+    previous goal, unless the reasoner had asked its operator something and this prompt
+    is not marked ``new_goal``: a mission that has not started is replaced by any prompt,
+    and a reply to "which block?" means nothing without the question.
+
+    Example:
+        >>> m = MissionState(["pick the block"])
+        >>> forgets_conversation(previous=m, asked=False, metadata_json="")
+        True
+        >>> forgets_conversation(previous=m, asked=True, metadata_json="")  # the reply
+        False
+        >>> forgets_conversation(previous=m, asked=True, metadata_json='{"new_goal": true}')
+        True
+        >>> forgets_conversation(previous=None, asked=False, metadata_json="")
+        False
+    """
+    if previous is None or previous.is_empty():
+        return False
+    if not asked:
+        return True
+    try:
+        parsed = json.loads(metadata_json) if metadata_json else {}
+    except json.JSONDecodeError:
+        return False
+    return isinstance(parsed, dict) and parsed.get("new_goal") is True
 
 
 def should_rebuild_mission(

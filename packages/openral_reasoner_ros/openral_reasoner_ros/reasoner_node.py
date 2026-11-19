@@ -162,6 +162,7 @@ from openral_reasoner.mission import (
 from openral_reasoner.node_policy import (
     CASCADE_PROMPT_SOURCES,
     OPERATOR_PROMPT_TOPIC,
+    forgets_conversation,
     is_operator_prompt,
     prompt_correlation_id,
     should_rebuild_mission,
@@ -2448,16 +2449,17 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         if str(getattr(msg.header, "frame_id", "") or "") == self.get_name():
             return
         source = str(getattr(msg.header, "frame_id", "") or "")
+        # Asked before this prompt arrived: then a prompt without ``new_goal`` is the reply.
+        asked = self._renderer.awaiting_operator is not None
         if is_operator_prompt(source):
             # The operator spoke: whatever the reasoner asked them is answered (#660).
             self._renderer.awaiting_operator = None
-        self._renderer.append_prompt(
-            PromptRecord(
-                text=msg.text,
-                metadata_json=msg.metadata_json,
-                stamp_ns=int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec),
-            ),
+        record = PromptRecord(
+            text=msg.text,
+            metadata_json=msg.metadata_json,
+            stamp_ns=int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec),
         )
+        record = self._renderer.append_prompt(record)  # as stored: its priority resolved
         # Reward-gated task verification §1 — a genuine operator goal (re)builds the mission
         # queue so it survives the pull-once prompt drain. Cascade re-prompts (advisory query
         # responses, spatial-memory) are NOT new goals. While a mission is IN PROGRESS, an
@@ -2490,6 +2492,11 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             if not mission.is_empty():
                 self._mission_generation += 1
                 self._object_query_blocked_task_id = None
+                if forgets_conversation(
+                    previous=current, asked=asked, metadata_json=msg.metadata_json
+                ):
+                    # A new goal: the old goal's words must not reach the model (#661).
+                    self._renderer.forget_conversation(keep=record)
                 self._renderer.set_mission(mission)
                 self._subdivide_offered.clear()  # #123 — fresh goal, fresh offers
                 self._reset_task_locate_budget()  # fresh goal, fresh budget
