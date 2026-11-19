@@ -312,46 +312,20 @@ def test_publish_uses_ignore_patterns_for_secret_files(
     assert expected <= actual, f"Missing ignore patterns: {expected - actual}"
 
 
-# ── --public flag + license gate (CLAUDE.md §1.9) ───────────────────────────
+# ── --public flag (CLAUDE.md §1.9) ──────────────────────────────────────────
 
 
-def test_public_visibility_error_allows_commercial(publisher: types.ModuleType) -> None:
-    from openral_core.schemas import RSkillManifest
-
-    m = RSkillManifest.from_yaml(  # apache-2.0 → commercial OK
-        str(_REPO_ROOT / "rskills" / "rtdetr-coco-r18" / "rskill.yaml")
-    )
-    assert m.is_commercial_use_allowed
-    assert publisher.public_visibility_error(m, public=True) is None
-    assert publisher.public_visibility_error(m, public=False) is None
-
-
-def test_public_visibility_error_refuses_non_commercial(publisher: types.ModuleType) -> None:
-    from openral_core.schemas import RSkillManifest
-
-    m = RSkillManifest.from_yaml(  # nvidia_non_commercial → must stay private
-        str(_REPO_ROOT / "rskills" / "locateanything-3b-nf4" / "rskill.yaml")
-    )
-    assert not m.is_commercial_use_allowed
-    err = publisher.public_visibility_error(m, public=True)
-    assert err is not None and "non-commercial" in err
-    # Private (no --public) is always fine.
-    assert publisher.public_visibility_error(m, public=False) is None
-
-
-def test_main_public_on_non_commercial_skill_exits_before_network(
+def test_main_public_dry_run_accepts_non_commercial_skill(
     publisher: types.ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # A non-commercial manifest + --publish --public must abort at the license
-    # gate (exit 1) without resolving a token or touching HfApi.
+    # --public carries no licence gate: a non-commercial skill dry-runs cleanly.
+    # The loader refuses it at activation without OPENRAL_ALLOW_NONCOMMERCIAL=1.
     nc_manifest = _VALID_MANIFEST_YAML.replace(
         "license: apache-2.0", "license: rlwrld_non_commercial"
     )
     skill_dir = _write_skill_dir(tmp_path, manifest_text=nc_manifest)
-    monkeypatch.setattr(sys, "argv", ["rskill_publisher", str(skill_dir), "--publish", "--public"])
-    with pytest.raises(SystemExit) as excinfo:
-        publisher.main()
-    assert excinfo.value.code == 1
+    monkeypatch.setattr(sys, "argv", ["rskill_publisher", str(skill_dir), "--public"])
+    publisher.main()  # no SystemExit
 
 
 def test_publish_public_passes_private_false_and_runs_public_gate(

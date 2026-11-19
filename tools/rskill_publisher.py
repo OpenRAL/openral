@@ -37,9 +37,10 @@ to ``nf4``); ``<owner>/rskill-<model>-<robot>-<task>`` for
 ``expected_repo_name``); hard-fails dry-run and ``--publish`` unless
 ``--fix-name``.
 
-Design constraints: private by default; ``--public`` requires
-``manifest.is_commercial_use_allowed`` (license-lineage §9), re-verified
-against the API post-``create_repo``. ``--gated`` (exclusive with ``--public``)
+Design constraints: private by default; ``--public`` is allowed for any
+licence (a non-commercial skill is still refused at load time without
+``OPENRAL_ALLOW_NONCOMMERCIAL=1``, CLAUDE.md §1.9) and is re-verified against
+the API post-``create_repo``. ``--gated`` (exclusive with ``--public``)
 creates a public repo, sets Hub gating to ``manual`` approval *before any file
 is uploaded* and verifies it; allowed for commercial or ``proprietary``
 licences. Hugging Face gating is the only enforcement — no entitlement check
@@ -89,31 +90,6 @@ log = structlog.get_logger(__name__)
 
 # Files that must be present in a valid rSkill directory.
 _REQUIRED_FILES = ["rskill.yaml"]
-
-
-def public_visibility_error(manifest: RSkillManifest, public: bool) -> str | None:  # type: ignore[name-defined]  # noqa: F821
-    """Return an error message if ``--public`` is not allowed, else ``None``.
-
-    Enforces the license-lineage posture (CLAUDE.md §1.9): a non-commercial-licensed
-    skill (e.g. NVIDIA GR00T / LocateAnything) must not be published to a public
-    repo. Commercially-licensed weights (Apache-2.0 / MIT / NVIDIA Open Model …)
-    may be public. Pure (no network) so the guard is unit-testable and fails fast
-    before any HF call.
-
-    Args:
-        manifest: The validated rSkill manifest.
-        public: Whether ``--public`` was requested.
-
-    Returns:
-        ``None`` when the request is allowed; otherwise an explanatory string.
-    """
-    if public and not manifest.is_commercial_use_allowed:
-        return (
-            f"--public refused: {manifest.name!r} has a non-commercial license "
-            f"({manifest.license.value}); only commercially-licensed weights may be made "
-            "public (CLAUDE.md §1.9). Publish privately instead (drop --public)."
-        )
-    return None
 
 
 def gated_visibility_error(manifest: RSkillManifest, gated: bool) -> str | None:  # type: ignore[name-defined]  # noqa: F821
@@ -644,8 +620,8 @@ def main() -> None:
         action="store_true",
         default=False,
         help=(
-            "Create/verify a PUBLIC repo instead of private. Only allowed for "
-            "commercially-licensed weights (refused for non-commercial skills, §9)."
+            "Create/verify a PUBLIC repo instead of private. Any licence; a "
+            "non-commercial skill stays refused at load time (§9)."
         ),
     )
     visibility_group.add_argument(
@@ -701,11 +677,7 @@ def main() -> None:
     # ── Validate README + manifest documentation (CLAUDE.md §3 rSkill packaging) ───
     doc_report = _validate_docs(skill_dir, manifest)
 
-    # ── License gate for --public (CLAUDE.md §1.9), before any network call ─────
-    public_error = public_visibility_error(manifest, args.public)
-    if public_error:
-        log.error("rskill_publisher.public_refused", error=public_error)
-        sys.exit(1)
+    # ── License gate for --gated (CLAUDE.md §1.9), before any network call ──────
     gated_error = gated_visibility_error(manifest, args.gated)
     if gated_error:
         log.error("rskill_publisher.gated_refused", error=gated_error)

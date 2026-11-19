@@ -75,7 +75,7 @@ Read only the context needed for the task:
    - Dry-run first: `uv run python tools/rskill_publisher.py rskills/<id>/`.
    - Publish only after validation passes: `uv run python tools/rskill_publisher.py rskills/<id>/ --publish`.
    - Use `--bump-revision` to pin upstream `weights_uri` to a commit SHA before upload.
-   - The publisher creates private repos by default; `--public` is refused unless the manifest's license allows commercial use. Do not weaken this gate.
+   - The publisher creates private repos by default; `--public` accepts any licence (the loader enforces non-commercial licences at activation); `--gated` is refused unless the licence is commercial or `proprietary`. Do not weaken that gate.
    - A write token is required via `HF_TOKEN`, cached Hugging Face login, or `--token` depending on the tool path.
 
 8. Update docs and tests.
