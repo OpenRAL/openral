@@ -485,6 +485,7 @@ class MujocoArmHAL(HALBase):
         self._close_renderers()
         self._model = None
         self._data = None
+        self._scene_cache = None  # holds the model: release it too
         self._connected = False
 
     def _close_renderers(self) -> None:
@@ -950,6 +951,7 @@ class MujocoArmHAL(HALBase):
         self._close_renderers()
         self._model = None
         self._data = None
+        self._scene_cache = None  # holds the model: release it too
         self._connected = False
         raise ROSEStopRequested(f"Emergency stop triggered on robot '{self.description.name}'.")
 

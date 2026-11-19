@@ -36,6 +36,7 @@ _BIN_CHUNK = 0x004E4942
 _FLOAT, _UINT32 = 5126, 5125
 _ARRAY_BUFFER, _ELEMENT_ARRAY_BUFFER = 34962, 34963
 _CLAMP_TO_EDGE = 33071
+_REPEAT = 10497
 #: The longest side an embedded texture keeps: 512 px adds ~0.4 MB to the shelf aisle.
 TEXTURE_MAX_PX = 512
 
@@ -168,8 +169,8 @@ def write_glb(primitives: list[tuple[Any, ...]]) -> bytes:
     Each primitive gets its own unlit-looking PBR material (``baseColorFactor`` = ``rgba``,
     metallic 0, roughness 1). A textured primitive carries two more items,
     ``uvs (n, 2)`` (glTF convention: v down) and ``(image bytes, mime type, clamp)``: its
-    image is embedded and becomes the material's ``baseColorTexture`` (clamp-to-edge when
-    ``clamp``, else repeat); a PNG (``image/png``, the alpha case) blends
+    image is embedded and becomes the material's ``baseColorTexture``, clamped to its edge
+    along each axis ``clamp`` (a bool, or ``(s, t)``) says, else repeated; a PNG (``image/png``, the alpha case) blends
     (``alphaMode: BLEND``). Empty primitives are dropped.
 
     Example:
@@ -186,6 +187,7 @@ def write_glb(primitives: list[tuple[Any, ...]]) -> bytes:
     materials: list[dict[str, Any]] = []
     images: list[dict[str, Any]] = []
     textures: list[dict[str, Any]] = []
+    samplers: list[tuple[bool, bool]] = []  # (clamp s, clamp t); none is glTF's repeat
 
     def add(data: bytes, target: int | None) -> int:
         nonlocal offset
@@ -215,7 +217,13 @@ def write_glb(primitives: list[tuple[Any, ...]]) -> bytes:
             })  # fmt: skip
             attributes["TEXCOORD_0"] = len(accessors) - 1
             images.append({"bufferView": add(data, None), "mimeType": mime})
-            textures.append({"source": len(images) - 1} | ({"sampler": 0} if clamp else {}))
+            wrap = (clamp, clamp) if isinstance(clamp, bool) else (bool(clamp[0]), bool(clamp[1]))
+            texture: dict[str, Any] = {"source": len(images) - 1}
+            if any(wrap):
+                if wrap not in samplers:
+                    samplers.append(wrap)
+                texture["sampler"] = samplers.index(wrap)
+            textures.append(texture)
             pbr["baseColorTexture"] = {"index": len(textures) - 1}
             alpha = {"alphaMode": "BLEND"} if mime == "image/png" else {}
         accessors.append({
@@ -251,9 +259,11 @@ def write_glb(primitives: list[tuple[Any, ...]]) -> bytes:
             "bufferViews": views,
             "buffers": [{"byteLength": offset}],
         }
-        if images:  # one texture per image; sampler 0 clamps, none is glTF's repeat
-            clamp_to_edge = {"wrapS": _CLAMP_TO_EDGE, "wrapT": _CLAMP_TO_EDGE}
-            doc |= {"images": images, "textures": textures, "samplers": [clamp_to_edge]}
+        if images:  # one texture per image
+            doc |= {"images": images, "textures": textures}
+        if samplers:
+            wrap_mode = {True: _CLAMP_TO_EDGE, False: _REPEAT}
+            doc["samplers"] = [{"wrapS": wrap_mode[s], "wrapT": wrap_mode[t]} for s, t in samplers]
     js = json.dumps(doc, separators=(",", ":")).encode()
     js += b" " * ((-len(js)) % 4)
     blob = b"".join(bin_parts)
@@ -340,7 +350,7 @@ class _Texture(NamedTuple):
 
     path: str  # the resolved file
     attr: Any  # the asset attribute that names it (licence: its layer stack)
-    clamp: bool  # wrapS / wrapT ``clamp`` (else repeat)
+    clamp: tuple[bool, bool]  # (wrapS, wrapT) is ``clamp`` (else repeat)
     uv_transform: NDArray[np.float64]  # 3x3, applied to (u, v, 1) before the v flip
     varname: str | None  # the primvar a UsdPrimvarReader names, if any
 
@@ -402,21 +412,33 @@ def _texture_of(prim: Any) -> _Texture | None:
     """
     import os
 
-    from pxr import Usd, UsdShade
+    from pxr import UsdShade
 
     mat, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
-    for child in Usd.PrimRange(mat.GetPrim()) if mat else []:
-        shader = UsdShade.Shader(child)
-        if not shader:
-            continue
+    if not mat:
+        return None
+    surfaces: list[Any] = []  # the shaders its surface outputs use: universal, MDL, MaterialX
+    for context in (UsdShade.Tokens.universalRenderContext, "mdl", "mtlx"):
+        surface = mat.ComputeSurfaceSource(context)[0]
+        if surface and all(surface.GetPath() != t.GetPath() for t in surfaces):
+            surfaces.append(surface)
+    for surface in surfaces:
+        shader = surface
+        if str(shader.GetIdAttr().Get() or "").startswith("ND_standard_surface"):
+            shader = _upstream(shader.GetInput("base_color"))  # MaterialX: its base colour
+            if shader is None:
+                continue
         sid = shader.GetIdAttr().Get()
-        uv_m, varname, clamp = np.eye(3), None, False
+        uv_m, varname, clamp = np.eye(3), None, (False, False)
         if sid == "UsdPreviewSurface":
             tex = _upstream(shader.GetInput("diffuseColor"))
             if tex is None or tex.GetIdAttr().Get() != "UsdUVTexture":
                 continue
             file_input = tex.GetInput("file")
-            clamp = str(_value(tex.GetInput("wrapS")) or "") == "clamp"
+            clamp = (
+                str(_value(tex.GetInput("wrapS")) or "") == "clamp",
+                str(_value(tex.GetInput("wrapT")) or "") == "clamp",
+            )
             st = _upstream(tex.GetInput("st"))
             if st is not None and st.GetIdAttr().Get() == "UsdTransform2d":
                 uv_m = _srt(
@@ -447,6 +469,15 @@ def _texture_of(prim: Any) -> _Texture | None:
     return None
 
 
+def _is_uv(primvar: Any) -> bool:  # reason: a UsdGeom.Primvar
+    """``primvar`` holds two-component values (``float2[]``, ``texCoord2f[]``, ...)."""
+    return primvar.GetTypeName().isArray and primvar.GetTypeName().type.typeName in (
+        "VtArray<GfVec2f>",
+        "VtArray<GfVec2d>",
+        "VtArray<GfVec2h>",
+    )
+
+
 def _face_uvs(
     prim: Any, indices: Any, n_points: int, texture: _Texture
 ) -> NDArray[np.float64] | None:
@@ -461,9 +492,9 @@ def _face_uvs(
 
     api = UsdGeom.PrimvarsAPI(prim)
     names = [n for n in (texture.varname, "st", "st0", "UVMap") if n]
-    named = [api.GetPrimvar(n) for n in names]
+    named = [p for p in map(api.GetPrimvar, names) if p and _is_uv(p)]
     typed = [p for p in api.GetPrimvars() if p.GetTypeName() == Sdf.ValueTypeNames.TexCoord2fArray]
-    pv = next((p for p in [*named, *typed] if p and p.HasValue()), None)
+    pv = next((p for p in [*named, *typed] if p.HasValue()), None)
     if pv is None:
         return None
     st: NDArray[np.float64] = np.asarray(pv.ComputeFlattened(), dtype=np.float64).reshape(-1, 2)
@@ -576,7 +607,9 @@ def static_scene_glb(
     else:
         textures_on = True
     groups: dict[tuple[float, ...], tuple[list[Any], list[Any], list[int]]] = {}
-    textured: dict[tuple[str, bool], tuple[list[Any], list[Any], list[Any], list[int]]] = {}
+    textured: dict[
+        tuple[str, tuple[bool, bool]], tuple[list[Any], list[Any], list[Any], list[int], list[Any]]
+    ] = {}
     nvidia_textures = unreadable = 0
     layers: set[str] = set()
     unsupported: dict[str, int] = {}
@@ -615,10 +648,9 @@ def static_scene_glb(
                 nvidia_textures += 1  # an NVIDIA texture is not embedded (licence)
                 tex = None
             uv = _face_uvs(prim, idx, len(pts), tex) if tex is not None and len(pts) else None
-            if uv is not None:  # unshared vertices: a UV per face corner
-                pts, tri = pts[idx], fan_triangles(counts, np.arange(len(idx)), holes)
-            else:
-                tri = fan_triangles(counts, idx, holes)
+            tri = fan_triangles(counts, idx, holes)
+            if uv is not None:  # textured: unshared vertices, a UV per face corner
+                corner_tri = fan_triangles(counts, np.arange(len(idx)), holes)
         elif prim.IsA(UsdGeom.Gprim):
             capsule = kind.startswith("Capsule")
             got = gprim_mesh(
@@ -654,14 +686,20 @@ def static_scene_glb(
             nvidia_colours += 1
         world = pts @ m[:3, :3].T + m[:3, 3]
         if uv is not None and tex is not None:
-            verts, uvs, tris, base = textured.setdefault((tex.path, tex.clamp), ([], [], [], [0]))
-            uvs.append(uv)
+            # Per face corner for the textured GLB; indexed, as plain meshes are, for the
+            # mean-colour fallback and the size guard.
+            group = textured.setdefault((tex.path, tex.clamp), ([], [], [], [0], []))
+            group[0].append(world[idx])
+            group[1].append(uv)
+            group[2].append(corner_tri + group[3][0])
+            group[3][0] += len(idx)
+            group[4].append((world, tri))
         else:
             rgb = tuple(round(min(max(c, 0.0), 1.0) * 16) / 16 for c in colour)
             verts, tris, base = groups.setdefault(rgb, ([], [], [0]))
-        verts.append(world)
-        tris.append(tri + base[0])
-        base[0] += len(pts)
+            verts.append(world)
+            tris.append(tri + base[0])
+            base[0] += len(pts)
         triangles += len(tri)
         vertices += len(pts)
         if limit_bytes is not None and 12 * (vertices + triangles) > limit_bytes:
@@ -692,16 +730,19 @@ def static_scene_glb(
     ]
     images: list[tuple[Any, ...]] = []  # textured primitives
     means: list[tuple[Any, ...]] = []  # the same geometry in each texture's mean colour
-    for (path, clamp), (v, u, t, _) in textured.items():
+    for (path, clamp), (v, u, t, _, indexed) in textured.items():
+        offsets = np.cumsum([0] + [len(w) for w, _ in indexed[:-1]])
+        iv = np.vstack([w for w, _ in indexed])
+        it = np.vstack([tr + o for (_, tr), o in zip(indexed, offsets, strict=True)])
         try:
             data, mime, mean = _encode_texture(path)
         except Exception:  # reason: any undecodable image draws grey, never fails the export
             unreadable += 1
-            plain.append(((*GREY, 1.0), np.vstack(v), np.vstack(t)))
+            plain.append(((*GREY, 1.0), iv, it))
             continue
         images.append(((1.0, 1.0, 1.0, 1.0), np.vstack(v), np.vstack(t), np.vstack(u),
                        (data, mime, clamp)))  # fmt: skip
-        means.append(((*mean, 1.0), np.vstack(v), np.vstack(t)))
+        means.append(((*mean, 1.0), iv, it))
     if unreadable:
         skipped += f", {unreadable} unreadable textures drawn grey"
     glb = write_glb(plain + images)
@@ -813,13 +854,17 @@ def mujoco_static_scene_glb(
     groups: dict[tuple[float, ...], tuple[list[Any], list[Any], list[int]]] = {}
     triangles = vertices = 0
     rgb_role = int(mujoco.mjtTextureRole.mjTEXROLE_RGB)
-    for geoms in by_top.values():
-        visual = [g for g in geoms if not model.geom_contype[g] and not model.geom_conaffinity[g]]
+    for top, geoms in by_top.items():
+        # Within a fixture body, its visual-only geoms are its look; the world body's
+        # geoms are unrelated (a floor and a marker), so all of them draw.
+        visual = [
+            g for g in geoms if top and not model.geom_contype[g] and not model.geom_conaffinity[g]
+        ]
         for geom in visual or geoms:
             mat = int(model.geom_matid[geom])
             own = np.asarray(model.geom_rgba[geom], dtype=np.float64)
             # MuJoCo: a geom's rgba, when not the default, takes precedence over its material.
-            uses_mat = mat >= 0 and np.allclose(own, _MJ_DEFAULT_RGBA)
+            uses_mat = mat >= 0 and bool(np.all(own == _MJ_DEFAULT_RGBA))  # exact, as MuJoCo
             rgba = np.array(model.mat_rgba[mat] if uses_mat else own, dtype=np.float64)
             if rgba[3] <= 0.01:  # an invisible (site-like) geom
                 continue

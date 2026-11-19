@@ -90,7 +90,9 @@ class SceneCache:
     """One ``write_sim_scene`` result per scene source, re-exported when the source changes.
 
     ``key`` identifies the static scene (the live ``MjModel``, or one constant for an
-    Isaac stage); a failed export is retried on the next call.
+    Isaac stage); a failed export, or a GLB another deploy's sweep removed, is redone on
+    the next call. ponytail: a deploy that never calls ``get`` for a week can still lose its
+    file to the sweep; per-deploy directories if that matters.
 
     Example:
         >>> calls = []
@@ -110,9 +112,19 @@ class SceneCache:
 
     def get(self, key: object, scene_mesh: Callable[[int], dict[str, Any]]) -> dict[str, object]:
         """The cached payload for ``key``, exporting through ``scene_mesh`` when it is stale."""
-        failed = self._scene is not None and str(self._scene.get("note", "")).startswith(_FAILED)
-        if self._scene is None or failed or self._key is not key:
+        scene = self._scene
+        if scene is None or self._key is not key or str(scene.get("note", "")).startswith(_FAILED):
+            stale = True
+        elif "uri" in scene:  # swept by another deploy's week-old cleanup: write it again
+            glb = sim_scene_package_root() / str(scene["uri"]).rsplit("/", 1)[-1]
+            stale = not glb.is_file()
+            if not stale:
+                os.utime(glb)  # still in use: keeps it out of the sweep
+        else:
+            stale = False
+        if stale:
             self._key, self._scene = key, write_sim_scene(scene_mesh)
+        assert self._scene is not None
         return self._scene
 
 

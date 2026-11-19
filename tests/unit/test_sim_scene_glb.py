@@ -345,6 +345,7 @@ def test_a_textured_primitive_embeds_its_image_and_uvs() -> None:
     glb = write_glb([
         ((1, 1, 1, 1), *cube, uv, (b"\xff\xd8jpeg", "image/jpeg", False)),
         ((1, 1, 1, 1), *cube, uv, (b"\x89PNG", "image/png", True)),
+        ((1, 1, 1, 1), *cube, uv, (b"\x89PNG", "image/png", (False, True))),
     ])  # fmt: skip
     doc = _doc(glb)
     prim = doc["meshes"][0]["primitives"][0]
@@ -358,6 +359,8 @@ def test_a_textured_primitive_embeds_its_image_and_uvs() -> None:
     assert doc["materials"][1]["alphaMode"] == "BLEND"  # a PNG carries alpha
     assert doc["textures"][1] == {"source": 1, "sampler": 0}
     assert doc["samplers"][0] == {"wrapS": 33071, "wrapT": 33071}  # clamp to edge
+    assert doc["textures"][2]["sampler"] == 1
+    assert doc["samplers"][1] == {"wrapS": 10497, "wrapT": 33071}  # each axis its own
     with pytest.raises(ValueError, match="uvs for"):
         write_glb([((1, 1, 1, 1), *cube, uv[:3], (b"x", "image/png", False))])
 
@@ -384,6 +387,7 @@ def test_a_textured_mesh_embeds_its_shrunk_texture(tmp_path: Path) -> None:
         sh = UsdShade.Shader.Define(s, f"{path}_mat/S")
         sh.CreateIdAttr("UsdPreviewSurface")
         sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(rgb)
+        mat.CreateSurfaceOutput().ConnectToSource(sh.ConnectableAPI(), "surface")
         UsdShade.MaterialBindingAPI.Apply(quad.GetPrim()).Bind(mat)
 
     s = usd.Stage.CreateInMemory()
@@ -436,7 +440,7 @@ def test_texture_wiring_through_interface_inputs_transforms_and_nvidia_layers(
         "uv", Sdf.ValueTypeNames.Float2Array, UsdGeom.Tokens.vertex
     ).Set([(0, 0), (1, 0), (1, 1), (0, 1)])
 
-    def material(path: str, layer: Any = None) -> Any:
+    def material(path: str, layer: Any = None, *, surface: bool = True) -> Any:
         if layer is not None:
             s.SetEditTarget(layer)
         mat = UsdShade.Material.Define(s, path)
@@ -462,6 +466,8 @@ def test_texture_wiring_through_interface_inputs_transforms_and_nvidia_layers(
         sh = UsdShade.Shader.Define(s, f"{path}/S")
         sh.CreateIdAttr("UsdPreviewSurface")
         sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(iface)
+        if surface:
+            mat.CreateSurfaceOutput().ConnectToSource(sh.ConnectableAPI(), "surface")
         s.SetEditTarget(s.GetRootLayer())
         return mat
 
@@ -476,7 +482,12 @@ def test_texture_wiring_through_interface_inputs_transforms_and_nvidia_layers(
     start = 20 + struct.unpack_from("<I", out["glb"], 12)[0] + 8 + view["byteOffset"]
     st = np.frombuffer(out["glb"], np.float32, 8, start).reshape(4, 2)
     assert st[:, 0].max() == pytest.approx(4.0) and st[:, 1].min() == pytest.approx(-3.0)
-    assert doc["textures"][0]["sampler"] == 0  # wrapS clamp
+    assert doc["textures"][0]["sampler"] == 0
+    assert doc["samplers"] == [{"wrapS": 33071, "wrapT": 10497}]  # wrapS clamp, wrapT repeat
+
+    # A preview shader the material's surface output does not use is not its texture.
+    UsdShade.MaterialBindingAPI(quad.GetPrim()).Bind(material("/World/Looks/loose", surface=False))
+    assert "images" not in _doc(static_scene_glb(s, np.eye(4), [], str(tmp_path / "nv"))["glb"])
 
     # The same material authored in an NVIDIA layer: its texture is not embedded, even
     # though the image itself sits outside the NVIDIA root.
@@ -493,15 +504,20 @@ _MJCF = """
   <asset>
     <texture name="wood" type="2d" builtin="flat" rgb1="0.5 0.25 0" width="8" height="8"/>
     <material name="wood" texture="wood"/>
+    <material name="glass" rgba="1 1 1 0"/>
   </asset>
   <worldbody>
     <geom name="floor" type="plane" size="0 0 0.1" rgba="0.5 0.5 0.5 1"/>
+    <geom name="marker" type="box" pos="0 0 0.05" size="0.01 0.01 0.01" contype="0" conaffinity="0"
+          rgba="1 0 0 1"/>
     <body name="counter" pos="1 0 0.5">
       <geom type="box" size="0.5 0.3 0.5" material="wood"/>
       <geom type="box" size="0.5 0.3 0.5" contype="0" conaffinity="0" material="wood"/>
       <geom type="box" size="0.1 0.1 0.4" contype="0" conaffinity="0" material="wood"
             rgba="0 1 0 1"/>
       <geom type="sphere" size="0.05" rgba="1 1 1 0"/>
+      <geom type="box" size="0.05 0.05 0.05" contype="0" conaffinity="0" material="glass"
+            rgba="0.500001 0.5 0.5 1"/>
     </body>
     <body name="cup" pos="1 0 1.1"><freejoint/><geom type="cylinder" size="0.04 0.05"/></body>
     <body name="target" mocap="true" pos="0 1 1"><geom type="box" size="0.1 0.1 0.1"/></body>
@@ -548,13 +564,20 @@ def test_mujoco_static_scene_keeps_world_welded_geoms_minus_robot_and_mocap() ->
     shift = np.eye(4)
     shift[:3, 3] = [0.0, 0.0, -1.0]
     out = mujoco_static_scene_glb(model, data, shift)
-    # floor + the counter's two visual boxes (not its collision box, nor the invisible ball)
-    assert out["triangles"] == 2 + 12 + 12, out["log"]
+    # The floor and the world's visual-only marker (a world geom never hides another), the
+    # counter's three visual boxes (not its collision box, nor the invisible ball): the
+    # near-default rgba is the geom's own, opaque, not its transparent material's.
+    assert out["triangles"] == 2 + 12 + 3 * 12, out["log"]
     doc = _doc(out["glb"])
     colours = {tuple(m["pbrMetallicRoughness"]["baseColorFactor"]) for m in doc["materials"]}
     # wood: its texture's mean colour; the green box: its own rgba beats its material's,
     # still times the material's texture (as MuJoCo draws it)
-    assert colours == {(0.5, 0.5, 0.5, 1.0), (0.5, 0.25, 0.0, 1.0), (0.0, 0.25, 0.0, 1.0)}
+    assert colours == {
+        (0.5, 0.5, 0.5, 1.0),
+        (0.5, 0.25, 0.0, 1.0),
+        (0.0, 0.25, 0.0, 1.0),
+        (1.0, 0.0, 0.0, 1.0),
+    }
     zs = [doc["accessors"][p["attributes"]["POSITION"]] for p in doc["meshes"][0]["primitives"]]
     assert min(a["min"][2] for a in zs) == pytest.approx(-1.0)  # the floor, in the frame
     assert max(a["max"][2] for a in zs) == pytest.approx(0.0)  # the counter's top
@@ -606,28 +629,38 @@ def test_a_mujoco_arm_hal_exports_only_when_asked_and_once_per_model(
     try:
         assert not (tmp_path / "sim_scene").exists()  # connect alone exports nothing
         scene = arm.export_sim_scene()
-        assert scene is not None and scene["triangles"] == 26, scene
+        assert scene is not None and scene["triangles"] == 50, scene
         glb = tmp_path / "sim_scene" / str(scene["uri"]).rsplit("/", 1)[1]
-        glb.unlink()
-        assert arm.export_sim_scene() == scene and not glb.exists()  # cached, not re-exported
+        mtime = glb.stat().st_mtime_ns
+        assert arm.export_sim_scene() is scene and glb.stat().st_mtime_ns >= mtime  # cached
     finally:
         arm.disconnect()
+    assert arm._scene_cache is None  # the disconnected model is not kept alive
 
 
-def test_a_scene_cache_retries_a_failed_export() -> None:
+def test_a_scene_cache_redoes_an_export_it_could_not_keep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A GLB the cache could not write, or that a sweep removed, is written again."""
+    glb = write_glb([((1, 1, 1, 1), *gprim_mesh("Cube", size=1.0))])
     calls: list[int] = []
 
-    def flaky(limit_bytes: int) -> dict[str, Any]:
+    def scene(limit_bytes: int) -> dict[str, Any]:
         calls.append(limit_bytes)
-        if len(calls) == 1:
-            raise RuntimeError("sidecar busy")
-        return {"note": "the scene has no static geometry"}
+        return {"glb": glb, "triangles": 12}
 
+    (tmp_path / "blocked").write_text("a file, not a directory")
+    monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path / "blocked"))
     cache = SceneCache()
-    assert str(cache.get("stage", flaky)["note"]).startswith("export failed: RuntimeError")
-    assert cache.get("stage", flaky) == {"note": "the scene has no static geometry"}
-    assert cache.get("stage", flaky) == {"note": "the scene has no static geometry"}
-    assert len(calls) == 2
+    assert str(cache.get("stage", scene)["note"]).startswith("export failed: ")
+    monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path / "cache"))
+    uri = str(cache.get("stage", scene)["uri"])
+    path = tmp_path / "cache" / "sim_scene" / uri.rsplit("/", 1)[-1]
+    assert path.read_bytes() == glb
+    assert cache.get("stage", scene)["uri"] == uri and len(calls) == 2  # reused
+    path.unlink()  # another deploy's week-old sweep
+    assert cache.get("stage", scene)["uri"] == uri and path.read_bytes() == glb
+    assert len(calls) == 3
 
 
 def test_texture_encoding_and_uv_transforms_need_no_usd(tmp_path: Path) -> None:

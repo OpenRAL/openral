@@ -2732,7 +2732,7 @@ if _ROS2_AVAILABLE:
             publishes it at once, as the ``reset_to_pose`` handler does, so the
             next goal's first tick reads the post-reset pose.
             """
-            from openral_core.exceptions import ROSError
+            from openral_core.exceptions import ROSError, ROSSafetyViolation
 
             if self._hal is None:
                 response.success = False  # type: ignore[attr-defined]  # reason: rosidl srv response is untyped
@@ -2756,7 +2756,16 @@ if _ROS2_AVAILABLE:
                 self._vision_attachment.teardown()
                 self._vision_attachment = None
                 self._setup_vision_attachment()
-            self._publish_sim_scene()  # a reset may have composed a new static scene
+            # A reset may have composed a new static scene. Only while active: the
+            # publisher is gone after deactivate, and on_activate_post_subs latches the
+            # current scene. A failed refresh never fails the reset that already ran.
+            if self._bridge is not None:
+                try:
+                    self._publish_sim_scene()
+                except ROSSafetyViolation:
+                    raise
+                except Exception as exc:  # reason: viz only (platform#133)
+                    self.get_logger().warning(f"reset_episode: sim scene not refreshed: {exc!r}")
             self.get_logger().info(f"reset_episode: new episode, env seed {seed}")
             response.success = True  # type: ignore[attr-defined]
             response.message = f"seed={seed}"  # type: ignore[attr-defined]
@@ -3026,8 +3035,8 @@ if _ROS2_AVAILABLE:
             payload = {**scene, "frame_id": frame} if "uri" in scene else dict(scene)
             if payload == self._sim_scene_payload:
                 return
-            self._sim_scene_payload = payload
             self._sim_scene_pub.publish(String(data=json.dumps(payload)))
+            self._sim_scene_payload = payload  # only once published: a failure retries
             self.get_logger().info(f"sim scene layer: {payload}")
 
         def _attach_mobile_base_bridge(self) -> None:
