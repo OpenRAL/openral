@@ -12,7 +12,10 @@ pure, single-sourced, and unit-testable without a ROS install.
 from __future__ import annotations
 
 import json
+import re
 from typing import Literal
+
+from openral_core.robot_ui import CORRELATION_ID_PATTERN
 
 from openral_reasoner.mission import (
     DEFAULT_MAX_ATTEMPTS,
@@ -22,6 +25,7 @@ from openral_reasoner.mission import (
 
 __all__ = [
     "CASCADE_PROMPT_SOURCES",
+    "prompt_correlation_id",
     "should_rebuild_mission",
     "task_step_without_verifier",
 ]
@@ -35,6 +39,36 @@ __all__ = [
 CASCADE_PROMPT_SOURCES: frozenset[str] = frozenset(
     {"spatial_memory", "detector", "scene_vlm", "reward_monitor", "memory", "mission"}
 )
+
+
+CORRELATION_ID_RE = re.compile(CORRELATION_ID_PATTERN)
+
+
+def prompt_correlation_id(metadata_json: str) -> str | None:
+    """The caller's correlation id in a prompt's ``metadata_json``, or ``None``.
+
+    A program that sends a prompt (``openral prompt --correlation-id``, the dashboard
+    ``prompt`` action) names it with an id; the mission that prompt starts carries the
+    id (``MissionState.correlation_id``), so the program can tell its mission from an
+    earlier one with the same text. Only a well-formed id counts (``CORRELATION_ID_RE``):
+    it is echoed into telemetry and the dashboard.
+
+    Example:
+        >>> prompt_correlation_id('{"correlation_id": "fleet-7:step-2"}')
+        'fleet-7:step-2'
+        >>> prompt_correlation_id('{"correlation_id": "has space"}') is None
+        True
+        >>> prompt_correlation_id("") is None
+        True
+    """
+    if not metadata_json:
+        return None
+    try:
+        parsed = json.loads(metadata_json)
+    except json.JSONDecodeError:
+        return None
+    value = parsed.get("correlation_id") if isinstance(parsed, dict) else None
+    return value if isinstance(value, str) and CORRELATION_ID_RE.fullmatch(value) else None
 
 
 def should_rebuild_mission(

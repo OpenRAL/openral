@@ -58,6 +58,7 @@ from openral_core.schemas import (
 )
 
 __all__ = [
+    "CORRELATION_ID_PATTERN",
     "ENROLMENT_PATH_ENV",
     "REMOTE_CONTROL_ENV",
     "TRUSTED_ISSUERS",
@@ -122,9 +123,20 @@ _IMAGE_MODALITIES = frozenset(
     }
 )
 
+# A caller's id for one prompt: echoed into the mission, telemetry and the dashboard, so
+# it is short, has no spaces, quotes or control characters, and can't be read as an option.
+# Match it with ``re.fullmatch``: under ``re.search`` a ``$`` lets a trailing newline through.
+CORRELATION_ID_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+
 _PROMPT_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "properties": {"text": {"type": "string", "minLength": 1}},
+    "properties": {
+        "text": {"type": "string", "minLength": 1},
+        # The id the mission this prompt starts will carry; the dashboard makes one when absent.
+        "correlation_id": {"type": "string", "pattern": f"^{CORRELATION_ID_PATTERN}$"},
+        # Replace a mission in progress (``should_rebuild_mission``), not a reply to it.
+        "new_goal": {"type": "boolean"},
+    },
     "required": ["text"],
 }
 

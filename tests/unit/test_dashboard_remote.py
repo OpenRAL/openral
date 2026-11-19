@@ -711,3 +711,59 @@ async def test_the_tunnel_never_reaches_the_robots_own_settings(
             headers={**_auth(token), "Origin": _SITE},
         )
         assert put.status_code == 403
+
+
+# ── the prompt action's correlation id (#658) ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_prompt_action_carries_the_callers_correlation_id(
+    issuer: FakeIssuer, tmp_path: Path, ros2_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The id and ``new_goal`` reach ``openral prompt``; the reply names the id (made if absent)."""
+    monkeypatch.setenv("OPENRAL_DASHBOARD_REMOTE_CONTROL", "1")
+    log = tmp_path / "openral.jsonl"
+    shim = tmp_path / "openral"  # tmp_path is first on PATH (ros2_log)
+    shim.write_text(
+        f"#!{sys.executable}\nimport json, sys\n"
+        f"open({str(log)!r}, 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n"
+    )
+    shim.chmod(shim.stat().st_mode | stat.S_IXUSR)
+    app = create_app(_store_with_manifest(), verifier=_verifier(issuer, tmp_path))
+
+    def operator() -> dict[str, str]:  # one write per token
+        return _auth(issuer.mint(role="operator"))
+
+    async with _remote(app) as client:
+        named = await client.post(
+            "/api/actions/prompt",
+            json={"args": {"text": "--go", "correlation_id": "fleet-7:step-2", "new_goal": True}},
+            headers=operator(),
+        )
+        plain = await client.post(
+            "/api/actions/prompt", json={"args": {"text": "go"}}, headers=operator()
+        )
+        bad = [
+            await client.post("/api/actions/prompt", json={"args": args}, headers=operator())
+            for args in (
+                {"text": "go", "correlation_id": "--new-goal"},
+                {"text": "go", "correlation_id": "ok\n"},
+                {"text": "go", "correlation_id": ""},
+                {"text": "go", "correlation_id": "a" * 129},
+                {"text": "go", "correlation_id": 7},
+                {"text": "go", "new_goal": "yes"},
+            )
+        ]
+        from openral_observability.dashboard.app import _BACKGROUND_TASKS
+
+        await asyncio.gather(*_BACKGROUND_TASKS)
+    assert named.status_code == 200, named.text
+    assert named.json()["correlation_id"] == "fleet-7:step-2"
+    made = plain.json()["correlation_id"]
+    assert plain.status_code == 200 and len(made) == 32 and made != "fleet-7:step-2"
+    assert [r.status_code for r in bad] == [400] * 6
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert len(calls) == 2  # no refused prompt reached the CLI
+    head = ["prompt", "--topic", "/openral/prompt_in/dashboard"]
+    assert calls[0] == [*head, "--correlation-id=fleet-7:step-2", "--new-goal", "--", "--go"]
+    assert calls[1] == [*head, f"--correlation-id={made}", "--", "go"]

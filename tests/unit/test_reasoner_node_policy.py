@@ -17,6 +17,7 @@ from openral_reasoner import MissionState
 from openral_reasoner.mission import DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_TASK_DISPATCHES
 from openral_reasoner.node_policy import (
     CASCADE_PROMPT_SOURCES,
+    prompt_correlation_id,
     should_rebuild_mission,
     task_step_without_verifier,
 )
@@ -295,3 +296,39 @@ def test_attempt_cap_is_left_to_the_reward_gate_when_one_is_available() -> None:
         )
         is None
     )
+
+
+# ── prompt_correlation_id (#658) ─────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("metadata", "expected"),
+    [
+        ('{"correlation_id": "fleet-7:step-2", "source": "dashboard"}', "fleet-7:step-2"),
+        ('{"correlation_id": "' + "a" * 128 + '"}', "a" * 128),
+        ('{"correlation_id": "' + "a" * 129 + '"}', None),
+        ('{"correlation_id": "has space"}', None),
+        ('{"correlation_id": "--new-goal"}', None),
+        ('{"correlation_id": "line\\nbreak"}', None),
+        ('{"correlation_id": "ok\\n"}', None),  # fullmatch: no trailing newline
+        ('{"correlation_id": ""}', None),
+        ('{"correlation_id": 7}', None),
+        ('{"source": "cli"}', None),
+        ("[1]", None),
+        ("not json", None),
+        ("", None),
+    ],
+)
+def test_prompt_correlation_id_takes_only_a_well_formed_id(
+    metadata: str, expected: str | None
+) -> None:
+    assert prompt_correlation_id(metadata) == expected
+
+
+def test_a_mission_keeps_its_correlation_id_through_summary_and_resume() -> None:
+    mission = MissionState.from_prompt("pick the bowl", correlation_id="c-1")
+    assert mission.to_summary()["correlation_id"] == "c-1"
+    assert MissionState.from_state_dict(mission.to_state_dict()).correlation_id == "c-1"
+    # A mission saved before the id existed, or started with none, has none.
+    assert MissionState.from_state_dict({"goal": "x", "tasks": []}).correlation_id is None
+    assert MissionState.from_prompt("pick").to_summary()["correlation_id"] is None
