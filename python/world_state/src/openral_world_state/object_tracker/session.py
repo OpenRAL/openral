@@ -34,7 +34,7 @@ from __future__ import annotations
 import math
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 import numpy as np
@@ -79,7 +79,7 @@ from openral_world_state.object_tracker.binding import (
 )
 from openral_world_state.object_tracker.cover import Cell, hand_touches
 from openral_world_state.object_tracker.fit import ContainingFit
-from openral_world_state.object_tracker.grounding import in_scope
+from openral_world_state.object_tracker.grounding import centre_within, in_scope
 from openral_world_state.object_tracker.pinch import HandModel
 from openral_world_state.object_tracker.release import JawReleaseMonitor, release_track
 from openral_world_state.object_tracker.stall import JawStallDetector
@@ -252,13 +252,19 @@ class _Goal:
     #: is centred in: the query fails closed instead of binding a same-label neighbour.
     scope: PlaceRegion | None = None
     scope_resolved: bool | None = None  # last logged resolve state of ``scope``
+    #: Set when ``scope`` is in another frame than the grid: the ids of the tracks measured
+    #: inside it (``TrackerSession._measure_scope``), shared with the goal's TARGET queries
+    #: (``StandingQuery.members``). They decide the match; ``within`` only crops the search.
+    members: set[str] | None = None
+    #: ``object_id -> ((box, fit stamp), inside)``: what ``members`` was last judged from.
+    measured: dict[str, tuple[tuple[PlaceRegion, int], bool]] = field(default_factory=dict)
 
     def owns(self, track: TrackedObject) -> bool:
         """Whether ``track`` is an instance of one of this goal's queries."""
         return any(
             track.label == q.label
             and track.role is q.role
-            and (q.role is not ObjectRole.TARGET or in_scope(track, self.within))
+            and (q.role is not ObjectRole.TARGET or in_scope(track, self.within, self.members))
             for q in self.queries
         )
 
@@ -676,6 +682,7 @@ class TrackerSession:
         if source_stamp_ns >= self.grid_stamp_ns:
             self.grid, self.grid_stamp_ns = grid, source_stamp_ns
             self._rescope()
+            self._measure_scope()
             self._tick(source_stamp_ns)
 
     def on_jaw_command(self, gripper_joint: str, target: float, stamp_ns: int) -> None:
@@ -1027,6 +1034,7 @@ class TrackerSession:
             results=results,
             hand_spaces=hands,
         )
+        self._measure_scope()  # this feed's fits, before ownership reads them
         # A declaration can open before the first matching fit; that fit may be
         # minted by an older standing query. Reconcile ownership after every feed.
         self._rekey_live_tracks()
@@ -1396,8 +1404,10 @@ class TrackerSession:
             invocation_id=invocation_id,
             within=within,
             scope=scope,
+            members=set() if scope is not None and scope.frame_id != self.frame_id else None,
         )
         self._rescope()
+        self._measure_scope()
         self._rekey_live_tracks()
         if self._now_ns > 0:
             self._start(goal, self._now_ns)
@@ -1417,6 +1427,7 @@ class TrackerSession:
                 stamp_ns=stamp_ns,
                 invocation_id=goal.invocation_id,
                 within=goal.within if query.role is ObjectRole.TARGET else None,
+                members=goal.members if query.role is ObjectRole.TARGET else None,
             )
         goal.start_ns = stamp_ns
 
@@ -1426,7 +1437,9 @@ class TrackerSession:
         Through ``zone_transform`` at the newest grid's stamp. A lookup that misses (or a tilted
         transform) after the scope resolved keeps the last resolved box, so one late tf does
         not reset the query; one that never resolved keeps the scope in its own frame, where
-        ``centre_within`` matches no track: fail closed.
+        ``centre_within`` matches no track: fail closed. For a scope in another frame than the
+        grid this box only crops the search (where the node is now); which tracks are inside
+        is ``_measure_scope``'s.
         """
         for goal in self._goals.values():
             if goal is None or goal.scope is None:
@@ -1459,6 +1472,44 @@ class TrackerSession:
             for q in self.tracker.queries.queries:
                 if q.goal_id == goal.goal_id and q.query.role is ObjectRole.TARGET:
                     q.within = within
+
+    def _measure_scope(self) -> None:
+        """Judge each track against a fixed-frame goal ``scope`` where the track was measured.
+
+        A track's box is in the grid (base) frame as the base stood at its last fit, so it is
+        compared with the scope re-expressed through ``zone_transform`` at that fit's stamp:
+        both sides in the scope's own fixed frame (#651). The newest grid's box (``_rescope``)
+        would move with the base while an unrefitted track's box does not, and a base that
+        moved between the fit and the match would drop the node's instance or bind its
+        neighbour. A verdict holds until the track is fitted again (a new box or fit stamp).
+        Fail closed: a track with no transform at its fit stamp (tf2 missing, tilted, or older
+        than the buffer) is out until a later fit resolves; one already judged keeps its
+        verdict over a miss, so one late tf does not reset the query.
+        """
+        for goal in self._goals.values():
+            if goal is None or goal.scope is None or goal.members is None:
+                continue
+            measured: dict[str, tuple[tuple[PlaceRegion, int], bool]] = {}
+            for track in self.tracker.store.all():
+                fit = (track.box, track.last_fit_stamp_ns)
+                verdict = goal.measured.get(track.object_id)
+                if (verdict is None or verdict[0] != fit) and self.zone_transform is not None:
+                    t = self.zone_transform(goal.scope.frame_id, track.last_fit_stamp_ns)
+                    try:
+                        there = None if t is None else rebase_box(goal.scope, t, self.frame_id)
+                    except ROSConfigError:
+                        there = None  # tilted: unjudged, as a missing transform
+                    if there is not None:
+                        verdict = (fit, centre_within(track.box, there))
+                if verdict is not None:
+                    measured[track.object_id] = verdict
+            goal.measured = measured
+            inside = {oid for oid, (_, ok) in measured.items() if ok}
+            if inside != goal.members:
+                log.info("object_tracker.goal_scope_members", goal_id=goal.goal_id,
+                         inside=sorted(inside))  # fmt: skip
+                goal.members.clear()  # in place: the goal's queries hold this set
+                goal.members.update(inside)
 
     def _clear_declaration_scope(self, key: str) -> None:
         """Remove a closed declaration's ownership key from its tracks."""

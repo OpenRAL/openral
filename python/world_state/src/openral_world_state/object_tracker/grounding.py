@@ -27,7 +27,7 @@ start) is still picked up, at a modest rate.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Sequence, Set
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -77,6 +77,11 @@ class StandingQuery:
             grid frame on every grid (``TrackerSession._rescope``). ``None``: label and role.
             A BOUND or RELEASED track is exempt (``in_scope``): the box says where the
             object was to be grasped, not where the hand carries or lets it go.
+        members: Set for a seeded query whose scope is in another frame than the grid
+            (``map`` / ``odom``): the ids of the tracks measured inside it, each judged with
+            tf2 at its own fit stamp (``TrackerSession._measure_scope``). It replaces the
+            ``within`` centre test, which would compare a box from where the base stood at
+            the fit with the scope where the base stands now (#651).
     """
 
     goal_id: str
@@ -91,6 +96,7 @@ class StandingQuery:
     observations: list[ObjectQueryObservation] = field(default_factory=list)
     prior: PlaceRegion | None = None
     within: PlaceRegion | None = None
+    members: Set[str] | None = None
 
     @property
     def key(self) -> tuple[str, str]:
@@ -102,22 +108,25 @@ class StandingQuery:
         return (
             track.label == self.query.label
             and track.role is self.query.role
-            and in_scope(track, self.within)
+            and in_scope(track, self.within, self.members)
         )
 
 
-def in_scope(track: TrackedObject, within: PlaceRegion | None) -> bool:
+def in_scope(
+    track: TrackedObject, within: PlaceRegion | None, members: Set[str] | None = None
+) -> bool:
     """Whether ``track`` passes a goal's ``within`` gate (``StandingQuery.within``).
 
     A BOUND or RELEASED track always does: once grasped, the declared search box no longer
     locates it (a lifted carton leaves the tote's box; gating it there would unresolve the
-    query mid-carry and leave its release unrecorded).
+    query mid-carry and leave its release unrecorded). ``members`` (a fixed-frame scope,
+    ``StandingQuery.members``) decides in place of the centre test: a track not in it is out.
     """
-    return (
-        within is None
-        or track.status in (TrackStatus.BOUND, TrackStatus.RELEASED)
-        or centre_within(track.box, within)
-    )
+    if track.status in (TrackStatus.BOUND, TrackStatus.RELEASED):
+        return True
+    if members is not None:
+        return track.object_id in members
+    return within is None or centre_within(track.box, within)
 
 
 def centre_within(box: PlaceRegion, region: PlaceRegion) -> bool:
@@ -216,6 +225,7 @@ class QueryBook:
         stamp_ns: int,
         invocation_id: str = "",
         within: PlaceRegion | None = None,
+        members: Set[str] | None = None,
     ) -> None:
         """Start a standing query at goal dispatch (source time ``stamp_ns``)."""
         self._queries[(goal_id, query_id)] = StandingQuery(
@@ -227,6 +237,7 @@ class QueryBook:
             stamp_ns,
             invocation_id=invocation_id,
             within=within,
+            members=members,
         )
         log.info("object_tracker.query_open", goal_id=goal_id, query_id=query_id, label=query.label)
 

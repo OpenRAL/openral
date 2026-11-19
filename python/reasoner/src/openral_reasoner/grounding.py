@@ -135,6 +135,12 @@ def _locate(
     padded box in the node's own frame (``map`` for a lifted node; around its pose when it has
     no box): the TARGET query's ``seed``, which the tracker re-expresses through tf2 and gates
     the query's matches on, so a same-label neighbour never binds in its place (issue #631).
+    ``pad_m`` is the scope's whole tolerance, by decision (issue #650): a ``SpatialNode``
+    carries no pose covariance, and its age (``last_seen_ns``) gives no metres without a drift
+    model, so nothing here widens the box. A node whose recalled pose is off by more than
+    ``pad_m`` stays unmatched (fail closed; the query escalates and the reasoner looks again)
+    instead of reaching a same-label neighbour. A deploy with a looser map raises the bound it
+    is built from (the reasoner's ``grasp_target_extrinsic_error_m``).
 
     Raises:
         ROSReasonerInvalidPlan: Nothing grounds (unless ``several_ok``), several instances
