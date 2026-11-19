@@ -376,6 +376,61 @@ Additive like `failure_kind`: an older producer's Result decodes as `""`.
 The reasoner renders it on the skill's execution line and picks its
 strategy hint from the kind and the evidence (`reflect_on_failure`).
 
+### `task_outcome` — did the run do what it was asked
+
+`success` says the goal ended without a fault. Whether the task was done is a second,
+typed answer on every Result: `task_outcome` (`TASK_UNKNOWN` = 0, `TASK_SUCCEEDED`,
+`TASK_FAILED`) and `task_outcome_json`, one `openral_core.TaskOutcome` (verdict, source,
+reason, and the tracked objects it was read from). The same verdict is on the
+`rskill.execute` span (`rskill.task_outcome`, `.source`, `.reason`) and in the
+`rskill_runner.task_outcome` log line.
+
+| Source | When | Verdict |
+| --- | --- | --- |
+| `success_condition` | The goal carries an `openral_core.SuccessCondition` (`success_condition_valid`), or the deploy scene declares one for the goal's prompt (`DeployScene.success_conditions` → `success_conditions_json`, matched by `success_condition_for_prompt`); the goal's wins | `succeeded` once `min_count` objects of `object_label` have rested released inside `region` for `settle_s`; `failed` when too few rest there and the tracker sees one held or elsewhere; `unknown` when there is no live tracked set, it is in another frame, too few objects of the label are tracked, one is released but not yet re-confirmed, or they have not rested long enough |
+| `skill` | The skill raised `ROSRskillGoalSatisfied` (a wrapped action reached its terminal status), and no condition says `failed` | `succeeded` |
+| `checker` | A completion check ended the goal through `/openral/rskill/complete`, and no condition says `failed` | `succeeded` (a condition perception could not decide is named in the reason) |
+| `none` | None of the above (also a goal refused before its condition was read) | `unknown` |
+
+The condition is judged by one `openral_core.success.SuccessJudge` per goal, fed every
+set the tracker publishes on `/openral/tracked_objects` (its 2 Hz heartbeat included,
+whatever the policy's tick rate). A goal is judged at the moment it ends: a deadline miss
+with the object placed and one with it still in the gripper now read differently. `unknown`
+is never reported as a success.
+
+A condition with `end_on_success: true` also ends the run: each tick, while the world-state
+snapshot holds a live tracked set, a settled condition ends the goal
+(`rskill_runner.success_condition_met`, `success` true) instead of leaving it to its
+budget, and that verdict is the one the Result reports. It is off by default because the
+verdict is only as good as the tracker's tracks: on Isaac SO-101 PickOrange (q5090,
+2026-11-19) the tracker held three confirmed `orange` tracks in the plate with one orange
+there, two of them one object 3 cm apart. Tracks whose centre lies in another counted
+track's box now count once, but a track of something that is not there still counts, and
+ending a run on it would cut the policy short. Off, a wrong `succeeded` costs a label. A condition that does not validate refuses the goal
+(`FAILURE_CONFIG_ERROR`); a goal refused later (a manifest gate, a grounding wait) is still
+judged by its condition. It is advisory: it ends a goal or labels its result, commands
+nothing, and the safety kernel never reads it.
+
+The settle clock is the tracker's evidence, not the runner's patience: `settle_s` is
+measured on the tracked sets' own stamps, a set seen twice counts once, and a missing set, a
+stamp that goes backwards or a gap longer than `max_evidence_gap_s` restarts it. One set
+alone never decides a success (`settle_s` > 0). A `RELEASED` track (its box is frozen at
+the let-go pose until the tracker re-grounds it) does not count as resting.
+
+A scene's conditions are keyed by prompt (case and whitespace aside), so only a goal with
+that prompt is judged by them; a wrapped Nav2 move or another task is not, and is never
+ended early by them (`rskill_runner.success_condition_unmatched` names the prompt). The
+reasoner does not put a condition on its goals yet, so a goal it dispatches is judged only
+when its prompt is one the scene declares.
+
+Limits today: the region is a box in the tracker's grid frame (the robot base frame; a
+map-frame region reads `unknown`), any track of the label counts (an object of that class
+already in the region satisfies it, and so does a track the tracker holds for something
+that is not there), and with object tracking off there is no evidence, so
+every verdict is `unknown` (`openral deploy` says so at launch).
+
+Additive like `failure_kind`: an older producer's Result decodes as `TASK_UNKNOWN` / `""`.
+
 The default resolver is a `ManifestSkillResolver` (`make_default_skill_resolver`):
 the runner resolves the goal's manifest (in-tree by name under the search paths,
 else the HF Hub manifest alone), runs `check_manifest_gates` against the robot

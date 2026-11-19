@@ -175,6 +175,8 @@ def main(argv: list[str] | None = None) -> int:
                 "failure_reason": result.failure_reason,
                 "failure_kind": int(result.failure_kind),
                 "evidence_json": str(getattr(result, "evidence_json", "") or ""),
+                # Issue #635: the task verdict (openral_core.TaskOutcome), apart from success.
+                "task_outcome_json": str(getattr(result, "task_outcome_json", "") or ""),
                 "rskill_id": args.rskill_id,
             },
             sort_keys=True,

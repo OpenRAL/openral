@@ -147,6 +147,8 @@ success. The
 mission summary the dashboard reads (`reasoner.mission_json`) carries `failures`
 next to `attempts`, plus `max_dispatches`.
 
+**What the task outcome says.** When the runner's `ExecuteRskill.Result.task_outcome_json` names a source, the `## EXECUTION` line of that skill carries it, on `[ok]`, `[failed]` and `[stopped]` (a reward or patience cancel) lines alike: `task_outcome=<succeeded|failed|unknown> (<success_condition|skill|checker>): <reason>` (`openral_reasoner.context.task_outcome_text`). A run that missed its deadline with the object placed and one that never grasped it are then different lines, and `unknown` is spelled out, never shown as a success. A run nothing judged adds no phrase.
+
 **What a success says.** The `## EXECUTION` line for a successful goal carries
 the runner's `ExecuteRskill.Result.outcome_summary` before the trace id. For a
 result-only wrapped action that is the terminal status, the result's scalar
