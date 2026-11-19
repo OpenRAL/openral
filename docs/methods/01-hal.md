@@ -77,15 +77,24 @@ _Internal MuJoCo-backed HAL implementation shared by UR / Franka / SO-100 / G1 /
 _Several robots in one MuJoCo world, each driven by its own deploy graph on its own ROS domain (issue #666). JSON over a Unix socket; sim only._
 
 - `compose_shared_world(world: SharedWorldScene, arena_mjcf: Path, descriptions: dict[str, RobotDescription], view: str | None) -> tuple[MjSpec, list[tuple[str, int, int]]]` (L80) — The world's `MjSpec` as one robot sees it (its base frame is the model's world frame, its elements unprefixed and first, the others under `<name>_`), or the server's model (`view=None`: world frame, every robot prefixed). Each robot is its own MJCF with the manifest cameras rigged in (`rig_cameras_into_mjcf`); the arena MJCF is attached last. Also returns `(name, joints, actuators)` per robot in joint order. Fixed-base hinge / slide robots only.
-- `class SharedWorldServer` (L159) — Owns the world's physics and serves it to the robots' HALs. Lockstep barrier: a robot is *commanding* from a `send_action` until its next idle step; the world advances one control period once every commanding robot has sent its action, or after `barrier_timeout_s` (logged `shared_world.barrier_timeout`; the late robot's targets are held). With no robot commanding, idle steps advance it on wall time. Every robot must have the same control period. State is mapped into each robot's view (block permutation; planar base transform on free bodies).
+- `class SharedWorldServer` (L159) — Owns the world's physics and serves it to the robots' HALs (and, read-only via `observe`, to `peer_voxels`). Lockstep barrier: a robot is *commanding* from a `send_action` until its next idle step; the world advances one control period once every commanding robot has sent its action, or after `barrier_timeout_s` (logged `shared_world.barrier_timeout`; the late robot's targets are held). With no robot commanding, idle steps advance it on wall time. Every robot must have the same control period. State is mapped into each robot's view (block permutation; planar base transform on free bodies).
   - `start(self) -> None` (L263) — Listen on the Unix socket; one thread per robot.
   - `close(self) -> None` (L269) — Stop listening. Idempotent.
   - `sim_time_s(self) -> float` (L275) — The world's elapsed simulation time.
-- `class SharedWorldArmHAL(MujocoArmHAL)` (L476) — A `MujocoArmHAL` whose physics is a shared world's: it keeps a mirror model for cameras / joint reads / the sim clock and overrides the two seams `_load_model` (compose its view) and `_step_physics` (ask the world to advance). Built by `build_hal` when the transport names `shared_world` + `shared_world_robot`.
-  - `connect(self) -> None` (L515) — Compose the view, join the world (refused: unknown or already-attached robot, another control period, no declared control rate, no world at the address).
-  - `disconnect(self) -> None` (L551) — Retarget the arm to the pose it has now, leave the world, release the mirror.
-  - `estop(self) -> None` (L556) — Retarget the arm to the pose it has now (it holds there; the other robots keep running), leave the world, then `MujocoArmHAL.estop` (always raises).
-  - `reset_to_pose(self, pose: list[float]) -> None` (L579) — Snap this arm's joints in the shared world.
+- `class SharedWorldArmHAL(MujocoArmHAL)` (L486) — A `MujocoArmHAL` whose physics is a shared world's: it keeps a mirror model for cameras / joint reads / the sim clock and overrides the two seams `_load_model` (compose its view) and `_step_physics` (ask the world to advance). Built by `build_hal` when the transport names `shared_world` + `shared_world_robot`.
+  - `connect(self) -> None` (L525) — Compose the view, join the world (refused: unknown or already-attached robot, another control period, no declared control rate, no world at the address).
+  - `disconnect(self) -> None` (L561) — Retarget the arm to the pose it has now, leave the world, release the mirror.
+  - `estop(self) -> None` (L566) — Retarget the arm to the pose it has now (it holds there; the other robots keep running), leave the world, then `MujocoArmHAL.estop` (always raises).
+  - `reset_to_pose(self, pose: list[float]) -> None` (L589) — Snap this arm's joints in the shared world.
+
+### `python/hal/src/openral_hal/peer_voxels.py`
+
+_Peer robots as occupied cells of `/openral/world_voxels` for each robot's safety kernel (issue #666). Source-agnostic boxes; the shared MuJoCo world is the implemented source._
+
+- `class PeerBox(NamedTuple)` (L44) — An oriented box a peer occupies, in this robot's base frame: `centre`, `rotation` (axes as columns), `half_extents`.
+- `occupancy_grid(boxes: list[PeerBox], centre, radius_m, resolution_m) -> tuple[NDArray, tuple[int, int, int], NDArray[np.uint8]]` (L58) — Rasterize the boxes into the axis-aligned grid around a coverage ball (`floor(2r/res + 1/2) + 1` cells per axis, the kernel's `world_voxel_max_cells` for that ball); a cell is occupied when its centre is in a box grown by half a cell diagonal (conservative). Returns origin, shape, row-major x-fastest cells.
+- `mujoco_peer_boxes(model, data, peers: list[str]) -> list[PeerBox]` (L100) — The `<peer>_…` bodies' collision geoms (contype or conaffinity) in a robot's view of a shared world, as their local bounding boxes.
+- `main(argv=None) -> None` (L158) — `python -m openral_hal.peer_voxels --world --robot --frame --centre --radius --resolution`: reads the world (`observe`) as that robot sees it and publishes the peers on `/openral/world_voxels`, stamped (`source_stamp`) with the world time read; exits when the world stops answering, so the kernel fails closed. Started by `deploy_e2e.launch.py` when `shared_world:=` is set.
 
 ### `python/hal/src/openral_hal/_base.py`
 _Shared HAL mixin — `_connected` flag, validation helpers, and a default `disconnect`._

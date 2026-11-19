@@ -52,6 +52,49 @@ or open its dashboard.
   single-robot deploy. Base poses are planar (`base_xyz`, `base_yaw_deg`), so
   gravity is the same in every view.
 
+## Robots see each other: peers in the safety check
+
+Robots in one workcell must know about each other and not collide. Each
+robot's safety kernel already refuses a command that drives one of its links
+into an occupied cell of `/openral/world_voxels` (in its base frame, refused
+when stale). In a shared world that grid holds **the other robots**:
+
+- `openral deploy world` binds each robot's HAL to the world; `deploy sim` then
+  passes the launch `shared_world:=` / `shared_world_robot:=`, which starts
+  `openral_hal.peer_voxels` in that robot's graph and turns its kernel's world
+  check on.
+- `peer_voxels` reads the world as that robot sees it (its base frame), takes
+  every collision geom of the other robots, and rasterizes their boxes into the
+  cells of the robot's coverage ball (the same ball, resolution and cell budget
+  the launch gives the kernel). A cell is occupied whenever a peer box can touch
+  it.
+- **Fail-closed.** Every grid is built from a fresh read of the world and is
+  stamped with that world time (`source_stamp`). When the world stops
+  answering, `peer_voxels` exits and stops publishing; the kernel's receipt
+  deadline (`world_voxel_deadline_s`) and data-age budget then refuse every
+  command of that robot.
+- The kernel is unchanged: this is an input it already consumes.
+
+Measured on the fixture (q5090): robot `a` panned 0.9 rad towards `b` is
+refused on its first commanded row (`safety.collision kind=world a=gripper
+b=voxel_…`, E-stop latched, the arm never moves), `a` panned -0.4 rad away from
+`b` executes, and with `peer_voxels` killed a clear command is refused too.
+Without this, the same 0.9 rad command drove `a` into `b`.
+
+**Limits.** A robot of a shared world runs with its octomap leg off: two
+producers on `/openral/world_voxels` would overwrite each other's grid, so the
+launch refuses `enable_octomap` together with `shared_world` (merging the peers
+into the octomap bridge's grid is a follow-up). The peers are their collision
+geoms' bounding boxes, a few millimetres larger than the meshes. A held object
+is not part of its robot's box set.
+
+**Real robots in one workcell (follow-up).** The rasterizer takes oriented boxes
+in the robot's base frame (`PeerBox`), whatever their source. For real robots
+the source would be each peer's manifest `collision_geometry`, posed by its
+`/joint_states` (bridged from its domain) and its surveyed base pose in this
+robot's base frame, with the same freshness rule. That source needs a decision
+on how peers' states cross domains and a hazard-log entry before it is built.
+
 ## Time
 
 The single-robot rule holds for every robot: **one action is one control
@@ -120,11 +163,10 @@ robots:
 - The world steps and renders with the first robot's MJCF `<option>` and
   `<visual>`; mixing robots whose MJCFs need different solver options is not
   supported yet.
-- Each graph's safety kernel knows only its own robot. The other robot is
-  visible in its cameras, but is not a collision object for the kernel unless
-  the robot has a depth sensor feeding the voxel map. Two arms can therefore
-  collide in the shared world. Before this is used for anything but simulation
-  experiments, a shared-workspace hazard needs a hazard-log entry.
+- Robots with a depth camera and the octomap leg (the peers would need to
+  be merged into that grid) are refused; see above.
+- The peer check is a simulation input. The shared-workspace hazard (two arms
+  in one space) needs a hazard-log entry before any real-robot source is built.
 - Nothing coordinates the robots: no claims on objects, no hand-over skill.
   That is the fleet layer's job (OpenRAL Pro).
 - One dashboard per robot; there is no merged view.
@@ -145,3 +187,7 @@ Recorded for review; the matching entry in the private decision log is owed.
    `barrier_timeout_s`.
 4. **`SharedWorldScene` is a new file type** (`scenes/worlds/`); `DeployScene`
    is unchanged.
+5. **Peers reach the kernel as occupied cells** on its existing
+   `/openral/world_voxels` input, not as a new kernel input: no Safety-WG-gated
+   code changes, and the existing freshness rules make a stale peer fail
+   closed.
