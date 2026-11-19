@@ -55,6 +55,7 @@ from openral_core.exceptions import (
 from openral_core.schemas import Action, JointState, RobotDescription
 
 from openral_hal._base import HALBase, _raw_floats, resolve_staleness_limit_s
+from openral_hal._slot_group import GRIPPER_MODES, SlotGroupStager, compose_slot_group_action
 from openral_hal.protocol import EStopRecovery
 
 __all__ = [
@@ -65,6 +66,7 @@ __all__ = [
     "ControllerSwitchReport",
     "DownstreamStopReport",
     "DownstreamStopReporting",
+    "GroupedRosControlHAL",
     "RosControlHAL",
     "TriggerReport",
 ]
@@ -869,3 +871,261 @@ class RosControlHAL(HALBase):
                 f"'{self.description.name}'."
             )
         self._validate_action_dims(action, len(self._joint_names))
+
+
+class GroupedRosControlHAL(RosControlHAL):
+    """``RosControlHAL`` whose joints are split across several trajectory controllers.
+
+    A bimanual ros2_control arm (the OpenArm's arm + gripper per side, the dual
+    Rizon's one controller per arm) commands one action vector through several
+    ``JointTrajectoryController`` instances. This base owns that fan-out, so each
+    robot declares only its ``groups`` — ``(controller_name, n_joints)`` in
+    action-vector order — and its own preflight. Three properties hold for every
+    subclass:
+
+    * **All or nothing.** ``send_action`` builds every controller's message before
+      publishing any, so a malformed action cannot leave one arm on a new chunk and
+      the other on a stale one.
+    * **Named, not positional.** Each message carries its own ``joint_names``, and
+      ``read_state`` matches ``/joint_states`` by name, raising on a missing joint
+      rather than zero-filling it (``sensor_msgs/JointState`` has no order, and each
+      controller's joints arrive independently).
+    * **Slot groups (ADR-0102).** A slot-dispatched tick is staged until every slot
+      passed safety and is published as one reassembled vector.
+
+    ros2_control joint names come from each joint's ``sim_joint_name`` (the URDF
+    name), or its manifest ``name`` where the two agree.
+
+    Args:
+        description: The robot manifest.
+        groups: ``(controller_name, n_joints)`` per controller, in action order;
+            the counts must sum to the manifest's joint count.
+        joint_state_topic / publish_fn / state_fn / staleness_limit_s: As
+            ``RosControlHAL``.
+
+    Raises:
+        ROSConfigError: If ``groups`` is empty or does not cover every joint.
+
+    Example:
+        >>> from openral_hal.openarm_real import OpenArmRealHAL
+        >>> OpenArmRealHAL(require_can_links=False).command_topics()[2]
+        '/right_joint_trajectory_controller/joint_trajectory'
+    """
+
+    def __init__(
+        self,
+        description: RobotDescription,
+        *,
+        groups: Sequence[tuple[str, int]],
+        joint_state_topic: str = "/joint_states",
+        publish_fn: _PublishFn | None = None,
+        state_fn: Callable[[], dict[str, object]] | None = None,
+        staleness_limit_s: float | None = None,
+    ) -> None:
+        """Initialise the fan-out table; opens no connection."""
+        if not groups or sum(n for _, n in groups) != len(description.joints):
+            raise ROSConfigError(
+                f"{type(self).__name__}: controller groups {list(groups)} must cover the "
+                f"{len(description.joints)} joints of '{description.name}' exactly."
+            )
+        super().__init__(
+            description,
+            controller_name=groups[0][0],
+            joint_state_topic=joint_state_topic,
+            publish_fn=publish_fn,
+            state_fn=state_fn,
+            staleness_limit_s=staleness_limit_s,
+        )
+        self._ros2_names: list[str] = [str(j.sim_joint_name or j.name) for j in description.joints]
+        self._controller_names = [name for name, _ in groups]
+        # (command topic, action slice, ros2_control joint names) per controller.
+        table: list[tuple[str, slice, list[str]]] = []
+        start = 0
+        for name, n in groups:
+            span = slice(start, start + n)
+            table.append((f"/{name}/joint_trajectory", span, self._ros2_names[span]))
+            start += n
+        self._command_groups: tuple[tuple[str, slice, list[str]], ...] = tuple(table)
+        self._slot_group = SlotGroupStager()
+
+    def ros2_control_joint_names(self) -> list[str]:
+        """Return the ros2_control joint names in action-vector order."""
+        return list(self._ros2_names)
+
+    def command_bindings(self) -> dict[str, ControllerKind]:
+        """Return every controller's ``joint_trajectory`` topic, in fan-out order."""
+        return {topic: ControllerKind.JOINT_TRAJECTORY for topic, _, _ in self._command_groups}
+
+    def controller_names(self) -> list[str]:
+        """Return every controller ``estop`` deactivates, in fan-out order."""
+        return list(self._controller_names)
+
+    def read_state(self) -> JointState:
+        """Return the latest joint state, matched by name into manifest order.
+
+        Raises:
+            ROSRuntimeError: If not connected, or if the incoming state is missing
+                joints the manifest declares.
+            ROSPerceptionStale: If the last reading exceeds the staleness deadline.
+        """
+        state = super().read_state()
+        if self._state_fn is None:
+            # No subscriber wired: the base returns a zeroed state in manifest order.
+            return state
+        raw = self._state_fn()
+        incoming = raw.get("name")
+        if not isinstance(incoming, list):
+            # Without names there is nothing to match; the positional read stands.
+            return state
+
+        index_of = {str(n): i for i, n in enumerate(incoming)}
+        absent = [n for n in self._ros2_names if n not in index_of]
+        if absent:
+            raise ROSRuntimeError(
+                f"{self._joint_state_topic} is missing {len(absent)} joint(s) "
+                f"declared by '{self.description.name}': {absent}. Check that every "
+                "controller is active — each publishes its own joints."
+            )
+
+        def _reordered(key: str, *, absent: list[float]) -> list[float]:
+            values = raw.get(key)
+            if not isinstance(values, list) or len(values) != len(incoming):
+                return absent
+            return [float(values[index_of[n]]) for n in self._ros2_names]
+
+        zeros = [0.0] * len(self._ros2_names)
+        return JointState(
+            name=list(self._joint_names),
+            position=_reordered("position", absent=zeros),
+            velocity=_reordered("velocity", absent=zeros),
+            # An absent effort channel stays empty, never zero-filled: zeros would
+            # fake an effort reading the driver never published.
+            effort=_reordered("effort", absent=[]),
+            stamp_ns=state.stamp_ns,
+        )
+
+    def send_action(self, action: Action) -> None:
+        """Fan one action out to every controller, all or nothing.
+
+        Raises:
+            ROSRuntimeError: If not connected.
+            ROSConfigError: If the control mode is unsupported, the target width
+                does not match the manifest, or a gripper action arrives outside a
+                slot group.
+        """
+        self._require_connected("send_action")
+
+        # ADR-0102: a slot-dispatched tick arrives as several typed actions, none a
+        # whole-robot command on its own. Reassemble it and fall through to the
+        # single-vector publish, so the all-or-nothing guarantee covers the group.
+        group: list[Action] | None = None
+        if int(action.tick_group_size) > 1:
+            group = self._slot_group.stage(action)
+            if group is None:
+                return
+            log.debug(
+                "hal.send_action.slot_group",
+                robot=self.description.name,
+                slots=len(group),
+                tick=group[0].tick_index,
+                modes=[a.control_mode.value for a in group],
+            )
+            action = compose_slot_group_action(group, [j.name for j in self.description.joints])
+        else:
+            # Ungrouped ticked actions (starting-pose ramp, approach) share the
+            # watermark, so a restarted runner's renumbering is seen here too.
+            self._slot_group.admit(action)
+
+        self._validate_action(action)
+
+        if action.control_mode in GRIPPER_MODES:
+            # A lone gripper action: the controllers are commanded from one joint
+            # vector, so there is nowhere to put it. Refuse loudly — dropping it
+            # would move the arms while the grippers never actuate.
+            raise ROSConfigError(
+                f"{type(self).__name__} cannot execute a standalone "
+                f"{action.control_mode.value} action: its controllers are commanded as "
+                "one joint vector, so a gripper command is only placeable inside a slot "
+                "group (tick_group_size > 1, ADR-0102)."
+            )
+
+        if action.joint_targets is None:
+            log.debug("hal.send_action.empty", robot=self.description.name)
+            return
+
+        deadline = self.time_from_start_s(action)
+        outbound = [
+            (
+                topic,
+                {
+                    "control_mode": action.control_mode,
+                    "horizon": action.horizon,
+                    "joint_names": names,
+                    "joint_targets": [list(step[span]) for step in action.joint_targets],
+                    "stamp_ns": action.stamp_ns,
+                    "time_from_start_s": deadline,
+                },
+            )
+            for topic, span, names in self._command_groups
+        ]
+        for topic, msg in outbound:
+            self._publish_fn(topic, msg)
+        if group is not None:
+            self._slot_group.commit(group, applied=action)
+        else:
+            self._slot_group.commit_tick(action)
+        log.debug(
+            "hal.send_action",
+            robot=self.description.name,
+            control_mode=action.control_mode,
+            horizon=action.horizon,
+            controllers=len(outbound),
+        )
+
+    def disconnect(self) -> None:
+        """Close the connection, dropping any half-staged slot group (and the watermark)."""
+        self._slot_group.reset()
+        super().disconnect()
+
+    @property
+    def last_applied_action(self) -> Action | None:
+        """The command the robot was last actually given (``None`` = none yet).
+
+        For a slot group this is the composed full-dof ``JOINT_POSITION`` action; set
+        only once the apply succeeded, in step with ``last_committed_tick``. The
+        lifecycle node folds it into the grasp trigger.
+        """
+        return self._slot_group.last_applied_action
+
+    @property
+    def last_committed_tick(self) -> int:
+        """Inference tick of the last slot group published (0 = none since disconnect)."""
+        return self._slot_group.last_committed_tick
+
+    @property
+    def last_committed_session(self) -> int:
+        """``runner_session_id`` of ``last_committed_tick`` (0 = none / session-less)."""
+        return self._slot_group.last_committed_session
+
+    def discard_staged_slots(self) -> int:
+        """Drop a half-staged slot group, keeping the committed watermark.
+
+        Called by the HAL lifecycle node on every ``/openral/estop`` latch and
+        ``/openral/estop_cleared``, so a tick cut short by a stop never outlives it.
+
+        Returns:
+            How many staged slots were dropped.
+        """
+        return self._slot_group.discard()
+
+    def estop(self) -> None:
+        """Drop any half-staged slot group, then the base stop (deactivate every controller).
+
+        The committed watermark is kept: a pre-stop tick replayed after the stop is
+        still refused as stale.
+
+        Raises:
+            ROSEStopRequested: Always, from the base implementation.
+        """
+        self._slot_group.discard()
+        super().estop()

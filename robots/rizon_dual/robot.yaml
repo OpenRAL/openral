@@ -1,0 +1,358 @@
+# RobotDescription — two Flexiv Rizon 4s arms driven as one robot (reference rig: q5090).
+#
+# Kinematics are upstream flexiv_description jazzy-v1.9 (Rizon4s), composed on one `world`
+# by packages/openral_hal_rizon/urdf/rizon_dual.urdf.xacro with the rig's measured mounts;
+# rizon_dual.urdf is that xacro rendered. Joint origins below are read off that URDF.
+# Position limits are Flexiv's SOFT limits (config/Rizon4s/joint_limits.yaml; the RDK
+# refuses targets past them), except joint7: held to home +-90 deg on the reference rig,
+# where the wrist cabling winds past that (a right wrist wound 3.2 rad, 2026-11-11).
+#
+# The rig's Damiao jaws (CAN) have no upstream ros2_control driver; this embodiment is the
+# two 7-DoF arms only (14-D action: left 0..6, right 7..13).
+
+name: "rizon_dual"
+embodiment_kind: "manipulator"
+base_frame: "world"
+
+assets:
+  urdf:
+    ref: "file:rizon_dual.urdf"
+  srdf: "file:rizon_dual.srdf"
+
+joints:
+  - name: "left_joint1"
+    origin_xyz: [0, 0, 0.155]
+    origin_rpy: [0, 0, 3.1415927]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "left_base_link"
+    child_link: "left_link1"
+    position_limits: [-2.7925, 2.7925]
+    velocity_limit: 2.0944
+    effort_limit: 123.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "left_joint2"
+    origin_xyz: [0, 0.03, 0.21]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "left_link1"
+    child_link: "left_link2"
+    position_limits: [-2.2689, 2.2689]
+    velocity_limit: 2.0944
+    effort_limit: 123.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "left_joint3"
+    origin_xyz: [0, 0.035, 0.205]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "left_link2"
+    child_link: "left_link3"
+    position_limits: [-2.9671, 2.9671]
+    velocity_limit: 2.4435
+    effort_limit: 64.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "left_joint4"
+    origin_xyz: [-0.02, -0.03, 0.19]
+    origin_rpy: [0, 0, 3.1415927]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "left_link3"
+    child_link: "left_link4"
+    position_limits: [-1.8675, 2.6878]
+    velocity_limit: 2.4435
+    effort_limit: 64.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "left_joint5"
+    origin_xyz: [-0.02, 0.025, 0.195]
+    origin_rpy: [0, 0, 3.1415927]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "left_link4"
+    child_link: "left_link5"
+    position_limits: [-2.9671, 2.9671]
+    velocity_limit: 4.8869
+    effort_limit: 39.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "left_joint6"
+    origin_xyz: [0, 0.03, 0.19]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "left_link5"
+    child_link: "left_link6"
+    position_limits: [-1.3963, 4.5379]
+    velocity_limit: 4.8869
+    effort_limit: 39.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "left_joint7"
+    origin_xyz: [-0.015, 0.073, 0.11]
+    origin_rpy: [0, -1.5707963, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "left_link6"
+    child_link: "left_link7"
+    position_limits: [-2.9671, -0.2231]
+    velocity_limit: 4.8869
+    effort_limit: 39.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "right_joint1"
+    origin_xyz: [0, 0, 0.155]
+    origin_rpy: [0, 0, 3.1415927]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "right_base_link"
+    child_link: "right_link1"
+    position_limits: [-2.7925, 2.7925]
+    velocity_limit: 2.0944
+    effort_limit: 123.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "right_joint2"
+    origin_xyz: [0, 0.03, 0.21]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "right_link1"
+    child_link: "right_link2"
+    position_limits: [-2.2689, 2.2689]
+    velocity_limit: 2.0944
+    effort_limit: 123.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "right_joint3"
+    origin_xyz: [0, 0.035, 0.205]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "right_link2"
+    child_link: "right_link3"
+    position_limits: [-2.9671, 2.9671]
+    velocity_limit: 2.4435
+    effort_limit: 64.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "right_joint4"
+    origin_xyz: [-0.02, -0.03, 0.19]
+    origin_rpy: [0, 0, 3.1415927]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "right_link3"
+    child_link: "right_link4"
+    position_limits: [-1.8675, 2.6878]
+    velocity_limit: 2.4435
+    effort_limit: 64.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "right_joint5"
+    origin_xyz: [-0.02, 0.025, 0.195]
+    origin_rpy: [0, 0, 3.1415927]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "right_link4"
+    child_link: "right_link5"
+    position_limits: [-2.9671, 2.9671]
+    velocity_limit: 4.8869
+    effort_limit: 39.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "right_joint6"
+    origin_xyz: [0, 0.03, 0.19]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "right_link5"
+    child_link: "right_link6"
+    position_limits: [-1.3963, 4.5379]
+    velocity_limit: 4.8869
+    effort_limit: 39.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "right_joint7"
+    origin_xyz: [-0.015, 0.073, 0.11]
+    origin_rpy: [0, -1.5707963, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "right_link6"
+    child_link: "right_link7"
+    position_limits: [-0.3074, 2.8342]
+    velocity_limit: 4.8869
+    effort_limit: 39.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+
+end_effectors:
+  - name: "left_flange"
+    kind: "tool"
+    hand: "left"
+    n_dof: 0
+    max_payload_kg: 4.0
+    workspace_radius_m: 0.78
+  - name: "right_flange"
+    kind: "tool"
+    hand: "right"
+    n_dof: 0
+    max_payload_kg: 4.0
+    workspace_radius_m: 0.78
+
+capabilities:
+  locomotion: ["none"]
+  can_lift_kg: 4.0
+  has_force_control: true
+  bimanual: true
+  supported_control_modes: ["joint_position"]
+  supported_vla_embodiments: ["rizon_dual"]
+  embodiment_tags: ["rizon_dual", "rizon4s", "flexiv", "bimanual"]
+
+# provisional: none of these is measured on the rig yet. The speeds sit under the 1 rad/s
+# the reference rig's VR acceptance session earned (half the RDK's own 2 rad/s cap); the
+# torque ceiling is the Rizon 4s' proximal rating.
+safety:
+  max_ee_speed_m_s: 0.5
+  max_joint_speed_factor: 0.25
+  max_force_n: 150.0
+  max_torque_nm: 123.0
+  deadman_required: true
+  max_ee_accel_m_s2: 1.0
+  contact_force_threshold_n: 30.0
+  self_collision_margin_m: 0.03
+  starting_pose_max_joint_speed_rad_s: 0.3
+  starting_pose_tolerance_rad: 0.05
+  # A real encoder feed silent for half a second is a fault (measure with
+  # tools/joint_state_staleness_probe.py --robot robots/rizon_dual/robot.yaml).
+  joint_state_staleness_limit_s: 0.5
+
+# flexiv_ros2 / flexiv_description / the RDK's API are Apache-2.0, but the RDK's driver
+# core is a vendor-precompiled static library.
+sdk_kind: "closed_with_api"
+
+# provisional: the runner's 30 Hz default; the controllers interpolate at 1 kHz.
+action_spec:
+  control_freq_hz: 30.0
+
+hal:
+  sim: null
+  real: "openral_hal.flexiv_rizon_real:RizonDualRealHAL"
+  # controller_manager + 2 x upstream FlexivHardwareInterface (C++, 1 kHz, §1.5).
+  real_bringup: "openral_hal_rizon:real_bringup.launch.py"
+  parameters:
+    defaults:
+      # Must match packages/openral_hal_rizon/config/rizon_dual_controllers.yaml.
+      left_arm_controller: "left_arm_controller"
+      right_arm_controller: "right_arm_controller"
+
+# The two arm mounts, verbatim from rizon_dual.urdf's left_/right_base_joint (world at
+# the column's foot): the kernel places both arm trees relative to `world` through these.
+fixed_attachments:
+  - name: "left_base_joint"
+    parent_link: "world"
+    child_link: "left_base_link"
+    origin_xyz: [0.0, 0.34, 1.5]
+    origin_rpy: [3.141592653589793, -1.5707963267948966, 0.0]
+  - name: "right_base_joint"
+    parent_link: "world"
+    child_link: "right_base_link"
+    origin_xyz: [0.0, -0.34, 1.5]
+    origin_rpy: [0.0, 1.5707963267948966, 0.0]
+
+schema_version: "0.2"
+
+# GENERATED by `openral collision lower` — do not hand-edit.
+collision_geometry:
+  - link_name: "left_base_link"
+    shape: { shape: "capsule", radius_m: 0.0886, length_m: 0.0035 }
+    origin_xyz_rpy: [-0.0000, 0.0003, 0.0259, 1.5714, 1.0864, 1.0869]
+  - link_name: "left_base_link"
+    shape: { shape: "capsule", radius_m: 0.0790, length_m: 0.0040 }
+    origin_xyz_rpy: [-0.0002, 0.0007, 0.1021, -1.5839, -0.4544, 0.4602]
+  - link_name: "left_link1"
+    shape: { shape: "capsule", radius_m: 0.0720, length_m: 0.1839 }
+    origin_xyz_rpy: [0.0000, -0.0054, 0.1219, 0.0585, -0.0000, -0.0000]
+  - link_name: "left_link2"
+    shape: { shape: "capsule", radius_m: 0.0732, length_m: 0.0370 }
+    origin_xyz_rpy: [-0.0000, 0.0331, 0.0161, -0.0340, -0.0025, 0.0000]
+  - link_name: "left_link2"
+    shape: { shape: "capsule", radius_m: 0.0644, length_m: 0.0965 }
+    origin_xyz_rpy: [-0.0002, 0.0354, 0.1173, -0.0145, -0.0051, 0.0000]
+  - link_name: "left_link3"
+    shape: { shape: "capsule", radius_m: 0.0609, length_m: 0.1682 }
+    origin_xyz_rpy: [-0.0102, 0.0042, 0.1103, -0.0498, -0.1217, 0.0030]
+  - link_name: "left_link4"
+    shape: { shape: "capsule", radius_m: 0.0628, length_m: 0.1621 }
+    origin_xyz_rpy: [-0.0099, 0.0282, 0.0777, 0.0302, -0.1255, -0.0019]
+  - link_name: "left_link5"
+    shape: { shape: "capsule", radius_m: 0.0602, length_m: 0.1680 }
+    origin_xyz_rpy: [0.0000, -0.0034, 0.1094, 0.0401, 0.0004, 0.0000]
+  - link_name: "left_link6"
+    shape: { shape: "capsule", radius_m: 0.0680, length_m: 0.0619 }
+    origin_xyz_rpy: [0.0101, 0.0467, 0.0288, -0.3183, 0.3415, -0.0553]
+  - link_name: "left_link6"
+    shape: { shape: "capsule", radius_m: 0.0728, length_m: 0.0439 }
+    origin_xyz_rpy: [0.0363, 0.0698, 0.0988, -0.3002, 0.3444, -0.0526]
+  - link_name: "left_link7"
+    shape: { shape: "capsule", radius_m: 0.0606, length_m: 0.0013 }
+    origin_xyz_rpy: [0.0001, -0.0001, 0.0263, -1.5487, -0.9906, 0.9723]
+  - link_name: "left_link7"
+    shape: { shape: "capsule", radius_m: 0.0565, length_m: 0.0020 }
+    origin_xyz_rpy: [-0.0002, -0.0001, 0.0854, 0.9942, -0.6800, -0.3793]
+  - link_name: "right_base_link"
+    shape: { shape: "capsule", radius_m: 0.0886, length_m: 0.0035 }
+    origin_xyz_rpy: [-0.0000, 0.0003, 0.0259, 1.5714, 1.0864, 1.0869]
+  - link_name: "right_base_link"
+    shape: { shape: "capsule", radius_m: 0.0790, length_m: 0.0040 }
+    origin_xyz_rpy: [-0.0002, 0.0007, 0.1021, -1.5839, -0.4544, 0.4602]
+  - link_name: "right_link1"
+    shape: { shape: "capsule", radius_m: 0.0720, length_m: 0.1839 }
+    origin_xyz_rpy: [0.0000, -0.0054, 0.1219, 0.0585, -0.0000, -0.0000]
+  - link_name: "right_link2"
+    shape: { shape: "capsule", radius_m: 0.0732, length_m: 0.0370 }
+    origin_xyz_rpy: [-0.0000, 0.0331, 0.0161, -0.0340, -0.0025, 0.0000]
+  - link_name: "right_link2"
+    shape: { shape: "capsule", radius_m: 0.0644, length_m: 0.0965 }
+    origin_xyz_rpy: [-0.0002, 0.0354, 0.1173, -0.0145, -0.0051, 0.0000]
+  - link_name: "right_link3"
+    shape: { shape: "capsule", radius_m: 0.0609, length_m: 0.1682 }
+    origin_xyz_rpy: [-0.0102, 0.0042, 0.1103, -0.0498, -0.1217, 0.0030]
+  - link_name: "right_link4"
+    shape: { shape: "capsule", radius_m: 0.0628, length_m: 0.1621 }
+    origin_xyz_rpy: [-0.0099, 0.0282, 0.0777, 0.0302, -0.1255, -0.0019]
+  - link_name: "right_link5"
+    shape: { shape: "capsule", radius_m: 0.0602, length_m: 0.1680 }
+    origin_xyz_rpy: [0.0000, -0.0034, 0.1094, 0.0401, 0.0004, 0.0000]
+  - link_name: "right_link6"
+    shape: { shape: "capsule", radius_m: 0.0680, length_m: 0.0619 }
+    origin_xyz_rpy: [0.0101, 0.0467, 0.0288, -0.3183, 0.3415, -0.0553]
+  - link_name: "right_link6"
+    shape: { shape: "capsule", radius_m: 0.0728, length_m: 0.0439 }
+    origin_xyz_rpy: [0.0363, 0.0698, 0.0988, -0.3002, 0.3444, -0.0526]
+  - link_name: "right_link7"
+    shape: { shape: "capsule", radius_m: 0.0606, length_m: 0.0013 }
+    origin_xyz_rpy: [0.0001, -0.0001, 0.0263, -1.5487, -0.9906, 0.9723]
+  - link_name: "right_link7"
+    shape: { shape: "capsule", radius_m: 0.0565, length_m: 0.0020 }
+    origin_xyz_rpy: [-0.0002, -0.0001, 0.0854, 0.9942, -0.6800, -0.3793]
+
+# GENERATED by `openral collision lower` (source: srdf) — do not hand-edit.
+allowed_collision_pairs:
+  - [left_base_link, left_link1]
+  - [left_link1, left_link2]
+  - [left_link2, left_link3]
+  - [left_link3, left_link4]
+  - [left_link4, left_link5]
+  - [left_link5, left_link6]
+  - [left_link6, left_link7]
+  - [right_base_link, right_link1]
+  - [right_link1, right_link2]
+  - [right_link2, right_link3]
+  - [right_link3, right_link4]
+  - [right_link4, right_link5]
+  - [right_link5, right_link6]
+  - [right_link6, right_link7]

@@ -171,6 +171,13 @@ _Bringup-only package: no HAL node of its own (OpenArm runs `openral_hal_node`);
 - `prop _LEFT_CAN_INTERFACE, _RIGHT_CAN_INTERFACE` (L55–56) — `"openarm_left"` / `"openarm_right"`; must match the udev names `openral_hal.openarm_real._LEFT_CAN_INTERFACE` / `_RIGHT_CAN_INTERFACE` assign to the USB CAN-FD adapter's two channels.
 - `_ROBOT_CONTROLLER` (L61) — `"joint_trajectory_controller"`; must match the controller type `OpenArmRealHAL` publishes `JointTrajectory` messages to, not `forward_position_controller` (which takes `Float64MultiArray`).
 
+### `packages/openral_hal_rizon/launch/real_bringup.launch.py`
+_Real-hardware ros2_control bringup for the dual Flexiv Rizon 4s (`robots/rizon_dual`), included by `deploy run` through `hal.real_bringup`._
+
+- `_ROBOT_SN_LEFT, _ROBOT_SN_RIGHT` (L38) — The reference rig's serials (`Rizon4s-063642` left, `Rizon4s-063618` right); the defaults `deploy run` uses, since it forwards no launch arguments.
+- `_CONTROLLERS` (L41) — `joint_state_broadcaster`, `left_arm_controller`, `right_arm_controller`; the arm names must match `RizonDualRealHAL`'s defaults.
+- `generate_launch_description() -> LaunchDescription` (L62) — Refuses a networked ROS graph (`require_host_confined_real_bringup`), then starts `robot_state_publisher` on `urdf/rizon_dual.urdf.xacro` (`ros2_control:=true`: upstream `flexiv_description` kinematics + one upstream `FlexivHardwareInterface` per arm), `ros2_control_node` with `config/rizon_dual_controllers.yaml` (1 kHz) and the three spawners. Args: `robot_sn_left`, `robot_sn_right`, `mounting_file`, `network_interface_whitelist`. Activation enables both arms (brakes released; the controllers hold the measured pose).
+
 ### `packages/openral_hal_unitree/launch/real_bringup.launch.py`
 
 _Bringup package (plus the guarded safety-controller plugin below): the Unitree hg HAL node is the generic `openral_hal_node` running `openral_hal.unitree_real:UnitreeHgRealHAL`; `robots/g1/robot.yaml` reaches this file through `hal.real_bringup`._

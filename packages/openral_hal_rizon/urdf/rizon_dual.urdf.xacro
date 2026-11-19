@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Two Flexiv Rizon arms on one `world`, each its own robot (own serial number, own
+     RDK connection, own FlexivHardwareInterface). Kinematics, limits and meshes are
+     upstream flexiv_description's `rizon_robot` macro; only the composition and the
+     ros2_control blocks live here. Upstream's own rizon_dual.urdf.xacro is not used: its
+     ros2_control block is FlexivDualHardwareInterface, which needs flexiv_drdk (see
+     deps.repos), and its prefix is `left_<sn>_` even for an empty serial (`left__`).
+
+     Joint names: left_joint1..7, right_joint1..7 (rizon_robot with robot_sn="").
+     ros2_control:=false renders the kinematic URDF committed as
+     robots/rizon_dual/rizon_dual.urdf. -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="rizon_dual">
+  <xacro:arg name="rizon_type_left" default="Rizon4s" />
+  <xacro:arg name="rizon_type_right" default="Rizon4s" />
+  <xacro:arg name="robot_sn_left" default="" />
+  <xacro:arg name="robot_sn_right" default="" />
+  <xacro:arg name="mounting_file" default="$(find openral_hal_rizon)/config/rizon_dual_mounting.yaml" />
+  <xacro:arg name="ros2_control" default="false" />
+  <xacro:arg name="rdk_control_mode" default="joint_position" />
+  <!-- Comma-separated host IPs the RDK may discover on; needed on multi-NIC hosts. -->
+  <xacro:arg name="network_interface_whitelist" default="" />
+
+  <xacro:include filename="$(find flexiv_description)/urdf/common/rizon_robot.xacro" />
+  <xacro:property name="cfg" value="$(find flexiv_description)/config" />
+  <xacro:property name="mount" value="${xacro.load_yaml('$(arg mounting_file)')['positions']}" />
+
+  <link name="world" />
+
+  <xacro:macro name="arm" params="side type">
+    <xacro:property name="p" value="${mount[side]}" />
+    <xacro:rizon_robot
+      rizon_type="${type}"
+      robot_sn=""
+      arm_prefix="${side}"
+      joint_limits_parameters_file="${cfg}/${type}/joint_limits.yaml"
+      kinematics_parameters_file="${cfg}/${type}/default_kinematics.yaml"
+      inertia_parameters_file="${cfg}/${type}/inertia_parameters.yaml"
+      visual_parameters_file="${cfg}/${type}/visual_parameters.yaml"
+      add_world_link="false"
+      base_xyz="${p['x']} ${p['y']} ${p['z']}"
+      base_rpy="${radians(p['rx'])} ${radians(p['ry'])} ${radians(p['rz'])}" />
+  </xacro:macro>
+
+  <xacro:arm side="left" type="$(arg rizon_type_left)" />
+  <xacro:arm side="right" type="$(arg rizon_type_right)" />
+
+  <!-- One FlexivHardwareInterface per arm; the interface/parameter layout is
+       flexiv_ros2 jazzy-v1.9's (flexiv_hardware_interface.cpp on_init). -->
+  <xacro:macro name="arm_ros2_control" params="side robot_sn">
+    <ros2_control name="${side}_rizon" type="system">
+      <hardware>
+        <plugin>flexiv_hardware/FlexivHardwareInterface</plugin>
+        <param name="robot_sn">${robot_sn}</param>
+        <param name="prefix">${side}_</param>
+        <param name="rdk_control_mode">$(arg rdk_control_mode)</param>
+        <param name="network_interface_whitelist">$(arg network_interface_whitelist)</param>
+      </hardware>
+      <xacro:macro name="joint" params="n">
+        <joint name="${side}_joint${n}">
+          <command_interface name="position" />
+          <command_interface name="velocity" />
+          <command_interface name="effort" />
+          <state_interface name="position" />
+          <state_interface name="velocity" />
+          <state_interface name="effort" />
+        </joint>
+      </xacro:macro>
+      <xacro:joint n="1" /><xacro:joint n="2" /><xacro:joint n="3" /><xacro:joint n="4" />
+      <xacro:joint n="5" /><xacro:joint n="6" /><xacro:joint n="7" />
+    </ros2_control>
+  </xacro:macro>
+
+  <xacro:if value="$(arg ros2_control)">
+    <xacro:arm_ros2_control side="left" robot_sn="$(arg robot_sn_left)" />
+    <xacro:arm_ros2_control side="right" robot_sn="$(arg robot_sn_right)" />
+  </xacro:if>
+</robot>
