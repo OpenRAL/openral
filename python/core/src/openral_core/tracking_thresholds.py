@@ -89,6 +89,8 @@ class _TrackerThresholds(_Section):
     support_flatness_res_fraction: float = Field(gt=0.0)
     plausible_extent_factor: float = Field(ge=1.0)
     recent_s: float = Field(gt=0.0)
+    station_motion_m: float = Field(gt=0.0)
+    station_rotation_rad: float = Field(gt=0.0)
     locate_contrast_labels: tuple[str, ...]
 
 

@@ -25,16 +25,25 @@ Camera conventions differ per consumer, so the **view axis is explicit**:
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from typing import Literal
 
 import numpy as np
 from numpy.typing import NDArray
 
 from openral_core.exceptions import ROSConfigError
-from openral_core.schemas import AttachedCollisionObject, PlaceRegion, Pose6D
+from openral_core.schemas import (
+    AttachedCollisionObject,
+    JointType,
+    PlaceRegion,
+    Pose6D,
+    RobotDescription,
+)
 
 __all__ = [
     "ViewAxis",
+    "base_displaced",
+    "base_prismatic",
     "compute_gaze_pose",
     "freeze_released_attachment",
     "homogeneous_from_quat_xyz",
@@ -426,3 +435,65 @@ def rebase_box(box: PlaceRegion, t_frame_from_box: NDArray[np.float64], frame: s
         }
     )
     return box.model_copy(update={"frame_id": frame, "pose": pose})
+
+
+def base_displaced(
+    reference: Sequence[float] | None,
+    now: Sequence[float] | None,
+    prismatic: Sequence[bool],
+    *,
+    planar_m: float,
+    turn_rad: float,
+) -> bool:
+    """Whether a mobile base's planar dofs left ``reference`` by more than the bounds.
+
+    The prismatic dofs' planar distance (against ``planar_m``) and each revolute dof's wrapped
+    angle (against ``turn_rad``) are tested separately. Unknown (``None``) or non-finite on
+    either side counts as moved: fail-closed. Shared by the HAL's release window / grasp-target
+    leg and the Layer-2 object tracker's station reset.
+
+    Args:
+        reference: The ``base_joints`` positions to compare against, in manifest order.
+        now: The same dofs now.
+        prismatic: Per dof, whether it is prismatic (else revolute / continuous).
+        planar_m: Planar distance bound (m).
+        turn_rad: Per-dof rotation bound (rad).
+
+    Returns:
+        ``True`` past either bound, or when either side is unknown.
+
+    Example:
+        >>> mask = (True, True, False)
+        >>> base_displaced(
+        ...     (0.0, 0.0, 3.14), (0.005, 0.0, -3.14), mask, planar_m=0.01, turn_rad=0.01
+        ... )
+        False
+        >>> base_displaced((0.0, 0.0, 0.0), (0.02, 0.0, 0.0), mask, planar_m=0.01, turn_rad=0.01)
+        True
+        >>> base_displaced(
+        ...     (0.0, 0.0, 0.0), (float("nan"), 0.0, 0.0), mask, planar_m=1.0, turn_rad=1.0
+        ... )
+        True
+    """
+    if reference is None or now is None:
+        return True
+    deltas = [b - a for a, b in zip(reference, now, strict=True)]
+    if not all(math.isfinite(d) for d in deltas):
+        return True
+    planar = math.hypot(*(d for d, p in zip(deltas, prismatic, strict=True) if p))
+    turn = max(
+        (abs(math.remainder(d, math.tau)) for d, p in zip(deltas, prismatic, strict=True) if not p),
+        default=0.0,
+    )
+    return planar > planar_m or turn > turn_rad
+
+
+def base_prismatic(description: RobotDescription) -> tuple[bool, ...]:
+    """Per ``base_joints`` entry, whether it is prismatic (``base_displaced``'s mask).
+
+    Example:
+        >>> base_prismatic(RobotDescription.from_yaml("robots/openamrobot_v2/robot.yaml"))
+        (True, True, False)
+    """
+    kinds = {j.name: j.joint_type for j in description.joints}
+    return tuple(kinds[name] is JointType.PRISMATIC for name in description.base_joints or ())

@@ -1093,14 +1093,29 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 return
             # The last station's in-flight call: its answer (and the frame it carries) is
             # never fed (`_answer`); the session frees its scheduler slot.
+            self._station_left(transition, *self.session.leave_station())
+
+        def _station_left(self, transition: str, dropped: list[str], released: list[str]) -> None:
+            """The node's half of a discarded station (``TrackerSession.leave_station``).
+
+            The in-flight call, the queued answers and the queued depth frames are about the
+            last station's frames and never reach the tracker; the track set and the attachment
+            state are republished at once, without the dropped tracks and their regions.
+            """
+            assert self.session is not None
             self._issued_frame = None
             self._drop_abandoned()
-            dropped, released = self.session.leave_station()
+            for cam in self._cams.values():
+                cam.pending.clear()
+            self._answers.clear()
             self.get_logger().info(
                 f"object_tracker.station_reset transition={transition} "
                 f"dropped_tracks={len(dropped)} released_records={len(released)} "
                 f"kept_tracks={len(self.session.tracker.store.all())}"
             )
+            if self._active:
+                self._attach_key = None  # republish at once, in the new state
+                self._publish_tracked(force=True)
 
         def _on_station_perception(self, request: Any, response: Any) -> Any:
             """``std_srvs/SetBool``: switch the station's perception on (``data``) or off.
@@ -1117,13 +1132,9 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 self.get_logger().warning(f"object_tracker.station_perception refused on={on}")
                 return response
             if on != self._station_on:
-                self._leave_station("station_on" if on else "station_off")
                 self._station_on = on
-                for cam in self._cams.values():
-                    cam.pending.clear()
-                self._answers.clear()
-                self._attach_key = None  # republish at once, in the new state
-                self._publish_tracked(force=True)
+                self._leave_station("station_on" if on else "station_off")
+                self._attach_key = None  # the switch itself changes what is published
                 self._publish_attachment()
             self.get_logger().info(f"object_tracker.station_perception on={on}")
             response.success = True
@@ -1191,12 +1202,11 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             self._source_clock.observe(clock_ns=self._joint_rx_ns, stamp_ns=stamp)
             self._fill.joints(time.monotonic())
             self._fill.touch(time.monotonic())
-            if self.session.on_joint_state(positions, stamp):
-                # The base moved off the station and the session dropped its tracks (#651):
-                # the in-flight call's answer is about a frame from before the move.
-                self._issued_frame = None
-                self._drop_abandoned()
-                self.get_logger().info("object_tracker.station_reset transition=base_moved")
+            left = self.session.on_joint_state(positions, stamp)
+            if left is not None and (self._station_on or any(left)):
+                # The base moved off the station and the session discarded it (#651). With the
+                # station perception off nothing is queued or in flight: no reset to log.
+                self._station_left("base_moved", *left)
             self._publish_attachment()
 
         def _on_safe_action(self, msg: Any) -> None:
@@ -1342,6 +1352,8 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             results: Sequence[TrackerResult] = (),
         ) -> None:
             assert self.session is not None
+            if frame.stamp_ns <= self.session.base_moved_ns:
+                return  # taken before the base moved off the last station (#651)
             out = self.session.on_frame(frame, wall_s=time.monotonic(), results=results)
             for e in out.escalations:
                 self._escalate(e)

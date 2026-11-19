@@ -828,17 +828,19 @@ def test_a_base_move_discards_the_station_so_a_memory_node_never_binds_a_stale_t
     centre, spacing = np.array([0.5, 0.0, 0.4]), np.array([0.12, 0.0, 0.0])
     base = {forward: 0.0, side: 0.0, yaw: 0.0}
     offset = np.array([1.0, -0.5, 0.0])  # grid <- map with the base at its first pose
+    tf_up = [True]
 
     def tf(frame: str, _stamp_ns: int) -> NDArray[np.float64] | None:
         t = np.eye(4)  # the base drives along its own x: map points move back in its frame
         t[:3, 3] = offset - np.array([base[forward], 0.0, 0.0])
-        return t if frame == "map" else None
+        return t if frame == "map" and tf_up[0] else None
 
     def grid(stamp_ns: int) -> None:
         s.on_grid(_grid(s.frame_id, centre[None, :], centre - 0.3, 60), stamp_ns)
 
     s.zone_transform = tf
-    assert s.on_joint_state(base, 1) is False
+    assert s.on_joint_state(base, 1) == ([], []), "the first measured base pose: a new station"
+    assert s.on_joint_state(base, 2) is None
     oid, other = _mint(s, centre), _mint(s, centre + spacing)
     grid(5)
     seed = _search_box("map", centre - offset)  # the node: the first orange, in map
@@ -854,20 +856,32 @@ def test_a_base_move_discards_the_station_so_a_memory_node_never_binds_a_stale_t
 
     # Settle noise under the thresholds: the station holds.
     base[forward], base[yaw] = 0.9 * STATION_MOTION_M, 0.9 * STATION_ROTATION_RAD
-    assert s.on_joint_state(base, 6) is False
+    assert s.on_joint_state(base, 6) is None
     assert {t.object_id for t in store.all()} == {oid, other}
 
     # The base backs up by the spacing: the node's box now lies over the neighbour's old box.
     base[forward], base[yaw] = -float(spacing[0]), 0.0
-    assert s.on_joint_state(base, 7) is True
+    assert s.on_joint_state(base, 7) == ([oid, other], [])
     assert store.all() == [], "no track from before the move is left to match"
+    assert s.base_moved_ns == 7
+    grid(7)  # built from depth taken before the move
+    assert s.grid is None, "a grid stamped up to the move is refused"
+
+    # No tf2 at the new pose yet: the scope resolved at the last station is not kept. A track
+    # measured where the node's box used to be (the neighbour, now) is not the goal's.
+    tf_up[0] = False
     grid(8)
-    assert standing.within is not None
+    stale = _mint(s, centre)
+    assert standing.within is not None and standing.within.frame_id == "map"
+    assert not standing.matches(store.get(stale))  # type: ignore[arg-type]
+    store.drop(stale)
+    tf_up[0] = True
+    grid(9)
     assert standing.within.pose.xyz == pytest.approx(tuple(centre + spacing))
 
     # Measured again from the new pose, the node's own orange is the goal's; its neighbour is not.
     again, neighbour = _mint(s, centre + spacing), _mint(s, centre + 2 * spacing)
-    assert s.on_joint_state(base, 9) is False
+    assert s.on_joint_state(base, 10) is None
     s.on_grasp_declaration(named)  # rekeys
     assert standing.matches(store.get(again))  # type: ignore[arg-type]
     assert not standing.matches(store.get(neighbour))  # type: ignore[arg-type]
@@ -876,14 +890,28 @@ def test_a_base_move_discards_the_station_so_a_memory_node_never_binds_a_stale_t
 
     # A turn past the rotation threshold leaves the station as well.
     base[yaw] = 1.5 * STATION_ROTATION_RAD
-    assert s.on_joint_state(base, 10) is True and store.all() == []
+    assert s.on_joint_state(base, 11) == ([again, neighbour], []) and store.all() == []
+
+    # With nothing tracked a move still leaves the station: a request in flight across it is
+    # about the old pose, and the next track must not be anchored there.
+    base[forward] += 2 * STATION_MOTION_M
+    assert s.on_joint_state(base, 12) == ([], []) and s.base_moved_ns == 12
+
+    # A base pose that stops being measured leaves the station once, and once more when it is
+    # measured again, so nothing measured in between is kept.
+    lost = _mint(s, centre)
+    assert s.on_joint_state({**base, forward: float("nan")}, 13) == ([lost], [])
+    assert s.on_joint_state({**base, forward: float("nan")}, 14) is None
+    between = _mint(s, centre)
+    assert s.on_joint_state(base, 15) == ([between], [])
+    assert s.on_joint_state(base, 16) is None
 
 
 def test_a_fixed_base_never_leaves_its_station() -> None:
     """No ``base_joints``: joint states never discard the tracks (issue #651's rule is a
     mobile base's)."""
     s, oid, q, _ = _grasp_region_rig()
-    assert s.on_joint_state(q, 7) is False
+    assert s.on_joint_state(q, 7) is None
     assert s.tracker.store.get(oid) is not None
 
 
