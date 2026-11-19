@@ -134,6 +134,7 @@ from openral_reasoner.context import (
     reflect_on_reward_plateau,
     render_playbooks_block,
     render_robot_self_model,
+    task_outcome_text,
 )
 from openral_reasoner.core import (
     LLM_ERROR_BACKOFF_S,
@@ -6723,6 +6724,10 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                         for part in (
                             # Bounded here too: any ExecuteRskill producer may fill it.
                             str(getattr(result, "outcome_summary", "") or "")[:480],
+                            # Issue #635: what decided the task succeeded (or that it
+                            # did not, when a completion check ended a run its declared
+                            # success condition refutes).
+                            task_outcome_text(str(getattr(result, "task_outcome_json", "") or "")),
                             f"trace={result.trace_id[:8] if result.trace_id else '-'}",
                         )
                         if part
@@ -6756,7 +6761,12 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 f"execute_rskill {cancel_reason}-cancelled rskill_id={call.rskill_id!r} "
                 "— verifying",
             )
-            self._note_reasoner_stop(call, cancel_reason, now_ns)
+            self._note_reasoner_stop(
+                call,
+                cancel_reason,
+                now_ns,
+                task_outcome_text(str(getattr(result, "task_outcome_json", "") or "")),
+            )
             self._maybe_verify_active_mission_task(
                 call,
                 traceparent=traceparent,
@@ -6775,13 +6785,16 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         )
         outcome_state = "aborted" if status == 6 else "canceled" if status == 5 else "failed"
         detail = result.failure_reason or f"GoalStatus={status}"
+        # Issue #635: a run judged by a success condition says how the task ended too
+        # (a deadline miss with the object placed reads differently from one without).
+        outcome_text = task_outcome_text(str(getattr(result, "task_outcome_json", "") or ""))
         # Reasoner playbooks §2.2/§2.3 — execution feedback + a Reflexion strategy hint so
         # the next tick advances the ladder instead of blindly retrying.
         self._renderer.append_execution(
             ExecutionEventRecord(
                 rskill_id=call.rskill_id,
                 outcome="failed",
-                summary=detail,
+                summary=f"{detail} {outcome_text}".rstrip(),
                 reflection=reflect_on_failure(
                     outcome_state,
                     detail,
@@ -6997,10 +7010,13 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             ok=bool(resp.success),
         )
 
-    def _note_reasoner_stop(self, call: ExecuteRskillTool, cancel_reason: str, now_ns: int) -> None:
+    def _note_reasoner_stop(
+        self, call: ExecuteRskillTool, cancel_reason: str, now_ns: int, outcome_text: str = ""
+    ) -> None:
         """Record that the reasoner itself ended an attempt (reward wake or patience).
 
-        The model must see that the attempt ended and why; the reward verdict (if
+        The model must see that the attempt ended and why, and how the runner judged
+        the task when it did (``outcome_text``, issue #635); the reward verdict (if
         any) follows as its own line.
         """
         why = (
@@ -7012,7 +7028,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             ExecutionEventRecord(
                 rskill_id=call.rskill_id,
                 outcome="stopped",
-                summary=f"stopped by the reasoner: {why}",
+                summary=f"stopped by the reasoner: {why} {outcome_text}".rstrip(),
                 reflection=None,
                 stamp_ns=now_ns,
             )

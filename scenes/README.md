@@ -131,7 +131,18 @@ adapters. Quick reference:
 - A `DeployScene` is a `scene:` block plus optional deploy context:
   `robot_id`, `robot_unit`, `base_pose`, `hal`, `sensors`, `drivers`,
   `runtime`, `safety`, `composition`, `extra_allowed_collision_pairs`,
-  `grasp_declaration` / `place_declaration`, `place_zones`, `memory_dir`, `seed`.
+  `grasp_declaration` / `place_declaration`, `place_zones`, `success_conditions`,
+  `memory_dir`, `seed`.
+- `success_conditions` says what success means for the scene's tasks, by prompt
+  (`SuccessCondition`, issue #635): at least `min_count` objects labelled `object_label`
+  rest, released, inside `region` for `settle_s`. The rSkill runner judges a goal with
+  that prompt by it over the object tracker's tracks and reports a typed `TaskOutcome`
+  (`succeeded` / `failed` / `unknown`) on the `ExecuteRskill` result; with
+  `end_on_success: true` it also ends the run when the condition settles (off by default:
+  the verdict is only as good as the tracker's tracks). The region is a box in the robot base frame (the tracker's grid
+  frame; another frame reads `unknown`), and with `object_tracking: off` every verdict is
+  `unknown`. Advisory only. `scenes/deploy/isaac_leisaac_pick_orange.yaml` is the worked
+  instance (three oranges in the plate).
 - `place_zones` declares named place zones on the cell's fixed furniture (shelf slots,
   `PlaceZone`): under `object_tracking: tracking`, a goal whose prompt names one ("into
   upper slot 2") gets that box as its place region from the object tracker while a payload
