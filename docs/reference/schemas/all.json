@@ -8467,7 +8467,7 @@
           "type": "object"
         }
       },
-      "description": "A detected object in the scene.\n\nAttributes:\n    label: Semantic class label.\n    confidence: Detection confidence in [0, 1].\n    pose: 6D pose in the world or camera frame.\n    bbox_3d: 3D bounding box (x_min, y_min, z_min, x_max, y_max, z_max).\n    track_id: Persistent track ID across frames.",
+      "description": "A detected object in the scene.\n\nAttributes:\n    label: Semantic class label.\n    confidence: Detection confidence in [0, 1].\n    pose: 6D pose in the world or camera frame.\n    bbox_3d: 3D bounding box (x_min, y_min, z_min, x_max, y_max, z_max).\n    track_id: Persistent track ID across frames.\n    existence: The object memory's belief, as a probability in [0, 1], that the\n        object is still where it was remembered (issue #636). ``None`` when the\n        producer keeps no belief (a raw detection, an older publisher).",
       "properties": {
         "label": {
           "title": "Label",
@@ -8525,6 +8525,20 @@
           ],
           "default": null,
           "title": "Track Id"
+        },
+        "existence": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Existence"
         }
       },
       "required": [
@@ -13916,7 +13930,7 @@
           "type": "object"
         },
         "DetectedObject": {
-          "description": "A detected object in the scene.\n\nAttributes:\n    label: Semantic class label.\n    confidence: Detection confidence in [0, 1].\n    pose: 6D pose in the world or camera frame.\n    bbox_3d: 3D bounding box (x_min, y_min, z_min, x_max, y_max, z_max).\n    track_id: Persistent track ID across frames.",
+          "description": "A detected object in the scene.\n\nAttributes:\n    label: Semantic class label.\n    confidence: Detection confidence in [0, 1].\n    pose: 6D pose in the world or camera frame.\n    bbox_3d: 3D bounding box (x_min, y_min, z_min, x_max, y_max, z_max).\n    track_id: Persistent track ID across frames.\n    existence: The object memory's belief, as a probability in [0, 1], that the\n        object is still where it was remembered (issue #636). ``None`` when the\n        producer keeps no belief (a raw detection, an older publisher).",
           "properties": {
             "label": {
               "title": "Label",
@@ -13974,6 +13988,20 @@
               ],
               "default": null,
               "title": "Track Id"
+            },
+            "existence": {
+              "anyOf": [
+                {
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Existence"
             }
           },
           "required": [

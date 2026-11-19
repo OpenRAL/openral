@@ -41,9 +41,9 @@ def _map_pose() -> Pose6D:
 
 
 def test_home_fixture_loads_as_scene_graph() -> None:
-    """The real home fixture (a ``"0.1"`` graph) migrates to ``"0.2"`` and round-trips."""
+    """The real home fixture (a ``"0.1"`` graph) migrates to ``"0.3"`` and round-trips."""
     graph = SceneGraph.model_validate_json(_FIXTURE.read_text())
-    assert graph.schema_version == "0.2"
+    assert graph.schema_version == "0.3"
     assert all(not n.declared and not n.aliases for n in graph.nodes)
     assert SceneGraph.model_validate_json(graph.model_dump_json()) == graph
 

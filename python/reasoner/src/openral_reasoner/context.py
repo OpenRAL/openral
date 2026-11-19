@@ -33,6 +33,7 @@ from openral_core import (
     ControllerEvidence,
     FailureEvidence,
     GraspOutcomeEvidence,
+    ObjectBeliefState,
     ObjectDetection2D,
     ObjectsMetadata,
     PerceptionEventMetadata,
@@ -41,6 +42,7 @@ from openral_core import (
     SpatialNodeKind,
     TimeoutEvidence,
     WorldState,
+    belief_state,
 )
 from openral_core.geometry import quat_xyzw_to_yaw
 from openral_observability import failure_bus
@@ -1459,7 +1461,13 @@ class ContextRenderer:
                         o.label,
                         o.pose.xyz,
                         o.bbox_3d,
-                        "" if o.track_id is None else f" track={o.track_id}",
+                        ("" if o.track_id is None else f" track={o.track_id}")
+                        # Remembered but not confirmed (restored, or its evidence decayed).
+                        + (
+                            " [uncertain]"
+                            if belief_state(o.existence) is ObjectBeliefState.UNCERTAIN
+                            else ""
+                        ),
                     )
                     for o in world_state.detected_objects
                 ],
@@ -1487,7 +1495,8 @@ class ContextRenderer:
         """Render spatial-memory OBJECT nodes as ``memory_objects[<frame>]``, or ``""``.
 
         ``<label> id=<node_id>@(x,y,z) size=(dx,dy,dz)`` per node — the id is
-        what ``grasp_target.object_id`` takes to pick one instance of a label.
+        what ``grasp_target.object_id`` takes to pick one instance of a label. A
+        node not believed present is marked ``[uncertain]`` or ``[absent]``.
         """
         graph = self._spatial_memory
         if graph is None:
@@ -1496,7 +1505,13 @@ class ContextRenderer:
             _render_instances(
                 "memory_objects",
                 [
-                    (n.pose.frame_id, f"{n.label or '?'} id={n.node_id}", n.pose.xyz, n.bbox_3d, "")
+                    (
+                        n.pose.frame_id,
+                        f"{n.label or '?'} id={n.node_id}",
+                        n.pose.xyz,
+                        n.bbox_3d,
+                        "" if n.state is ObjectBeliefState.PRESENT else f" [{n.state.value}]",
+                    )
                     for n in graph.nodes
                     if n.kind is SpatialNodeKind.OBJECT
                 ],

@@ -881,7 +881,11 @@ def _memory_bundle_launch_args(memory_dir: str) -> list[str]:
     Each artifact is forwarded to its own consumer's launch arg. The dir must exist
     (the robot writes ``MEMORY.md`` into it); ``scene_graph.json`` / ``map.yaml`` are
     forwarded only when present, so a fresh bundle (empty dir) just starts the reasoner
-    with empty memory and no preloaded scene/map.
+    with empty memory and no preloaded scene/map. ``object_memory.json`` opts the
+    world-state object memory into persistence (issue #636) the same way — when present
+    (``{}`` to start empty) it is restored with every object uncertain and rewritten
+    whenever the set of objects changes. Its poses are in the map frame, so opt in only
+    where that frame is the same place every deploy (a fixed base, a saved map).
     """
     from openral_core.exceptions import ROSConfigError
 
@@ -894,6 +898,9 @@ def _memory_bundle_launch_args(memory_dir: str) -> list[str]:
         )
     # memory_md_path may not exist yet — the reasoner creates it on the first memory_write.
     args = [f"memory_md_path:={d / 'MEMORY.md'}"]
+    object_memory = d / "object_memory.json"
+    if object_memory.is_file():
+        args.append(f"object_memory_path:={object_memory}")
     scene_graph = d / "scene_graph.json"
     if scene_graph.is_file():
         args.append(f"spatial_memory_path:={scene_graph}")

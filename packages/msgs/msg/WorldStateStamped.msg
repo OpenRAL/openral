@@ -73,6 +73,11 @@ string                detected_object_frame
 bool[]                detected_object_bbox_valid
 geometry_msgs/Point[] detected_object_bbox_min
 geometry_msgs/Point[] detected_object_bbox_max
+# The object memory's belief that each object is still there (issue #636), as a
+# probability in [0, 1]: above 0.5 present, at or below it uncertain (restored
+# from disk, or its evidence decayed). An object the memory evicts leaves these
+# arrays. NaN = no belief kept; an empty array (an older publisher) = none.
+float32[]             detected_object_existence
 
 # Objects carried by robot links. Each object is removed from world occupancy
 # only while the equivalent attached geometry is present here.

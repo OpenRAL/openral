@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from openral_core import DetectionTracker2D, aabb_iou_2d
 from openral_core.schemas import DetectedObject, ObjectDetection2D, Pose6D
+from openral_world_state.object_lift import MissEvidence
 from openral_world_state.object_memory import ObjectMemory
 
 
@@ -60,7 +61,7 @@ def test_miss_eviction_retires_a_vanished_track() -> None:
 def test_det_id_propagates_through_lift_into_object_memory() -> None:
     """A new lifted object ADOPTS its det_id (via DetectedObject.track_id)
     instead of ObjectMemory minting a fresh one — one id across 2D and 3D."""
-    mem = ObjectMemory(iou_threshold=0.3, max_misses=1)
+    mem = ObjectMemory(iou_threshold=0.3)
     # The lift sets DetectedObject.track_id = ObjectDetection2D.det_id (here 7).
     lifted = DetectedObject(
         label="milk",
@@ -69,13 +70,13 @@ def test_det_id_propagates_through_lift_into_object_memory() -> None:
         bbox_3d=(0.0, 0.0, 0.0, 1.0, 1.0, 1.0),
         track_id=7,
     )
-    out = mem.tick([lifted], stamp_ns=1, in_fov=lambda o: True)
+    out = mem.tick([lifted], stamp_ns=1, miss_evidence=lambda o: MissEvidence.FREE)
     assert out[0].track_id == 7  # adopted, not minted as 0
 
 
 def test_object_memory_still_mints_for_untracked_legacy_detections() -> None:
     """track_id None (legacy detector / det_id -1) → ObjectMemory mints as before."""
-    mem = ObjectMemory(iou_threshold=0.3, max_misses=1)
+    mem = ObjectMemory(iou_threshold=0.3)
     legacy = DetectedObject(
         label="cup",
         confidence=0.9,
@@ -83,5 +84,5 @@ def test_object_memory_still_mints_for_untracked_legacy_detections() -> None:
         bbox_3d=(0.0, 0.0, 0.0, 1.0, 1.0, 1.0),
         track_id=None,
     )
-    out = mem.tick([legacy], stamp_ns=1, in_fov=lambda o: True)
+    out = mem.tick([legacy], stamp_ns=1, miss_evidence=lambda o: MissEvidence.FREE)
     assert out[0].track_id == 0

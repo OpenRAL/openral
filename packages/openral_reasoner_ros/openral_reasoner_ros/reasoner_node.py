@@ -826,7 +826,8 @@ def build_spatial_memory(
     memory: SpatialMemory | None = None
     if path:
         try:
-            memory = SpatialMemory.load(path)
+            # What an earlier run or a scene file remembered is not yet seen (#636).
+            memory = SpatialMemory.load(path, restored_uncertain=True)
         except (OSError, ValueError) as exc:
             warnings.append(f"spatial_memory_path={path!r} failed to load: {exc}")
             if not ingest and not goals:
@@ -2927,6 +2928,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                         node.label,
                         *(round(value, 2) for value in node.pose.xyz),
                         node.is_container,
+                        node.state.value,
                     )
                     for node in graph.nodes
                     if node.kind is SpatialNodeKind.OBJECT
@@ -2950,8 +2952,10 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         """Fold a snapshot's ``detected_objects`` into the owned SpatialMemory.
 
         No-op unless the reasoner owns a writable backend (``spatial_memory_ingest``
-        or a preloaded map) and the snapshot carries a detection list; an empty list
-        ingests nothing but still advances the latest-batch stamp. Accrual is
+        or a preloaded map) and the snapshot carries a detection list. The list is
+        the world-state object memory's whole remembered set, so a node it no
+        longer carries was evicted there and is marked absent (issue #636) — an
+        empty list included. Accrual is
         advisory: failures degrade at DEBUG so a hiccup never disturbs the tick.
         Uses the snapshot's ``stamp_ns`` for recency (deterministic in sim),
         falling back to wall-clock.
@@ -2964,12 +2968,10 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             return
         try:
             now_ns = int(getattr(world_state, "stamp_ns", 0)) or time.time_ns()
-            if not objects:
-                # An empty batch saw nothing: no object is "seen now" any more.
-                self._latest_batch_ns = now_ns
-                return
-            touched = writer.ingest_detected_objects(objects, now_ns=now_ns)
+            touched = writer.ingest_detected_objects(objects, now_ns=now_ns, follow_eviction=True)
             self._latest_batch_ns = now_ns
+            if not objects:
+                return  # an empty batch saw nothing: no object is "seen now" any more
             self.get_logger().debug(
                 f"spatial-memory ingest: {len(touched)} node(s) from {len(objects)} detection(s)",
             )
