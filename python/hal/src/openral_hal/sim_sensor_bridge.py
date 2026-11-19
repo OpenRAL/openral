@@ -428,6 +428,41 @@ def _optical_frame_rgb_cameras(sensors: Any) -> list[Any]:
     ]
 
 
+def _static_optical_mount(spec: Any, sensors: Any, *, mujoco: bool, obs_depth: bool) -> Any:
+    """The ``OpticalMount`` whose optical child the bridge latches on /tf_static, or ``None``.
+
+    ``openral_core.depth_extrinsic.optical_mount`` of ``spec`` (so the frame is the one
+    ``image_frame_id`` and the real deploy launch name), where the mount frame is
+    body-convention and so needs the child. ``None`` too where the depth leg already
+    broadcasts ``base -> <that optical frame>`` live on /tf, since a frame has one parent:
+    a depth sensor on a non-MuJoCo backend that surfaces depth in obs (``obs_depth``;
+    Isaac places it by the backend's own pose), or on MuJoCo (``mujoco``) one with no
+    manifest mount. Pure (no rclpy / MuJoCo), so it is unit-testable in isolation.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> arm = RobotDescription.from_yaml("robots/openarm/robot.yaml").sensors
+        >>> top = next(s for s in arm if s.name == "top")
+        >>> _static_optical_mount(top, arm, mujoco=True, obs_depth=False)[1:]
+        ('zed_camera_link', 'zed_camera_link_optical_frame')
+        >>> _static_optical_mount(top, arm, mujoco=False, obs_depth=True) is None  # live
+        True
+    """
+    from openral_core.depth_extrinsic import optical_mount
+
+    from openral_hal.depth_cloud import is_depth_sensor
+
+    placed = optical_mount(spec, sensors)
+    if placed is None or placed.optical == placed.frame:
+        return None
+    mount = placed.sensor
+    if is_depth_sensor(mount):
+        unmounted = mount.parent_frame is None or mount.static_transform_xyz_rpy is None
+        if unmounted if mujoco else obs_depth:  # the depth leg's live TF owns the frame
+            return None
+    return placed
+
+
 def _body_record(model: Any, data: Any, body_id: int) -> dict[str, object]:
     """MJCF body id → ``{id, name, world_xyz, world_quat_wxyz}``, the body's world pose.
 
@@ -4453,8 +4488,7 @@ class SimSensorBridge:
             self._depth_info_pubs[spec.name] = self._node.create_publisher(
                 CameraInfo, camera_topic(spec.name, CameraTopicKind.DEPTH_CAMERA_INFO), info_qos
             )
-            if has_mujoco:
-                self._publish_optical_mount(spec)
+            self._publish_optical_mount(spec)
         self._depth_timer = self._node.create_timer(
             1.0 / max(self._depth_rate_hz, 1.0), self._publish_depth_clouds
         )
@@ -4471,9 +4505,13 @@ class SimSensorBridge:
         )
 
     def _publish_optical_mount(self, spec: Any) -> None:
-        """Latch ``<mount> -> <mount>_optical_frame`` for a body-frame camera.
+        """Latch ``<mount> -> <mount>_optical_frame`` for a body-frame camera mount.
 
-        An RGB camera's pixels are stamped in that optical child (``image_frame_id``).
+        The mount is ``openral_core.depth_extrinsic.optical_mount``'s: the one rule
+        ``image_frame_id`` (the frame an RGB camera's pixels are stamped in) and the
+        real deploy launch read, so this publishes the frame the object lift looks up.
+        A camera that ``shares_mount_with`` another sensor gets *that* sensor's optical
+        child (OpenArm ``top`` on ``head_zed``), whether or not the depth leg runs.
         A depth sensor whose ``frame_id`` is a body-convention camera mount with a
         manifest pose (``parent_frame`` + ``static_transform_xyz_rpy``, published by
         the deploy launch) gets its optical child here, the way a real camera
@@ -4481,17 +4519,21 @@ class SimSensorBridge:
         sits at that same mount (``SensorSpec.sim_placement``), so the raster,
         the cloud and the registered colour are placed by TF where they were
         cast. A sensor already framed optically, or with no manifest mount, keeps
-        the live ``base -> optical`` TF of ``_publish_depth_clouds``.
+        the live ``base -> optical`` TF of ``_publish_depth_clouds``; so does a mount
+        the depth leg places live (``_static_optical_mount``), which a second,
+        static parent would break.
         """
-        from openral_hal.depth_cloud import BODY_TO_OPTICAL_QUAT_XYZW, depth_optical_frame_id
+        from openral_hal.depth_cloud import BODY_TO_OPTICAL_QUAT_XYZW
 
-        optical = depth_optical_frame_id(spec)
-        if (
-            optical == spec.frame_id
-            or spec.parent_frame is None
-            or spec.static_transform_xyz_rpy is None
-        ):
+        placed = _static_optical_mount(
+            spec,
+            self._description.sensors,
+            mujoco=getattr(self._hal, "mujoco_handles", lambda: None)() is not None,
+            obs_depth=callable(getattr(self._hal, "read_depth_clouds", None)),
+        )
+        if placed is None or placed.sensor.name in self._depth_static_optical:  # latched
             return
+        optical = placed.optical
         from geometry_msgs.msg import TransformStamped
         from tf2_ros import StaticTransformBroadcaster
 
@@ -4499,7 +4541,7 @@ class SimSensorBridge:
             self._static_tf_broadcaster = StaticTransformBroadcaster(self._node)
         tf = TransformStamped()
         tf.header.stamp = self._node.get_clock().now().to_msg()
-        tf.header.frame_id = str(spec.frame_id)
+        tf.header.frame_id = placed.frame
         tf.child_frame_id = optical
         qx, qy, qz, qw = BODY_TO_OPTICAL_QUAT_XYZW
         tf.transform.rotation.x = qx
@@ -4507,7 +4549,7 @@ class SimSensorBridge:
         tf.transform.rotation.z = qz
         tf.transform.rotation.w = qw
         self._static_tf_broadcaster.sendTransform(tf)
-        self._depth_static_optical.add(spec.name)
+        self._depth_static_optical.add(placed.sensor.name)
 
     def _mujoco_depth_frame(
         self, name: str, kwargs: dict[str, Any], model: Any, data: Any, stride: int

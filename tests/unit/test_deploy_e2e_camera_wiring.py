@@ -157,6 +157,40 @@ def test_real_deploy_names_the_top_cameras_optical_child(launch_module: object, 
     assert mounts(sensors, "sim") == {}
 
 
+@pytest.mark.parametrize(
+    "robot", sorted(p.parent.name for p in (REPO_ROOT / "robots").glob("*/robot.yaml"))
+)
+def test_real_launch_publishes_every_optical_child_a_consumer_names(
+    launch_module: object, robot: str
+) -> None:
+    """#641: on every manifest, the optical child the object lift (``image_frame_id``) or
+    the DA3 resolver names is one the real launch hangs under the camera's mount."""
+    from openral_core.depth_extrinsic import (
+        image_frame_id,
+        optical_mount,
+        resolve_estimated_depth_camera,
+    )
+
+    desc = _robot(robot)
+    sensors = [*desc.sensors, *(s for b in desc.sensor_bundles for s in b.sensors)]
+    mounts = launch_module._optical_mounts(sensors, "real")  # type: ignore[attr-defined]
+    for spec in sensors:
+        if spec.modality != "rgb":
+            continue
+        frame = image_frame_id(spec, sensors)
+        placed = optical_mount(spec, sensors)
+        if placed is None:
+            assert frame == spec.frame_id
+        elif placed.optical != placed.frame:
+            assert mounts[placed.frame] == frame
+        da3 = resolve_estimated_depth_camera(sensors, spec.name, hal_mode="real")
+        if da3.optical_parent is not None:
+            assert mounts[da3.optical_parent] == da3.cloud_frame
+    assert set(mounts.values()) <= {
+        image_frame_id(s, sensors) for s in sensors if s.modality == "rgb"
+    }
+
+
 def _compose(launch_module: object, monkeypatch: pytest.MonkeyPatch, **overrides: str) -> list[str]:
     """Node names of the real ``compose_runtime_graph``, every other arg at its default."""
     from launch import LaunchContext
