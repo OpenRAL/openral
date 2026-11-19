@@ -1103,38 +1103,28 @@ class GroupedRosControlHAL(RosControlHAL):
             stamp_ns=stamp_ns,
         )
 
-    def _commanded_groups(self, action: Action) -> tuple[tuple[str, slice, list[str]], ...]:
-        """The controllers ``action`` commands: all of them, or those its ``joint_names`` cover.
+    def _refuse_a_partial_action(self, action: Action) -> None:
+        """Refuse an action that does not command every controller.
 
-        A row padded to full width that names only some joints (a one-arm slot dispatched
-        without a group, ``tick_group_size`` 1) carries filler at the others: publishing
-        it would drive the unnamed arm to the filler. Only controllers whose joints are
-        all named are commanded; the rest keep their current trajectory.
+        A row whose ``joint_names`` cover only some joints (a one-arm slot dispatched
+        without a group, ``tick_group_size`` 1) is padded to full width with filler:
+        publishing it would drive the unnamed arm to the filler, and skipping the unnamed
+        controller would leave it running an earlier trajectory beside the new command.
+        Neither is a command anyone checked, so a partial command must arrive as a slot
+        group (ADR-0102), which composes every controller's target before publishing.
 
         Raises:
-            ROSConfigError: If a controller's joints are named only in part, or none is.
+            ROSConfigError: If ``joint_names`` leaves any of the robot's joints unnamed.
         """
         if not action.joint_names:
-            return self._command_groups
-        named = set(action.joint_names)
-        manifest = [j.name for j in self.description.joints]
-        out: list[tuple[str, slice, list[str]]] = []
-        for topic, span, names in self._command_groups:
-            covered = [n in named for n in manifest[span]]
-            if all(covered):
-                out.append((topic, span, names))
-            elif any(covered):
-                raise ROSConfigError(
-                    f"{type(self).__name__}: action names only part of {topic}'s joints "
-                    f"({[n for n, c in zip(manifest[span], covered, strict=True) if c]}); "
-                    "a controller is commanded whole or not at all."
-                )
-        if not out:
+            return
+        unnamed = [j.name for j in self.description.joints if j.name not in set(action.joint_names)]
+        if unnamed:
             raise ROSConfigError(
-                f"{type(self).__name__}: action joint_names {sorted(named)} cover no "
-                f"controller of '{self.description.name}'."
+                f"{type(self).__name__}: an ungrouped action must command every controller; "
+                f"it leaves {unnamed} unnamed. Send a partial command as a slot group "
+                "(tick_group_size > 1, ADR-0102)."
             )
-        return tuple(out)
 
     def _refuse_a_frozen_group(self, position: list[float], velocity: list[float]) -> None:
         """Raise when one controller's joints have not changed for ``frozen_state_limit_s``.
@@ -1215,8 +1205,8 @@ class GroupedRosControlHAL(RosControlHAL):
             log.debug("hal.send_action.empty", robot=self.description.name)
             return
 
+        self._refuse_a_partial_action(action)
         deadline = self.time_from_start_s(action)
-        groups = self._commanded_groups(action)
         outbound = [
             (
                 topic,
@@ -1229,7 +1219,7 @@ class GroupedRosControlHAL(RosControlHAL):
                     "time_from_start_s": deadline,
                 },
             )
-            for topic, span, names in groups
+            for topic, span, names in self._command_groups
         ]
         for sent, (topic, msg) in enumerate(outbound):
             try:

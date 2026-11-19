@@ -279,37 +279,46 @@ def test_a_non_positive_frozen_limit_is_refused(desc: RobotDescription, limit: f
         _hal(desc, frozen_state_limit_s=limit)
 
 
-def test_a_one_arm_action_reaches_only_that_arms_controller(desc: RobotDescription) -> None:
-    """An ungrouped row padded to 14 that names the right arm must never drive the left."""
-    sent: list[tuple[str, dict[str, object]]] = []
-    hal = _hal(desc, publish_fn=lambda t, m: sent.append((t, m)))
+def test_an_ungrouped_one_arm_action_is_refused_while_the_other_arm_moves(
+    desc: RobotDescription,
+) -> None:
+    """A one-arm row must never leave the other arm on an older trajectory, nor pad it.
+
+    The left arm is mid-trajectory from a full command; a right-arm-only row then arrives
+    ungrouped. Publishing its padding would drive the left arm to filler, and skipping
+    the left controller would let it keep executing the older trajectory: both refused.
+    """
+    transport = _transport()
+    hal = _hal(desc, publish_fn=transport.publish, state_fn=transport.state)
+    hal.connect()
+    hal.send_action(_action(0.4))  # both arms now executing a trajectory
+    published = len(transport.calls)
+    for names in (RIGHT, [*RIGHT, "left_joint1"]):
+        with pytest.raises(ROSConfigError, match="every controller"):
+            hal.send_action(
+                Action(
+                    control_mode=ControlMode.JOINT_POSITION,
+                    horizon=1,
+                    joint_targets=[[-0.2231] * 7 + [0.5] * 7],  # left part is padding
+                    joint_names=names,
+                )
+            )
+    assert len(transport.calls) == published  # nothing reached either controller
+
+
+def test_an_action_naming_every_joint_reaches_both_controllers(desc: RobotDescription) -> None:
+    sent: list[str] = []
+    hal = _hal(desc, publish_fn=lambda t, m: sent.append(t))
     hal.connect()
     hal.send_action(
         Action(
             control_mode=ControlMode.JOINT_POSITION,
             horizon=1,
-            joint_targets=[[-0.2231] * 7 + [0.5] * 7],  # left part is padding
-            joint_names=RIGHT,
+            joint_targets=[[0.1] * 14],
+            joint_names=LEFT + RIGHT,
         )
     )
-    assert [t for t, _ in sent] == ["/right_arm_controller/joint_trajectory"]
-    assert sent[0][1]["joint_targets"] == [[0.5] * 7]
-
-
-def test_a_controller_named_only_in_part_is_refused(desc: RobotDescription) -> None:
-    sent: list[object] = []
-    hal = _hal(desc, publish_fn=lambda t, m: sent.append(t))
-    hal.connect()
-    with pytest.raises(ROSConfigError, match="whole or not at all"):
-        hal.send_action(
-            Action(
-                control_mode=ControlMode.JOINT_POSITION,
-                horizon=1,
-                joint_targets=[[0.0] * 14],
-                joint_names=[*RIGHT, "left_joint1"],
-            )
-        )
-    assert sent == []
+    assert sent == hal.command_topics()
 
 
 @pytest.mark.parametrize("positions", [[], [0.0] * 13])
