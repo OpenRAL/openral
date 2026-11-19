@@ -202,7 +202,8 @@ the node's own frame, rides the TARGET query's `seed`, and the tracker re-expres
 grid through tf2 and matches only a track centred in it, so a same-label neighbour never
 binds in its place (no tf2 yet: none does; a later missed lookup keeps the last resolved
 box; issue #631). That padding (`grasp_target_voxel_m` + `grasp_target_extrinsic_error_m`) is
-the scope's whole tolerance, by decision (issue #650): a memory node carries no pose
+the scope's whole tolerance (base motion under the tracker's 2 cm station threshold comes
+out of it), by decision (issue #650): a memory node carries no pose
 covariance, and its age gives no metres without a drift model, so the box is not widened for
 a stale or drifted node. A node recalled further off than the padding stays unmatched (fail
 closed) and the query escalates, so the reasoner looks again; it never reaches a same-label
