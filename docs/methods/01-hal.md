@@ -811,12 +811,12 @@ _RosControlHAL — `ros2_control`-backed HAL adapter, plus the typed downstream 
   - `controller_names() -> list[str]` — Every group's controller; `estop` deactivates them all. (L959)
   - `read_state() -> JointState` — Matches `/joint_states` by ros2_control name into manifest order; raises naming the missing joints rather than zero-filling; an absent/wrong-length `effort` channel yields `effort=[]`, never zeros. (L963)
   - `send_action(action) -> None` — All-or-nothing fan-out: every group's message (own slice, own `joint_names`, shared `time_from_start_s`) is built before any is published. ADR-0102 slot groups are staged (`SlotGroupStager`) and composed by `compose_slot_group_action` first; an ungrouped ticked action is checked against the same watermark (`admit` / `commit_tick`). A standalone gripper action raises `ROSConfigError` (nowhere to route it). (L1007)
-  - `disconnect() -> None` — Also resets the stager and its watermark. (L1085)
-  - **(property)** `last_applied_action -> Action | None` — The command last published (the composed action for a slot group); fed to the grasp trigger. (L1091)
-  - **(property)** `last_committed_tick -> int` — Tick of the last slot group published (0 = none since disconnect). (L1101)
-  - **(property)** `last_committed_session -> int` — `runner_session_id` of `last_committed_tick`. (L1106)
-  - `discard_staged_slots() -> int` — `SlotGroupStager.discard` (watermark kept); called on every `/openral/estop` latch and `/openral/estop_cleared`. (L1110)
-  - `estop() -> None` — Discards the half-staged tick (watermark kept), then the base stop: every controller deactivated and confirmed. (L1121)
+  - `disconnect() -> None` — Also resets the stager and its watermark. (L1105)
+  - **(property)** `last_applied_action -> Action | None` — The command last published (the composed action for a slot group); fed to the grasp trigger. (L1111)
+  - **(property)** `last_committed_tick -> int` — Tick of the last slot group published (0 = none since disconnect). (L1121)
+  - **(property)** `last_committed_session -> int` — `runner_session_id` of `last_committed_tick`. (L1126)
+  - `discard_staged_slots() -> int` — `SlotGroupStager.discard` (watermark kept); called on every `/openral/estop` latch and `/openral/estop_cleared`. (L1130)
+  - `estop() -> None` — Discards the half-staged tick (watermark kept), then the base stop: every controller deactivated and confirmed. (L1141)
 ### `python/hal/src/openral_hal/ros_control_transport.py`
 _Production `rclpy` transport shared by every real `RosControlHAL` robot._
 

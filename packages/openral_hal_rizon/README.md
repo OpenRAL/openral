@@ -41,8 +41,9 @@ stack (`*** stack smashing detected ***` in `RealtimeStatesPubSubType::deseriali
 reproduced on q5090 with Fast-CDR 2.2.8). The copy is static and hidden, so it stays
 inside `libflexiv_hardware.so`.
 
-Each arm must be in **Remote mode (Ethernet)** on its controller. On a multi-NIC host,
-pass the host IP facing the arms as `network_interface_whitelist:=<ip>`.
+Each arm must be in **Remote mode (Ethernet)** on its controller. The pinned
+`FlexivHardwareInterface` constructs its RDK `Robot` with no network-interface whitelist,
+so the RDK discovers the arms on every interface; there is no launch argument to narrow it.
 
 ## Run
 

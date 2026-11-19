@@ -1007,7 +1007,13 @@ class GroupedRosControlHAL(RosControlHAL):
     def send_action(self, action: Action) -> None:
         """Fan one action out to every controller, all or nothing.
 
+        Every message is built and validated before the first publish. A publish that
+        fails after an earlier controller already took its target cannot be undone, so
+        it stops every controller instead (``estop``) and the tick is never committed.
+
         Raises:
+            ROSEStopRequested: If a later controller's publish fails after an earlier
+                one succeeded.
             ROSRuntimeError: If not connected.
             ROSConfigError: If the control mode is unsupported, the target width
                 does not match the manifest, or a gripper action arrives outside a
@@ -1068,8 +1074,22 @@ class GroupedRosControlHAL(RosControlHAL):
             )
             for topic, span, names in self._command_groups
         ]
-        for topic, msg in outbound:
-            self._publish_fn(topic, msg)
+        for sent, (topic, msg) in enumerate(outbound):
+            try:
+                self._publish_fn(topic, msg)
+            except Exception:
+                if sent == 0:
+                    raise  # nothing reached a controller: an ordinary refused tick
+                # An earlier controller already holds the new target and this one does
+                # not: the arms are commanded inconsistently. Stop every controller
+                # (raises ROSEStopRequested) rather than leave a half-applied tick.
+                log.critical(
+                    "hal.send_action.partial_publish",
+                    robot=self.description.name,
+                    published=[t for t, _ in outbound[:sent]],
+                    failed=topic,
+                )
+                self.estop()
         if group is not None:
             self._slot_group.commit(group, applied=action)
         else:

@@ -174,9 +174,9 @@ _Bringup-only package: no HAL node of its own (OpenArm runs `openral_hal_node`);
 ### `packages/openral_hal_rizon/launch/real_bringup.launch.py`
 _Real-hardware ros2_control bringup for the dual Flexiv Rizon 4s (`robots/rizon_dual`), included by `deploy run` through `hal.real_bringup`._
 
-- `_ROBOT_SN_LEFT, _ROBOT_SN_RIGHT` (L38) — The reference rig's serials (`Rizon4s-063642` left, `Rizon4s-063618` right); the defaults `deploy run` uses, since it forwards no launch arguments.
-- `_CONTROLLERS` (L41) — `joint_state_broadcaster`, `left_arm_controller`, `right_arm_controller`; the arm names must match `RizonDualRealHAL`'s defaults.
-- `generate_launch_description() -> LaunchDescription` (L62) — Refuses a networked ROS graph (`require_host_confined_real_bringup`), then starts `robot_state_publisher` on `urdf/rizon_dual.urdf.xacro` (`ros2_control:=true`: upstream `flexiv_description` kinematics + one upstream `FlexivHardwareInterface` per arm), `ros2_control_node` with `config/rizon_dual_controllers.yaml` (1 kHz) and the three spawners. Args: `robot_sn_left`, `robot_sn_right`, `mounting_file`, `network_interface_whitelist`. Activation enables both arms (brakes released; the controllers hold the measured pose).
+- `_ROBOT_SN_LEFT, _ROBOT_SN_RIGHT` (L37) — The reference rig's serials (`Rizon4s-063642` left, `Rizon4s-063618` right); the defaults `deploy run` uses, since it forwards no launch arguments.
+- `_CONTROLLERS` (L40) — `joint_state_broadcaster`, `left_arm_controller`, `right_arm_controller`; the arm names must match `RizonDualRealHAL`'s defaults.
+- `generate_launch_description() -> LaunchDescription` (L61) — Refuses a networked ROS graph (`require_host_confined_real_bringup`), then starts `robot_state_publisher` on `urdf/rizon_dual.urdf.xacro` (`ros2_control:=true`: upstream `flexiv_description` kinematics + one upstream `FlexivHardwareInterface` per arm), `ros2_control_node` with `config/rizon_dual_controllers.yaml` (1 kHz) and the three spawners. Args: `robot_sn_left`, `robot_sn_right`, `mounting_file`. Activation enables both arms (brakes released; the controllers hold the measured pose).
 
 ### `packages/openral_hal_unitree/launch/real_bringup.launch.py`
 

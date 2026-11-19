@@ -17,8 +17,6 @@
   <xacro:arg name="mounting_file" default="$(find openral_hal_rizon)/config/rizon_dual_mounting.yaml" />
   <xacro:arg name="ros2_control" default="false" />
   <xacro:arg name="rdk_control_mode" default="joint_position" />
-  <!-- Comma-separated host IPs the RDK may discover on; needed on multi-NIC hosts. -->
-  <xacro:arg name="network_interface_whitelist" default="" />
 
   <xacro:include filename="$(find flexiv_description)/urdf/common/rizon_robot.xacro" />
   <xacro:property name="cfg" value="$(find flexiv_description)/config" />
@@ -53,7 +51,6 @@
         <param name="robot_sn">${robot_sn}</param>
         <param name="prefix">${side}_</param>
         <param name="rdk_control_mode">$(arg rdk_control_mode)</param>
-        <param name="network_interface_whitelist">$(arg network_interface_whitelist)</param>
       </hardware>
       <xacro:macro name="joint" params="n">
         <joint name="${side}_joint${n}">

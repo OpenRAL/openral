@@ -19,7 +19,9 @@ the 180°-rolled mount, right arm `Rizon4s-063618`, robot software v3.11).
   (`Rizon4s`), composed by `packages/openral_hal_rizon/urdf/rizon_dual.urdf.xacro`.
   `rizon_dual.urdf` is that xacro rendered with `ros2_control:=false`; meshes resolve
   through `robot_descriptions`' Flexiv clone (`rd:rizon4_description`, byte-identical for
-  Rizon4s). Re-render after changing the xacro or the mounting; never hand-edit.
+  Rizon4s). Re-render after changing the xacro or the mounting, then wrap each link's
+  bare `origin`/`mass`/`inertia` in `<inertial>`: flexiv_description jazzy-v1.9's
+  `get_inertias` emits them unwrapped, which URDF parsers ignore. Never hand-edit otherwise.
 - **Position limits:** Flexiv's *soft* limits (the RDK refuses targets past them), and
   joint 7 held to home ±90° on the reference rig, where the wrist cabling winds past that.
 - **Mounting:** `packages/openral_hal_rizon/config/rizon_dual_mounting.yaml` (measured on

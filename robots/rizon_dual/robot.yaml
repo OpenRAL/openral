@@ -213,11 +213,12 @@ capabilities:
   embodiment_tags: ["rizon_dual", "rizon4s", "flexiv", "bimanual"]
 
 # provisional: none of these is measured on the rig yet. The speeds sit under the 1 rad/s
-# the reference rig's VR acceptance session earned (half the RDK's own 2 rad/s cap); the
+# the reference rig's VR acceptance session earned (half the RDK's own 2 rad/s cap):
+# 0.2 x the URDF velocity limits is 0.42 rad/s on joints 1-4, 0.98 rad/s on 5-7; the
 # torque ceiling is the Rizon 4s' proximal rating.
 safety:
   max_ee_speed_m_s: 0.5
-  max_joint_speed_factor: 0.25
+  max_joint_speed_factor: 0.2
   max_force_n: 150.0
   max_torque_nm: 123.0
   deadman_required: true

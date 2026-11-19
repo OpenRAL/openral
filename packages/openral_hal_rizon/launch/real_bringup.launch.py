@@ -25,9 +25,8 @@ Usage::
 from __future__ import annotations
 
 import os
-from typing import Any
 
-from launch import LaunchContext, LaunchDescription
+from launch import LaunchContext, LaunchDescription, LaunchDescriptionEntity
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -41,7 +40,7 @@ _ROBOT_SN_RIGHT = "Rizon4s-063618"
 _CONTROLLERS = ("joint_state_broadcaster", "left_arm_controller", "right_arm_controller")
 
 
-def _require_host_confined_graph(context: LaunchContext) -> list[Any]:
+def _require_host_confined_graph(context: LaunchContext) -> list[LaunchDescriptionEntity]:
     """Refuse a networked ROS graph before anything is started (issue #556)."""
     try:
         from openral_core.ros_graph_scope import require_host_confined_real_bringup
@@ -75,8 +74,6 @@ def generate_launch_description() -> LaunchDescription:
                 LaunchConfiguration("robot_sn_right"),
                 " mounting_file:=",
                 LaunchConfiguration("mounting_file"),
-                " network_interface_whitelist:=",
-                LaunchConfiguration("network_interface_whitelist"),
             ]
         ),
         value_type=str,
@@ -97,11 +94,6 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "mounting_file",
                 default_value=PathJoinSubstitution([share, "config", "rizon_dual_mounting.yaml"]),
-            ),
-            DeclareLaunchArgument(
-                "network_interface_whitelist",
-                default_value="",
-                description="Comma-separated host IPs the RDK discovers on (multi-NIC hosts).",
             ),
             OpaqueFunction(function=_require_host_confined_graph),
             Node(

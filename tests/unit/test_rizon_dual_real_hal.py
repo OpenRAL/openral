@@ -23,7 +23,7 @@ import yaml
 
 pytest.importorskip("lerobot", reason="openral_hal imports lerobot at package import")
 
-from openral_core.exceptions import ROSConfigError, ROSRuntimeError
+from openral_core.exceptions import ROSConfigError, ROSEStopRequested, ROSRuntimeError
 from openral_core.schemas import Action, ControlMode, RobotDescription
 from openral_hal import build_hal
 from openral_hal.flexiv_rizon_real import RizonDualRealHAL
@@ -116,3 +116,36 @@ def test_committed_urdf_declares_the_manifest_joints(desc: RobotDescription) -> 
     root = ET.parse(urdf).getroot()
     revolute = [j.get("name") for j in root.findall("joint") if j.get("type") == "revolute"]
     assert revolute == [j.name for j in desc.joints]
+
+
+def test_a_publish_failing_after_one_arm_took_its_target_stops_both(
+    desc: RobotDescription,
+) -> None:
+    sent: list[str] = []
+
+    def publish(topic: str, msg: dict[str, object]) -> None:
+        if topic.startswith("/right"):
+            raise RuntimeError("publisher gone")
+        sent.append(topic)
+
+    hal = _hal(desc, publish_fn=publish)
+    hal.connect()
+    before = hal.last_committed_tick
+    with pytest.raises(ROSEStopRequested):
+        hal.send_action(
+            Action(control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[[0.5] * 14])
+        )
+    assert sent == ["/left_arm_controller/joint_trajectory"]
+    assert hal.last_committed_tick == before  # the half-applied tick is never committed
+    with pytest.raises(ROSRuntimeError):  # disconnected: nothing more reaches either arm
+        hal.send_action(
+            Action(control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[[0.5] * 14])
+        )
+
+
+def test_committed_urdf_keeps_every_link_inertia() -> None:
+    """flexiv_description emits bare origin/mass/inertia; parsers read them only in <inertial>."""
+    root = ET.parse(MANIFEST.parent / "rizon_dual.urdf").getroot()
+    for link in root.findall("link"):
+        assert link.find("mass") is None, f"{link.get('name')}: mass outside <inertial>"
+    assert len(root.findall("link/inertial/mass")) == 16

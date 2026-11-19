@@ -20,8 +20,9 @@
 #   5. colcon: flexiv_msgs, flexiv_hardware, flexiv_description.
 set -eo pipefail
 
-WS=${1:-$HOME/flexiv_ws}
 HERE=$(cd "$(dirname "$0")" && pwd)
+mkdir -p "${1:-$HOME/flexiv_ws}"
+WS=$(cd "${1:-$HOME/flexiv_ws}" && pwd)  # absolute: the RDK's installer runs from its own dir
 RDK=$WS/rdk_install
 DDS=$WS/dds_install
 JOBS=$(nproc)
@@ -29,7 +30,9 @@ mkdir -p "$WS/src" "$WS/third"
 # shellcheck source=/dev/null
 source /opt/ros/jazzy/setup.bash
 
-vcs import --skip-existing "$WS/src" < "$HERE/deps.repos"
+# No --skip-existing: an existing checkout is fetched and moved to the pin; vcs refuses a
+# different remote URL, and git refuses to check out over conflicting local edits.
+vcs import "$WS/src" < "$HERE/deps.repos"
 touch "$WS/src/flexiv_rdk/COLCON_IGNORE"
 
 if [ ! -f "$RDK/lib/libRBDyn.so" ]; then
