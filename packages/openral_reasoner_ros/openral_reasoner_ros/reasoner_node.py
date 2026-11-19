@@ -161,6 +161,7 @@ from openral_reasoner.mission import (
 )
 from openral_reasoner.node_policy import (
     CASCADE_PROMPT_SOURCES,
+    prompt_correlation_id,
     should_rebuild_mission,
     task_step_without_verifier,
 )
@@ -2476,7 +2477,11 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                     f"mission: task {current_active.task_id} succeeded with no verifier; "
                     "the new operator prompt replaces the mission",
                 )
-            mission = MissionState.from_prompt(msg.text)
+            # The caller's id for this prompt (a fleet program, the dashboard): the mission
+            # carries it, so the caller can tell this mission is its command's (#658).
+            mission = MissionState.from_prompt(
+                msg.text, correlation_id=prompt_correlation_id(msg.metadata_json)
+            )
             if not mission.is_empty():
                 self._mission_generation += 1
                 self._object_query_blocked_task_id = None
@@ -5387,7 +5392,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 return
             # Keep the operator goal the subtasks serve: the Mission card shows it above them.
             new_mission = MissionState(
-                call.rendered_subtasks(), goal=mission.goal if mission is not None else None
+                call.rendered_subtasks(),
+                goal=mission.goal if mission is not None else None,
+                correlation_id=mission.correlation_id if mission is not None else None,
             )
             if new_mission.is_empty():
                 return

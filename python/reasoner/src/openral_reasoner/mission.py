@@ -357,13 +357,19 @@ class MissionState:
         True
     """
 
-    def __init__(self, tasks: list[str], *, goal: str | None = None) -> None:
+    def __init__(
+        self, tasks: list[str], *, goal: str | None = None, correlation_id: str | None = None
+    ) -> None:
         """Build the queue from ordered subtask strings; activate the first.
 
         ``goal`` is the operator goal the queue serves (display only), kept
         when ``decompose_mission`` replaces the single-task seed.
+        ``correlation_id`` is the id the caller sent with the prompt that started
+        this mission (``prompt_correlation_id``), kept the same way: a program
+        reads it back from ``to_summary`` to know this mission is its command's.
         """
         self.goal = goal
+        self.correlation_id = correlation_id
         # Every task ``subdivide_active`` replaced, by id: its text and the steps it
         # ran before the split. Its children's dot-path ids hang under it.
         self._splits: dict[str, SplitRecord] = {}
@@ -381,14 +387,18 @@ class MissionState:
         self.reward_gated: bool | None = None
 
     @classmethod
-    def from_prompt(cls, text: str) -> MissionState:
+    def from_prompt(cls, text: str, *, correlation_id: str | None = None) -> MissionState:
         """Seed a mission from an operator goal as a single task.
 
         The LLM owns decomposition via ``decompose_mission``. A blank goal
         yields an empty mission.
+
+        Example:
+            >>> MissionState.from_prompt("pick", correlation_id="c1").to_summary()["correlation_id"]
+            'c1'
         """
         goal = text.strip()
-        return cls([goal] if goal else [], goal=goal or None)
+        return cls([goal] if goal else [], goal=goal or None, correlation_id=correlation_id)
 
     # ── readers ──────────────────────────────────────────────────────────────
 
@@ -618,6 +628,7 @@ class MissionState:
         """
         return {
             "goal": self.goal,
+            "correlation_id": self.correlation_id,
             "splits": {
                 k: {"text": v["text"], "steps": [dict(s) for s in v["steps"]]}
                 for k, v in self._splits.items()
@@ -644,7 +655,12 @@ class MissionState:
     def from_state_dict(cls, state: dict[str, object]) -> MissionState:
         """Rebuild a mission from ``to_state_dict`` output (exact resume)."""
         goal = state.get("goal")
-        mission = cls([], goal=str(goal) if goal else None)
+        correlation_id = state.get("correlation_id")
+        mission = cls(
+            [],
+            goal=str(goal) if goal else None,
+            correlation_id=correlation_id if isinstance(correlation_id, str) else None,
+        )
         raw_splits = state.get("splits")
         if isinstance(raw_splits, dict):
             for key, raw in raw_splits.items():
@@ -726,6 +742,7 @@ class MissionState:
                 for t in self._tasks
             ],
             "goal": self.goal,
+            "correlation_id": self.correlation_id,
             "splits": {
                 k: {"text": v["text"], "steps": [dict(s) for s in v["steps"]]}
                 for k, v in self._splits.items()

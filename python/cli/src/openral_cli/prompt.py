@@ -11,7 +11,8 @@ Wire shape:
 * QoS: ``RELIABLE + VOLATILE + KEEP_LAST=10`` (matches the router's
   subscription so a one-shot publish survives even a late-subscribing router).
 * ``metadata_json``: ``{"source_cli": true}``, plus ``"new_goal": true`` under
-  ``--new-goal`` (see ``openral_reasoner.node_policy.should_rebuild_mission``);
+  ``--new-goal`` (see ``openral_reasoner.node_policy.should_rebuild_mission``) and
+  ``"correlation_id": "<id>"`` under ``--correlation-id`` (``prompt_correlation_id``);
   the router appends ``source`` / ``priority``.
 
 ``rclpy`` is imported lazily inside the command so ``openral --help`` stays
@@ -22,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 
 import typer
@@ -67,6 +69,17 @@ def prompt_command(
             "a hint) and does NOT rebuild the task queue."
         ),
     ),
+    correlation_id: str | None = typer.Option(
+        None,
+        "--correlation-id",
+        help=(
+            "Your id for this prompt (a letter or digit, then letters, digits and . _ : -; at "
+            "most 128). The "
+            "mission this prompt starts carries it, so a program can tell that mission "
+            "from an earlier one with the same text. A prompt taken as a reply to a "
+            "mission in progress starts none: pass --new-goal to replace it."
+        ),
+    ),
     robot: str | None = typer.Option(None, "--robot", help=ROBOT_OPTION_HELP),
 ) -> None:
     """Publish a one-shot PromptStamped on the prompt-router CLI input topic.
@@ -82,6 +95,17 @@ def prompt_command(
 
         openral prompt --robot openarm "pick the red cube"
     """
+    from openral_core.robot_ui import (  # noqa: PLC0415  # reason: lazy CLI import
+        CORRELATION_ID_PATTERN,
+    )
+
+    if correlation_id is not None and not re.fullmatch(CORRELATION_ID_PATTERN, correlation_id):
+        typer.echo(
+            "openral prompt: --correlation-id starts with a letter or digit, then takes "
+            "letters, digits and . _ : - (at most 128)",
+            err=True,
+        )
+        raise typer.Exit(code=2)
     join_robot_scope_or_exit("openral prompt", robot_id=robot)  # before rclpy.init() (#557)
     try:
         import rclpy  # noqa: PLC0415  # reason: heavy ROS dep deferred
@@ -124,7 +148,11 @@ def prompt_command(
         msg.header.stamp = node.get_clock().now().to_msg()
         msg.header.frame_id = "openral_cli_prompt"
         msg.text = text
-        metadata = {"source_cli": True} | ({"new_goal": True} if new_goal else {})
+        metadata: dict[str, object] = {"source_cli": True}
+        if new_goal:
+            metadata["new_goal"] = True
+        if correlation_id is not None:
+            metadata["correlation_id"] = correlation_id
         msg.metadata_json = json.dumps(metadata, sort_keys=True)
 
         # Spin until a subscriber matches so the one-shot publish isn't lost.

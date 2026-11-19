@@ -38,6 +38,7 @@ import re
 import shutil
 import socket
 import time
+import uuid
 import zlib
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from pathlib import Path
@@ -57,6 +58,7 @@ from openral_core import (
     RobotManifest,
     pseudonymous_actor_id,
 )
+from openral_core.robot_ui import CORRELATION_ID_PATTERN
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import (
     ExportLogsServiceRequest,
     ExportLogsServiceResponse,
@@ -416,8 +418,14 @@ async def _transcribe_response(audio: bytes) -> JSONResponse:
     return JSONResponse({"status": "ok", "text": text, "model": model_name})
 
 
-async def _prompt_response(text: str) -> JSONResponse:
+async def _prompt_response(
+    text: str, correlation_id: str | None = None, *, new_goal: bool = False
+) -> JSONResponse:
     """Publish an operator prompt via ``openral prompt``.
+
+    The reply carries ``correlation_id``: the caller's, or one made here. The mission
+    this prompt starts has the same id in ``topics.reasoner.mission``; a prompt the
+    reasoner takes as a reply to a mission in progress starts none (send ``new_goal``).
 
     Shells out so the wire shape (PromptStamped on
     ``/openral/prompt_in/dashboard``, fanned out by ``prompt_router_node`` at
@@ -427,11 +435,14 @@ async def _prompt_response(text: str) -> JSONResponse:
     openral = shutil.which("openral")
     if openral is None:
         return _error(503, "`openral` not on PATH; source the workspace install first")
+    correlation_id = correlation_id or uuid.uuid4().hex
     proc = await asyncio.create_subprocess_exec(
         openral,
         "prompt",
         "--topic",
         "/openral/prompt_in/dashboard",
+        f"--correlation-id={correlation_id}",
+        *(["--new-goal"] if new_goal else []),
         "--",  # the operator's text is never an option, even when it starts with "-"
         text,
         stdout=asyncio.subprocess.PIPE,
@@ -455,7 +466,9 @@ async def _prompt_response(text: str) -> JSONResponse:
             },
             status_code=502,
         )
-    return JSONResponse({"ok": True, "stdout": stdout, "stderr": stderr})
+    return JSONResponse(
+        {"ok": True, "correlation_id": correlation_id, "stdout": stdout, "stderr": stderr}
+    )
 
 
 async def _estop_reset_response(estop: Any = None) -> JSONResponse:
@@ -942,7 +955,13 @@ async def _run_action(  # noqa: PLR0911  # reason: one return per action kind / 
         if not isinstance(text, str) or not text.strip():
             return _error(400, "invalid args: 'text' must be a non-empty string")
         await _announce_operator_action("prompt", principal, client_ip)
-        return await _prompt_response(text)
+        correlation_id = args.get("correlation_id")
+        # Checked here too: a manifest action may carry no ``args_schema``.
+        if correlation_id is not None and not (
+            isinstance(correlation_id, str) and re.fullmatch(CORRELATION_ID_PATTERN, correlation_id)
+        ):
+            return _error(400, "invalid args: 'correlation_id' is not a well-formed id")
+        return await _prompt_response(text, correlation_id, new_goal=args.get("new_goal") is True)
     rskill_id = action.id.removeprefix("skill:")
     await _announce_operator_action("skill_execute", principal, client_ip, rskill_id)
     actor = principal.sub or client_ip
