@@ -2287,6 +2287,22 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         argv_template.append(
             f"grasp_declaration_json:={deploy_scene.grasp_declaration.model_dump_json()}"
         )
+    # Issue #635: what success means for the scene's tasks, by prompt; the runner judges a
+    # goal that carries no condition of its own by the one its prompt names and reports
+    # the TaskOutcome. Judged on the object tracker's tracks: without it, say so.
+    if deploy_scene is not None and deploy_scene.success_conditions:
+        from openral_core import SuccessCondition
+        from pydantic import TypeAdapter
+
+        conditions = TypeAdapter(dict[str, SuccessCondition]).dump_json(
+            deploy_scene.success_conditions
+        )
+        argv_template.append(f"success_conditions_json:={conditions.decode()}")
+        if deploy_scene.runtime is None or deploy_scene.runtime.object_tracking == "off":
+            _console.print(
+                "[yellow]success_conditions: object tracking is off, so nothing tracks "
+                "the objects they name; every run's task outcome will be unknown.[/yellow]"
+            )
     # Issue #418: the object classes the prompt's graded task names, for the tracker. A
     # direct-dispatch deploy (no reasoner, so no initial task) runs the cell's preload
     # prompt; that is the prompt whose task is graded, so it names the queries.

@@ -42,11 +42,17 @@
         processes): a new process found services on processes 1-30 and none on 34-60, so
         two late participants never meet. A deploy sim graph is ~50 processes, and Nav2
         starts last: bt_navigator never found planner_server / behavior_server, the
-        lifecycle manager aborted the bring-up and every navigate goal was rejected. 128
+        lifecycle manager aborted the bring-up and every navigate goal was rejected. 120
         covers the graph with room for helper processes; the same 60-process probe then
         finds all 60.
+
+        Not more than 120 (issue #664): a participant's unicast ports are
+        7400 + 250 * domain + 10 + 2 * id (+1), so ids 0-119 end one port below the next
+        domain's block and id 125 IS the next domain's id 0. At 128 a sim on domain N
+        announced itself to the first three participants of domain N+1, the two graphs
+        merged and the second sim was refused as an occupied graph.
       -->
-      <maxInitialPeersRange>128</maxInitialPeersRange>
+      <maxInitialPeersRange>120</maxInitialPeersRange>
     </transport_descriptor>
   </transport_descriptors>
   <!--

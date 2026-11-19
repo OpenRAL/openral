@@ -6363,6 +6363,180 @@ class TrackedObjectSet(BaseModel):
             msg.objects.append(item)  # type: ignore[attr-defined]
 
 
+class TaskVerdict(StrEnum):
+    """Whether a policy run did what it was asked (issue #635).
+
+    ``UNKNOWN`` is a verdict of its own, never a success: it is what a run reports when
+    nothing declared a success condition, or perception could not decide it.
+    """
+
+    UNKNOWN = "unknown"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class TaskOutcome(BaseModel):
+    """The typed outcome of one ``ExecuteRskill`` run (issue #635).
+
+    Rides ``ExecuteRskill.Result.task_outcome_json`` beside the ``task_outcome`` uint8,
+    the ``rskill.execute`` span and the reasoner's ``## EXECUTION`` line. It is the task's
+    verdict; ``Result.success`` stays the execution's (the goal ended without a fault).
+
+    Attributes:
+        verdict: Succeeded, failed, or unknown.
+        source: What decided it: ``success_condition`` (a declared ``SuccessCondition``
+            over the tracked objects), ``skill`` (the skill's own completion signal, e.g.
+            a wrapped action's terminal status), ``checker`` (an external completion
+            check ended the goal through ``/openral/rskill/complete``), or ``none``.
+        reason: One line saying why, for a person and for the reasoner.
+        object_ids: The tracked objects the verdict was read from: those resting in the
+            region, else the one seen held or elsewhere. Empty when none.
+        resting: How many objects of the label rest in the region.
+        required: How many the condition needs (0 when no condition judged).
+        held_s: Seconds of tracker evidence over which the condition has held (0 when
+            it does not hold).
+
+    Example:
+        >>> TaskOutcome(verdict=TaskVerdict.UNKNOWN, reason="no success condition").source
+        'none'
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Bound on ``reason`` (it is rendered into the reasoner's prompt).
+    MAX_REASON_CHARS: ClassVar[int] = 240
+
+    verdict: TaskVerdict
+    source: Literal["success_condition", "skill", "checker", "none"] = "none"
+    reason: str = Field(max_length=MAX_REASON_CHARS)
+    object_ids: tuple[str, ...] = ()
+    resting: int = Field(default=0, ge=0)
+    required: int = Field(default=0, ge=0)
+    held_s: float = Field(default=0.0, ge=0.0)
+
+
+class SuccessCondition(BaseModel):
+    """What success means for a policy run, as a predicate over world state (issue #635).
+
+    One predicate today: *at least ``min_count`` objects labelled ``object_label`` rest,
+    released, with their box centres inside ``region``, and have for ``settle_s``*.
+    ``openral_core.success.SuccessJudge`` judges it over the object tracker's
+    ``TrackedObjectSet`` s; the rSkill runner reports the ``TaskOutcome`` of every run and,
+    with ``end_on_success``, ends a run that satisfies it.
+
+    Declared per goal (``ExecuteRskill.Goal.success_condition``), which wins, or per scene
+    and prompt (``DeployScene.success_conditions``). Advisory: it can only end a goal or
+    label its result; it commands nothing and is never a safety-kernel input.
+
+    Attributes:
+        object_label: Label of the tracked objects (``TrackedObject.label``, compared
+            case-folded). Any track of the label counts, so an object of that class
+            already resting in ``region`` does too.
+        region: Box an object's centre must rest inside, in the tracker's grid frame
+            (the robot base frame); ``geometry`` empty. Another frame is never
+            re-expressed: the verdict is ``unknown``.
+        min_count: How many objects must rest in the region.
+        settle_s: Seconds of tracker evidence the predicate must hold over (> 0: one
+            tracked set alone never decides a success).
+        max_evidence_gap_s: Longest gap between two sets the tracker publishes that the
+            hold may span; a longer one restarts ``settle_s``.
+        end_on_success: End the run once the condition has settled. Off by default: the
+            verdict then only labels the result, and the run still ends on its budget,
+            its skill or a completion check. A wrong ``succeeded`` (the tracker holding
+            a track for something that is not there) then costs a label, not the task.
+
+    Example:
+        >>> region = PlaceRegion(
+        ...     frame_id="base",
+        ...     pose=Pose6D(xyz=(0.3, 0.1, 0.02), quat_xyzw=(0, 0, 0, 1), frame_id="base"),
+        ...     half_extents=(0.03, 0.03, 0.03),
+        ... )
+        >>> SuccessCondition(object_label="cube", region=region).min_count
+        1
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    object_label: str = Field(min_length=1, max_length=64)
+    region: PlaceRegion
+    min_count: int = Field(default=1, ge=1, le=32)
+    settle_s: float = Field(default=1.0, gt=0.0, le=60.0)
+    max_evidence_gap_s: float = Field(default=2.0, gt=0.0, le=60.0)
+    end_on_success: bool = False
+
+    @model_validator(mode="after")
+    def _validate_condition(self) -> Self:
+        if self.region.geometry:
+            raise ValueError("SuccessCondition.region.geometry must be empty.")
+        if self.region.pose.frame_id != self.region.frame_id:
+            raise ValueError(
+                f"SuccessCondition.region.pose is in {self.region.pose.frame_id!r}, not the "
+                f"region's {self.region.frame_id!r}."
+            )
+        if not all(math.isfinite(v) for v in self.region.pose.xyz):
+            raise ValueError("SuccessCondition.region.pose.xyz must be finite.")
+        norm = math.hypot(*self.region.pose.quat_xyzw)
+        if not math.isfinite(norm) or math.isclose(norm, 0.0, abs_tol=1e-6):
+            raise ValueError("SuccessCondition.region.pose.quat_xyzw is not a rotation.")
+        return self
+
+    @classmethod
+    def from_idl(cls, msg: object) -> Self:
+        """Decode the duck-typed ``openral_msgs/SuccessCondition`` without importing ROS.
+
+        A zero ``min_count`` / ``settle_s`` / ``max_evidence_gap_s`` (an unset wire
+        field) reads as the schema default, never as "no settle".
+        """
+        defaults = cls.model_fields
+        return cls(
+            object_label=str(msg.object_label),  # type: ignore[attr-defined]
+            region=PlaceRegion.from_idl(msg.region),  # type: ignore[attr-defined]
+            min_count=int(msg.min_count) or defaults["min_count"].default,  # type: ignore[attr-defined]
+            settle_s=float(msg.settle_s) or defaults["settle_s"].default,  # type: ignore[attr-defined]
+            max_evidence_gap_s=float(msg.max_evidence_gap_s)  # type: ignore[attr-defined]
+            or defaults["max_evidence_gap_s"].default,
+            end_on_success=bool(msg.end_on_success),  # type: ignore[attr-defined]
+        )
+
+    def fill_idl(self, msg: object) -> None:
+        """Populate a duck-typed ``openral_msgs/SuccessCondition`` without importing ROS."""
+        msg.object_label = self.object_label  # type: ignore[attr-defined]
+        self.region.fill_idl(msg.region)  # type: ignore[attr-defined]
+        msg.min_count = int(self.min_count)  # type: ignore[attr-defined]
+        msg.settle_s = float(self.settle_s)  # type: ignore[attr-defined]
+        msg.max_evidence_gap_s = float(self.max_evidence_gap_s)  # type: ignore[attr-defined]
+        msg.end_on_success = bool(self.end_on_success)  # type: ignore[attr-defined]
+
+
+def success_condition_for_prompt(
+    prompt: str, conditions: Mapping[str, SuccessCondition]
+) -> SuccessCondition | None:
+    """The condition ``conditions`` declares for ``prompt``, or ``None`` (issue #635).
+
+    A scene keys its conditions by the task prompt; the match ignores case and
+    surrounding / repeated whitespace, nothing else. A goal with another prompt (a
+    wrapped Nav2 move, a different task) is judged by none of them.
+
+    Example:
+        >>> region = PlaceRegion(
+        ...     frame_id="base",
+        ...     pose=Pose6D(xyz=(0.3, 0.1, 0.02), quat_xyzw=(0, 0, 0, 1), frame_id="base"),
+        ...     half_extents=(0.03, 0.03, 0.03),
+        ... )
+        >>> declared = {"Place the cube": SuccessCondition(object_label="cube", region=region)}
+        >>> success_condition_for_prompt("  place the  CUBE ", declared).object_label
+        'cube'
+        >>> success_condition_for_prompt("go to the dock", declared) is None
+        True
+    """
+
+    def key(text: str) -> str:
+        return " ".join(text.split()).casefold()
+
+    wanted = key(prompt)
+    return next((c for p, c in conditions.items() if key(p) == wanted), None)
+
+
 class OccupancyGridRef(BaseModel):
     """Reference to a 2D occupancy grid for mobile-base world-collision.
 
@@ -13585,6 +13759,14 @@ class DeployScene(BaseModel):
     reasoner-grounded — the LLM names an ``ExecuteRskillTool.grasp_target``, the
     reasoner grounds its ``search_box`` from perception, and the goal carries the
     declaration (design §2.2)."""
+    success_conditions: dict[str, SuccessCondition] = Field(default_factory=dict)
+    """What success means for this scene's tasks, by prompt (issue #635).
+
+    ``openral deploy sim`` / ``deploy run`` forward them (``success_conditions_json``) to
+    the rSkill runner, which judges a goal that carries no condition of its own by the one
+    its prompt names (``success_condition_for_prompt``) and reports the ``TaskOutcome``.
+    Empty — every scene before #635 — declares nothing: a policy run's task outcome is
+    ``unknown``. Advisory, never a safety-kernel input."""
     place_zones: list[PlaceZone] = Field(default_factory=list)
     """Named place zones on the cell's fixed furniture (shelf slots), see ``PlaceZone``.
 
@@ -13637,6 +13819,9 @@ class DeployScene(BaseModel):
         dupes = repeated_nav_goal_names(self.nav_goals)
         if dupes:
             raise ValueError(f"nav_goals names/aliases must be unique; repeated: {dupes}.")
+        # A blank prompt would name every goal sent without one (a wrapped move).
+        if any(not prompt.strip() for prompt in self.success_conditions):
+            raise ValueError("success_conditions keys are task prompts; a blank one is refused.")
         return self
 
     @model_validator(mode="before")

@@ -1,0 +1,70 @@
+{
+  "$defs": {
+    "TaskVerdict": {
+      "description": "Whether a policy run did what it was asked (issue #635).\n\n``UNKNOWN`` is a verdict of its own, never a success: it is what a run reports when\nnothing declared a success condition, or perception could not decide it.",
+      "enum": [
+        "unknown",
+        "succeeded",
+        "failed"
+      ],
+      "title": "TaskVerdict",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The typed outcome of one ``ExecuteRskill`` run (issue #635).\n\nRides ``ExecuteRskill.Result.task_outcome_json`` beside the ``task_outcome`` uint8,\nthe ``rskill.execute`` span and the reasoner's ``## EXECUTION`` line. It is the task's\nverdict; ``Result.success`` stays the execution's (the goal ended without a fault).\n\nAttributes:\n    verdict: Succeeded, failed, or unknown.\n    source: What decided it: ``success_condition`` (a declared ``SuccessCondition``\n        over the tracked objects), ``skill`` (the skill's own completion signal, e.g.\n        a wrapped action's terminal status), ``checker`` (an external completion\n        check ended the goal through ``/openral/rskill/complete``), or ``none``.\n    reason: One line saying why, for a person and for the reasoner.\n    object_ids: The tracked objects the verdict was read from: those resting in the\n        region, else the one seen held or elsewhere. Empty when none.\n    resting: How many objects of the label rest in the region.\n    required: How many the condition needs (0 when no condition judged).\n    held_s: Seconds of tracker evidence over which the condition has held (0 when\n        it does not hold).\n\nExample:\n    >>> TaskOutcome(verdict=TaskVerdict.UNKNOWN, reason=\"no success condition\").source\n    'none'",
+  "properties": {
+    "verdict": {
+      "$ref": "#/$defs/TaskVerdict"
+    },
+    "source": {
+      "default": "none",
+      "enum": [
+        "success_condition",
+        "skill",
+        "checker",
+        "none"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "reason": {
+      "maxLength": 240,
+      "title": "Reason",
+      "type": "string"
+    },
+    "object_ids": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Object Ids",
+      "type": "array"
+    },
+    "resting": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Resting",
+      "type": "integer"
+    },
+    "required": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Required",
+      "type": "integer"
+    },
+    "held_s": {
+      "default": 0.0,
+      "minimum": 0.0,
+      "title": "Held S",
+      "type": "number"
+    }
+  },
+  "required": [
+    "verdict",
+    "reason"
+  ],
+  "title": "TaskOutcome",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

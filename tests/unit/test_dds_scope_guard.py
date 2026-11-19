@@ -432,6 +432,9 @@ class TestGraphOccupancyGuard:
         # The way out must still be named — but it is an action, not an env var.
         assert "different host or ROS_DOMAIN_ID" in message
         assert "stop the other graph" in message
+        # #664: the occupant may be a graph one domain over, and the message says so.
+        assert "next ROS_DOMAIN_ID up or down" in message
+        assert "at least 2 domains apart" in message
 
     def test_a_real_robot_refuses_to_start_beside_an_existing_graph(
         self, monkeypatch: pytest.MonkeyPatch

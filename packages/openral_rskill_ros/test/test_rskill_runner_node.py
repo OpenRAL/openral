@@ -1631,6 +1631,11 @@ def test_successful_goal_reports_failure_kind_none() -> None:
     assert result.success, result.failure_reason
     assert result.failure_reason == ""
     assert result.failure_kind == ExecuteRskill.Result.FAILURE_NONE
+    # Issue #635: the skill's own completion signal is the source of the task verdict.
+    from openral_core import TaskOutcome
+
+    assert result.task_outcome == ExecuteRskill.Result.TASK_SUCCEEDED
+    assert TaskOutcome.model_validate_json(result.task_outcome_json).source == "skill"
 
 
 def test_non_skill_resolver_result_carries_config_error_kind() -> None:
@@ -2329,3 +2334,271 @@ def test_a_nav2_goal_longer_than_the_first_chunk_window_is_not_braked() -> None:
     assert len(announced) == 1
     assert bytes(announced[0].goal_uuid) == bytes(handle.goal_id.uuid)
     assert announced[0].wall_bound_s == pytest.approx(10.0)
+
+
+# ── Issue #635: the task outcome of a run ───────────────────────────────────
+
+_CUBE_PROMPT = "Pick up the cube and place it at the marked location"
+
+
+def _scene_success_conditions() -> Any:
+    """The ``{prompt: SuccessCondition}`` the metal pick-place scene declares."""
+    from openral_core import SimScene
+
+    scene = SimScene.from_yaml(str(_REPO / "scenes" / "sim" / "makermods_metal_pick_place.yaml"))
+    assert _CUBE_PROMPT in scene.success_conditions
+    return scene.success_conditions
+
+
+def _tracked_cube_msg(xyz: tuple[float, float, float], frame: str) -> Any:
+    """A real ``openral_msgs/TrackedObjectSet``: one confirmed cube centred at ``xyz``, now."""
+    from openral_core import (
+        FitKind,
+        ObjectRole,
+        PlaceRegion,
+        Pose6D,
+        TrackedObject,
+        TrackedObjectSet,
+        TrackStatus,
+    )
+    from openral_msgs import msg as msgs
+
+    stamp = time.time_ns()
+    track = TrackedObject(
+        object_id="trk:1",
+        epoch=0,
+        label="cube",
+        role=ObjectRole.TARGET,
+        declaration_key="obj:cube@0",
+        status=TrackStatus.CONFIRMED,
+        box=PlaceRegion(
+            frame_id=frame,
+            pose=Pose6D(xyz=xyz, quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=frame),
+            half_extents=(0.0125, 0.0125, 0.0125),
+        ),
+        fit_kind=FitKind.SILHOUETTE_CONE,
+        support_z=0.003,
+        support_ref="map",
+        floor_z=0.03,
+        visible_cells=4,
+        occupied_cells=4,
+        last_fit_stamp_ns=stamp,
+        last_confirmed_stamp_ns=stamp,
+    )
+    out = msgs.TrackedObjectSet()
+    TrackedObjectSet(frame_id=frame, stamp_ns=stamp, revision=stamp, objects=[track]).fill_idl(
+        out, object_factory=msgs.TrackedObject, primitive_factory=msgs.AttachedCollisionPrimitive
+    )
+    return out
+
+
+def _judged_run(
+    *,
+    deadline_s: float,
+    on_goal: bool = False,
+    on_scene: bool = False,
+    cube_xyz: tuple[float, float, float] | None = None,
+    prompt: str = _CUBE_PROMPT,
+    label: str = "cube",
+    complete_after_s: float | None = None,
+    end_on_success: bool = True,
+) -> tuple[Any, float]:
+    """Run the constant policy under a success condition; return (Result, seconds it ran).
+
+    The scene fixture's condition rides the goal (``on_goal``, with ``label`` as its
+    ``object_label``) or the runner's ``success_conditions_json`` (``on_scene``, keyed by
+    the scene's prompt). ``cube_xyz`` is where a tracker peer on
+    ``/openral/tracked_objects`` reports the cube, at 10 Hz from 0.3 s into the run,
+    through the real World State node; ``None`` publishes no tracked-object set at all.
+    ``complete_after_s`` calls ``/openral/rskill/complete`` (the completion check's service)
+    that long into the run.
+    """
+    from openral_core import SuccessCondition
+    from openral_msgs.action import ExecuteRskill
+    from openral_msgs.msg import TrackedObjectSet
+    from pydantic import TypeAdapter
+    from rclpy.action import ActionClient
+    from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+    from std_srvs.srv import Trigger
+
+    declared = _scene_success_conditions()
+    condition = declared[_CUBE_PROMPT]
+    params = None
+    if on_scene:
+        raw = TypeAdapter(dict[str, SuccessCondition]).dump_json(declared).decode()
+        params = {"success_conditions_json": raw}
+    with _compose_harness(runner_parameters=params) as (executor, runtime, _safety, _observed):
+        pub = runtime.world_state_node.create_publisher(
+            TrackedObjectSet,
+            "/openral/tracked_objects",
+            QoSProfile(
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.VOLATILE,
+                depth=1,
+            ),
+        )
+        client = ActionClient(runtime.skill_runner_node, ExecuteRskill, "/openral/execute_rskill")
+        _spin_for(executor, 0.3)
+        assert client.wait_for_server(timeout_sec=2.0)
+        goal = ExecuteRskill.Goal()
+        goal.rskill_id = "openral/test-constant-skill"
+        goal.prompt = prompt
+        goal.deadline_s = deadline_s
+        if on_goal:
+            goal.success_condition_valid = True
+            condition.fill_idl(goal.success_condition)
+            # After the fill: an invalid label must reach the runner to be refused.
+            goal.success_condition.object_label = label
+            goal.success_condition.end_on_success = end_on_success
+        send = client.send_goal_async(goal)
+        t0 = time.monotonic()
+        while not send.done() and time.monotonic() - t0 < 5.0:
+            executor.spin_once(timeout_sec=0.02)
+        handle = send.result()
+        assert handle is not None and handle.accepted
+        result_future = handle.get_result_async()
+        next_pub = t0 + 0.3
+        complete = runtime.world_state_node.create_client(Trigger, "/openral/rskill/complete")
+        while not result_future.done() and time.monotonic() - t0 < deadline_s + 10.0:
+            executor.spin_once(timeout_sec=0.02)
+            if complete_after_s is not None and time.monotonic() - t0 >= complete_after_s:
+                complete.call_async(Trigger.Request())
+                complete_after_s = None
+            if cube_xyz is not None and time.monotonic() >= next_pub:
+                pub.publish(_tracked_cube_msg(cube_xyz, condition.region.frame_id))
+                next_pub += 0.1
+        assert result_future.done(), "result future timed out"
+        return result_future.result().result, time.monotonic() - t0
+
+
+def test_a_goal_whose_success_condition_settles_ends_early_as_succeeded(
+    captured_spans: InMemorySpanExporter,
+) -> None:
+    """The cube rests over the marker: the run ends on the condition, not on its budget."""
+    from openral_core import TaskOutcome, TaskVerdict
+    from openral_msgs.action import ExecuteRskill
+
+    marker = _scene_success_conditions()[_CUBE_PROMPT].region.pose.xyz
+    result, ran_s = _judged_run(deadline_s=20.0, on_goal=True, cube_xyz=marker)
+
+    assert result.success, result.failure_reason
+    assert result.task_outcome == ExecuteRskill.Result.TASK_SUCCEEDED
+    outcome = TaskOutcome.model_validate_json(result.task_outcome_json)
+    assert (outcome.verdict, outcome.source) == (TaskVerdict.SUCCEEDED, "success_condition")
+    assert outcome.object_ids == ("trk:1",) and (outcome.resting, outcome.required) == (1, 1)
+    assert outcome.held_s >= 1.0  # the fixture's settle_s, on the tracker's own stamps
+    assert 1.0 < ran_s < 10.0, f"ran {ran_s:.1f} s of a 20 s budget"
+    execute = [s for s in captured_spans.get_finished_spans() if s.name == "rskill.execute"]
+    assert execute and execute[-1].attributes is not None
+    assert execute[-1].attributes["rskill.task_outcome"] == "succeeded"
+    assert execute[-1].attributes["rskill.task_outcome.source"] == "success_condition"
+
+
+def test_a_run_that_ends_on_its_budget_with_the_object_elsewhere_is_failed() -> None:
+    """The scene's condition, the cube still at its start: a deadline miss AND a failed task."""
+    from openral_core import TaskOutcome, TaskVerdict
+    from openral_msgs.action import ExecuteRskill
+
+    result, _ = _judged_run(deadline_s=1.5, on_scene=True, cube_xyz=(0.267, -0.069, 0.0155))
+
+    assert not result.success
+    assert result.failure_kind == ExecuteRskill.Result.FAILURE_DEADLINE_MISSED
+    assert result.task_outcome == ExecuteRskill.Result.TASK_FAILED
+    outcome = TaskOutcome.model_validate_json(result.task_outcome_json)
+    assert outcome.verdict is TaskVerdict.FAILED and "trk:1 is outside it" in outcome.reason
+    assert outcome.source == "success_condition" and outcome.object_ids == ("trk:1",)
+
+
+def test_a_run_perception_cannot_judge_is_unknown_never_succeeded() -> None:
+    """No tracked-object set arrives: the declared condition reads unknown, with the reason."""
+    from openral_core import TaskOutcome, TaskVerdict
+    from openral_msgs.action import ExecuteRskill
+
+    result, _ = _judged_run(deadline_s=1.0, on_scene=True)
+
+    assert not result.success
+    assert result.task_outcome == ExecuteRskill.Result.TASK_UNKNOWN
+    outcome = TaskOutcome.model_validate_json(result.task_outcome_json)
+    assert outcome.verdict is TaskVerdict.UNKNOWN and outcome.source == "success_condition"
+    assert "no tracked-object set" in outcome.reason
+
+
+@pytest.mark.parametrize("on_scene", [False, True], ids=["none_declared", "another_prompt"])
+def test_a_run_no_success_condition_names_is_unknown(on_scene: bool) -> None:
+    """Nothing declared what success is for this goal: unknown, source ``none``.
+
+    Also with the scene's conditions loaded and the cube tracked on the marker, when the
+    goal's prompt is not one of theirs (a move, another task): it is neither judged by
+    them nor ended early.
+    """
+    from openral_core import TaskOutcome, TaskVerdict
+    from openral_msgs.action import ExecuteRskill
+
+    result, ran_s = _judged_run(
+        deadline_s=2.0, on_scene=on_scene, cube_xyz=(0.278, 0.076, 0.0155), prompt="go home"
+    )
+
+    assert not result.success and ran_s >= 2.0
+    assert result.failure_kind == ExecuteRskill.Result.FAILURE_DEADLINE_MISSED
+    assert result.task_outcome == ExecuteRskill.Result.TASK_UNKNOWN
+    outcome = TaskOutcome.model_validate_json(result.task_outcome_json)
+    assert (outcome.verdict, outcome.source) == (TaskVerdict.UNKNOWN, "none")
+
+
+def test_a_goal_with_an_invalid_success_condition_is_refused() -> None:
+    """A condition that does not validate refuses the goal; it is never dropped in silence."""
+    from openral_msgs.action import ExecuteRskill
+
+    result, _ = _judged_run(deadline_s=5.0, on_goal=True, label="")
+
+    assert not result.success
+    assert result.failure_kind == ExecuteRskill.Result.FAILURE_CONFIG_ERROR
+    assert "success condition does not validate" in result.failure_reason
+    assert result.task_outcome == ExecuteRskill.Result.TASK_UNKNOWN
+
+
+def test_a_completion_check_decides_a_run_its_condition_could_not() -> None:
+    """A checker ends the goal while perception has nothing to judge the condition on: the
+    task succeeded by the checker's word, and the undecided condition is named."""
+    from openral_core import TaskOutcome, TaskVerdict
+    from openral_msgs.action import ExecuteRskill
+
+    result, _ = _judged_run(deadline_s=20.0, on_scene=True, complete_after_s=1.0)
+
+    assert result.success, result.failure_reason
+    assert result.task_outcome == ExecuteRskill.Result.TASK_SUCCEEDED
+    outcome = TaskOutcome.model_validate_json(result.task_outcome_json)
+    assert (outcome.verdict, outcome.source) == (TaskVerdict.SUCCEEDED, "checker")
+    assert "its success condition was undecided: no tracked-object set" in outcome.reason
+
+
+def test_a_completion_check_does_not_overrule_a_condition_that_says_failed() -> None:
+    """The checker ends the goal, the tracker sees the cube still at its start: the goal
+    ended cleanly (``success``) and the task is reported failed, not succeeded."""
+    from openral_core import TaskOutcome, TaskVerdict
+    from openral_msgs.action import ExecuteRskill
+
+    result, _ = _judged_run(
+        deadline_s=20.0, on_scene=True, cube_xyz=(0.267, -0.069, 0.0155), complete_after_s=1.5
+    )
+
+    assert result.success, result.failure_reason
+    assert result.task_outcome == ExecuteRskill.Result.TASK_FAILED
+    outcome = TaskOutcome.model_validate_json(result.task_outcome_json)
+    assert (outcome.verdict, outcome.source) == (TaskVerdict.FAILED, "success_condition")
+
+
+def test_a_condition_that_only_labels_does_not_end_the_run() -> None:
+    """Without ``end_on_success`` the settled condition is the Result's verdict, not its end:
+    the run goes to its budget, and reads as a deadline miss with the task done."""
+    from openral_core import TaskOutcome, TaskVerdict
+    from openral_msgs.action import ExecuteRskill
+
+    marker = _scene_success_conditions()[_CUBE_PROMPT].region.pose.xyz
+    result, ran_s = _judged_run(deadline_s=3.0, on_goal=True, cube_xyz=marker, end_on_success=False)
+
+    assert not result.success and ran_s >= 3.0
+    assert result.failure_kind == ExecuteRskill.Result.FAILURE_DEADLINE_MISSED
+    assert result.task_outcome == ExecuteRskill.Result.TASK_SUCCEEDED
+    outcome = TaskOutcome.model_validate_json(result.task_outcome_json)
+    assert (outcome.verdict, outcome.source) == (TaskVerdict.SUCCEEDED, "success_condition")
