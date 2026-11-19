@@ -105,7 +105,8 @@ def test_the_deploy_launch_gives_the_bridge_the_overlay(overlay_cache: Path) -> 
     ]
     assert module._foxglove_asset_env(None) == {}
     text = LAUNCH.read_text(encoding="utf-8")
-    assert "additional_env=_foxglove_asset_env(robot_description_xml, robot_mesh_packages)" in text
+    call = text[text.index("additional_env=_foxglove_asset_env(") :][:160]
+    assert "robot_description_xml, {**robot_mesh_packages, **_sim_scene_package(hal_mode)}" in call
 
 
 def _load_launch(name: str) -> object:
@@ -120,8 +121,14 @@ def _load_launch(name: str) -> object:
 
 
 @pytest.mark.parametrize("robot", ["ur5e", "droid_franka_robotiq"])
-def test_rd_meshes_reach_the_bridge_as_file_uris(robot: str) -> None:
-    """A vendored URDF's `rd:` meshes go on `/robot_description` as `file://` URIs."""
+def test_rd_meshes_reach_the_bridge_as_a_package(
+    robot: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A vendored URDF's `rd:` meshes go on `/robot_description` as `package://` URIs.
+
+    `file://` (what this wrote before) is outside the bridge's `ASSET_URI_ALLOWLIST`, so
+    the console drew bare links for every `rd:` robot (dual Rizon on q5090, 2026-11-19).
+    """
     from openral_core.assets import AssetFetchError, expand_rd_mesh_refs
 
     xml = (REPO_ROOT / "robots" / robot / f"{robot}.urdf").read_text(encoding="utf-8")
@@ -133,8 +140,13 @@ def test_rd_meshes_reach_the_bridge_as_file_uris(robot: str) -> None:
     module = _load_launch(f"deploy_e2e_launch_rd_{robot}")
     out = module._portable_robot_description(xml)  # type: ignore[attr-defined]  # reason: launch module loaded by path
     refs = re.findall(r'filename="([^"]+)"', out)
-    assert refs and all(r.startswith("file:///") for r in refs)
-    assert all(Path(r[len("file://") :]).is_file() for r in refs)
+    assert refs and all(Path(r).is_absolute() and Path(r).is_file() for r in refs)
+    monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path / "cache"))
+    served, local = module._robot_mesh_package(out, REPO_ROOT / "robots" / robot)  # type: ignore[attr-defined]  # reason: launch module loaded by path
+    [(pkg, root)] = local.items()
+    uris = re.findall(r'filename="([^"]+)"', served)
+    assert uris and all(u.startswith(f"package://{pkg}/") for u in uris)
+    assert all((root / u[len(f"package://{pkg}/") :]).is_file() for u in uris)
     text = LAUNCH.read_text(encoding="utf-8")
     assert (
         "_robot_mesh_package(\n                    _portable_robot_description(fh.read())," in text

@@ -55,9 +55,9 @@ repo id interchangeably; a Hub skill needs no local manifest.
 perception path is ONNX-file-based, and `openral deploy sim` uses
 `rskills/rtdetr-coco-r18/model.onnx` as its offline detector fallback. The
 binary is gitignored (`model.onnx`, `model.onnx.data`) and regenerated locally
-on demand. The heavier `rtdetr-v2-r50vd` variant (`runtime: tensorrt`) moved to
-the private `openral-pro` repo, which hosts the TensorRT engine runtime it
-depends on as an OpenRAL Pro plugin.
+on demand. The heavier `rtdetr-v2-r50vd` variant ships the same way (fp32 ONNX,
+`runtime: onnx`); with OpenRAL Pro installed, its NVMM aggregator tier builds a
+TensorRT engine from the same `model.onnx`.
 
 ## Catalog
 
@@ -104,6 +104,7 @@ embodiment-agnostic.**
 | `locateanything-3b-nf4` | detector (open-vocab VLM) |
 | `omdet-turbo-indoor` / `omdet-turbo-locator` | detector (open-vocab) |
 | `rtdetr-coco-r18` | detector (ONNX, `local://`) |
+| `rtdetr-v2-r50vd` | detector (ONNX, `local://`) |
 | `qwen35-4b-nf4` | vlm |
 | `robometer-4b` / `topreward-qwen3vl-4b-nf4` | reward |
 | `rskill-sam2_1-any-grasped_object_mask-bf16` | segmenter (SAM 2.1) |

@@ -1,0 +1,8 @@
+# Arm mounting faces in `world` (metres; Euler angles in degrees), the schema of
+# flexiv_description's config/dual_arm_mounting.yaml. Values are the reference rig's
+# (q5090 cell, measured 2026-09-11): a column 1.5 m up with the arms 0.68 m apart.
+# The left arm is the right one rolled 180 deg, not a mirrored model, so both are
+# Rizon4s. Pass `mounting_file:=` to the bringup for another rig.
+positions:
+  left: {x: 0.0, y: 0.34, z: 1.5, rx: 180.0, ry: -90.0, rz: 0.0}
+  right: {x: 0.0, y: -0.34, z: 1.5, rx: 0.0, ry: 90.0, rz: 0.0}

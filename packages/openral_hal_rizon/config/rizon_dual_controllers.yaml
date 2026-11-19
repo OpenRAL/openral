@@ -1,0 +1,38 @@
+# Controllers for the dual Rizon 4s, shaped on upstream flexiv_ros2 jazzy-v1.9
+# flexiv_bringup/config/rizon_dual_controllers.yaml: 1 kHz (the RDK's own loop rate),
+# one JointTrajectoryController per arm claiming position command + position/velocity
+# state. Controller names are the manifest's hal.parameters.defaults.groups. Upstream's gpio_controller
+# and flexiv_robot_states_broadcaster are left out: nothing in OpenRAL reads them.
+controller_manager:
+  ros__parameters:
+    update_rate: 1000
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+    left_arm_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+    right_arm_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+left_arm_controller:
+  ros__parameters:
+    joints: [left_joint1, left_joint2, left_joint3, left_joint4, left_joint5, left_joint6, left_joint7]
+    command_interfaces: [position]
+    state_interfaces: [position, velocity]
+    state_publish_rate: 50.0
+    action_monitor_rate: 20.0
+    allow_partial_joints_goal: false
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 0.0
+
+right_arm_controller:
+  ros__parameters:
+    joints: [right_joint1, right_joint2, right_joint3, right_joint4, right_joint5, right_joint6, right_joint7]
+    command_interfaces: [position]
+    state_interfaces: [position, velocity]
+    state_publish_rate: 50.0
+    action_monitor_rate: 20.0
+    allow_partial_joints_goal: false
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 0.0
