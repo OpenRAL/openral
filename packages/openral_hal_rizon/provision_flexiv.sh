@@ -32,10 +32,11 @@ source /opt/ros/jazzy/setup.bash
 
 # No --skip-existing: an existing checkout is fetched and moved to the pin; vcs refuses a
 # different remote URL. Git would carry non-conflicting local edits across the checkout,
-# so refuse any (bar this script's own COLCON_IGNORE) rather than build modified sources.
+# so refuse any (bar this script's own flexiv_rdk/COLCON_IGNORE) rather than build them.
 for repo in "$WS"/src/*/; do
   [ -d "$repo/.git" ] || continue
-  dirty=$(git -C "$repo" status --porcelain | grep -v '^?? COLCON_IGNORE$' || true)
+  dirty=$(git -C "$repo" status --porcelain)
+  [ "$(basename "$repo")" = flexiv_rdk ] && dirty=$(grep -v '^?? COLCON_IGNORE$' <<<"$dirty" || true)
   if [ -n "$dirty" ]; then
     echo "refusing: local changes in $repo (commit, stash or remove them):" >&2
     echo "$dirty" >&2

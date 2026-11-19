@@ -2032,21 +2032,29 @@ if _ROS2_AVAILABLE:
             ``ROSEStopRequested`` from ``send_action`` means the HAL stopped itself
             mid-send (a ``GroupedRosControlHAL`` fan-out that reached some controllers
             but not all): an e-stop, never a skipped tick. Latching it here makes the
-            heartbeat report it (with the downstream stop report) and drops every later
-            command; ``/openral/estop`` carries it to the rest of the graph when this node
-            has that publisher. Any other typed error skips the tick with a warning.
+            heartbeat report it (with the HAL's own downstream stop report: the HAL is not
+            stopped a second time) and drops every later command; ``/openral/estop``
+            carries it to the rest of the graph when this node has that publisher, best
+            effort. Any other typed error skips the tick with a warning.
             """
             from openral_core.exceptions import ROSEStopRequested
 
             if not isinstance(exc, ROSEStopRequested):
                 self.get_logger().warn(f"send_action ({source}) failed: {exc}")
                 return
-            self.get_logger().fatal(f"send_action ({source}) e-stopped the HAL: {exc}")
+            self.get_logger().fatal(
+                f"send_action ({source}) e-stopped the HAL: {exc} {self._downstream_stop_fields()}"
+            )
+            # Latch first, without a second HAL stop (it keeps the HAL's own report);
+            # the graph-wide publish is best-effort and must not undo the latch.
+            self._latch_estop(invoke_hal=False)
             if self._tracking_estop_pub is not None:
                 from std_msgs.msg import Empty
 
-                self._tracking_estop_pub.publish(Empty())
-            self._on_estop(None)
+                try:
+                    self._tracking_estop_pub.publish(Empty())
+                except Exception as pub_exc:  # reason: the local latch already holds
+                    self.get_logger().error(f"/openral/estop publish failed: {pub_exc}")
 
         def _send_action_traced(self, action: Any, *, source: str) -> bool:  # noqa: ANN401  # reason: action shape is HAL-adapter-specific (numpy ndarray / dict / typed namedtuple)
             """Forward ``action`` to ``self._hal.send_action`` inside a ``hal.send_action`` span.
@@ -2127,6 +2135,16 @@ if _ROS2_AVAILABLE:
 
         def _on_estop(self, _msg: object) -> None:
             """Latch and invoke downstream stop for HALs that explicitly opt in."""
+            self._latch_estop(invoke_hal=True)
+
+        def _latch_estop(self, *, invoke_hal: bool) -> None:
+            """Latch, stop (``invoke_hal``: the HAL's own ``estop``), then report.
+
+            ``invoke_hal=False`` is for a stop the HAL already performed itself: a second
+            ``estop()`` would re-deactivate controllers that are already inactive, which a
+            STRICT ``controller_manager`` switch refuses, overwriting an acknowledged
+            report with an unacknowledged one.
+            """
             if self._estopped:
                 return
             self._estopped = True
@@ -2143,7 +2161,8 @@ if _ROS2_AVAILABLE:
             # (the early return in `_invoke_hal_estop`) — an uncounted e-stop
             # is exactly the blind spot this exists to close.
             try:
-                self._invoke_hal_estop()
+                if invoke_hal:
+                    self._invoke_hal_estop()
             finally:
                 self._discard_staged_slots("estop")
                 self._emit_estop_telemetry()

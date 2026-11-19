@@ -146,6 +146,10 @@ def test_a_publish_failing_after_one_arm_took_its_target_stops_both(
 def test_committed_urdf_keeps_every_link_inertia() -> None:
     """flexiv_description emits bare origin/mass/inertia; parsers read them only in <inertial>."""
     root = ET.parse(MANIFEST.parent / "rizon_dual.urdf").getroot()
+    inertials = root.findall("link/inertial")
+    assert len(inertials) == 16
     for link in root.findall("link"):
-        assert link.find("mass") is None, f"{link.get('name')}: mass outside <inertial>"
-    assert len(root.findall("link/inertial/mass")) == 16
+        for tag in ("origin", "mass", "inertia"):
+            assert link.find(tag) is None, f"{link.get('name')}: {tag} outside <inertial>"
+    for inertial in inertials:
+        assert [c.tag for c in inertial] == ["origin", "mass", "inertia"]

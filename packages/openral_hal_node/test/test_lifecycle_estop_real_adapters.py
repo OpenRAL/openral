@@ -212,3 +212,44 @@ def test_a_partial_fan_out_with_a_refused_stop_reads_unacknowledged() -> None:
             node.destroy_node()
     finally:
         rclpy.try_shutdown()
+
+
+def test_a_partial_fan_out_stops_the_hal_once() -> None:
+    """The node latches without a second HAL stop, which a STRICT manager would refuse."""
+    rclpy.init()
+    try:
+        node = ManifestHALLifecycleNode("openral_hal_openarm_partial_publish_once")
+        hal, transport, _names = _openarm_failing_after_left_arm()
+        node._hal = hal
+        try:
+            node._send_action_traced(_joint_action(), source="test")
+            assert [op for op, _ in transport.switch_calls if op == "deactivate"] == ["deactivate"]
+            assert node._heartbeat_status("openarm")[2]["downstream_stop"] == "acknowledged"
+        finally:
+            node.destroy_node()
+    finally:
+        rclpy.try_shutdown()
+
+
+def test_a_failing_estop_publish_does_not_undo_the_latch() -> None:
+    """The graph-wide /openral/estop publish is best effort; the local latch holds anyway."""
+
+    class _BrokenPublisher:
+        def publish(self, _msg: object) -> None:
+            raise RuntimeError("context shut down")
+
+    rclpy.init()
+    try:
+        node = ManifestHALLifecycleNode("openral_hal_openarm_partial_publish_pub_fails")
+        hal, _transport, _names = _openarm_failing_after_left_arm()
+        node._hal = hal
+        node._tracking_estop_pub = _BrokenPublisher()
+        try:
+            node._send_action_traced(_joint_action(), source="test")
+            assert node._estopped
+            assert node._heartbeat_status("openarm")[1] == "estop latched"
+        finally:
+            node._tracking_estop_pub = None
+            node.destroy_node()
+    finally:
+        rclpy.try_shutdown()
