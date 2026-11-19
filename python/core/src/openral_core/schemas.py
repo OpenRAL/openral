@@ -15994,10 +15994,13 @@ class ReasonerModelOption(BaseModel):
         keys: Every key setting that serves the model, in preference order; any one
             of them is enough. Empty for a model that runs on the robot (including
             on the robot's own Ollama, which needs no key).
+        served: The id the model's default endpoint expects (``served_model_id``):
+            openral.com calls the model itself for the fleet super reasoner (ADR-0135).
+            ``None`` from an export that predates it.
 
     Example:
         >>> ReasonerModelOption(id="m", label="M", needs=None, keys=[]).model_dump()
-        {'id': 'm', 'label': 'M', 'needs': None, 'keys': []}
+        {'id': 'm', 'label': 'M', 'needs': None, 'keys': [], 'served': None}
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -16006,6 +16009,7 @@ class ReasonerModelOption(BaseModel):
     label: str = Field(min_length=1)
     needs: str | None
     keys: list[str]
+    served: str | None = None
 
 
 def _model_keys(model: ReasonerModel) -> list[str] | None:
@@ -16048,7 +16052,11 @@ def reasoner_model_options() -> list[ReasonerModelOption]:
             continue
         label = re.sub(r"\s*\((?:Anthropic|via OpenRouter|OpenAI)\)$", "", model.display_name)
         needs = keys[0] if keys else None
-        out.append(ReasonerModelOption(id=model.id, label=label, needs=needs, keys=keys))
+        out.append(
+            ReasonerModelOption(
+                id=model.id, label=label, needs=needs, keys=keys, served=model.served_model_id
+            )
+        )
     return out
 
 
