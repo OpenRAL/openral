@@ -2285,6 +2285,7 @@ def _write_robot_manifest(
         RSkillManifest,
         allowed_rskills_from_env,
         build_robot_manifest,
+        robot_instance_id,
     )
     from openral_rskill.loader import manifest_paths_by_name
 
@@ -2302,6 +2303,7 @@ def _write_robot_manifest(
         write_controls=os.environ.get(WRITE_CONTROLS_ENV) == "1",
         remote_control=os.environ.get(REMOTE_CONTROL_ENV) == "1",
         unit_serial=unit_serial,
+        instance_id=robot_instance_id(),
         # The robot's rSkill list: the console offers what the reasoner may use, nothing else.
         allowed_rskill_ids=allowed_rskills_from_env(),
     )

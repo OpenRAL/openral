@@ -49,6 +49,7 @@ from openral_core.robot_ui import (
     casefold_rskills,
     enrolment_path,
     parse_robot_link_code,
+    robot_instance_id,
     rskill_listed,
     rskill_matches_robot,
 )
@@ -720,6 +721,7 @@ __all__ = [
     "required_vla_camera_slots",
     "resolve_sensor_overlays",
     "resolve_unit_identity",
+    "robot_instance_id",
     "rskill_listed",
     "rskill_matches_robot",
     "scale_intrinsics_to",

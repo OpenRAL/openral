@@ -3033,6 +3033,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             WRITE_CONTROLS_ENV,
             DeployRuntime,
             build_robot_manifest,
+            robot_instance_id,
         )
         from openral_observability.producer import emit_robot_manifest
 
@@ -3050,6 +3051,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 remote_control=os.environ.get(REMOTE_CONTROL_ENV) == "1",
                 commercial_deployment=self._commercial_deployment,
                 unit_serial=serial or os.environ.get(UNIT_SERIAL_ENV) or None,
+                instance_id=robot_instance_id(),
             )
             emit_robot_manifest(manifest)
         except ValueError as exc:  # pydantic's ValidationError is a ValueError
