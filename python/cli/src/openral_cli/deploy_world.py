@@ -125,7 +125,8 @@ def _stop_with_parent() -> None:
     launcher that is killed outright, whose robots would otherwise keep running
     against a world that is gone. Linux ``prctl(PR_SET_PDEATHSIG)``.
     """
-    _LIBC.prctl(1, signal.SIGINT)  # PR_SET_PDEATHSIG = 1
+    if _LIBC is not None:  # only ever installed on Linux, where it is loaded
+        _LIBC.prctl(1, signal.SIGINT)  # PR_SET_PDEATHSIG = 1
 
 
 #: libc on Linux (loaded here so nothing is imported between fork and exec); ``None``
