@@ -1095,12 +1095,16 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             # never fed (`_answer`); the session frees its scheduler slot.
             self._station_left(transition, *self.session.leave_station())
 
-        def _station_left(self, transition: str, dropped: list[str], released: list[str]) -> None:
-            """The node's half of a discarded station (``TrackerSession.leave_station``).
+        def _station_left(
+            self, transition: str, dropped: list[str], released: list[str], *, carried: int = 0
+        ) -> None:
+            """The node's half of a station change (``TrackerSession.leave_station``, a base move).
 
             The in-flight call, the queued answers and the queued depth frames are about the
-            last station's frames and never reach the tracker; the track set and the attachment
-            state are republished at once, without the dropped tracks and their regions.
+            last pose's frames and never reach the tracker; the track set and the attachment
+            state are republished at once, with the carried tracks at the new pose and without
+            the dropped ones and their regions. A pure carry (every 2 cm of a drive) logs at
+            debug level.
             """
             assert self.session is not None
             self._issued_frame = None
@@ -1108,9 +1112,11 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             for cam in self._cams.values():
                 cam.pending.clear()
             self._answers.clear()
-            self.get_logger().info(
+            quiet = transition == "base_moved" and not dropped and not released
+            (self.get_logger().debug if quiet else self.get_logger().info)(
                 f"object_tracker.station_reset transition={transition} "
-                f"dropped_tracks={len(dropped)} released_records={len(released)} "
+                f"carried_tracks={carried} dropped_tracks={len(dropped)} "
+                f"released_records={len(released)} "
                 f"kept_tracks={len(self.session.tracker.store.all())}"
             )
             if self._active:
@@ -1202,11 +1208,14 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             self._source_clock.observe(clock_ns=self._joint_rx_ns, stamp_ns=stamp)
             self._fill.joints(time.monotonic())
             self._fill.touch(time.monotonic())
-            left = self.session.on_joint_state(positions, stamp)
-            if left is not None and (self._station_on or any(left)):
-                # The base moved off the station and the session discarded it (#651). With the
-                # station perception off nothing is queued or in flight: no reset to log.
-                self._station_left("base_moved", *left)
+            change = self.session.on_joint_state(positions, stamp)
+            if change is not None and (self._station_on or change.dropped or change.released):
+                # The base moved (#651): the session carried its tracks to the new pose, or
+                # discarded them (fail closed). Either way what is queued or in flight is about
+                # the old pose. With the station perception off nothing is: no reset to log.
+                self._station_left(
+                    change.why, change.dropped, change.released, carried=len(change.carried)
+                )
             self._publish_attachment()
 
         def _on_safe_action(self, msg: Any) -> None:

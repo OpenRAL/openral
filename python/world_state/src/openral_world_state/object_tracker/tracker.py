@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Sequence, Set
 from dataclasses import dataclass, replace
 from enum import Enum, auto
 from statistics import median
@@ -38,7 +38,7 @@ from openral_core import (
     TrackedObjectSet,
     TrackStatus,
 )
-from openral_core.geometry import homogeneous_from_quat_xyz
+from openral_core.geometry import homogeneous_from_quat_xyz, rebase_box, rebase_pose
 from openral_core.object_primitives import instance_prompt
 from openral_core.perception_geometry import (
     VoxelLattice,
@@ -136,6 +136,19 @@ PRIOR_MARGIN_M = _T.prior_margin_m
 #: Visible-fraction margin an OCCLUDED track needs to return to CONFIRMED.
 _VIS_HYSTERESIS = _T.vis_hysteresis
 _DUPLICATE_MINT_IOU = _T.duplicate_mint_iou
+
+
+def _rebase_track(t: TrackedObject, t_new_old: NDArray[np.float64], frame: str) -> TrackedObject:
+    """``t`` carried by the planar base motion ``t_new_old`` (``ObjectTracker.rebase``).
+
+    The box stays gravity-aligned (``rebase_box``); the tight hulls, posed in the base frame,
+    take the full motion. ``support_z`` / ``floor_z`` are heights: a planar motion keeps them.
+    """
+    tight = tuple(
+        p.model_copy(update={"pose_in_object": rebase_pose(p.pose_in_object, t_new_old, frame)})
+        for p in t.tight
+    )
+    return t.model_copy(update={"box": rebase_box(t.box, t_new_old, frame), "tight": tight})
 
 
 def _aabb(box: PlaceRegion) -> tuple[float, float, float, float, float, float]:
@@ -705,6 +718,56 @@ class ObjectTracker:
         """End every query of ``goal_id``; tracks persist across goals."""
         self.queries.close_goal(goal_id)
         self._pending = [r for r in self._pending if not r.query_key or r.query_key[0] != goal_id]
+
+    def rebase(
+        self,
+        t_new_old: NDArray[np.float64],
+        carried: Set[str],
+        grid: VoxelLattice | None,
+    ) -> None:
+        """Re-express the ``carried`` tracks and every base-frame record across a base move.
+
+        ``t_new_old`` is the planar base motion, new base frame <- old (the session's
+        ``_follow_base``). One pass at the source, so association, confirmation, the grasp
+        region and the binder all read the moved boxes: each carried track's box, tight hull
+        and centroid, its surface cells (moved and re-quantised on ``grid``'s lattice, the one
+        they were taken on; without it they are dropped and the next fit measures them again),
+        every let-go and placed record. Per-camera views, growth votes, prompted seed cells and
+        in-flight / pending requests were taken from the old pose and are dropped: cheap to
+        measure again. A track not in ``carried`` (a held payload rides the hand) is untouched.
+        """
+        frame = self.store.frame_id
+        for t in self.store.all():
+            if t.object_id in carried:
+                self.store.replace(_rebase_track(t, t_new_old, frame))
+        rot, shift = t_new_old[:3, :3], t_new_old[:3, 3]
+        for oid in carried:
+            cells = self._cells.get(oid)
+            if cells is not None:
+                if grid is None or not cells:
+                    del self._cells[oid]
+                else:
+                    r_grid = grid.rotation()
+                    ijk = np.asarray(sorted(cells), dtype=np.float64)
+                    centres = (ijk + 0.5) * grid.resolution @ r_grid.T + np.asarray(grid.origin)
+                    moved = centres @ rot.T + shift
+                    local = (moved - np.asarray(grid.origin)) @ r_grid / grid.resolution
+                    self._cells[oid] = frozenset(
+                        (int(i), int(j), int(k)) for i, j, k in np.floor(local).astype(int).tolist()
+                    )
+            centroid = self._centroid.get(oid)
+            if centroid is not None:
+                c = rot @ np.asarray(centroid) + shift
+                self._centroid[oid] = (float(c[0]), float(c[1]), float(c[2]))
+            self._views.pop(oid, None)
+            self._growth_votes.pop(oid, None)
+        for oid, entry in self._let_go.items():
+            if entry is not None:
+                self._let_go[oid] = (_rebase_track(entry[0], t_new_old, frame), *entry[1:])
+        self._placed = {oid: rebase_box(box, t_new_old, frame) for oid, box in self._placed.items()}
+        self._prompted.clear()
+        self._sched.abandon()
+        self._pending = []
 
     def drop_requests(self) -> None:
         """Forget the in-flight request, every pending prompt and every placed record.

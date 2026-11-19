@@ -51,6 +51,7 @@ __all__ = [
     "look_at_quat_wxyz",
     "quat_xyzw_to_yaw",
     "rebase_box",
+    "rebase_pose",
     "rotation_to_quat_wxyz",
     "yaw_to_quat_wxyz",
     "yaw_to_quat_xyzw",
@@ -435,6 +436,33 @@ def rebase_box(box: PlaceRegion, t_frame_from_box: NDArray[np.float64], frame: s
         }
     )
     return box.model_copy(update={"frame_id": frame, "pose": pose})
+
+
+def rebase_pose(pose: Pose6D, t_frame_from_pose: NDArray[np.float64], frame: str) -> Pose6D:
+    """``pose`` re-expressed in ``frame`` through ``t_frame_from_pose`` (tf2 ``frame <- pose``).
+
+    The full rigid motion, tilt included (``rebase_box`` keeps a declared box yaw-only; a
+    payload primitive or a released record carries whatever orientation it was measured
+    with). The Layer-2 object tracker carries its base-frame poses across a base move with it.
+
+    Example:
+        >>> yaw90 = np.array([[0, -1, 0, 1], [1, 0, 0, 2], [0, 0, 1, 0.5], [0, 0, 0, 1.0]])
+        >>> p = Pose6D(xyz=(1.0, 0.0, 0.0), quat_xyzw=(0, 0, 0, 1), frame_id="old")
+        >>> r = rebase_pose(p, yaw90, "new")
+        >>> r.frame_id, [round(v, 3) for v in r.xyz], [round(v, 3) for v in r.quat_xyzw]
+        ('new', [1.0, 3.0, 0.5], [0.0, 0.0, 0.707, 0.707])
+    """
+    m = np.asarray(t_frame_from_pose, dtype=np.float64) @ homogeneous_from_quat_xyz(
+        pose.xyz, pose.quat_xyzw
+    )
+    w, x, y, z = rotation_to_quat_wxyz(m[:3, :3])
+    return pose.model_copy(
+        update={
+            "xyz": (float(m[0, 3]), float(m[1, 3]), float(m[2, 3])),
+            "quat_xyzw": (x, y, z, w),
+            "frame_id": frame,
+        }
+    )
 
 
 def base_displaced(

@@ -91,6 +91,8 @@ class _TrackerThresholds(_Section):
     recent_s: float = Field(gt=0.0)
     station_motion_m: float = Field(gt=0.0)
     station_rotation_rad: float = Field(gt=0.0)
+    carry_max_m: float = Field(gt=0.0)
+    carry_max_rad: float = Field(gt=0.0)
     locate_contrast_labels: tuple[str, ...]
 
 

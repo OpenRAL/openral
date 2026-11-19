@@ -809,41 +809,106 @@ def test_a_named_memory_node_binds_only_its_instance_through_tf2() -> None:
     assert not fresh.matches(store.get(oid)) and not fresh.matches(store.get(other))  # type: ignore[arg-type]
 
 
-def test_a_base_move_discards_the_station_so_a_memory_node_never_binds_a_stale_track() -> None:
-    """Issue #651: tracks are base-frame boxes from where the base stood at their fit, while a
-    memory node's scope is re-expressed where the base stands now. The base moves between
-    the tracks' birth and the match, by the two oranges' spacing: the node's box then lies
-    over the NEIGHBOUR's stale box. Past the kernel's station threshold the session discards
-    what the station measured, so no stale track is matched (fail closed), and the tracks
-    measured from the new pose bind the node's own orange. Under the threshold they stay."""
-    from openral_world_state.object_tracker.session import STATION_MOTION_M, STATION_ROTATION_RAD
+def _amr() -> tuple[TrackerSession, dict[str, float], tuple[str, str, str]]:
+    """An ``openamrobot_v2`` session in ``tracking``, its base joints measured at the origin."""
+    d = RobotDescription.from_yaml("robots/openamrobot_v2/robot.yaml")
+    assert d.base_joints is not None
+    names = (d.base_joints[0], d.base_joints[1], d.base_joints[2])
+    s = TrackerSession(d, cell_m=RES, grounding_wait_s=3.0, params=TrackerParams())
+    s.mode = TrackingMode.TRACKING
+    base = dict.fromkeys(names, 0.0)
+    assert s.on_joint_state(base, 1) is not None  # the first measured base pose
+    assert s.on_joint_state(base, 2) is None  # anchors the station
+    return s, base, names
+
+
+def _world_from_base(x: float, y: float, yaw: float) -> NDArray[np.float64]:
+    """The manifest's base chain written out: prismatic x, prismatic y, then yaw, from world."""
+    t = np.eye(4)
+    t[:2, :2] = [[math.cos(yaw), -math.sin(yaw)], [math.sin(yaw), math.cos(yaw)]]
+    t[:2, 3] = (x, y)
+    return t
+
+
+def _in_world(
+    base: dict[str, float], names: tuple[str, str, str], xyz: tuple[float, ...]
+) -> NDArray[np.float64]:
+    t = _world_from_base(base[names[0]], base[names[1]], base[names[2]])
+    return (t @ np.array([*xyz, 1.0]))[:3]
+
+
+def test_a_base_move_carries_every_track_to_its_place_in_the_world() -> None:
+    """Issue #651, maintainer review of #686: tracks are never dropped by a base move. Past the
+    kernel's station threshold every unheld track is re-expressed by the measured base motion,
+    so it stays where it is in the world: its box, tight hull, surface cells and query prior.
+    A payload in the hand moves with the base and is untouched; a grid built before the move
+    is refused, and the carry is logged with the ids it moved."""
+    from tests.unit.test_object_tracker_binding import _grid
+
+    s, base, (fwd, side, yaw) = _amr()
+    centre = np.array([0.5, 0.1, 0.4])
+    oid = _mint(s, centre)
+    held = _mint(s, centre + np.array([0.0, -0.3, 0.0]))
+    store = s.tracker.store
+    store.replace(store.get(held).model_copy(update={"status": TrackStatus.BOUND}))  # type: ignore[union-attr]
+    grid = _grid(s.frame_id, centre[None, :], centre - 0.3, 60)
+    s.on_grid(grid, 5)
+    origin, res = np.asarray(grid.origin), grid.resolution
+    s.tracker._cells[oid] = frozenset({tuple(int(v) for v in np.floor((centre - origin) / res))})  # type: ignore[misc]
+    s.on_grasp_declaration(_decl(1, label="orange", robot="openamrobot_v2"))
+    (standing,) = s.tracker.queries.queries
+    standing.prior = store.get(oid).box  # type: ignore[union-attr]
+    before = store.get(oid)
+    assert before is not None
+    world_before = _in_world(base, (fwd, side, yaw), before.box.pose.xyz)
+    held_box = store.get(held).box  # type: ignore[union-attr]
+
+    base.update({fwd: -0.12, side: 0.05, yaw: 0.3})
+    change = s.on_joint_state(base, 7)
+    assert change is not None and change.why == "base_moved"
+    assert change.carried == [oid] and change.dropped == [] and change.released == []
+    after = store.get(oid)
+    assert after is not None and after.status is TrackStatus.CONFIRMED
+    assert _in_world(base, (fwd, side, yaw), after.box.pose.xyz) == pytest.approx(world_before)
+    assert after.box.half_extents == before.box.half_extents
+    assert after.support_z == before.support_z and after.floor_z == before.floor_z
+    from openral_core.geometry import quat_xyzw_to_yaw
+
+    # The box turns the other way in the base frame.
+    assert quat_xyzw_to_yaw(*after.box.pose.quat_xyzw) == pytest.approx(-0.3)
+    assert store.get(held).box == held_box, "a payload in the hand rides the base"  # type: ignore[union-attr]
+    assert standing.prior is not None and standing.prior.pose.xyz == after.box.pose.xyz
+    moved_centre = np.asarray(after.box.pose.xyz)
+    (cell,) = s.tracker._cells[oid]
+    assert np.all(np.abs((np.asarray(cell) + 0.5) * res + origin - moved_centre) <= res)
+    assert s.base_moved_ns == 7 and s.grid is None
+    s.on_grid(grid, 7)
+    assert s.grid is None, "a grid stamped up to the move was built at the old pose"
+    s.on_grid(grid, 8)
+    assert s.grid is not None
+
+
+def test_a_memory_node_keeps_binding_its_carried_instance_across_a_base_move() -> None:
+    """Issue #651: a goal names one memory node (its box in ``map``) beside a same-label
+    neighbour. The base backs up by the oranges' spacing, so the node's box re-expressed at
+    the new pose lies where the NEIGHBOUR was before the move. Both tracks are carried with the
+    base, so the node's own orange is still the goal's instance, without being measured again,
+    and the neighbour is not; the next grid re-resolves the scope through tf2 at the new pose
+    and agrees."""
+    s, base, names = _amr()
+    fwd = names[0]
+    centre, spacing = np.array([0.5, 0.0, 0.4]), np.array([0.12, 0.0, 0.0])
+
+    def tf(frame: str, _stamp_ns: int) -> NDArray[np.float64] | None:
+        grid_from_world = np.linalg.inv(_world_from_base(base[fwd], 0.0, 0.0))
+        return grid_from_world if frame == "map" else None
 
     from tests.unit.test_object_tracker_binding import _grid
 
-    d = RobotDescription.from_yaml("robots/openamrobot_v2/robot.yaml")
-    assert d.base_joints is not None
-    forward, side, yaw = d.base_joints[:3]
-    s = TrackerSession(d, cell_m=RES, grounding_wait_s=3.0, params=TrackerParams())
-    s.mode = TrackingMode.TRACKING
-    centre, spacing = np.array([0.5, 0.0, 0.4]), np.array([0.12, 0.0, 0.0])
-    base = {forward: 0.0, side: 0.0, yaw: 0.0}
-    offset = np.array([1.0, -0.5, 0.0])  # grid <- map with the base at its first pose
-    tf_up = [True]
-
-    def tf(frame: str, _stamp_ns: int) -> NDArray[np.float64] | None:
-        t = np.eye(4)  # the base drives along its own x: map points move back in its frame
-        t[:3, 3] = offset - np.array([base[forward], 0.0, 0.0])
-        return t if frame == "map" and tf_up[0] else None
-
-    def grid(stamp_ns: int) -> None:
-        s.on_grid(_grid(s.frame_id, centre[None, :], centre - 0.3, 60), stamp_ns)
-
     s.zone_transform = tf
-    assert s.on_joint_state(base, 1) == ([], []), "the first measured base pose: a new station"
-    assert s.on_joint_state(base, 2) is None
     oid, other = _mint(s, centre), _mint(s, centre + spacing)
-    grid(5)
-    seed = _search_box("map", centre - offset)  # the node: the first orange, in map
+    s.on_grid(_grid(s.frame_id, centre[None, :], centre - 0.3, 60), 5)
+    seed = _search_box("map", centre)  # base at the world origin: map == base here
     query = ObjectQuery(label="orange", count="one", role=ObjectRole.TARGET, seed=seed)
     named = _decl(1, label="orange", robot="openamrobot_v2").model_copy(
         update={"target_queries": (query,)}
@@ -851,60 +916,61 @@ def test_a_base_move_discards_the_station_so_a_memory_node_never_binds_a_stale_t
     s.on_grasp_declaration(named)
     (standing,) = s.tracker.queries.queries
     store = s.tracker.store
-    assert standing.matches(store.get(oid))  # type: ignore[arg-type]
-    assert not standing.matches(store.get(other))  # type: ignore[arg-type]
+    assert standing.matches(store.get(oid)) and not standing.matches(store.get(other))  # type: ignore[arg-type]
 
-    # Settle noise under the thresholds: the station holds.
-    base[forward], base[yaw] = 0.9 * STATION_MOTION_M, 0.9 * STATION_ROTATION_RAD
-    assert s.on_joint_state(base, 6) is None
-    assert {t.object_id for t in store.all()} == {oid, other}
-
-    # The base backs up by the spacing: the node's box now lies over the neighbour's old box.
-    base[forward], base[yaw] = -float(spacing[0]), 0.0
-    assert s.on_joint_state(base, 7) == ([oid, other], [])
-    assert store.all() == [], "no track from before the move is left to match"
-    assert s.base_moved_ns == 7
-    grid(7)  # built from depth taken before the move
-    assert s.grid is None, "a grid stamped up to the move is refused"
-
-    # No tf2 at the new pose yet: the scope resolved at the last station is not kept. A track
-    # measured where the node's box used to be (the neighbour, now) is not the goal's.
-    tf_up[0] = False
-    grid(8)
-    stale = _mint(s, centre)
-    assert standing.within is not None and standing.within.frame_id == "map"
-    assert not standing.matches(store.get(stale))  # type: ignore[arg-type]
-    store.drop(stale)
-    tf_up[0] = True
-    grid(9)
+    base[fwd] = -float(spacing[0])
+    change = s.on_joint_state(base, 7)
+    assert change is not None and sorted(change.carried) == sorted([oid, other])
+    assert store.get(other).box.pose.xyz == pytest.approx(tuple(centre + 2 * spacing))  # type: ignore[union-attr]
+    assert standing.within is not None
     assert standing.within.pose.xyz == pytest.approx(tuple(centre + spacing))
+    assert standing.matches(store.get(oid)), "carried, not re-detected"  # type: ignore[arg-type]
+    assert not standing.matches(store.get(other))  # type: ignore[arg-type]
+    assert store.get(oid).declaration_key == "orange@1"  # type: ignore[union-attr]
+    assert store.get(other).declaration_key == ""  # type: ignore[union-attr]
+    s.on_grid(_grid(s.frame_id, centre[None, :], centre - 0.3, 60), 8)  # tf2 at the new pose
+    assert standing.within.pose.xyz == pytest.approx(tuple(centre + spacing))
+    assert standing.matches(store.get(oid)) and not standing.matches(store.get(other))  # type: ignore[arg-type]
 
-    # Measured again from the new pose, the node's own orange is the goal's; its neighbour is not.
-    again, neighbour = _mint(s, centre + spacing), _mint(s, centre + 2 * spacing)
-    assert s.on_joint_state(base, 10) is None
-    s.on_grasp_declaration(named)  # rekeys
-    assert standing.matches(store.get(again))  # type: ignore[arg-type]
-    assert not standing.matches(store.get(neighbour))  # type: ignore[arg-type]
-    assert store.get(again).declaration_key == "orange@1"  # type: ignore[union-attr]
-    assert store.get(neighbour).declaration_key == ""  # type: ignore[union-attr]
 
-    # A turn past the rotation threshold leaves the station as well.
-    base[yaw] = 1.5 * STATION_ROTATION_RAD
-    assert s.on_joint_state(base, 11) == ([again, neighbour], []) and store.all() == []
+def test_a_base_move_that_cannot_be_trusted_drops_the_tracks() -> None:
+    """The fail-closed cases. Under the station threshold nothing moves. A track carried past
+    ``CARRY_MAX_M`` since its last fit is dropped (odometry drift past the extrinsic bound); a
+    fresh fit restarts its budget. A base pose that stops being measured (non-finite) drops
+    every unheld track, and so does the first one measured after it: the motion over the gap
+    is unknown."""
+    from openral_world_state.object_tracker.session import (
+        CARRY_MAX_M,
+        STATION_MOTION_M,
+        STATION_ROTATION_RAD,
+    )
 
-    # With nothing tracked a move still leaves the station: a request in flight across it is
-    # about the old pose, and the next track must not be anchored there.
-    base[forward] += 2 * STATION_MOTION_M
-    assert s.on_joint_state(base, 12) == ([], []) and s.base_moved_ns == 12
+    s, base, (fwd, _, yaw) = _amr()
+    store = s.tracker.store
+    oid = _mint(s, np.array([0.5, 0.0, 0.4]))
+    base[fwd], base[yaw] = 0.9 * STATION_MOTION_M, 0.9 * STATION_ROTATION_RAD
+    assert s.on_joint_state(base, 3) is None, "settle noise: the station holds"
 
-    # A base pose that stops being measured leaves the station once, and once more when it is
-    # measured again, so nothing measured in between is kept.
-    lost = _mint(s, centre)
-    assert s.on_joint_state({**base, forward: float("nan")}, 13) == ([lost], [])
-    assert s.on_joint_state({**base, forward: float("nan")}, 14) is None
-    between = _mint(s, centre)
-    assert s.on_joint_state(base, 15) == ([between], [])
-    assert s.on_joint_state(base, 16) is None
+    step = 0.6 * CARRY_MAX_M
+    base[fwd], base[yaw] = step, 0.0
+    assert s.on_joint_state(base, 4).carried == [oid]  # type: ignore[union-attr]
+    base[fwd] = 2 * step
+    assert s.on_joint_state(base, 5).dropped == [oid] and store.get(oid) is None  # type: ignore[union-attr]
+
+    refit = _mint(s, np.array([0.5, 0.0, 0.4]), fit_ns=6)
+    base[fwd] = 3 * step
+    assert s.on_joint_state(base, 7).carried == [refit]  # type: ignore[union-attr]
+    store.replace(store.get(refit).model_copy(update={"last_fit_stamp_ns": 8}))  # type: ignore[union-attr]
+    base[fwd] = 4 * step
+    assert s.on_joint_state(base, 9).carried == [refit], "a fresh fit restarts the budget"  # type: ignore[union-attr]
+
+    change = s.on_joint_state({**base, fwd: float("nan")}, 10)
+    assert change is not None and change.why == "base_unmeasured" and change.dropped == [refit]
+    assert s.on_joint_state({**base, fwd: float("nan")}, 11) is None
+    between = _mint(s, np.array([0.5, 0.0, 0.4]))
+    change = s.on_joint_state(base, 12)
+    assert change is not None and change.why == "base_measured" and change.dropped == [between]
+    assert s.on_joint_state(base, 13) is None
 
 
 def test_a_fixed_base_never_leaves_its_station() -> None:
