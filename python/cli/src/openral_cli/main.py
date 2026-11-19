@@ -778,15 +778,18 @@ def _check_reasoner_model(model_key: str) -> list[CheckResult]:
         if preset is not None:
             dialect = dialect or preset.dialect
         if endpoint_override and dialect not in {"anthropic", "openai"}:
-            # Same wording as the factory (`_build_uncurated_model`).
+            # The factory (`_build_uncurated_model`) refuses the same two cases.
+            raw = os.environ.get("OPENRAL_REASONER_ENDPOINT", "").strip()
             return [
                 CheckResult(
                     "Reasoner LLM",
                     "fail",
-                    f"OPENRAL_REASONER_ENDPOINT={endpoint_override!r} is a URL, not a named "
-                    f"endpoint ({', '.join(sorted(REASONER_ENDPOINT_PRESETS))}), so the "
-                    f"uncurated model {model_key!r} also needs OPENRAL_REASONER_DIALECT set to "
-                    f"anthropic or openai (got {dialect!r}).",
+                    f"OPENRAL_REASONER_DIALECT={dialect!r} must be anthropic or openai."
+                    if preset is not None
+                    else f"OPENRAL_REASONER_ENDPOINT={raw!r} is not a named endpoint "
+                    f"({', '.join(sorted(REASONER_ENDPOINT_PRESETS))}), so it is read as a URL, "
+                    f"and the uncurated model {model_key!r} on a URL also needs "
+                    f"OPENRAL_REASONER_DIALECT set to anthropic or openai (got {dialect!r}).",
                 )
             ]
         if not endpoint_override:

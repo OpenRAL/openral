@@ -311,6 +311,7 @@ _REASONER_ENV = (
     "OPENRAL_REASONER_DIALECT",
     "OPENRAL_REASONER_MAX_TOKENS",
     "OPENRAL_REASONER_TIMEOUT_S",
+    "OPENRAL_REASONER_FIRST_CALL_TIMEOUT_S",
     "OPENRAL_REASONER_TOOL_CHOICE",
     "OPENRAL_REASONER_LLM_PROVIDER",
     "OPENRAL_REASONER_LLM_MODEL",
@@ -409,7 +410,8 @@ def test_check_reasoner_uncurated_url_says_it_needs_a_dialect(
     monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "http://localhost:11434/v1")
     rows = _check_reasoner_llm()
     assert rows[0].status == "fail"
-    assert "'http://localhost:11434/v1' is a URL" in rows[0].details
+    assert "'http://localhost:11434/v1' is not a named endpoint" in rows[0].details
+    assert "read as a URL" in rows[0].details
     assert "also needs OPENRAL_REASONER_DIALECT" in rows[0].details
 
 

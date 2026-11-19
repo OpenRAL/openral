@@ -222,6 +222,7 @@ class FakeLLMServer:
 
     Attributes:
         requests: Every request body received, in order.
+        headers: The headers of every request, in order (lower-cased names).
         paths: The request path of every request, in order.
     """
 
@@ -237,6 +238,7 @@ class FakeLLMServer:
         self._get_bodies = dict(get_bodies or {})
         self._delays_s: deque[float] = deque(delays_s or [])
         self.requests: list[dict[str, Any]] = []
+        self.headers: list[dict[str, str]] = []
         self.paths: list[str] = []
         server = self
 
@@ -245,6 +247,7 @@ class FakeLLMServer:
                 length = int(self.headers.get("content-length", "0"))
                 server.requests.append(json.loads(self.rfile.read(length) or b"{}"))
                 server.paths.append(self.path)
+                server.headers.append({k.lower(): v for k, v in self.headers.items()})
                 if server._delays_s:
                     time.sleep(server._delays_s.popleft())
                 if server._replies:
