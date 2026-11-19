@@ -41,13 +41,13 @@ _CODE = base64.urlsafe_b64encode(json.dumps(_LINK).encode()).decode().rstrip("="
 
 @pytest.fixture
 def enrolment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    from openral_cli.robot import ACCOUNT_SETTINGS, CONTROL_SETTINGS
+    from openral_cli.robot import ACCOUNT_SETTINGS, CONTROL_SETTINGS, SKILL_SETTINGS
     from openral_observability.dashboard import tunnel
 
     monkeypatch.setattr(tunnel, "CLOUDFLARED", {})  # never download in a unit test
     # apply_account_settings writes os.environ itself: record each variable's original
     # state first (setenv, then delenv), so teardown restores it and nothing leaks.
-    for var in ACCOUNT_SETTINGS | CONTROL_SETTINGS:
+    for var in ACCOUNT_SETTINGS | CONTROL_SETTINGS | SKILL_SETTINGS:
         monkeypatch.setenv(var, "")
         monkeypatch.delenv(var)
     path = tmp_path / "config" / "robot.json"
