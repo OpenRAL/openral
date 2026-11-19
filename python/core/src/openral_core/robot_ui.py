@@ -133,7 +133,8 @@ _PROMPT_SCHEMA: dict[str, Any] = {
     "properties": {
         "text": {"type": "string", "minLength": 1},
         # The id the mission this prompt starts will carry; the dashboard makes one when absent.
-        "correlation_id": {"type": "string", "pattern": f"^{CORRELATION_ID_PATTERN}$"},
+        # ``(?![\s\S])`` is "end of text" in Python and in a browser alike; ``$`` is not.
+        "correlation_id": {"type": "string", "pattern": f"^{CORRELATION_ID_PATTERN}(?![\\s\\S])"},
         # Replace a mission in progress (``should_rebuild_mission``), not a reply to it.
         "new_goal": {"type": "boolean"},
     },

@@ -767,3 +767,14 @@ async def test_prompt_action_carries_the_callers_correlation_id(
     head = ["prompt", "--topic", "/openral/prompt_in/dashboard"]
     assert calls[0] == [*head, "--correlation-id=fleet-7:step-2", "--new-goal", "--", "--go"]
     assert calls[1] == [*head, f"--correlation-id={made}", "--", "go"]
+
+
+def test_the_prompt_schema_refuses_a_malformed_correlation_id() -> None:
+    """The manifest's own schema, as a client validates it: no trailing newline, no option."""
+    import jsonschema
+    from openral_core.robot_ui import _PROMPT_SCHEMA
+
+    jsonschema.validate({"text": "go", "correlation_id": "fleet-7:step-2"}, _PROMPT_SCHEMA)
+    for bad in ("ok\n", "--new-goal", "has space", "", "a" * 129, 7):
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate({"text": "go", "correlation_id": bad}, _PROMPT_SCHEMA)

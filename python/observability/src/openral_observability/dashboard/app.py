@@ -956,8 +956,10 @@ async def _run_action(  # noqa: PLR0911  # reason: one return per action kind / 
             return _error(400, "invalid args: 'text' must be a non-empty string")
         await _announce_operator_action("prompt", principal, client_ip)
         correlation_id = args.get("correlation_id")
-        # The schema's pattern is searched, so its ``$`` lets a trailing newline through.
-        if correlation_id is not None and not re.fullmatch(CORRELATION_ID_PATTERN, correlation_id):
+        # Checked here too: a manifest action may carry no ``args_schema``.
+        if correlation_id is not None and not (
+            isinstance(correlation_id, str) and re.fullmatch(CORRELATION_ID_PATTERN, correlation_id)
+        ):
             return _error(400, "invalid args: 'correlation_id' is not a well-formed id")
         return await _prompt_response(text, correlation_id, new_goal=args.get("new_goal") is True)
     rskill_id = action.id.removeprefix("skill:")
