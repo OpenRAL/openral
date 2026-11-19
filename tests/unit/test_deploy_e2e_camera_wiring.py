@@ -163,32 +163,26 @@ def test_real_deploy_names_the_top_cameras_optical_child(launch_module: object, 
 def test_real_launch_publishes_every_optical_child_a_consumer_names(
     launch_module: object, robot: str
 ) -> None:
-    """#641: on every manifest, the optical child the object lift (``image_frame_id``) or
-    the DA3 resolver names is one the real launch hangs under the camera's mount."""
-    from openral_core.depth_extrinsic import (
-        image_frame_id,
-        optical_mount,
-        resolve_estimated_depth_camera,
-    )
+    """#641: on every manifest the real launch hangs exactly the optical children of
+    ``test_optical_mount.MOUNTS`` (written out by hand) under their mounts, and those
+    are the frames the object lift (``image_frame_id``) and the DA3 resolver name."""
+    from openral_core.depth_extrinsic import image_frame_id, resolve_estimated_depth_camera
 
-    desc = _robot(robot)
-    sensors = [*desc.sensors, *(s for b in desc.sensor_bundles for s in b.sensors)]
+    from tests.unit.test_optical_mount import MOUNTS, lift_sensors
+
+    sensors = lift_sensors(robot)
+    want = MOUNTS.get(robot, {})
     mounts = launch_module._optical_mounts(sensors, "real")  # type: ignore[attr-defined]
+    assert mounts == {frame: optical for _, frame, optical in want.values()}
+    assert launch_module._optical_mounts(sensors, "sim") == {}  # type: ignore[attr-defined]
     for spec in sensors:
         if spec.modality != "rgb":
             continue
         frame = image_frame_id(spec, sensors)
-        placed = optical_mount(spec, sensors)
-        if placed is None:
-            assert frame == spec.frame_id
-        elif placed.optical != placed.frame:
-            assert mounts[placed.frame] == frame
+        assert frame == spec.frame_id or frame in mounts.values()
         da3 = resolve_estimated_depth_camera(sensors, spec.name, hal_mode="real")
         if da3.optical_parent is not None:
-            assert mounts[da3.optical_parent] == da3.cloud_frame
-    assert set(mounts.values()) <= {
-        image_frame_id(s, sensors) for s in sensors if s.modality == "rgb"
-    }
+            assert mounts[da3.optical_parent] == da3.cloud_frame == frame
 
 
 def _compose(launch_module: object, monkeypatch: pytest.MonkeyPatch, **overrides: str) -> list[str]:

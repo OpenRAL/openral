@@ -84,12 +84,11 @@ def depth_extrinsic_problems(
     }
     if estimated_camera is not None:
         # The camera sits at its own mount or the one it shares; that mount is checked.
-        spec = next(
-            (s for s in (*description.sensors, *scene_sensors) if s.name == estimated_camera),
-            None,
-        )
-        if spec is not None and spec.shares_mount_with:
-            estimated_camera = spec.shares_mount_with
+        sensors = (*description.sensors, *scene_sensors)
+        spec = next((s for s in sensors if s.name == estimated_camera), None)
+        placed = None if spec is None else optical_mount(spec, sensors)
+        if placed is not None:
+            estimated_camera = placed.sensor.name
     problems = []
     for spec in description.sensors:
         if not spec.is_cloud_source and spec.name != estimated_camera:
