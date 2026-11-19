@@ -401,6 +401,18 @@ def test_check_reasoner_uncurated_model_needs_escape_hatch(
     assert "OPENRAL_REASONER_DIALECT" in rows[0].details
 
 
+def test_check_reasoner_uncurated_url_says_it_needs_a_dialect(
+    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
+) -> None:
+    """#665: a URL with no dialect is told that the URL is what needs one."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "qwen3:8b")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "http://localhost:11434/v1")
+    rows = _check_reasoner_llm()
+    assert rows[0].status == "fail"
+    assert "'http://localhost:11434/v1' is a URL" in rows[0].details
+    assert "also needs OPENRAL_REASONER_DIALECT" in rows[0].details
+
+
 def test_check_reasoner_named_endpoint_supplies_dialect(
     monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
 ) -> None:

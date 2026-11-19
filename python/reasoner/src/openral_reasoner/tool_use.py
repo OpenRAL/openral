@@ -629,6 +629,12 @@ REASONER_API_KEY_ENV: str = "OPENRAL_REASONER_API_KEY"
 REASONER_DIALECT_ENV: str = "OPENRAL_REASONER_DIALECT"
 REASONER_MAX_TOKENS_ENV: str = "OPENRAL_REASONER_MAX_TOKENS"
 REASONER_TIMEOUT_ENV: str = "OPENRAL_REASONER_TIMEOUT_S"
+# Timeout of an openai-dialect client's calls until its endpoint first replies
+# (#665): a cold local model takes longer to load than the per-call timeout, and
+# a server such as Ollama abandons the load when the client hangs up, so every
+# tick timed out and the model never loaded.
+REASONER_FIRST_CALL_TIMEOUT_ENV: str = "OPENRAL_REASONER_FIRST_CALL_TIMEOUT_S"
+DEFAULT_FIRST_CALL_TIMEOUT_S: float = 120.0
 # Per-tick skill-tool cap override (``resolve_max_skill_tools``); ``0`` = no cap.
 REASONER_MAX_SKILL_TOOLS_ENV: str = "OPENRAL_REASONER_MAX_SKILL_TOOLS"
 # Escape hatch for an uncurated model on a bare URL (openai dialect) or on the
@@ -1009,6 +1015,10 @@ def build_tool_use_client_from_env() -> ToolUseClient:
       cap ``ReasonerCore`` applies.
     * ``OPENRAL_REASONER_{MAX_TOKENS,TIMEOUT_S}`` (optional) — override the
       registry defaults.
+    * ``OPENRAL_REASONER_FIRST_CALL_TIMEOUT_S`` (optional, openai dialect) — the
+      timeout of each call until the endpoint first replies (default 120 s), so
+      a cold local model can load; at or below the per-call timeout it changes
+      nothing.
     * ``OPENRAL_REASONER_TOOL_CHOICE`` (escape hatch only) — overrides the
       ``tool_choice`` of an uncurated model on a bare URL (openai dialect) or
       on the anthropic dialect (``auto``; ``required`` is sent as Anthropic
@@ -1160,6 +1170,12 @@ def _reasoner_timeout_s(hosting: str) -> float:
     return 60.0 if hosting == "byo_local" else 10.0
 
 
+def _first_call_timeout_s() -> float:
+    """The until-first-reply timeout: env override, else ``DEFAULT_FIRST_CALL_TIMEOUT_S``."""
+    env = _env_float(REASONER_FIRST_CALL_TIMEOUT_ENV)
+    return DEFAULT_FIRST_CALL_TIMEOUT_S if env is None else env
+
+
 def _reasoner_max_tokens(entry: ReasonerModel) -> int | None:
     """Completion cap: env override, else the model's registry default."""
     env = _env_int(REASONER_MAX_TOKENS_ENV)
@@ -1266,6 +1282,7 @@ def _build_curated_model(entry: ReasonerModel) -> ToolUseClient:
         api_key=api_key,
         base_url=base_url,
         timeout_s=timeout_s,
+        first_call_timeout_s=_first_call_timeout_s(),
         # A named endpoint's quirk wins; an inferred preset never overrides the entry.
         tool_choice=preset.tool_choice
         if preset is not None and raw_endpoint
@@ -1312,6 +1329,7 @@ def _build_managed_local(
         api_key=api_key,
         base_url=base_url,
         timeout_s=timeout_s,
+        first_call_timeout_s=_first_call_timeout_s(),
         max_tokens=max_tokens,
         auto_start=auto_start,
         boot_timeout_s=float(boot_env) if boot_env else DEFAULT_BOOT_TIMEOUT_S,
@@ -1339,7 +1357,15 @@ def _build_uncurated_model(model_key: str, tool_choice: str | None) -> ToolUseCl
         endpoint, dialect = preset.url, dialect or preset.dialect
     else:
         endpoint = raw_endpoint or None
-    if endpoint is None or dialect not in {"anthropic", "openai"}:
+    if endpoint is not None and dialect not in {"anthropic", "openai"}:
+        # The endpoint is a bare URL (a preset brings its own dialect).
+        raise ROSConfigError(
+            f"{REASONER_ENDPOINT_ENV}={raw_endpoint!r} is a URL, not a named endpoint "
+            f"({sorted(_ENDPOINT_PRESETS)}), so the uncurated model {model_key!r} also needs "
+            f"{REASONER_DIALECT_ENV} set to anthropic or openai (got {dialect!r}): nothing "
+            "else says which wire format a URL speaks."
+        )
+    if endpoint is None:
         raise ROSConfigError(
             f"{REASONER_MODEL_ENV}={model_key!r} is not a curated model "
             f"({_curated_hint()}); for an uncurated endpoint set "
@@ -1391,6 +1417,7 @@ def _build_uncurated_model(model_key: str, tool_choice: str | None) -> ToolUseCl
         api_key=api_key,
         base_url=endpoint,
         timeout_s=timeout_s,
+        first_call_timeout_s=_first_call_timeout_s(),
         tool_choice=(preset.tool_choice if preset is not None else (tool_choice or "required")),
         max_tokens=max_tokens,
     )
@@ -2326,6 +2353,13 @@ class OpenAICompatibleToolUseClient:
         base_url: Endpoint base URL. Defaults to
             ``https://api.openai.com/v1`` when ``None``.
         timeout_s: Per-call wall-clock timeout in seconds. Defaults to 10 s.
+        first_call_timeout_s: Timeout of each call until the endpoint first
+            replies, when longer than ``timeout_s`` (#665): a cold local model
+            loads on its first request, and a client that hangs up at
+            ``timeout_s`` makes the server abandon the load, every tick. Those
+            calls are not retried by the SDK, and the allowance is logged
+            as ``reasoner.llm.first_call_timeout``. After the first reply
+            every call is bound by ``timeout_s``.
         tool_choice: OpenAI ``tool_choice`` mode. ``"required"`` (the default)
             forces exactly one tool call per tick — the reasoner's contract.
             Some endpoints (the HF router) reject ``"required"`` and only honour
@@ -2356,6 +2390,7 @@ class OpenAICompatibleToolUseClient:
         api_key: str | None = None,
         base_url: str | None = None,
         timeout_s: float = 10.0,
+        first_call_timeout_s: float = DEFAULT_FIRST_CALL_TIMEOUT_S,
         tool_choice: str = "required",
         max_tokens: int | None = None,
         max_tokens_param: str = "max_tokens",
@@ -2365,6 +2400,9 @@ class OpenAICompatibleToolUseClient:
         self._api_key = api_key
         self._base_url = base_url
         self._timeout_s = timeout_s
+        self._first_call_timeout_s = first_call_timeout_s
+        # False until the endpoint answers a call (see ``_client`` / ``_mark_replied``).
+        self._replied = False
         self._tool_choice = tool_choice
         self._max_tokens = max_tokens
         self._max_tokens_param = max_tokens_param
@@ -2395,21 +2433,46 @@ class OpenAICompatibleToolUseClient:
         return rendered[1]
 
     def _client(self) -> Any:  # noqa: ANN401  # reason: provider SDK boundary — openai.OpenAI, lazy-imported
-        """The cached ``openai.OpenAI`` instance (lazy import + construct)."""
+        """The cached ``openai.OpenAI`` instance (lazy import + construct).
+
+        Until the endpoint has replied once it is built with the longer
+        ``first_call_timeout_s`` and no SDK retries (a retry would hang up on a
+        model that is still loading and wait all over again); ``_mark_replied``
+        drops that instance so the next call builds the steady-state one.
+        """
         if self._sdk_client is None:
             try:
-                from openai import OpenAI  # noqa: PLC0415  # reason: optional cloud dep
+                from openai import (  # noqa: PLC0415  # reason: optional cloud dep
+                    DEFAULT_MAX_RETRIES,
+                    OpenAI,
+                )
             except ImportError as exc:
                 raise ROSConfigError(
                     "OpenAICompatibleToolUseClient requires the `openai` SDK; "
                     "install with `uv add openai --package openral-reasoner`.",
                 ) from exc
+            cold = not self._replied and self._first_call_timeout_s > self._timeout_s
+            if cold:
+                log.info(
+                    "reasoner.llm.first_call_timeout",
+                    model=self.model_id,
+                    timeout_s=self._first_call_timeout_s,
+                    steady_timeout_s=self._timeout_s,
+                )
             self._sdk_client = OpenAI(
                 api_key=self._api_key or "local",
                 base_url=self._base_url,
-                timeout=self._timeout_s,
+                timeout=self._first_call_timeout_s if cold else self._timeout_s,
+                max_retries=0 if cold else DEFAULT_MAX_RETRIES,
             )
         return self._sdk_client
+
+    def _mark_replied(self) -> None:
+        """The endpoint answered: from the next call on, ``timeout_s`` bounds every call."""
+        if not self._replied:
+            self._replied = True
+            if self._first_call_timeout_s > self._timeout_s:
+                self._sdk_client = None  # built with the first-call timeout; rebuild steady
 
     def select_tool(
         self,
@@ -2544,6 +2607,7 @@ class OpenAICompatibleToolUseClient:
                     error=str(refusals[-1]),
                 )
                 self._max_tokens_param = max_tokens_param
+            self._mark_replied()
             self._note_served_model(response)
             return _openai_choices(response), response
         raise ROSPlanningError(  # pragma: no cover — each adaptation fires at most once
@@ -2591,6 +2655,7 @@ class OpenAICompatibleToolUseClient:
             )
         except Exception as exc:  # reason: provider SDK boundary
             raise ROSPlanningError(f"OpenAI-compatible describe_image failed: {exc!s}") from exc
+        self._mark_replied()
         message = _openai_choices(response)[0].message
         text: str = message.content or ""
         if not text:
@@ -2668,14 +2733,15 @@ class OpenAIResponsesToolUseClient(OpenAICompatibleToolUseClient):
             )
 
         try:
-            return create(self._tool_choice)
+            response = create(self._tool_choice)
         except Exception as exc:  # reason: provider SDK boundary; re-raised unless tool_choice
             if self._tool_choice != "required" or not _rejects_forced_tool_choice(exc):
                 raise
             response = create("auto")
             _log_tool_choice_downgrade(self.model_id, exc)
             self._tool_choice = "auto"
-            return response
+        self._mark_replied()
+        return response
 
     def select_tool(
         self,
@@ -2745,6 +2811,7 @@ class OpenAIResponsesToolUseClient(OpenAICompatibleToolUseClient):
             )
         except Exception as exc:  # reason: provider SDK boundary
             raise ROSPlanningError(f"OpenAI Responses describe_image failed: {exc!s}") from exc
+        self._mark_replied()
         return _responses_text(response)
 
 

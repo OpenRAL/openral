@@ -11,8 +11,10 @@ Production code never imports this module.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import threading
+import time
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import TracebackType
@@ -215,6 +217,8 @@ class FakeLLMServer:
         replies: ``(status, json_body)`` pairs, consumed one per POST.
         get_bodies: JSON bodies served (200) on GET by path, e.g. Ollama's
             ``/api/ps``; any other GET is a 404.
+        delays_s: Seconds to hold each POST's reply, consumed one per POST (a
+            cold model load); POSTs past the end are answered at once.
 
     Attributes:
         requests: Every request body received, in order.
@@ -222,11 +226,16 @@ class FakeLLMServer:
     """
 
     def __init__(
-        self, replies: list[Reply], *, get_bodies: dict[str, object] | None = None
+        self,
+        replies: list[Reply],
+        *,
+        get_bodies: dict[str, object] | None = None,
+        delays_s: list[float] | None = None,
     ) -> None:
         """Bind an ephemeral loopback port; serving starts on ``__enter__``."""
         self._replies: deque[Reply] = deque(replies)
         self._get_bodies = dict(get_bodies or {})
+        self._delays_s: deque[float] = deque(delays_s or [])
         self.requests: list[dict[str, Any]] = []
         self.paths: list[str] = []
         server = self
@@ -236,6 +245,8 @@ class FakeLLMServer:
                 length = int(self.headers.get("content-length", "0"))
                 server.requests.append(json.loads(self.rfile.read(length) or b"{}"))
                 server.paths.append(self.path)
+                if server._delays_s:
+                    time.sleep(server._delays_s.popleft())
                 if server._replies:
                     status, body = server._replies.popleft()
                 else:
@@ -244,8 +255,10 @@ class FakeLLMServer:
                 self.send_response(status)
                 self.send_header("content-type", "application/json")
                 self.send_header("content-length", str(len(payload)))
-                self.end_headers()
-                self.wfile.write(payload)
+                # A client that timed out during the delay has hung up.
+                with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                    self.end_headers()
+                    self.wfile.write(payload)
 
             def do_GET(self) -> None:
                 found = self.path in server._get_bodies
