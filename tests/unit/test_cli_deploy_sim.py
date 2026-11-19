@@ -3523,8 +3523,9 @@ def test_preflight_preload_rskill_refuses_with_the_install_command(
 
 
 _BOGUS_REVISION = "0" * 40
-_HUB_ONLY_RSKILL = "OpenRAL/rskill-rtdetr_v2_r50vd-any-coco-fp16"
-_HUB_ONLY_REVISION = "e46b9e1f13aecbc588b1997a7c44894bf49c7261"
+# An OpenRAL Pro skill published public: no in-tree manifest, so it must come from the Hub.
+_HUB_ONLY_RSKILL = "OpenRAL/rskill-openwam_alpha-franka_panda-libero-bf16"
+_HUB_ONLY_REVISION = "ded8cc24b5d77a929126966d44b2e90ed97ed83c"
 
 
 def test_preflight_preload_rskill_resolves_an_in_tree_name_before_the_hub(
