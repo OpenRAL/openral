@@ -376,8 +376,11 @@ class H2MujocoHAL(MujocoArmHAL):
             control period from ``description.control_rate_hz``.
         gravity_enabled: ``False`` zeroes gravity at ``connect()``.
         staleness_limit_s: Maximum age of a cached state.
-        body_twist_dt_s: Seconds one BODY_TWIST action integrates the glide by;
-            ``None`` (default) is one control period of the twin (``MujocoTwinRollout``).
+        body_twist_dt_s: Seconds one BODY_TWIST action integrates the glide by. The
+            H2 manifest declares no control rate (its rates are unverified), so the
+            twin has no control period to derive it from; the 0.05 s default keeps
+            the glide's commanded speed at a 20 Hz command rate. ``None`` is one
+            physics settle (``MujocoTwinRollout``).
         description: The loaded ``robots/h2/robot.yaml`` (threaded by
             ``build_hal``); ``None`` uses the in-code ``H2_DESCRIPTION`` mirror.
 
@@ -399,7 +402,7 @@ class H2MujocoHAL(MujocoArmHAL):
         settle_steps: int | None = None,
         gravity_enabled: bool = True,
         staleness_limit_s: float = 0.5,
-        body_twist_dt_s: float | None = None,
+        body_twist_dt_s: float | None = 0.05,
         description: RobotDescription | None = None,
     ) -> None:
         """Initialise the H2 HAL; no MuJoCo state is created until ``connect()``."""
