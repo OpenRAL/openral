@@ -502,8 +502,10 @@ def _world_voxel_max_cells(radius_m: float, resolution_m: float) -> int:
     fraction is at least a half, so the snap term is explicit (plus a hair of
     float slack: over-reserving costs memory, under-reserving is fail-open).
     """
-    per_axis = math.floor(2.0 * radius_m / resolution_m + 0.5 + 1e-9) + 1
-    return per_axis**3
+    from openral_hal.peer_voxels import cells_per_axis
+
+    # One formula for the kernel's reserve and the shared world's peer grid.
+    return cells_per_axis(radius_m, resolution_m) ** 3
 
 
 # The per-rig ``DeployRuntime`` fields ``openral deploy`` forwards as launch args.
@@ -1466,6 +1468,18 @@ def _poll_autostart(
         ],
         output="screen",
     )
+
+
+#: Receipt deadline and data-age budget of a shared world's peer grid, sim seconds: four
+#: of ``peer_voxels``' 20 Hz periods. A peer moves at most this long unseen.
+_PEER_GRID_BUDGET_S = 0.2
+
+
+def _peer_voxels_topic() -> str:
+    """The kernel's world grid in a shared world (``openral_hal.peer_voxels``)."""
+    from openral_hal.peer_voxels import PEER_VOXELS_TOPIC
+
+    return PEER_VOXELS_TOPIC
 
 
 def _resolve_clock_origin(value: str) -> str:
@@ -3043,6 +3057,41 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     ).lower() in ("1", "true", "yes")
     octomap_cloud_topic = LaunchConfiguration("octomap_cloud_topic").perform(context)
     static_geometry_file = LaunchConfiguration("static_geometry_file").perform(context)
+    # A robot of a shared MuJoCo world (`openral deploy world`, issue #666): its peers
+    # reach the kernel's world check as occupied cells (openral_hal.peer_voxels).
+    shared_world = LaunchConfiguration("shared_world").perform(context)
+    shared_world_robot = LaunchConfiguration("shared_world_robot").perform(context)
+    if shared_world and (enable_octomap or hal_mode != "sim" or not shared_world_robot):
+        from openral_core.exceptions import ROSConfigError
+
+        # Two producers on /openral/world_voxels would each overwrite the other's grid:
+        # the peers would vanish whenever the octomap's grid landed. Merging them is a
+        # follow-up; until then the combination is refused, never run half-checked.
+        raise ROSConfigError(
+            f"shared_world={shared_world!r} needs hal_mode=sim, a shared_world_robot and "
+            f"enable_octomap off (got hal_mode={hal_mode!r}, "
+            f"shared_world_robot={shared_world_robot!r}, enable_octomap={enable_octomap}): "
+            "the peers are this robot's only /openral/world_voxels producer."
+        )
+    if shared_world:
+        # The HAL joins the world as the robot its params name; the peers are read for
+        # the robot named here. On a bare `ros2 launch` the two could differ, and the
+        # kernel would then avoid the wrong arm (or its own). `deploy sim` writes both
+        # from one binding; a file the launch cannot read is refused by launch_ros.
+        bound = _hal_file_params(
+            hal_params_file, LaunchConfiguration("hal_node_name").perform(context)
+        )
+        if bound and (
+            bound.get("shared_world") != shared_world
+            or bound.get("shared_world_robot") != shared_world_robot
+        ):
+            from openral_core.exceptions import ROSConfigError
+
+            raise ROSConfigError(
+                f"shared_world={shared_world!r} / shared_world_robot={shared_world_robot!r} "
+                f"differ from the HAL's binding in {hal_params_file} "
+                f"({bound.get('shared_world')!r} / {bound.get('shared_world_robot')!r})."
+            )
     if static_geometry_file and not enable_octomap:
         # Declared walls must never be dropped silently: with the octomap leg off there
         # is no world grid to mark them in, and the kernel would run without them.
@@ -3206,6 +3255,15 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # ``host_wall`` keeps every node on system time. There is no operator-facing
     # ROS time toggle to drift from the authority.
     clock_origin = _resolve_clock_origin(LaunchConfiguration("clock_origin").perform(context))
+    if shared_world and clock_origin != "simulation":
+        from openral_core.exceptions import ROSConfigError
+
+        # The peers' grid is stamped with world (sim) time; on another clock its data
+        # age reads as decades and the kernel refuses every command, unexplained.
+        raise ROSConfigError(
+            f"shared_world={shared_world!r} needs clock_origin=simulation (got "
+            f"{clock_origin!r}): the peers are stamped with the shared world's time."
+        )
     use_sim_time = clock_origin == "simulation"
     # Startup operator prompt set by --initial-task or /openral/prompt. When
     # non-empty, prompt_router_node publishes it onto /openral/prompt at
@@ -3462,7 +3520,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             base_dofs,
             _octomap_resolution(hal_mode),
         )
-        if enable_octomap
+        if enable_octomap or shared_world
         else None
     )
     if coverage is not None:
@@ -3633,8 +3691,16 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         kernel_params["static_points_file"] = _static_points_file(
             static_geometry_file, _octomap_resolution(hal_mode), kernel_cells=True
         )
-    if enable_octomap and has_collision_capsules and enable_octomap_kernel_check:
-        assert coverage is not None  # reason: computed whenever enable_octomap
+    if shared_world and not (has_collision_capsules and enable_octomap_kernel_check):
+        from openral_core.exceptions import ROSConfigError
+
+        raise ROSConfigError(
+            f"shared_world={shared_world!r}: the kernel's world check must be on to see the "
+            "peers (a collision model and enable_octomap_kernel_check); without it two arms "
+            "share a workspace unchecked."
+        )
+    if (enable_octomap or shared_world) and has_collision_capsules and enable_octomap_kernel_check:
+        assert coverage is not None  # reason: computed whenever enable_octomap or shared_world
         kernel_params = {
             **kernel_params,
             "world_voxel_enabled": True,
@@ -3653,10 +3719,29 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             # How old the world behind a grid may be at check time (Entry 034).
             "world_voxel_data_age_budget_ms": rig.world_voxel_data_age_budget_s * 1000.0,
         }
+        if shared_world:
+            # The peers move at arm speed (the octomap's world mostly does not): a peer
+            # grid is current for a few of its 20 Hz periods, never the octomap's second.
+            kernel_params["world_voxel_deadline_ms"] = _PEER_GRID_BUDGET_S * 1000.0
+            kernel_params["world_voxel_data_age_budget_ms"] = _PEER_GRID_BUDGET_S * 1000.0
 
     kernel_params = {**kernel_params, **_collision_scale_params()}
     # ADR-0121: a provider takes over the moved in-tree rules (never both at once).
     kernel_params = _hand_rules_to_provider(kernel_params)
+    relaxing = sorted(
+        k
+        for k in ("grasp_allowance_enabled", "workspace_contact_enabled", "exemption_provider")
+        if kernel_params.get(k)
+    )
+    if shared_world and relaxing:
+        from openral_core.exceptions import ROSConfigError
+
+        # Those rules tolerate contact with grid cells near the hand; in a shared world
+        # the cells are the other robot, which they were never measured against.
+        raise ROSConfigError(
+            f"shared_world={shared_world!r} with {relaxing}: the kernel would tolerate "
+            "hand contact with the other robot's cells. Turn them off for a shared world."
+        )
 
     # Run identity for the dashboard's Identity card. These
     # ride as OTLP resource attributes on every node so run mode / id /
@@ -3740,7 +3825,11 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         # HAL's manifest-named `~/joint_states` (or the scene's override).
         remappings=(
             [("/joint_states", runtime_joint_states_topic)] if runtime_joint_states_topic else []
-        ),
+        )
+        # A shared world's peers are the kernel's world grid, on their own topic so the
+        # other /openral/world_voxels readers (object lift, tracker, attachment barrier)
+        # never take two arms for a perceived map.
+        + ([("/openral/world_voxels", _peer_voxels_topic())] if shared_world else []),
         additional_env={**otel_env, **enclave_env(KERNEL_ENCLAVE)},
         output="screen",
     )
@@ -5024,6 +5113,48 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 if optical_mounts.get(mount.optical_parent or "") == mount.cloud_frame
                 else mount.optical_parent,
                 use_sim_time=use_sim_time,
+            )
+        )
+
+    if shared_world:
+        assert coverage is not None  # reason: computed whenever shared_world
+        # The peers' links as occupied cells in THIS robot's base frame (PEER_VOXELS_TOPIC,
+        # the kernel's world grid), over the same
+        # coverage ball the kernel reserves cells for. It exits when the world stops
+        # answering, and the kernel then refuses every command (fail-closed).
+        extra_nodes.append(
+            ExecuteProcess(
+                cmd=[
+                    sys.executable,
+                    "-m",
+                    "openral_hal.peer_voxels",
+                    "--world",
+                    shared_world,
+                    "--robot",
+                    shared_world_robot,
+                    "--frame",
+                    description.base_frame,
+                    "--centre",
+                    *(str(v) for v in coverage.centre),
+                    "--radius",
+                    str(coverage.radius),
+                    "--resolution",
+                    str(_octomap_resolution(hal_mode)),
+                ],
+                name="openral_peer_voxels",
+                output="screen",
+            )
+        )
+        extra_nodes.append(
+            RegisterEventHandler(
+                OnProcessExit(
+                    target_action=extra_nodes[-1],
+                    on_exit=_shutdown_unless_clean(
+                        "the shared world's peer producer",
+                        "This robot's kernel no longer sees the other robots, so the graph "
+                        "shuts down instead of standing with every command refused.",
+                    ),
+                )
             )
         )
 
@@ -6377,6 +6508,22 @@ def generate_launch_description() -> LaunchDescription:
                 "false-positive E-stop. Default True preserves the bundled behaviour. "
                 "Never weakens the kernel below the --no-enable-octomap baseline."
             ),
+        ),
+        DeclareLaunchArgument(
+            "shared_world",
+            default_value="",
+            description=(
+                "The Unix socket of a shared MuJoCo world (`openral deploy world`, issue "
+                "#666). Non-empty: openral_hal.peer_voxels publishes the other robots' "
+                "links on /openral/peer_voxels, the kernel's world grid (remapped for the "
+                "kernel only), with tight freshness bounds. "
+                "Sim only; refused with enable_octomap. Empty (default) = off."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "shared_world_robot",
+            default_value="",
+            description="This robot's name in the shared world (with shared_world).",
         ),
         DeclareLaunchArgument(
             "static_geometry_file",

@@ -97,6 +97,7 @@ nav:
     - rSkills: reference/rskills.md
     - Reasoner (S2): reference/reasoner.md
     - Reasoner design & decisions: reference/reasoner-design.md
+    - Several robots in one MuJoCo world: reference/shared-world-sim.md
     - Cosmos 3 Edge reasoner: reference/cosmos3-edge-reasoner.md
     - Sim environments: reference/sim-environments.md
     - aarch64 CUDA hosts (DGX Spark / Jetson): reference/aarch64-support.md

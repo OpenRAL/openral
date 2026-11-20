@@ -1,0 +1,12 @@
+# One SO-101 follower arm of a shared world — the per-robot DeployScene that
+# scenes/worlds/so101_handover_table.yaml runs twice (robots `a` and `b`).
+#
+# A bare MuJoCo twin: no `composition` and an unregistered `scene.id`, so the
+# arena comes from the shared world (`openral deploy world`), not from here.
+# Launched alone (`openral deploy sim --config` this file) it is the bare arm
+# with no table.
+
+scene:
+  id: so101_shared_table
+  backend: mujoco
+robot_id: so101_follower

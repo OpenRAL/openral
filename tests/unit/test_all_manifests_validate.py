@@ -143,6 +143,7 @@ _DEPLOY_STEMS: list[str] = [
     "robocasa_vslam_mono",
     "so101_bench",
     "so101_box",
+    "so101_shared_table",
 ]
 
 
