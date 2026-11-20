@@ -1656,6 +1656,14 @@ class TrackerSession:
         or within ``GraspDeclaration``'s caps (the kernel's ``kMaxGraspRegionHalfExtentM`` /
         ``kMaxGraspRegionVolumeM3``).
 
+        A goal naming one memory node (a TARGET query's ``seed``, #631) narrows WHICH track
+        this is, never the box's extent: only tracks centred in the resolved scope carry the
+        declaration's key (``_Goal.owns``), so a same-label neighbour inside the ``search_box``
+        gets no allowance, and an unresolved scope keys no track (``None``). The extent stays
+        bounded by the ``search_box`` alone (issue #652; ADR-0117 D1, the scope only filters
+        perception). ``evidence_ref`` ends ``within:search_box+scope`` when a resolved scope
+        chose the track, else ``within:search_box``.
+
         The region keeps being published through the hold, as a HAL-measured one is: the
         kernel latches the box the first snapshot carrying the declared attachment brings,
         ignores later moves of it, and retires the declaration for good once the payload's
@@ -1698,10 +1706,13 @@ class TrackerSession:
         corners = (signs * np.asarray(tb.half_extents)) @ t_box[:3, :3].T + t_box[:3, 3]
         if not all(inside(c) for c in corners):
             return None
+        goal = self._goals["grasp"]
+        scoped = goal is not None and goal.key == key and bool(goal.scope_resolved)
+        within = "search_box+scope" if scoped else "search_box"
         return tb.model_copy(
             update={
                 "stamp_ns": t.last_confirmed_stamp_ns,
-                "evidence_ref": f"tracked:{t.object_id}|epoch={t.epoch}|within:search_box",
+                "evidence_ref": f"tracked:{t.object_id}|epoch={t.epoch}|within:{within}",
             }
         )
 

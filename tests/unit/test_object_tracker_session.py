@@ -810,6 +810,50 @@ def test_a_named_memory_node_binds_only_its_instance_through_tf2() -> None:
     assert not fresh.matches(store.get(oid)) and not fresh.matches(store.get(other))  # type: ignore[arg-type]
 
 
+def test_a_memory_node_scope_narrows_the_grasp_region_to_its_instance() -> None:
+    """Issue #652: with two same-label oranges inside one ``search_box``, the grasp region is
+    the box of the one the memory node's scope names, never the neighbour's; a scope centred
+    on neither yields no region. The extent stays the ``search_box``'s bound."""
+    s, oid, _, centre = _grasp_region_rig()
+    other = _mint(s, centre + np.array([0.12, 0.0, 0.0]))
+    decl = s.grasp_declaration
+    assert decl is not None and decl.search_box is not None
+    wide = decl.search_box.model_copy(update={"half_extents": (0.15, 0.15, 0.15)})
+    decl = decl.model_copy(update={"search_box": wide})
+    s.on_grasp_declaration(decl)
+    assert s.grasp_region() is None, "two oranges in the box, no scope: ambiguous"
+
+    s.zone_transform = lambda frame, _ns: np.eye(4) if frame == "map" else None
+    (query,) = decl.target_queries
+    for i, (seed_at, expected) in enumerate(
+        (
+            (centre, oid),
+            (centre + np.array([0.12, 0.0, 0.0]), other),
+            (centre + np.array([0.06, 0.0, 0.0]), None),  # centred on neither
+        )
+    ):
+        seeded = query.model_copy(update={"seed": _search_box("map", seed_at, half=0.03)})
+        update = {"target_queries": (seeded,), "stamp_ns": decl.stamp_ns + i + 1}
+        s.on_grasp_declaration(decl.model_copy(update=update))
+        region = s.grasp_region()
+        if expected is None:
+            assert region is None, "a scope naming no track grants no allowance"
+            continue
+        assert region is not None
+        assert region.evidence_ref.startswith(f"tracked:{expected}|")
+        assert region.evidence_ref.endswith("|within:search_box+scope")
+        track = s.tracker.store.get(expected)
+        assert track is not None and region.pose.xyz == track.box.pose.xyz
+
+    # A scope that never resolves (no tf2) keys no track: fail closed.
+    s.zone_transform = lambda _frame, _ns: None
+    seeded = query.model_copy(update={"seed": _search_box("map", centre, half=0.03)})
+    s.on_grasp_declaration(
+        decl.model_copy(update={"target_queries": (seeded,), "stamp_ns": decl.stamp_ns + 9})
+    )
+    assert s.grasp_region() is None
+
+
 def _amr() -> tuple[TrackerSession, dict[str, float], tuple[str, str, str]]:
     """An ``openamrobot_v2`` session in ``tracking``, its base joints measured at the origin."""
     d = RobotDescription.from_yaml("robots/openamrobot_v2/robot.yaml")
