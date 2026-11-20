@@ -61,6 +61,10 @@ tracker:  # tracker.py TrackerParams and module constants
   support_flatness_res_fraction: 0.25  # fraction of a cell: spread of support heights still read as flat
   plausible_extent_factor: 1.5     # calibration point (pro#51 yw1 ep8): a box wider than this x its label PEERS' clear extent (max: the largest instance seen) is never minted as a target; one wider than this x their median never blocks another track
   recent_s: 10.0                   # s (source): a lost destination or a released target keeps its identity this long
+  station_motion_m: 0.02           # m: planar base move past which the station's tracks are carried to the new pose (= kernel station_motion_translation_m default; calibration point)
+  station_rotation_rad: 0.02       # rad: base turn past which they are carried (= kernel station_motion_rotation_rad default; calibration point)
+  carry_max_m: 0.75                # m: base travel a track is carried by odometry since its last fit; shares one budget with carry_max_rad (odometry drift 2 % of travel, a calibration point, within MAX_PLANAR_ERR_M 0.015)
+  carry_max_rad: 0.8               # rad: base turn the same (2 % of the turn at the 0.9 m reach within 0.015 m)
   # Asked of the locator beside every query label; a detection under low_prompt_score that one of
   # these covers with a higher score is no detection of the label (pro#51 negative test n0: a soup
   # can on the plate located as "orange" at 0.16-0.22 became a confirmed orange track, its cells

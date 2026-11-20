@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Sequence, Set
 from dataclasses import dataclass, replace
 from enum import Enum, auto
 from statistics import median
@@ -38,7 +38,7 @@ from openral_core import (
     TrackedObjectSet,
     TrackStatus,
 )
-from openral_core.geometry import homogeneous_from_quat_xyz
+from openral_core.geometry import homogeneous_from_quat_xyz, rebase_box, rebase_pose
 from openral_core.object_primitives import instance_prompt
 from openral_core.perception_geometry import (
     VoxelLattice,
@@ -136,6 +136,19 @@ PRIOR_MARGIN_M = _T.prior_margin_m
 #: Visible-fraction margin an OCCLUDED track needs to return to CONFIRMED.
 _VIS_HYSTERESIS = _T.vis_hysteresis
 _DUPLICATE_MINT_IOU = _T.duplicate_mint_iou
+
+
+def _rebase_track(t: TrackedObject, t_new_old: NDArray[np.float64], frame: str) -> TrackedObject:
+    """``t`` carried by the planar base motion ``t_new_old`` (``ObjectTracker.rebase``).
+
+    The box stays gravity-aligned (``rebase_box``); the tight hulls, posed in the base frame,
+    take the full motion. ``support_z`` / ``floor_z`` are heights: a planar motion keeps them.
+    """
+    tight = tuple(
+        p.model_copy(update={"pose_in_object": rebase_pose(p.pose_in_object, t_new_old, frame)})
+        for p in t.tight
+    )
+    return t.model_copy(update={"box": rebase_box(t.box, t_new_old, frame), "tight": tight})
 
 
 def _aabb(box: PlaceRegion) -> tuple[float, float, float, float, float, float]:
@@ -647,6 +660,10 @@ class ObjectTracker:
         self._static_centres: NDArray[np.float64] = np.zeros((0, 3))
         self._static_cache: tuple[tuple[object, ...], frozenset[Cell]] | None = None
         self._cells: dict[str, frozenset[Cell]] = {}
+        # Cells of carried tracks (``rebase``), as base-frame centres until the next grid; and
+        # the lattice the ``_cells`` keys are on (the last grid fed).
+        self._carried_cells: dict[str, NDArray[np.float64]] = {}
+        self._cells_grid: VoxelLattice | None = None
         self._centroid: dict[str, tuple[float, float, float]] = {}
         self._disagree: dict[str, int] = {}
         # Per track: the grid stamp its last `map_disagrees` counted (one count per grid).
@@ -706,6 +723,64 @@ class ObjectTracker:
         self.queries.close_goal(goal_id)
         self._pending = [r for r in self._pending if not r.query_key or r.query_key[0] != goal_id]
 
+    def rebase(
+        self,
+        t_new_old: NDArray[np.float64],
+        carried: Set[str],
+        riders: Set[str] = frozenset(),
+        *,
+        keep_records: bool,
+    ) -> None:
+        """Re-express the ``carried`` tracks and every base-frame record across a base move.
+
+        ``t_new_old`` is the planar base motion, new base frame <- old (the session's
+        ``_carry``). One pass at the source, so association, confirmation, the grasp region
+        and the binder all read the moved state: each carried track's box, tight hull and
+        centroid; its surface cells, kept as moved centres and put on the lattice of the next
+        grid fed (``feed``: a grid's lattice may turn with the base); and, with
+        ``keep_records``, every let-go and placed record (else they are dropped: carried past
+        the odometry budget). Per-camera views, growth votes, surface models, prompted seed
+        cells and in-flight / pending requests were taken from the old pose and are dropped:
+        cheap to measure again. A track not in ``carried`` (a held payload, an object riding the
+        robot) is untouched, and so are its let-go and placed records (``riders``).
+        """
+        frame = self.store.frame_id
+        rot, shift = t_new_old[:3, :3], t_new_old[:3, 3]
+        for t in self.store.all():
+            if t.object_id in carried:
+                self.store.replace(_rebase_track(t, t_new_old, frame))
+        for oid in carried:
+            cells = self._cells.pop(oid, None)
+            pending = self._carried_cells.pop(oid, None)
+            if cells and self._cells_grid is not None:
+                g = self._cells_grid
+                ijk = np.asarray(sorted(cells), dtype=np.float64)
+                pending = (ijk + 0.5) * g.resolution @ g.rotation().T + np.asarray(g.origin)
+            if pending is not None:
+                self._carried_cells[oid] = pending @ rot.T + shift
+            centroid = self._centroid.get(oid)
+            if centroid is not None:
+                c = rot @ np.asarray(centroid) + shift
+                self._centroid[oid] = (float(c[0]), float(c[1]), float(c[2]))
+            self._views.pop(oid, None)
+            self._growth_votes.pop(oid, None)
+        if self.surface_models is not None:
+            self.surface_models.retain({t.object_id for t in self.store.all()} - set(carried))
+        if keep_records:
+            for oid, entry in self._let_go.items():
+                if entry is not None and oid not in riders:
+                    self._let_go[oid] = (_rebase_track(entry[0], t_new_old, frame), *entry[1:])
+            self._placed = {
+                k: b if k in riders else rebase_box(b, t_new_old, frame)
+                for k, b in self._placed.items()
+            }
+        else:
+            self._let_go = {k: v for k, v in self._let_go.items() if k in riders}
+            self._placed = {k: v for k, v in self._placed.items() if k in riders}
+        self._prompted.clear()
+        self._sched.abandon()
+        self._pending = []
+
     def drop_requests(self) -> None:
         """Forget the in-flight request, every pending prompt and every placed record.
 
@@ -745,6 +820,13 @@ class ObjectTracker:
                 "no_camera_pose" if frame.t_base_from_cam is None else "no_robot_mask"
             )
             self._refuse(f"camera:{frame.camera}", unavailable_reason, stamp_ns=frame.stamp_ns)
+        if grid is not None:
+            self._cells_grid = grid
+            for oid, centres in self._carried_cells.items():
+                # Carried cells, on this grid's lattice; cells measured since win.
+                if self.store.get(oid) is not None and oid not in self._cells:
+                    self._cells[oid] = surface_cells(grid, centres)
+            self._carried_cells.clear()
         bound_fits: list[tuple[str, ContainingFit]] = []
         for res in results:
             req = self._sched.complete(res.request_id)
