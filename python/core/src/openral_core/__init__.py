@@ -50,6 +50,7 @@ from openral_core.robot_ui import (
     enrolment_path,
     parse_robot_link_code,
     robot_instance_id,
+    robot_secret_path,
     rskill_listed,
     rskill_matches_robot,
 )
@@ -737,6 +738,7 @@ __all__ = [
     "resolve_sensor_overlays",
     "resolve_unit_identity",
     "robot_instance_id",
+    "robot_secret_path",
     "rskill_listed",
     "rskill_matches_robot",
     "scale_intrinsics_to",

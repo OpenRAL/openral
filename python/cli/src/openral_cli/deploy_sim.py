@@ -1496,9 +1496,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # (issue #467); refuse here first, before any pre-launch work.
     # A robot linked to openral.com picks up its account settings (e.g. the reasoner's API
     # key) before anything reads the environment; variables already set win.
-    from openral_cli.robot import apply_reasoner_settings
+    from openral_cli.robot import apply_account_settings
 
-    apply_reasoner_settings(echo=_console.print)
+    apply_account_settings(echo=_console.print)
     if rskill_auto_install:
         # The robot's openral.com rSkill list, installed before the reasoner's palette is
         # built; a skipped or failed one never stops the deploy.

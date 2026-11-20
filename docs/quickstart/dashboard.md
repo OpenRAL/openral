@@ -150,12 +150,39 @@ the dashboard is down the tunnel stays up and openral.com shows the robot as unr
 The listener answers only `/api/*` and `/ws`, with a valid token; the OTLP receiver is
 never reachable through it.
 
-**Account settings.** Settings on openral.com (**Account → Settings**: the reasoner's API
-key, model, endpoint and dialect, set by an org admin, or by you on a free account) reach
-the robot at every deploy start: the link stored the robot's own credential
-(`robot.secret`, 0600), the deploy fetches its settings with it, caches them
-(`settings.json`, 0600) for offline starts, and puts them in the environment. A variable
-already set on the robot wins.
+**Settings levels.** openral.com holds settings at four levels. Each setting lives at exactly
+one of them, and a robot reads two: its own robot settings and one account.
+
+| Level | What is set there | Who changes it | Reaches the robot |
+|---|---|---|---|
+| **Robot** | its name, reasoner model, curated rSkills | an org admin (the owner, for a free robot) on openral.com's Robot settings page; the operator at the robot, in the console's ⚙ | yes; wins over the account |
+| **Organisation** | the provider API keys, the remote-control and skill-control switches | an org admin, in **Account → Settings** | yes, for the org's robots |
+| **Personal** | the same keys and switches | you, in **Account → Settings** | only for your own free robots, never an org's |
+| **Fleet** | the fleet's super reasoner (model, workcells, steps at once) | an org admin, on the fleet's settings page | no; openral.com uses them itself |
+
+An account's model from before models were set per robot is the fallback for a robot with
+none of its own.
+
+**Two reasoners, two models.** Don't confuse them:
+
+- The **robot's reasoner** (`OPENRAL_REASONER_MODEL`, a robot setting) is the S2 planner of
+  one robot: it runs with that robot's deploy, picks its rSkills and talks to its operator.
+  The robot gets its model and the account's key for it at deploy start.
+- The **fleet's super reasoner** (`OPENRAL_FLEET_MODEL`, a fleet setting, ADR-0135; a Pro
+  org's) runs on no robot: its loop runs in the fleet console on openral.com, which calls its
+  model with the org's key. It splits a fleet goal into steps and gives each to one robot as
+  a prompt (`POST /api/actions/prompt` with `new_goal` and a `fleet-…:<n>` `correlation_id`),
+  which that robot's own reasoner carries out with its own rSkills; it follows each step
+  through the robot's `/api/mission`, and relays a robot's question to the person (or, with
+  the fleet's "Super reasoner answers robots" on, answers it). Its settings are never sent to
+  a robot, and a robot's model never sets it.
+
+**At deploy start.** A linked robot fetches its settings from openral.com
+(`<site>/api/robot/settings`, the account's with the robot's own on top) with its own
+credential (`robot.secret`, 0600), caches them (`settings.json`, 0600) for offline starts,
+and puts them in the environment. A variable already set on the robot wins, so a change made
+on openral.com or in the console reaches the reasoner at the next deploy start, and never
+while that variable is set.
 
 **The robot's rSkills.** A robot's **Robot settings** page on openral.com lists the
 rSkills it may run (`OPENRAL_RSKILLS`, comma-separated Hugging Face repo ids such as
@@ -170,18 +197,17 @@ robot's Hugging Face token can't read (401/403) says to request access on Huggin
 No failure (offline, Hub down, a bad manifest) stops the deploy: it starts with what is
 installed. `--no-rskill-install` or `OPENRAL_RSKILL_AUTO_INSTALL=0` turns this off.
 
-**Settings in the console.** The console's left pane (⋯ next to your name → **Settings**)
-edits the reasoner's Anthropic, OpenAI, OpenRouter and Ollama API keys and its model in place.
-A model can be chosen once one of its keys is set: GPT runs on the OpenAI key (OpenAI's own
-API) or the OpenRouter key, the `*-openrouter` models on the OpenRouter key and the `*-cloud`
-models on the Ollama key (ollama.com; both not yet measured), and the models on the robot's own Ollama need none. On openral.com
-it edits your account's and your org's settings (above). On the robot it edits the robot's
-own (`robot-settings.json` beside the enrolment, 0600), which only the operator at the
-robot can change (read-only from the LAN, never over the tunnel); a secret only ever shows
-as `set …abcd`. A deploy applies them at start: a variable already set wins; when the
-robot's own settings choose a model, the account's reasoner settings are not applied at
-all (so the robot's key never goes to an endpoint the account names); otherwise the
-account's apply.
+**Settings in the console.** Robot settings have one source of truth: openral.com. The
+console's header ⚙ shows the same Robot settings as openral.com's Robot settings page (its
+name, its reasoner model, its curated rSkills): the robot's dashboard relays them to
+`<site>/api/robot/console` with its own credential (`GET`/`PUT`/`PATCH /api/robot-settings`),
+and openral.com decides who may change what. The operator at the robot may read and change
+them; a LAN viewer may only read them; over the tunnel they may only be read, with remote
+control on (change them on openral.com, where you are signed in). An unlinked robot, or one
+whose credential openral.com refuses, answers 409, and 502 while openral.com can't be
+reached. The robot keeps no reasoner settings of its own: a deploy applies the account's at
+start (above), and a variable set on the robot still wins; a `robot-settings.json` left by an
+older release is no longer read (the deploy says so) and can be deleted.
 
 Manage the service like any user unit:
 
@@ -191,7 +217,8 @@ systemctl --user status openral-tunnel.service
 
 To unlink, remove the robot on openral.com (its tunnel is deleted there), then
 `systemctl --user disable --now openral-tunnel.service` and delete
-`~/.config/openral/robot.json`, `tunnel.env`, `robot.secret` and `settings.json`.
+`~/.config/openral/robot.json`, `tunnel.env`, `robot.secret` and `settings.json` (and
+`robot-settings.json`, if an older release left one).
 
 ## The 3D view
 

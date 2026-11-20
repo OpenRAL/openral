@@ -324,9 +324,9 @@ def _write_private(path: Path, text: str) -> None:
 
 
 def _secret_path() -> Path:
-    from openral_core import enrolment_path
+    from openral_core import robot_secret_path
 
-    return enrolment_path().with_name("robot.secret")
+    return robot_secret_path()
 
 
 def _settings_cache() -> Path:
@@ -357,8 +357,7 @@ ACCOUNT_SETTINGS = frozenset(
 
 SKILL_SETTINGS = frozenset({"OPENRAL_RSKILLS"})
 """The robot's curated rSkill list openral.com may set (OpenRAL/platform#147): which installed
-rSkills its reasoner may use (``openral_core.RSKILLS_ENV``). It carries no key or URL,
-so it applies whether or not the robot's console chooses the reasoner."""
+rSkills its reasoner may use (``openral_core.RSKILLS_ENV``)."""
 
 CONTROL_SETTINGS = frozenset({REMOTE_CONTROL_ENV, WRITE_CONTROLS_ENV})
 """The dashboard's remote- and write-control switches openral.com may set (ADR-0132).
@@ -370,58 +369,6 @@ last word locally (``OPENRAL_DASHBOARD_REMOTE_CONTROL=0``). E-STOP is never gate
 _SWITCH_VALUES = frozenset({"0", "1"})
 
 
-def apply_console_settings(
-    *, echo: Callable[[str], None], console: dict[str, str] | None = None
-) -> list[str]:
-    """Put the reasoner settings set in this robot's console into ``os.environ``.
-
-    The console's settings pane saves the provider keys and the model on the robot
-    (``openral_observability.dashboard.robot_settings``); a deploy maps them to the
-    reasoner's variables (``reasoner_env``). The set applies whole or not at all: when
-    the environment already sets any reasoner variable it wins outright, so the robot's
-    key is never paired with an inherited model, endpoint or dialect it was not chosen
-    for. :func:`apply_reasoner_settings` skips the account's reasoner settings when
-    the console chooses a reasoner, so the robot's key is never paired with an
-    account's endpoint either. ``console`` is the ``reasoner_env`` snapshot a caller
-    already read (so one read decides and applies); ``None`` reads the file. Returns
-    the names it set; never raises.
-    """
-    from openral_observability.dashboard.robot_settings import load_settings, reasoner_env
-
-    if console is None:
-        console = reasoner_env(load_settings())
-    inherited = sorted(k for k in ACCOUNT_SETTINGS if k in os.environ)
-    if console and inherited:
-        echo(f"console settings: not applied, the environment sets {', '.join(inherited)}")
-        return []
-    applied = dict(console)
-    os.environ.update(applied)
-    if applied:
-        echo(f"console settings: {', '.join(sorted(applied))}")
-    return sorted(applied)
-
-
-def apply_reasoner_settings(*, echo: Callable[[str], None]) -> list[str]:
-    """The reasoner settings a deploy starts with: the robot console's, else the account's.
-
-    When the console's settings choose the reasoner (a model, and its key) the account's
-    reasoner settings are not applied at all: an account's endpoint or dialect would
-    otherwise carry the robot's own key to a URL the site picked. A variable already in
-    the environment wins over both. Returns the names it set; never raises.
-    """
-    from openral_observability.dashboard.robot_settings import load_settings, reasoner_env
-
-    # Decide by whether the console chooses a reasoner, not by whether it set anything:
-    # with its variables already exported (an inherited environment), it sets nothing,
-    # and the account's endpoint must still never pair with the robot's key.
-    console = reasoner_env(load_settings())  # one snapshot decides and is applied
-    if console:
-        # The control switches carry no key or URL, so the account's still apply.
-        applied = apply_console_settings(echo=echo, console=console)
-        return applied + apply_account_settings(echo=echo, names=CONTROL_SETTINGS | SKILL_SETTINGS)
-    return apply_account_settings(echo=echo)
-
-
 def apply_account_settings(
     *,
     echo: Callable[[str], None],
@@ -429,9 +376,11 @@ def apply_account_settings(
 ) -> list[str]:
     """Put this robot's openral.com account settings into ``os.environ`` (ADR-0129).
 
-    A linked robot (``openral robot link``) fetches its org's (or owner's) settings,
-    e.g. ``OPENRAL_REASONER_API_KEY``, with its own credential from
-    ``<site>/api/robot/settings``, and caches them (0600) for offline starts. A variable
+    A linked robot (``openral robot link``) fetches its settings with its own credential
+    from ``<site>/api/robot/settings``: its account's (its org's, or its owner's for a free
+    robot: the keys and switches) with the robot's own on top (its reasoner model and rSkills);
+    a fleet's settings never reach a robot. They arrive as the variables it reads, e.g.
+    ``OPENRAL_REASONER_API_KEY``, and are cached (0600) for offline starts. A variable
     already in the environment wins; only ``names`` are applied (default: the reasoner's
     ``ACCOUNT_SETTINGS`` and the dashboard's ``CONTROL_SETTINGS``), and nothing is
     fetched when every one of them is already set. A refused credential (the robot was
@@ -444,6 +393,14 @@ def apply_account_settings(
     from openral_observability.dashboard.remote_auth import load_enrolment
 
     secret_file = _secret_path()
+    if enrolment_path().with_name("robot-settings.json").is_file():
+        # Older releases kept a reasoner key and model set in the robot's console there;
+        # openral.com is now the only source, so say so rather than ignore it silently.
+        echo(
+            "account settings: robot-settings.json beside the enrolment is no longer read; "
+            "set the provider API key in the account's settings and the robot's model in its "
+            "Robot settings on openral.com, then delete that file"
+        )
     try:
         enrolment = load_enrolment(enrolment_path())
     except ValueError as exc:

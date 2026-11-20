@@ -696,23 +696,6 @@ def test_a_forwarded_websocket_on_the_local_listener_is_refused() -> None:
                 pass
 
 
-@pytest.mark.asyncio
-async def test_the_tunnel_never_reaches_the_robots_own_settings(
-    issuer: FakeIssuer, tmp_path: Path
-) -> None:
-    """openral.com keeps its own settings; the robot's (its API keys) stay at the robot."""
-    app = create_app(TelemetryStore(), verifier=_verifier(issuer, tmp_path))
-    async with _remote(app) as client:
-        token = issuer.mint(role="operator")
-        assert (await client.get("/api/settings", headers=_auth(token))).status_code == 403
-        put = await client.put(
-            "/api/settings",
-            json={"name": "ANTHROPIC_API_KEY", "value": "sk-ant-x"},
-            headers={**_auth(token), "Origin": _SITE},
-        )
-        assert put.status_code == 403
-
-
 # ── the prompt action's correlation id (#658) ────────────────────────────────
 
 
