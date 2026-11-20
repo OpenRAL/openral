@@ -15,7 +15,7 @@ than an inline branch:
   commit its surviving slots — that would leave one arm driven from the new
   chunk while the other holds an older setpoint. ``SlotGroupStager`` is the one
   staging machine that enforces it, for every HAL that reassembles a tick: the
-  sim HAL shell (``sim_attached.SimRolloutHAL``), ``GroupedRosControlHAL`` and
+  sim HAL shell (``sim_attached.SimAttachedHAL``), ``GroupedRosControlHAL`` and
   ``ComposedHAL``.
 * **Addressing by name, not position.** ``JOINT_*`` slots are zero-padded to
   full dof (the C++ kernel enforces ``chunk.n_dof == envelope.n_dof``), so a

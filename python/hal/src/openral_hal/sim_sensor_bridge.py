@@ -1,7 +1,7 @@
 # python/hal/src/openral_hal/sim_sensor_bridge.py
 """Shared sim-sensor + viewer bridge for scene-attached HAL lifecycle nodes.
 
-Republishes whatever a sim HAL (``SimRolloutHAL``: a scene-attached
+Republishes whatever a sim HAL (``SimAttachedHAL``: a scene-attached
 ``SimAttachedHAL`` or a MuJoCo twin) exposes — RGB camera frames
 (``read_images``) on ``/openral/cameras/<n>/image`` and an optional live
 ``mujoco.viewer`` — for any manifest-driven node, so franka/ur5e/... reach
@@ -287,7 +287,7 @@ def should_idle_step(
     Args:
         now_ns: Current monotonic clock in nanoseconds (``time.monotonic_ns()``).
         last_action_ns: Monotonic ns of the last real action through the HAL's
-            ``send_action`` (``SimRolloutHAL.last_action_ns``); ``0`` if none.
+            ``send_action`` (``SimAttachedHAL.last_action_ns``); ``0`` if none.
         idle_hold_ns: Quiet window in ns. A real action within this window of
             ``now_ns`` suppresses the idle tick.
         step_while_active: Keep stepping despite recent actions. Used only by
@@ -2739,7 +2739,7 @@ def initial_configuration_stop_record(
 
     A stop with ``last_action_ns == 0`` differs categorically from the
     mid-task stop the ``sim.estop_ground_truth_snapshot`` line reads like:
-    no action has reached ``SimRolloutHAL.send_action`` yet — the single
+    no action has reached ``SimAttachedHAL.send_action`` yet — the single
     choke point every real action passes, stamped *before* any early
     return — so the configuration the kernel refused is the one the
     **scene reset produced**, not one a policy drove into. The robot was
@@ -2765,7 +2765,7 @@ def initial_configuration_stop_record(
             entry; any missing key is simply omitted from the result.
         stop_seq: The bridge's monotonic stop counter, joining this line to the
             ``sim.estop_ground_truth_snapshot`` line for the same stop.
-        last_action_ns: ``SimRolloutHAL.last_action_ns`` — ``0`` until the
+        last_action_ns: ``SimAttachedHAL.last_action_ns`` — ``0`` until the
             first ``send_action``.
         candidate_chunks_seen: How many chunks the kernel had been offered on
             ``/openral/candidate_action`` when the stop fired.
@@ -3259,7 +3259,7 @@ class SimSensorBridge:
     def _publish_images(self) -> None:
         """Republish cached camera frames from the HAL as sensor_msgs/Image.
 
-        Reads ``SimRolloutHAL.read_images`` (a dict of
+        Reads ``SimAttachedHAL.read_images`` (a dict of
         ``camera_name -> HWC uint8 NDArray``) and publishes each frame on
         ``/openral/cameras/<name>/image``.  The obs-key lookup (via
         ``_image_obs_key``) lets LIBERO-style scenes (keyed by VLA slot
@@ -3594,7 +3594,7 @@ class SimSensorBridge:
         """Create the sim-only idle-step timer, gated on a callable ``idle_step``.
 
         Gate (the PRIMARY safety gate): the HAL exposes a callable ``idle_step``,
-        defined ONLY on the sim HAL shell (``SimRolloutHAL``). A real
+        defined ONLY on the sim HAL shell (``SimAttachedHAL``). A real
         HAL never defines it, so the timer is never created against real
         hardware. This is the real guarantee, not "zero is harmless" (a zero
         vector is a HOLD in sim but "drive to 0 rad" — violent — on a real
@@ -3945,8 +3945,8 @@ class SimSensorBridge:
         cannot verify — including one it has *never heard about*: a world state
         whose ``attachment_stamp_ns`` is still 0 is treated as unverifiable and
         every JOINT chunk is dropped as ``attached_overflow``. A HAL without the
-        attachment API (``update_attached_objects`` / ``read_attached_objects``,
-        i.e. every ``MujocoArmHAL`` twin) has no attach mechanics at all, so
+        attachment API (``update_attached_objects`` / ``read_attached_objects``;
+        every sim HAL has it since #683) has no attach mechanics at all, so
         "nothing attached, fresh" is the exact truth for it, and saying so is
         what lets the kernel certify its motion. Seen on the OpenArm twin,
         lab Orin, 2026-09-22: zero publishers on ``/openral/attachment_state`` and

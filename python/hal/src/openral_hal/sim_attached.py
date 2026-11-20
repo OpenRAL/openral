@@ -1,12 +1,12 @@
 """SimAttachedHAL — wrap any ``openral_sim.SimRollout`` as a HAL adapter.
 
 Generic bridge between ``openral_sim.SimRollout`` and the
-``openral_hal.HAL`` Protocol the ROS lifecycle nodes consume. ``SimRolloutHAL`` is
+``openral_hal.HAL`` Protocol the ROS lifecycle nodes consume. ``SimAttachedHAL`` is
 the one sim HAL shell (send path and slot-group staging, idle stepper, clock and
 time base, estop latch, state / image / depth reads, scene export, step
-bookkeeping); ``SimAttachedHAL`` adds what only a scene-attached backend offers
-(the attachment API, ``reset_episode``, per-goal placement grading). The bare
-MuJoCo twin, ``MujocoArmHAL``, is a ``SimRolloutHAL`` over a ``MujocoTwinRollout``. Runs the
+bookkeeping, the attachment API, ``reset_episode``, per-goal placement grading),
+for a scene backend and a bare twin alike: the MuJoCo twin, ``MujocoArmHAL``, is a
+``SimAttachedHAL`` over a ``MujocoTwinRollout``. Runs the
 HAL and the env in one process — a split HAL/env process pair left ``/scan``
 unable to ray-cast live MJCF geometry (no handle to ``MjModel``/``MjData``) —
 so the lifecycle node's ``mujoco_handle_provider`` can bind to
@@ -103,7 +103,7 @@ if TYPE_CHECKING:
 
 
 class SimEnv(Protocol):
-    """What ``SimRolloutHAL`` calls on its env directly; every other hook is ``getattr``-gated.
+    """What ``SimAttachedHAL`` calls on its env directly; every other hook is ``getattr``-gated.
 
     An ``openral_sim.SimRollout`` satisfies it, and so does a ``MujocoTwinRollout``.
     """
@@ -146,7 +146,6 @@ __all__ = [
     "ActionPacker",
     "SimAttachedHAL",
     "SimEnv",
-    "SimRolloutHAL",
     "gripper_targets_action",
     "normalized_joint_index",
     "pack_action_for_env",
@@ -452,7 +451,7 @@ def pack_action_for_env(  # noqa: PLR0912  # reason: one branch per supported co
 
 
 def _group_route(env: object) -> tuple[Callable[[list[Action]], Any] | None, int, bool]:
-    """How ``SimRolloutHAL`` sends to a backend that takes typed commands (``step_action_group``).
+    """How ``SimAttachedHAL`` sends to a backend that takes typed commands (``step_action_group``).
 
     Decided from what the env declares (see ``openral_sim.rollout.SimRollout``):
     ``action_group_size`` > 0 groups every run of that many ungrouped slots (BEHAVIOR);
@@ -484,7 +483,7 @@ def _group_twist_row(actions: list[Action]) -> list[float] | None:
     )
 
 
-class SimRolloutHAL:
+class SimAttachedHAL:
     """HAL Protocol adapter that wraps an in-process ``SimRollout``.
 
     Generic over robot embodiment. The active simulator is the source
@@ -1680,7 +1679,7 @@ class SimRolloutHAL:
         env only steps on ``/openral/safe_action`` receipt, so an idle scene
         freezes physics and cameras go stale.
 
-        Safety: defined ONLY on the sim shell (``SimRolloutHAL``) — real HALs don't
+        Safety: defined ONLY on the sim shell (``SimAttachedHAL``) — real HALs don't
         define it, and ``SimSensorBridge``
         gates its idle timer on ``callable(getattr(hal, "idle_step", None))``,
         so the timer is never created against a real HAL. That method-only
@@ -2641,22 +2640,6 @@ class SimRolloutHAL:
         if raw is None:
             return None
         return [float(value) for value in np.asarray(raw, dtype=np.float32).reshape(-1)]
-
-
-class SimAttachedHAL(SimRolloutHAL):
-    """A ``SimRolloutHAL`` over a scene-attached ``SimRollout`` (``deploy sim``'s scene).
-
-    Adds the surface a scene backend offers and a bare twin does not, each a deploy
-    behaviour the lifecycle node and the sensor bridge switch on by reflection
-    (``getattr(hal, name, None)``): the attachment API the kernel's attached-payload
-    check stages through (``update_attached_objects`` / ``read_attached_objects`` /
-    ``read_attached_body_ids``), the ``reset_episode`` service and per-goal placement
-    grading (``set_active_task``, the ``/openral/reward/active_task`` subscription).
-
-    Example:
-        >>> issubclass(SimAttachedHAL, SimRolloutHAL)
-        True
-    """
 
     def reset_episode(self) -> int:
         """Start a fresh episode on the live env without rebuilding it (sim only).

@@ -8,7 +8,7 @@ drives the base, and owns the ONE stepping loop (``advance``: the per-step hook,
 then ``mj_step``) every action and idle slice runs through. It reads the joint state
 in the manifest's public units and renders the manifest's RGB cameras on demand.
 
-``MujocoArmHAL`` is a ``SimRolloutHAL`` whose env is one of these, so the twin and
+``MujocoArmHAL`` is a ``SimAttachedHAL`` whose env is one of these, so the twin and
 every scene-attached backend share one HAL shell, which drives it through the env
 hooks it reads: ``step_action_group`` (every command: a slot group, or one ungrouped
 action as a group of one — ``steps_every_command_as_group``), ``idle_step``,
@@ -117,7 +117,7 @@ class TwinKwargs(TypedDict, total=False):
 
 
 class TwinStepResult(BaseModel):
-    """One twin transition, as ``SimRolloutHAL`` reads it (frozen).
+    """One twin transition, as ``SimAttachedHAL`` reads it (frozen).
 
     ``info["applied_action"]`` is the command the step applied (``step_action_group``):
     the composed full-dof action for a slot group, the action itself otherwise. No
@@ -163,7 +163,7 @@ class MujocoTwinRollout:
     #: The clock id the shell's ``clock_authority`` reports for this env.
     clock_id = "mujoco"
     #: The shell hands every command to ``step_action_group``, an ungrouped action as a
-    #: group of one (``SimRolloutHAL``'s explicit route for this env; see ``SimRollout``).
+    #: group of one (``SimAttachedHAL``'s explicit route for this env; see ``SimRollout``).
     steps_every_command_as_group: ClassVar[bool] = True
 
     def __init__(self, description: RobotDescription, **kwargs: Unpack[TwinKwargs]) -> None:
@@ -339,16 +339,31 @@ class MujocoTwinRollout:
             raise ROSConfigError(f"Could not load MJCF '{mjcf_path}': {exc}") from exc
 
     def reset(self, seed: int | None = None) -> dict[str, Any]:
-        """(Re)load the twin into its initial state: ``close``, then ``load``.
+        """Put the twin into its initial state: ``load`` it, or reset a loaded one in place.
 
-        Deterministic: ``seed`` is unused.
+        In place (``reset_episode``) keeps the ``MjModel``: the sensor bridge, the
+        renderers and the attachment evidence tracker hold it, so only ``MjData`` is
+        reset (to the keyframe when set), ``ctrl`` re-seeded and ``_on_load`` re-run, as
+        ``load`` does. Deterministic: ``seed`` is unused.
 
         Raises:
             ROSConfigError: See ``load``.
         """
         del seed
-        self.close()
-        self.load()
+        if self.model is None or self.data is None:
+            self.load()
+            return {}
+        import mujoco as mj  # reason: optional sim-only dep; loaded already
+
+        if self.keyframe_index is not None:
+            mj.mj_resetDataKeyframe(self.model, self.data, self.keyframe_index)
+        else:
+            mj.mj_resetData(self.model, self.data)
+        mj.mj_forward(self.model, self.data)
+        if self.seed_ctrl_from_qpos:
+            self._hold_qpos_in_ctrl(self.joint_names)
+        self._on_load()
+        self.last_state_time = time.monotonic()
         return {}
 
     def step(self, action: Sequence[float]) -> TwinStepResult:
@@ -419,7 +434,7 @@ class MujocoTwinRollout:
             self.model = None
             self.data = None
 
-    # ── SimRolloutHAL env hooks ─────────────────────────────────────────────
+    # ── SimAttachedHAL env hooks ─────────────────────────────────────────────
 
     def mujoco_handles(self) -> tuple[Any, Any] | None:
         """The live ``(model, data)``, or ``None`` before ``load`` / after ``close``."""

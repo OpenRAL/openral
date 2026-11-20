@@ -1,13 +1,12 @@
 """Internal MuJoCo-backed HAL implementation shared by every bare-twin adapter.
 
-``MujocoArmHAL`` is the ``SimRolloutHAL`` shell around a ``MujocoTwinRollout``:
+``MujocoArmHAL`` is the ``SimAttachedHAL`` shell around a ``MujocoTwinRollout``:
 the rollout owns the physics (the robot's own MJCF, its time base, command
 composition and validation, ctrl writes, base driving, the one stepping loop,
 joint-state reads and lazy camera renders), the shell owns everything a deploy-sim
 HAL exposes around it (the send path and its slot-group staging, the idle stepper,
-clock, scene export, step bookkeeping, post-step observers — not the scene-attached
-extras of ``SimAttachedHAL``: no attachment API, ``reset_episode`` or per-goal
-grading on a twin). It is the simulation
+clock, scene export, step bookkeeping, post-step observers, the attachment API,
+``reset_episode`` and per-goal grading). It is the simulation
 backbone behind ``UR5eHAL``, ``FrankaPandaHAL``, the OpenArm, ALOHA, SO-100, Rizon 4,
 OpenAMRobot and humanoid twins; a robot whose twin behaves differently passes its
 own rollout subclass (``twin``).
@@ -41,7 +40,7 @@ from openral_core.exceptions import ROSConfigError, ROSEStopRequested, ROSRuntim
 from openral_core.schemas import RobotDescription
 
 from openral_hal.mujoco_twin import MujocoTwinRollout, TwinKwargs
-from openral_hal.sim_attached import SimRolloutHAL
+from openral_hal.sim_attached import SimAttachedHAL
 
 if TYPE_CHECKING:
     import mujoco
@@ -104,7 +103,7 @@ def _kinematic_group(joint_name: str, groups: Sequence[str], *, robot: str) -> s
 log = structlog.get_logger(__name__)
 
 
-class MujocoArmHAL(SimRolloutHAL):
+class MujocoArmHAL(SimAttachedHAL):
     """Generic MuJoCo-backed HAL adapter for position-controlled arms.
 
     Supports single-arm robots, floating-base humanoids (via
@@ -112,7 +111,7 @@ class MujocoArmHAL(SimRolloutHAL):
     ``SimGripperDescription`` entries with optional
     ``mirror_actuator_index`` for parallel-jaw configurations like Aloha).
 
-    A ``SimRolloutHAL`` whose env is a ``MujocoTwinRollout`` (or the ``twin``
+    A ``SimAttachedHAL`` whose env is a ``MujocoTwinRollout`` (or the ``twin``
     subclass a robot passes) built from these arguments; the shell drives it. What a
     robot's twin does differently lives in its rollout subclass, never here.
     ``_model`` / ``_data`` / ``_settle_steps`` are the rollout's live values.
@@ -178,7 +177,7 @@ class MujocoArmHAL(SimRolloutHAL):
         kwargs["backend"] = type(self).__name__
         rollout = twin(description, **kwargs)
         # The explicit width means the shell never probes the env through openral_sim.
-        SimRolloutHAL.__init__(self, rollout, description, env_action_dim=rollout.action_dim)
+        SimAttachedHAL.__init__(self, rollout, description, env_action_dim=rollout.action_dim)
         self._twin = rollout  # the env, typed: the twin operations (reset_to_pose, ...)
 
     # ── The rollout's live state, under the names subclasses use ────────────
@@ -208,7 +207,7 @@ class MujocoArmHAL(SimRolloutHAL):
         return self._sim_dt_per_tick_s is None
 
     def connect(self) -> None:
-        """Load the MJCF into a fresh twin (``SimRolloutHAL.connect``: ``env.reset`` loads).
+        """Load the MJCF into a fresh twin (``SimAttachedHAL.connect``: ``env.reset`` loads).
 
         Unlike a scene-attached env's idempotent re-connect, the HAL Protocol refuses a
         second connect.
@@ -224,7 +223,7 @@ class MujocoArmHAL(SimRolloutHAL):
         super().connect()
 
     def disconnect(self) -> None:
-        """``SimRolloutHAL.disconnect``, then release the twin (model, renderers).  Idempotent."""
+        """``SimAttachedHAL.disconnect``, then release the twin (model, renderers).  Idempotent."""
         if self._connected:
             log.info("hal.disconnect", robot=self.description.name)
         super().disconnect()
@@ -277,7 +276,7 @@ class MujocoArmHAL(SimRolloutHAL):
     # ── Safety ─────────────────────────────────────────────────────────────────
 
     def estop(self) -> None:
-        """Latch the stop (``SimRolloutHAL.estop``), zero ``ctrl``, tear the twin down and raise.
+        """Latch the stop (``SimAttachedHAL.estop``), zero ``ctrl``, tear the twin down and raise.
 
         The twin's difference from the shell's latch: the HAL Protocol's raising stop,
         and the twin is released at once — its GL contexts closed now, because

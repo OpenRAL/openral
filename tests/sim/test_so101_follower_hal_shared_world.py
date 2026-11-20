@@ -30,7 +30,7 @@ else:
 import numpy as np
 from numpy.typing import NDArray
 from openral_core import Action, ControlMode, RobotDescription, SharedWorldScene
-from openral_core.exceptions import ROSConfigError, ROSEStopRequested
+from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError, ROSEStopRequested
 from openral_hal import build_hal
 from openral_hal.peer_voxels import (
     occupancy_grid,
@@ -208,7 +208,9 @@ def test_reset_to_pose_and_estop_stay_local_to_one_robot(table: _World) -> None:
 
 
 def test_the_world_refuses_what_it_cannot_serve(table: _World, tmp_path: Path) -> None:
-    """A second HAL for an attached robot, an unknown robot, and no world at all."""
+    """A second HAL for an attached robot, an unknown robot, a per-robot reset, no world."""
+    with pytest.raises(ROSCapabilityMismatch, match="shared world"):
+        table.hals["a"].reset_episode()
     with pytest.raises(ROSConfigError, match="already attached"):
         table.hal("a").connect()
     with pytest.raises(ROSConfigError, match="robots are"):
