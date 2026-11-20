@@ -72,7 +72,7 @@ completion-adjudication gate (`describe_image`). Against that contract:
   `VLLM_USE_FLASHINFER_SAMPLER=0`. Every one of those non-obvious flags was
   forced by a real failure (see the validation ledger). Those are the dGPU
   defaults; a Jetson gets different sizing (see [Jetson defaults](#jetson-defaults)).
-- Config surface: `OPENRAL_REASONER_{MODEL,ENDPOINT,API_KEY,TIMEOUT_S,MAX_TOKENS}`
+- Config surface: `OPENRAL_REASONER_{MODEL,ENDPOINT,API_KEY,TIMEOUT_S,FIRST_CALL_TIMEOUT_S,MAX_TOKENS}`
   plus `OPENRAL_COSMOS3_AUTOSTART` / `OPENRAL_COSMOS3_BOOT_TIMEOUT_S`
   / `OPENRAL_COSMOS3_SIDECAR` (client) and `OPENRAL_COSMOS3_GPU_MEM_UTIL` /
   `OPENRAL_COSMOS3_MAX_MODEL_LEN` / `OPENRAL_COSMOS3_KV_CACHE_BYTES` /

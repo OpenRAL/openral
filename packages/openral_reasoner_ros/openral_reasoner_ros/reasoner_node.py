@@ -2121,7 +2121,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         """Run ``_adjudicate_completion`` off-executor; deliver the verdict back (#21).
 
         ``describe_image`` shares the LLM timeout budget (10 s cloud / 60 s
-        local) and used to run inside a service done-callback, starving the
+        local, longer while a local model loads) and used to run inside a
+        service done-callback, starving the
         executor exactly like ``select_tool``. The whole sync helper is safe
         on the worker: it only reads immutable snapshot refs (frame bytes,
         client handle) and the network call. ``done(verdict)`` runs on the

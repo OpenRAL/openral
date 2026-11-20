@@ -192,6 +192,8 @@ class Cosmos3ToolUseClient(OpenAICompatibleToolUseClient):
         timeout_s: Per-call wall-clock timeout. Default 120 s — an on-device
             4B VLM's first inference after boot compiles kernels and is much
             slower than steady state.
+        first_call_timeout_s: Read timeout while the model may be loading,
+            when longer than ``timeout_s`` (see base class).
         max_tokens: Optional completion-token cap (see base class).
         auto_start: Spawn the managed sidecar when the loopback endpoint is
             down. Defaults ``True``; forced off for non-loopback URLs and
@@ -216,6 +218,7 @@ class Cosmos3ToolUseClient(OpenAICompatibleToolUseClient):
         api_key: str | None = None,
         base_url: str = COSMOS3_BASE_URL,
         timeout_s: float = 120.0,
+        first_call_timeout_s: float = 0.0,
         max_tokens: int | None = None,
         auto_start: bool = True,
         boot_timeout_s: float = DEFAULT_BOOT_TIMEOUT_S,
@@ -226,6 +229,7 @@ class Cosmos3ToolUseClient(OpenAICompatibleToolUseClient):
             api_key=api_key,
             base_url=base_url,
             timeout_s=timeout_s,
+            first_call_timeout_s=first_call_timeout_s,
             max_tokens=max_tokens,
         )
         self._auto_start = auto_start and _managed_port(base_url) is not None

@@ -84,12 +84,11 @@ def depth_extrinsic_problems(
     }
     if estimated_camera is not None:
         # The camera sits at its own mount or the one it shares; that mount is checked.
-        spec = next(
-            (s for s in (*description.sensors, *scene_sensors) if s.name == estimated_camera),
-            None,
-        )
-        if spec is not None and spec.shares_mount_with:
-            estimated_camera = spec.shares_mount_with
+        sensors = (*description.sensors, *scene_sensors)
+        spec = next((s for s in sensors if s.name == estimated_camera), None)
+        placed = None if spec is None else optical_mount(spec, sensors)
+        if placed is not None:
+            estimated_camera = placed.sensor.name
     problems = []
     for spec in description.sensors:
         if not spec.is_cloud_source and spec.name != estimated_camera:
@@ -219,8 +218,7 @@ def resolve_estimated_depth_camera(
         >>> [p.split(": ")[1].split(",")[0] for p in real.problems]  # nor a binding
         ['no deploy_binding', 'no mount ties it to the robot']
     """
-    by_name = {s.name: s for s in sensors}
-    spec = by_name.get(camera)
+    spec = next((s for s in sensors if s.name == camera), None)
     if spec is None:
         return EstimatedDepthMount("", None, camera, [f"{camera}: no such sensor"])
     if spec.modality != "rgb":
@@ -276,12 +274,19 @@ def resolve_estimated_depth_camera(
                 f"{camera}: deploy_binding.backend_params.rectified must be true or false "
                 "(true: the topic is already rectified, read through CameraInfo.p)"
             )
-    mount = by_name.get(spec.shares_mount_with or camera, spec)
-    if mount.parent_frame is not None and mount.static_transform_xyz_rpy is not None:
-        frame = str(mount.frame_id)
-        optical = optical_frame_id(frame)
+    placed = optical_mount(spec, sensors)
+    mount = spec if placed is None else placed.sensor
+    # DA3's own extra check: the mount must be declared, so the launch publishes it.
+    if (
+        placed is not None
+        and mount.parent_frame is not None
+        and mount.static_transform_xyz_rpy is not None
+    ):
         return EstimatedDepthMount(
-            optical, None if optical == frame else frame, mount.name, problems
+            placed.optical,
+            None if placed.optical == placed.frame else placed.frame,
+            mount.name,
+            problems,
         )
     if hal_mode == "sim" and str(spec.frame_id).endswith("_optical_frame"):
         return EstimatedDepthMount(str(spec.frame_id), None, camera, problems)
@@ -313,7 +318,8 @@ def image_frame_id(spec: SensorSpec, sensors: Sequence[SensorSpec]) -> str:
     """The tf2 frame a camera's pixels are in, for consumers that place them (the object lift).
 
     Pixels are optical-convention (z forward, y down), so the frame is always an optical
-    one wherever a mount is known — the same rule as :func:`resolve_estimated_depth_camera`:
+    one wherever a mount is known (:func:`optical_mount`, the one rule every publisher of
+    that frame follows):
 
     * a camera that ``shares_mount_with`` another sensor of ``sensors`` is that device's
       other stream, rendered from that sensor's mount: the mount's
@@ -334,9 +340,58 @@ def image_frame_id(spec: SensorSpec, sensors: Sequence[SensorSpec]) -> str:
         >>> image_frame_id(next(s for s in metal if s.name == "top"), metal)
         'top_camera_optical_frame'
     """
+    placed = optical_mount(spec, sensors)
+    return str(spec.frame_id) if placed is None else placed.optical
+
+
+class OpticalMount(NamedTuple):
+    """The mount a camera's pixels are placed through (:func:`optical_mount`).
+
+    Attributes:
+        sensor: The sensor whose mount places the camera: itself, or the one it
+            ``shares_mount_with``.
+        frame: That mount's ``frame_id``.
+        optical: The REP-103 optical frame the pixels are in (:func:`optical_frame_id`
+            of ``frame``). Where it differs from ``frame`` it is a child a publisher
+            (deploy launch on hardware, sim bridge in sim) must hang under ``frame``.
+    """
+
+    sensor: SensorSpec
+    frame: str
+    optical: str
+
+
+def optical_mount(spec: SensorSpec, sensors: Sequence[SensorSpec]) -> OpticalMount | None:
+    """The mount a camera's pixels are placed through, or ``None`` if it keeps its ``frame_id``.
+
+    The one rule the consumer (:func:`image_frame_id`, the object lift), the DA3
+    resolver (:func:`resolve_estimated_depth_camera`) and both publishers of the optical
+    child (``deploy_e2e.launch.py::_optical_mounts`` on hardware,
+    ``SimSensorBridge._publish_optical_mount`` in sim) share, so a frame one of them
+    names is a frame another publishes (issues #627, #641):
+
+    * a camera that ``shares_mount_with`` another sensor of ``sensors`` is that device's
+      other stream: it is placed through that sensor's mount, whatever its own
+      ``frame_id`` and pose say;
+    * a camera with its own mount (``parent_frame`` + ``static_transform_xyz_rpy``) is
+      placed through its own ``frame_id``;
+    * any other camera has no mount to resolve (``None``): its ``frame_id`` is a robot
+      link, a sim bridge's live optical frame, or unplaced.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> arm = RobotDescription.from_yaml("robots/openarm/robot.yaml").sensors
+        >>> top = optical_mount(next(s for s in arm if s.name == "top"), arm)
+        >>> top.sensor.name, top.frame, top.optical
+        ('head_zed', 'zed_camera_link', 'zed_camera_link_optical_frame')
+        >>> mobile = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml").sensors
+        >>> optical_mount(next(s for s in mobile if s.name == "wrist"), mobile) is None
+        True
+    """
     mount = next((s for s in sensors if s.name == spec.shares_mount_with), None)
-    if mount is not None:
-        return optical_frame_id(mount.frame_id)
-    if spec.parent_frame is not None and spec.static_transform_xyz_rpy is not None:
-        return optical_frame_id(spec.frame_id)
-    return str(spec.frame_id)
+    if mount is None:
+        if spec.parent_frame is None or spec.static_transform_xyz_rpy is None:
+            return None
+        mount = spec
+    frame = str(mount.frame_id)
+    return OpticalMount(mount, frame, optical_frame_id(frame))

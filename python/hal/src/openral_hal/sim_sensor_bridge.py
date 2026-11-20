@@ -116,6 +116,8 @@ if TYPE_CHECKING:
 
     from builtin_interfaces.msg import Time
     from openral_core import RobotDescription
+    from openral_core.depth_extrinsic import OpticalMount
+    from openral_core.schemas import SensorSpec
     from sensor_msgs.msg import LaserScan
 
     from openral_hal.proprio_snapshot import ProprioFrame
@@ -426,6 +428,40 @@ def _optical_frame_rgb_cameras(sensors: Any) -> list[Any]:
         if getattr(s, "modality", None) == "rgb"
         and str(getattr(s, "frame_id", "")).endswith("_optical_frame")
     ]
+
+
+def _static_optical_mount(
+    spec: SensorSpec, sensors: Sequence[SensorSpec], *, backend_places_depth: bool
+) -> OpticalMount | None:
+    """The ``OpticalMount`` whose optical child the bridge latches on /tf_static, or ``None``.
+
+    ``openral_core.depth_extrinsic.optical_mount`` of ``spec`` over ``sensors`` (so the
+    frame is the one ``image_frame_id`` and the real deploy launch name), where the mount
+    frame is body-convention and so needs the child. ``None`` too for a depth sensor's
+    mount on a backend that places depth cameras itself (``backend_places_depth``: a
+    non-MuJoCo backend such as Isaac ships each depth frame with the camera's own pose,
+    which the depth leg broadcasts as ``base -> <that optical frame>`` on /tf): a frame
+    has one parent. Pure (no rclpy / MuJoCo), so it is unit-testable in isolation.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> arm = RobotDescription.from_yaml("robots/openarm/robot.yaml").sensors
+        >>> top = next(s for s in arm if s.name == "top")
+        >>> _static_optical_mount(top, arm, backend_places_depth=False)[1:]
+        ('zed_camera_link', 'zed_camera_link_optical_frame')
+        >>> _static_optical_mount(top, arm, backend_places_depth=True) is None  # live
+        True
+    """
+    from openral_core.depth_extrinsic import optical_mount
+
+    from openral_hal.depth_cloud import is_depth_sensor
+
+    placed = optical_mount(spec, sensors)
+    if placed is None or placed.optical == placed.frame:
+        return None
+    if backend_places_depth and is_depth_sensor(placed.sensor):
+        return None
+    return placed
 
 
 def _body_record(model: Any, data: Any, body_id: int) -> dict[str, object]:
@@ -2901,9 +2937,9 @@ class SimSensorBridge:
         self._depth_colour_pubs: dict[str, tuple[Any, Any]] = {}
         self._depth_colour_renderers: dict[str, tuple[Any, Any, Any]] = {}
         self._depth_colour_disabled: set[str] = set()
-        # Depth sensors on a manifest mount (body-convention ``frame_id``): their
-        # optical child is a static TF under the mount, never a live one.
-        self._depth_static_optical: set[str] = set()
+        # Optical frames latched on /tf_static under a manifest mount
+        # (``_publish_optical_mount``): never also broadcast live, a frame has one parent.
+        self._static_optical_frames: set[str] = set()
         # Backend RGB-D frames already published (identity per camera) and the
         # cameras warned for a colour/depth size mismatch (``_publish_depth_frame``).
         self._depth_frames_published: dict[str, Any] = {}
@@ -3112,7 +3148,7 @@ class SimSensorBridge:
                 renderer.close()
         self._depth_colour_renderers.clear()
         self._depth_colour_disabled.clear()
-        self._depth_static_optical.clear()
+        self._static_optical_frames.clear()
         self._depth_frames_published.clear()
         self._depth_clouds_published.clear()
         self._depth_colour_mismatch_warned.clear()
@@ -3164,7 +3200,7 @@ class SimSensorBridge:
             self._camera_info_specs[s.name] = s
             self._image_frames[s.name] = image_frame_id(s, self._description.sensors)
             # A body-convention mount's optical child, as a real driver publishes it.
-            self._publish_optical_mount(s)
+            self._publish_optical_mount(s, self._description.sensors)
         self._image_timer = self._node.create_timer(
             1.0 / max(self._camera_rate_hz, 1.0), self._publish_images
         )
@@ -3459,6 +3495,8 @@ class SimSensorBridge:
             spec = specs.get(name)
             if spec is None or name in self._camera_tf_disabled:
                 continue
+            if str(spec.frame_id) in self._static_optical_frames:
+                continue  # latched under a manifest mount: a frame has one parent
             try:
                 xyz, quat = camera_optical_tf_to_base(
                     model=model,
@@ -4453,8 +4491,9 @@ class SimSensorBridge:
             self._depth_info_pubs[spec.name] = self._node.create_publisher(
                 CameraInfo, camera_topic(spec.name, CameraTopicKind.DEPTH_CAMERA_INFO), info_qos
             )
-            if has_mujoco:
-                self._publish_optical_mount(spec)
+            # Its own mount: the depth leg stamps a sensor's raster in its own
+            # optical frame (``depth_optical_frame_id``), whatever mount it shares.
+            self._publish_optical_mount(spec, ())
         self._depth_timer = self._node.create_timer(
             1.0 / max(self._depth_rate_hz, 1.0), self._publish_depth_clouds
         )
@@ -4470,10 +4509,14 @@ class SimSensorBridge:
             )
         )
 
-    def _publish_optical_mount(self, spec: Any) -> None:
-        """Latch ``<mount> -> <mount>_optical_frame`` for a body-frame camera.
+    def _publish_optical_mount(self, spec: SensorSpec, sensors: Sequence[SensorSpec]) -> None:
+        """Latch ``<mount> -> <mount>_optical_frame`` for a body-frame camera mount.
 
-        An RGB camera's pixels are stamped in that optical child (``image_frame_id``).
+        The mount is ``openral_core.depth_extrinsic.optical_mount``'s over ``sensors``:
+        the one rule ``image_frame_id`` (the frame an RGB camera's pixels are stamped
+        in) and the real deploy launch read, so this publishes the frame the object
+        lift looks up. An RGB camera that ``shares_mount_with`` another sensor gets
+        *that* sensor's optical child (OpenArm ``top`` on ``head_zed``).
         A depth sensor whose ``frame_id`` is a body-convention camera mount with a
         manifest pose (``parent_frame`` + ``static_transform_xyz_rpy``, published by
         the deploy launch) gets its optical child here, the way a real camera
@@ -4481,17 +4524,22 @@ class SimSensorBridge:
         sits at that same mount (``SensorSpec.sim_placement``), so the raster,
         the cloud and the registered colour are placed by TF where they were
         cast. A sensor already framed optically, or with no manifest mount, keeps
-        the live ``base -> optical`` TF of ``_publish_depth_clouds``.
+        the live ``base -> optical`` TF of ``_publish_depth_frame``. So does a depth
+        sensor's mount on a backend that places depth cameras itself (Isaac;
+        ``_static_optical_mount``): that frame is on TF only while the backend
+        renders the depth camera.
         """
-        from openral_hal.depth_cloud import BODY_TO_OPTICAL_QUAT_XYZW, depth_optical_frame_id
+        from openral_hal.depth_cloud import BODY_TO_OPTICAL_QUAT_XYZW
 
-        optical = depth_optical_frame_id(spec)
-        if (
-            optical == spec.frame_id
-            or spec.parent_frame is None
-            or spec.static_transform_xyz_rpy is None
-        ):
+        placed = _static_optical_mount(
+            spec,
+            sensors,
+            backend_places_depth=getattr(self._hal, "mujoco_handles", lambda: None)() is None
+            and callable(getattr(self._hal, "read_depth_clouds", None)),
+        )
+        if placed is None or placed.optical in self._static_optical_frames:  # latched
             return
+        optical = placed.optical
         from geometry_msgs.msg import TransformStamped
         from tf2_ros import StaticTransformBroadcaster
 
@@ -4499,7 +4547,7 @@ class SimSensorBridge:
             self._static_tf_broadcaster = StaticTransformBroadcaster(self._node)
         tf = TransformStamped()
         tf.header.stamp = self._node.get_clock().now().to_msg()
-        tf.header.frame_id = str(spec.frame_id)
+        tf.header.frame_id = placed.frame
         tf.child_frame_id = optical
         qx, qy, qz, qw = BODY_TO_OPTICAL_QUAT_XYZW
         tf.transform.rotation.x = qx
@@ -4507,7 +4555,7 @@ class SimSensorBridge:
         tf.transform.rotation.z = qz
         tf.transform.rotation.w = qw
         self._static_tf_broadcaster.sendTransform(tf)
-        self._depth_static_optical.add(spec.name)
+        self._static_optical_frames.add(optical)
 
     def _mujoco_depth_frame(
         self, name: str, kwargs: dict[str, Any], model: Any, data: Any, stride: int
@@ -4811,11 +4859,12 @@ class SimSensorBridge:
                     )
                 # Depth + colour Image/CameraInfo (and the live optical TF) through the
                 # one RGB-D frame path every backend shares (``_publish_depth_frame``).
-                live_tf = self._base_frame_body is not None and (
-                    name not in self._depth_static_optical
-                )
                 self._publish_depth_frame(
-                    name, spec, frame, stamp, tf_stamp=stamp if live_tf else None
+                    name,
+                    spec,
+                    frame,
+                    stamp,
+                    tf_stamp=stamp if self._base_frame_body is not None else None,
                 )
             except ROSConfigError as exc:
                 self._depth_disabled.add(name)
@@ -5710,7 +5759,8 @@ class SimSensorBridge:
         ``stamp`` is the time the frame shows; ``tf_stamp`` (the backend state time) stamps
         the optical TF, which the backend measured at the current step, so the TF
         history stays true and a lookup at ``stamp`` finds the pose of that time.
-        ``tf_stamp=None`` publishes no TF (a static manifest mount carries it). An
+        ``tf_stamp=None`` publishes no TF, and neither does an optical frame latched
+        under a manifest mount (``_publish_optical_mount``: a frame has one parent). An
         empty ``rgb`` (the camera has no registered colour) publishes the depth only.
         """
         import numpy as np
@@ -5732,7 +5782,11 @@ class SimSensorBridge:
         info = camera_info_from_intrinsics(
             width=w, height=h, fx=fx, fy=fy, cx=cx, cy=cy, frame_id=optical, stamp=stamp
         )
-        if self._tf_broadcaster is not None and tf_stamp is not None:
+        if (
+            self._tf_broadcaster is not None
+            and tf_stamp is not None
+            and optical not in self._static_optical_frames  # latched under its mount
+        ):
             qw, qx, qy, qz = rotation_to_quat_wxyz(optical_in_base[:3, :3])
             tf = TransformStamped()
             tf.header.stamp = tf_stamp
