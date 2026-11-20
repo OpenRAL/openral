@@ -97,7 +97,10 @@ def _send(sock: Any, endpoint: str, data: dict[str, Any] | None = None) -> None:
 
 
 def _recv(sock: Any) -> dict[str, Any]:
-    return msgpack.unpackb(sock.recv(), object_hook=sidecar._decode_ndarray, raw=False)
+    reply: dict[str, Any] = msgpack.unpackb(
+        sock.recv(), object_hook=sidecar._decode_ndarray, raw=False
+    )
+    return reply
 
 
 def _call(sock: Any, endpoint: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
