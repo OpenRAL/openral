@@ -527,6 +527,8 @@ class SimAttachedHAL:
     _scene_cache: SceneCache | None = None
     #: A step finished and its post-step observers have not run yet (``_run_due_observers``).
     _observers_due: bool = False
+    #: ``reset_episode`` can start a fresh episode (the HAL node advertises the service).
+    episode_reset_supported: bool = True
 
     def __init__(
         self,
@@ -810,7 +812,9 @@ class SimAttachedHAL:
 
     def _reset_env(self, seed: int | None, caller: str) -> None:
         """``env.reset(seed)`` and reset the HAL's per-episode state."""
-        self._accumulate_sim_time_before_reset()
+        # Read before the reset, folded into the offset only once it succeeded: a
+        # refused reset leaves the clock where it was (and a retry counts nothing twice).
+        elapsed = self._rollout_sim_time_ns()
         try:
             obs = self._env.reset(seed=seed)
         except ROSError:
@@ -819,6 +823,8 @@ class SimAttachedHAL:
             raise ROSRuntimeError(
                 f"{type(self).__name__}.{caller}: env.reset failed: {exc}"
             ) from exc
+        if elapsed is not None:
+            self._sim_time_offset_ns += elapsed
         self._last_obs = dict(obs) if isinstance(obs, dict) else None
         self._keep_depth_frames(self._last_obs)
         self._last_state_ns = time.time_ns()
@@ -2690,9 +2696,10 @@ class SimAttachedHAL:
             The seed the env was reset with.
 
         Raises:
-            ROSRuntimeError: ``env.reset`` raised.
+            ROSRuntimeError: Not connected, or ``env.reset`` raised.
 
         """
+        self._require_connected("reset_episode")
         self._episode_index += 1
         seed = (self._reset_seed or 0) + self._episode_index
         self._reset_env(seed, "reset_episode")

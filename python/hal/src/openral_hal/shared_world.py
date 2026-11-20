@@ -833,6 +833,9 @@ class SharedWorldArmHAL(MujocoArmHAL):
             ),
         )
 
+    #: Not advertised as ``/openral/<robot>/reset_episode`` (the node checks it).
+    episode_reset_supported = False
+
     def reset_episode(self) -> int:
         """Refused: one robot cannot reset a world its peers share.
 

@@ -27,6 +27,7 @@ imported here, so a bare twin runs on a host without it.
 from __future__ import annotations
 
 import contextlib
+import math
 import os
 import tempfile
 import threading
@@ -276,7 +277,7 @@ class MujocoTwinRollout:
             model.opt.gravity[:] = 0.0
         data = mj.MjData(model)
         if self.keyframe_index is not None:
-            if self.keyframe_index >= model.nkey:
+            if not 0 <= self.keyframe_index < model.nkey:
                 raise ROSConfigError(
                     f"keyframe_index={self.keyframe_index} but the MJCF has "
                     f"only {model.nkey} keyframes ({self.mjcf_path})"
@@ -409,8 +410,14 @@ class MujocoTwinRollout:
         targets, twist, applied = self._compose(actions)
         assert self.model is not None and self.data is not None
         self._command(targets, twist)
+        applied = self._record_applied(applied, twist)
         self.advance(self._action_steps(twist))
         return TwinStepResult(info={"applied_action": applied})
+
+    def _record_applied(self, applied: Action, twist: tuple[float, float, float] | None) -> Action:
+        """What the command applied, once written; the composed record by default."""
+        del twist
+        return applied
 
     def advance(self, steps: int) -> None:
         """The one stepping loop: ``steps`` times the per-step hook, then ``mj_step``.
@@ -552,11 +559,12 @@ class MujocoTwinRollout:
             gripper = self.grippers_by_joint.get(name)
             if gripper is not None:
                 positions.append(self._read_gripper_value(gripper))
+                dof = self._dof_of_qpos(gripper.qpos_addrs[0])
                 if gripper.read_mode is GripperReadMode.PASSTHROUGH:
-                    velocities.append(float(data.qvel[gripper.qpos_addrs[0]]))
+                    velocities.append(float(data.qvel[dof]))
                 else:
                     velocities.append(0.0)
-                efforts.append(joint_actuator_effort(data, gripper.qpos_addrs[0]))
+                efforts.append(joint_actuator_effort(data, dof))
             else:
                 qpos_addr = self.joint_qpos_addr[name]
                 qvel_addr = self.joint_qvel_addr[name]
@@ -675,21 +683,36 @@ class MujocoTwinRollout:
             if qpos_addr is None:
                 continue
             gripper = self.grippers_by_joint.get(name)
+            # Zero qvel too so the snap doesn't carry momentum: every coordinate written.
             if gripper is None:
                 data.qpos[qpos_addr] = float(value)
+                qvel_addr = self.joint_qvel_addr.get(name)
+                if qvel_addr is not None:
+                    data.qvel[qvel_addr] = 0.0
             else:
                 self._reset_gripper_qpos(gripper, float(value))
-            qvel_addr = self.joint_qvel_addr.get(name)
-            if qvel_addr is not None:
-                # Zero qvel too so the snap doesn't carry momentum.
-                data.qvel[qvel_addr] = 0.0
-        mj.mj_forward(model, data)
+                for addr in self._gripper_reset_addrs(gripper):
+                    data.qvel[self._dof_of_qpos(addr)] = 0.0
         # Re-seed ctrl so the actuators hold the new pose on the next ``mj_step``:
         # position actuators from qpos, grippers through their write mode.
         self._hold_qpos_in_ctrl([n for n in self.joint_names if n not in self.grippers_by_joint])
         if self.grippers_by_joint:
             self.apply_gripper_targets([float(v) for v in pose])
+        # After the last ctrl write, so efforts read right after reflect the new ctrl.
+        mj.mj_forward(model, data)
         self.last_state_time = time.monotonic()
+
+    def _dof_of_qpos(self, qpos_addr: int) -> int:
+        """The DOF (``qvel``) address of the joint whose ``qpos`` starts at ``qpos_addr``.
+
+        Differs from ``qpos_addr`` after a free or ball joint.
+        """
+        model = self.model
+        assert model is not None
+        matches = np.flatnonzero(np.asarray(model.jnt_qposadr) == qpos_addr)
+        if matches.size == 0:
+            raise ROSConfigError(f"{self.backend}: no joint has its qpos at {qpos_addr}.")
+        return int(model.jnt_dofadr[int(matches[0])])
 
     def apply_arm_targets(self, targets: list[float]) -> None:
         """Write each non-gripper joint's target into its position actuator's ``ctrl``."""
@@ -742,6 +765,8 @@ class MujocoTwinRollout:
         Raises:
             ROSConfigError: See ``_validate``, ``_split_twist``, ``compose_slot_group``.
         """
+        if not actions:
+            raise ROSConfigError(f"{self.backend}: an empty action group commands nothing.")
         twist, joints = self._split_twist(actions)
         if not joints:
             return None, twist, actions[0]
@@ -803,7 +828,13 @@ class MujocoTwinRollout:
     def _command(
         self, targets: list[float] | None, twist: tuple[float, float, float] | None
     ) -> None:
-        """Write one command before its period: the target row, then the base twist."""
+        """Write one command before its period: the target row, then the base twist.
+
+        A twin without a base refuses the twist before any ``ctrl`` write, so a refused
+        mixed group leaves the arm targets unchanged.
+        """
+        if twist is not None and type(self)._drive_base is MujocoTwinRollout._drive_base:
+            self._drive_base(*twist)  # raises: no base
         if targets is not None:
             self._apply_targets(targets)
         if twist is not None:
@@ -937,8 +968,12 @@ class MujocoTwinRollout:
         if pinned is None:
             self.body_twist_dt_s = period
             return
-        if pinned <= 0.0 or (
-            self.sim_dt_per_tick_s is not None and abs(pinned - period) > TIME_BASE_TOL * period
+        if (
+            not math.isfinite(pinned)
+            or pinned <= 0.0
+            or (
+                self.sim_dt_per_tick_s is not None and abs(pinned - period) > TIME_BASE_TOL * period
+            )
         ):
             raise ROSConfigError(
                 f"{self.backend}: body_twist_dt_s={pinned} s but one command advances "
@@ -966,7 +1001,9 @@ class MujocoTwinRollout:
         """Write a public gripper value into its native qpos representation."""
         assert self.data is not None
         if gripper.read_mode is GripperReadMode.AFFINE_LOW_HIGH:
-            self.data.qpos[gripper.qpos_addrs[0]] = _gripper_command_to_raw(gripper, value)
+            # The inverse of ``_read_gripper_value``'s mapping, whatever the write mode.
+            low, high = gripper.ctrl_range
+            self.data.qpos[gripper.qpos_addrs[0]] = low + max(0.0, min(1.0, value)) * (high - low)
             return
         if gripper.read_mode is GripperReadMode.PASSTHROUGH:
             self.data.qpos[gripper.qpos_addrs[0]] = value
@@ -1105,12 +1142,19 @@ class _SoftwarePDTwin(MujocoTwinRollout):
         ctrlrange = np.asarray(model.actuator_ctrlrange, dtype=np.float64)[self._pd_act]
         self._pd_low, self._pd_high = ctrlrange[:, 0], ctrlrange[:, 1]
         self._pd_targets = self._driven_qpos() if self.hold_pose_on_load else None
+        if self._pd_targets is None:
+            # ``ctrl`` is torque here: a keyframe's or a qpos-seeded value is no hold.
+            assert self.data is not None
+            self.data.ctrl[self._pd_act] = 0.0
 
     def reset_to_pose(self, pose: list[float]) -> None:
         """Snap the joints to ``pose``; it becomes the PD target, ``ctrl`` starts at zero."""
+        import mujoco as mj  # reason: optional sim-only dep
+
         super().reset_to_pose(pose)
-        assert self.data is not None
+        assert self.model is not None and self.data is not None
         self.data.ctrl[:] = 0.0
+        mj.mj_forward(self.model, self.data)  # efforts against the zeroed torque
         self._pd_targets = self._driven_qpos()
 
     def _apply_targets(self, targets: list[float]) -> None:

@@ -25,7 +25,7 @@ from openral_hal._mujoco_arm import MujocoArmHAL
 from openral_hal.mujoco_twin import MujocoTwinRollout, TwinKwargs
 
 if TYPE_CHECKING:
-    from openral_core import RobotDescription
+    from openral_core import Action, RobotDescription
 
 __all__ = ["OpenAMRobotV2MujocoHAL"]
 
@@ -63,6 +63,25 @@ class _OpenAMRobotV2Twin(MujocoTwinRollout):
         _model, data = self._require_loaded("base_pose")
         x, y, yaw = (float(data.qpos[self.joint_qpos_addr[n]]) for n in self._base_names)
         return (x, y, yaw)
+
+    def _record_applied(self, applied: Action, twist: tuple[float, float, float] | None) -> Action:
+        """A mixed twist + joint tick records the base targets the twist just wrote.
+
+        The composed row held the base at its pre-twist ctrl; ``_drive_base`` then moved
+        those targets, so the record takes the base joints' ctrl as written.
+        """
+        if twist is None or applied.joint_targets is None:
+            return applied
+        data = self.data
+        assert data is not None
+        names = list(applied.joint_names or self.joint_names)
+        row = list(applied.joint_targets[-1])
+        if len(row) != len(names):
+            return applied
+        for name in self._base_names:
+            if name in names:
+                row[names.index(name)] = float(data.ctrl[self.actuator_index[name]])
+        return applied.model_copy(update={"joint_targets": [row]})
 
     def _drive_base(self, vx: float, vy: float, wz: float) -> None:
         """Place the base where one ``body_twist_dt_s`` of ``(vx, wz)`` takes it."""

@@ -211,6 +211,8 @@ def test_the_world_refuses_what_it_cannot_serve(table: _World, tmp_path: Path) -
     """A second HAL for an attached robot, an unknown robot, a per-robot reset, no world."""
     with pytest.raises(ROSCapabilityMismatch, match="shared world"):
         table.hals["a"].reset_episode()
+    # ...and the HAL node does not advertise /openral/<robot>/reset_episode for it.
+    assert table.hals["a"].episode_reset_supported is False
     with pytest.raises(ROSConfigError, match="already attached"):
         table.hal("a").connect()
     with pytest.raises(ROSConfigError, match="robots are"):

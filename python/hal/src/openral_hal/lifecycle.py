@@ -2714,9 +2714,13 @@ if _ROS2_AVAILABLE:
             """Open ``/openral/<robot>/reset_episode`` iff the HAL can start a fresh episode.
 
             Reflection, like ``reset_to_pose``: only a sim-attached HAL exposes
-            ``reset_episode``, so a real robot never gets the service.
+            ``reset_episode``, so a real robot never gets the service; a HAL that
+            refuses every reset (``episode_reset_supported = False``, a shared-world
+            arm) is not advertised either.
             """
             if not callable(getattr(self._hal, "reset_episode", None)):
+                return
+            if not getattr(self._hal, "episode_reset_supported", True):
                 return
             from std_srvs.srv import Trigger
 

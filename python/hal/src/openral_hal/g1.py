@@ -79,7 +79,7 @@ from openral_core.schemas import (
     SimDescription,
     UrdfAsset,
 )
-from openral_core.time_base import physics_steps_per_tick
+from openral_core.time_base import TIME_BASE_TOL, physics_steps_per_tick
 
 from openral_hal._floating_base import write_base_pin
 from openral_hal._g1_gr00t_wbc import (
@@ -118,6 +118,8 @@ G1S0Controller = Literal["none", "playground_walk", "gr00t_wbc"]
 # GR00T WBC fall detector: a pelvis below this height (m, world z) or a torso
 # tilted further than this from vertical latches the S0 off (bake-off protocol).
 _FALL_PELVIS_HEIGHT_M = 0.5
+#: The playground walking policy's trained period (50 Hz).
+_WALK_POLICY_DT_S = 0.02
 _FALL_TILT_RAD = math.radians(45.0)
 
 
@@ -477,13 +479,22 @@ class _G1WalkTwin(_FreeBaseTwin, _GlideTwin):
         """Start from the walker's ``knees_bent`` keyframe with a fresh policy state.
 
         Raises:
-            ROSConfigError: The MJCF lacks the ``knees_bent`` keyframe.
+            ROSConfigError: The MJCF lacks the ``knees_bent`` keyframe, or its timestep
+                does not give the policy its trained 50 Hz cadence (the controller runs
+                every ``_CONTROL_DECIMATION`` steps and advances its gait phase 20 ms).
         """
         import mujoco as mj  # noqa: PLC0415  # reason: optional sim-only dep
 
         super()._on_load()
         model, data = self.model, self.data
         assert model is not None and data is not None
+        policy_dt = G1WalkingController._CONTROL_DECIMATION * float(model.opt.timestep)
+        if abs(policy_dt - _WALK_POLICY_DT_S) > TIME_BASE_TOL * _WALK_POLICY_DT_S:
+            raise ROSConfigError(
+                f"G1 playground_walk: the policy runs every {policy_dt * 1e3:.3f} ms here "
+                f"(timestep {float(model.opt.timestep)} s), but it was trained at "
+                f"{_WALK_POLICY_DT_S * 1e3:g} ms; pin a 0.002 s timestep (a 50 Hz control rate)."
+            )
         keyframe_id = mj.mj_name2id(model, mj.mjtObj.mjOBJ_KEY, "knees_bent")
         if keyframe_id < 0:
             raise ROSConfigError("G1 walking MJCF is missing the 'knees_bent' keyframe.")
@@ -604,7 +615,9 @@ class _G1Gr00tTwin(_FreeBaseTwin):
         assert model is not None and data is not None
         n = len(_G1_JOINT_NAMES)
         layout_ok = (
-            model.nu == n
+            # Commands are composed in manifest order and sliced by position.
+            list(self.joint_names) == list(_G1_JOINT_NAMES)
+            and model.nu == n
             and model.jnt_type[0] == mj.mjtJoint.mjJNT_FREE
             and [self.joint_qpos_addr[j] for j in _G1_JOINT_NAMES] == list(range(7, 7 + n))
             and [self.joint_qvel_addr[j] for j in _G1_JOINT_NAMES] == list(range(6, 6 + n))
@@ -614,8 +627,8 @@ class _G1Gr00tTwin(_FreeBaseTwin):
         if not layout_ok:
             raise ROSConfigError(
                 "G1 gr00t_wbc needs the Menagerie layout: a free base joint, then the 29 "
-                "joints at qpos[7:36] / qvel[6:35] driven by actuators 0..28 in "
-                "G1_DESCRIPTION order."
+                "joints at qpos[7:36] / qvel[6:35] driven by actuators 0..28, and the "
+                "manifest's joints, in G1_DESCRIPTION order."
             )
         timestep = float(model.opt.timestep)
         decimation, exact_dt = physics_steps_per_tick(CONTROL_RATE_HZ, timestep)
@@ -663,6 +676,8 @@ class _G1Gr00tTwin(_FreeBaseTwin):
         assert model is not None and data is not None
         x, y, yaw = self.read_base_pose()
         write_base_pin(data, (x, y, yaw, float(model.qpos0[2])))
+        # The base reset seeded ctrl from joint angles; these actuators are torque motors.
+        data.ctrl[:] = 0.0
         mj.mj_forward(model, data)
         self._arm_targets = np.asarray(pose[S0_JOINT_COUNT:], dtype=np.float64).copy()
         self._reset_state()

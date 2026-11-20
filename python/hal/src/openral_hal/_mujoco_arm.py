@@ -220,7 +220,13 @@ class MujocoArmHAL(SimAttachedHAL):
             raise ROSRuntimeError(
                 f"{type(self).__name__}('{self.description.name}') is already connected."
             )
-        super().connect()
+        try:
+            super().connect()
+        except BaseException:
+            # A refused connect (a time base the manifest disagrees with) leaves no
+            # loaded model behind: the shell's own teardown never closes the env.
+            self._release_twin()
+            raise
 
     def disconnect(self) -> None:
         """``SimAttachedHAL.disconnect``, then release the twin (model, renderers).  Idempotent."""

@@ -14,7 +14,9 @@ Real manifests, real MuJoCo, no mocks (CLAUDE.md §1.11).
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import os
+import tempfile
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -48,17 +50,26 @@ PlainShell = Callable[[str], tuple[SimAttachedHAL, MujocoTwinRollout]]
 @pytest.fixture
 def plain_shell(
     robot_description: Callable[[str], RobotDescription], connect_twin: Callable[..., Any]
-) -> Callable[[str], tuple[SimAttachedHAL, MujocoTwinRollout]]:
-    """Connect a plain ``SimAttachedHAL`` around a robot's twin rollout (``connect_twin``)."""
+) -> Iterator[Callable[[str], tuple[SimAttachedHAL, MujocoTwinRollout]]]:
+    """Connect a plain ``SimAttachedHAL`` around a robot's twin rollout (``connect_twin``).
+
+    The plain shell never closes its env, so teardown disconnects it and closes the
+    twin (renderers, model), also after a failed or skipped test.
+    """
+    built: list[tuple[SimAttachedHAL, MujocoTwinRollout]] = []
 
     def _build(robot: str) -> tuple[SimAttachedHAL, MujocoTwinRollout]:
         desc = robot_description(robot)
         twin = MujocoArmHAL.from_description(desc)._twin
         hal = connect_twin(lambda: SimAttachedHAL(twin, desc, env_action_dim=twin.action_dim))
         assert type(hal) is SimAttachedHAL
+        built.append((hal, twin))
         return hal, twin
 
-    return _build
+    yield _build
+    for hal, twin in reversed(built):
+        hal.disconnect()
+        twin.close()
 
 
 def test_plain_shell_serves_the_twins_joint_state_in_public_gripper_units(
@@ -88,9 +99,7 @@ def test_plain_shell_serves_the_twins_joint_state_in_public_gripper_units(
 @requires_renderer
 def test_plain_shell_renders_lazily_through_the_twin(plain_shell: PlainShell) -> None:
     hal, twin = plain_shell("so101_follower")
-    frames = hal.read_images()
-    if not frames:
-        pytest.skip("off-screen MuJoCo render produced no frames on this host")
+    frames = hal.read_images()  # the renderer probe already skips a host without GL
     assert set(frames) == {"top", "wrist"}
     # Nothing was cached from a step: the frames came from the hook, on demand.
     assert "images" not in (hal._last_obs or {})
@@ -203,9 +212,20 @@ def test_so101_box_deploy_scene_builds_a_working_bare_twin(repo_root: Path) -> N
     desc = RobotDescription.from_yaml(str(repo_root / "robots" / scene.robot_id / "robot.yaml"))
     composer = import_code_ref(scene.composition.composer, setting="composition.composer")
     xml, meshdir = composer(**scene.composition.params)  # type: ignore[operator]  # reason: import_code_ref returns object; the composer contract is (xml, meshdir)
-    scene_path = meshdir.parent / f"{desc.name}_composed_scene.xml"
-    scene_path.write_text(xml)
+    # A file of this test's own beside meshdir (relative mesh paths resolve), removed after.
+    fd, name = tempfile.mkstemp(
+        prefix=f"{desc.name}_composed_scene_", suffix=".xml", dir=meshdir.parent
+    )
+    with os.fdopen(fd, "w") as fh:
+        fh.write(xml)
+    scene_path = Path(name)
+    try:
+        _run_composed_so101_box(desc, scene_path)
+    finally:
+        scene_path.unlink(missing_ok=True)
 
+
+def _run_composed_so101_box(desc: RobotDescription, scene_path: Path) -> None:
     hal = build_hal(desc, mode="sim", transport={"mjcf_path": str(scene_path)})
     assert isinstance(hal, MujocoArmHAL)
     assert isinstance(hal, SimAttachedHAL)
@@ -254,9 +274,7 @@ def test_so101_box_deploy_scene_builds_a_working_bare_twin(repo_root: Path) -> N
         assert 0.0 <= g <= 1.0
         assert g == pytest.approx(0.8, abs=0.05)
 
-        frames = hal.read_images()
-        if not frames:
-            pytest.skip("off-screen MuJoCo render produced no frames on this host")
+        frames = hal.read_images()  # the renderer probe already skips a host without GL
         top = next(s for s in desc.sensors if s.name == "top")
         assert top.intrinsics is not None
         assert frames["top"].shape == (top.intrinsics.height, top.intrinsics.width, 3)

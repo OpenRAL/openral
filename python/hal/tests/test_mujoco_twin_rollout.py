@@ -855,17 +855,24 @@ def test_mobile_twin_arm_and_twist_tick_is_one_control_period(
 # ── One time base, one clock, one estop; a refused connect leaves nothing (#683) ──
 
 
+@pytest.mark.parametrize("keyframe", [99, -1])
 def test_a_refused_load_leaves_the_twin_disconnected_and_clockless(
-    robot_description: Describe,
+    robot_description: Describe, keyframe: int
 ) -> None:
-    """An out-of-range keyframe refuses the connect; no reader sees a half-loaded twin."""
+    """An out-of-range keyframe refuses the connect; no reader sees a half-loaded twin.
+
+    ``-1`` too: MuJoCo would silently reset to the defaults instead of a keyframe.
+    """
     from openral_core import ClockOrigin
 
     desc = robot_description("so101_follower")
-    kw = MujocoArmHAL._sim_kwargs_for(desc)
-    kw["keyframe_index"] = 99
+    try:
+        kw = MujocoArmHAL._sim_kwargs_for(desc)
+    except ROSConfigError as exc:
+        skip_if_unavailable(exc, "so101_follower MJCF")
+    kw["keyframe_index"] = keyframe
     hal = MujocoArmHAL(desc, **kw)
-    with pytest.raises(ROSConfigError, match="keyframe_index=99"):
+    with pytest.raises(ROSConfigError, match=f"keyframe_index={keyframe}"):
         hal.connect()
     assert hal._connected is False
     assert hal._twin.model is None and hal._twin.data is None
@@ -992,3 +999,182 @@ def test_twists_off_the_plane_are_refused_with_one_tolerance(connect_twin: Conne
         hal.send_action(tiny)
     with pytest.raises(ROSConfigError, match="linear-z"):
         hal._twin.step_action_group([tiny])
+
+
+# ── CodeRabbit review of #696: refusals and resets ───────────────────────────
+
+
+def test_an_empty_action_group_is_refused(rollout: Callable[[str], MujocoTwinRollout]) -> None:
+    """A direct ``step_action_group([])`` is a typed refusal, not an ``IndexError``."""
+    r = rollout("so101_follower")
+    with pytest.raises(ROSConfigError, match="empty action group"):
+        r.step_action_group([])
+
+
+def test_a_non_finite_twist_interval_is_refused(robot_description: Describe) -> None:
+    """``body_twist_dt_s=nan`` passed both comparisons and put NaN into the base pose."""
+    hal = OpenAMRobotV2MujocoHAL(
+        description=robot_description("openamrobot_v2"), body_twist_dt_s=float("nan")
+    )
+    try:
+        with pytest.raises(ROSConfigError, match="body_twist_dt_s=nan"):
+            hal.connect()
+    except ROSConfigError as exc:  # an unavailable MJCF refuses first
+        skip_if_unavailable(exc, "openamrobot_v2 twin")
+    assert hal._connected is False
+
+
+def test_a_twist_on_a_baseless_twin_leaves_the_arm_targets(connect_twin: ConnectTwin) -> None:
+    """A refused mixed group writes no ``ctrl``: the base refusal comes first."""
+    hal = connect_twin("so101_follower")
+    twin = hal._twin
+    assert twin.data is not None
+    ctrl = twin.data.ctrl.copy()
+    row = [0.4] * len(hal.description.joints)
+    with pytest.raises(ROSConfigError, match="has no base"):
+        twin._command(row, (0.1, 0.0, 0.0))
+    np.testing.assert_array_equal(twin.data.ctrl, ctrl)
+
+
+def test_a_snap_reports_effort_against_the_new_ctrl(connect_twin: ConnectTwin) -> None:
+    """``reset_to_pose`` refreshes the derived state after its last ``ctrl`` write.
+
+    Position actuators then hold the snapped pose: zero effort, not ``kp`` times the
+    distance to the previous target.
+    """
+    hal = connect_twin("so101_follower")
+    pose = [0.5, -0.3, 0.4, 0.2, 0.1, 0.5]
+    hal.reset_to_pose(pose)
+    effort = hal.read_state().effort
+    assert effort is not None
+    assert max(abs(e) for e in effort[:-1]) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_a_snap_zeroes_every_finger_coordinate_velocity(connect_twin: ConnectTwin) -> None:
+    """The Franka finger pair is two qpos slots: the snap zeroes both velocities."""
+    hal = connect_twin("franka_panda")
+    twin = hal._twin
+    assert twin.data is not None
+    gripper = next(iter(twin.grippers_by_joint.values()))
+    dofs = [twin._dof_of_qpos(a) for a in gripper.qpos_addrs]
+    assert len(dofs) == 2
+    twin.data.qvel[dofs] = 0.3
+    hal.reset_to_pose(list(hal.read_state().position))
+    assert [float(twin.data.qvel[d]) for d in dofs] == [0.0, 0.0]
+
+
+def test_dof_addresses_follow_the_free_joint(connect_twin: ConnectTwin) -> None:
+    """After a free joint (7 qpos, 6 dofs) the qpos and DOF addresses differ by one."""
+    hal = connect_twin("h2")
+    model = hal._twin.model
+    assert model is not None
+    first = int(model.jnt_qposadr[1])
+    assert hal._twin._dof_of_qpos(first) == int(model.jnt_dofadr[1]) == first - 1
+
+
+def test_an_affine_reset_round_trips_whatever_the_write_mode(connect_twin: ConnectTwin) -> None:
+    """``AFFINE_LOW_HIGH`` resets invert the read mapping, not the write mode."""
+    from openral_core.schemas import GripperWriteMode
+
+    hal = connect_twin("makermods_metal_station")
+    twin = hal._twin
+    for name, gripper in list(twin.grippers_by_joint.items()):
+        twin.grippers_by_joint[name] = gripper.model_copy(
+            update={"write_mode": GripperWriteMode.PASSTHROUGH}
+        )
+    gripper = next(iter(twin.grippers_by_joint.values()))
+    twin._reset_gripper_qpos(gripper, 0.5)
+    assert twin._read_gripper_value(gripper) == pytest.approx(0.5, abs=1e-9)
+
+
+def test_a_pd_twin_loads_with_no_torque(
+    robot_description: Describe, connect_twin: ConnectTwin
+) -> None:
+    """H1 (``hold_pose_on_load=False``): ``ctrl`` is torque, so nothing is seeded into it."""
+    hal = connect_twin(_h1(robot_description))
+    twin = hal._twin
+    assert twin.data is not None
+    assert not np.any(twin.data.ctrl[twin._pd_act])
+
+
+def test_a_gr00t_snap_leaves_no_joint_angle_as_torque(connect_twin: ConnectTwin) -> None:
+    """The base reset seeds ``ctrl`` from joint angles; GR00T's motors take torque."""
+    hal = connect_twin(_g1("gr00t_wbc"))
+    hal.reset_to_pose(list(hal.read_state().position))
+    assert hal._twin.data is not None
+    assert not np.any(hal._twin.data.ctrl)
+
+
+def test_gr00t_refuses_a_manifest_joint_order_it_cannot_slice(
+    robot_description: Describe,
+) -> None:
+    """Commands are composed in manifest order and sliced by position: the order is checked."""
+    from openral_hal.g1 import G1MujocoHAL
+
+    desc = robot_description("g1")
+    joints = list(desc.joints)
+    joints[0], joints[1] = joints[1], joints[0]
+    hal = G1MujocoHAL(
+        s0_controller="gr00t_wbc", description=desc.model_copy(update={"joints": joints})
+    )
+    try:
+        with pytest.raises(ROSConfigError, match="G1_DESCRIPTION order"):
+            hal.connect()
+    except ROSConfigError as exc:
+        skip_if_unavailable(exc, "g1 gr00t_wbc twin")
+
+
+def test_the_walking_twin_refuses_a_timestep_off_the_policy_cadence(
+    robot_description: Describe,
+) -> None:
+    """At 30 Hz the time base shrinks the timestep: ten steps are no longer 20 ms."""
+    from openral_hal.g1 import G1MujocoHAL
+
+    desc = robot_description("g1")
+    assert desc.action_spec is not None
+    spec = desc.action_spec.model_copy(update={"control_freq_hz": 30.0})
+    hal = G1MujocoHAL(
+        s0_controller="playground_walk", description=desc.model_copy(update={"action_spec": spec})
+    )
+    try:
+        with pytest.raises(ROSConfigError, match="trained at 20 ms"):
+            hal.connect()
+    except ROSConfigError as exc:
+        skip_if_unavailable(exc, "g1 walking twin")
+
+
+def test_a_mixed_amr_tick_records_the_base_it_moved(connect_twin: ConnectTwin) -> None:
+    """The applied record carries the base targets the twist wrote, not the pre-twist ones."""
+    hal = connect_twin("openamrobot_v2")
+    names = [j.name for j in hal.description.joints]
+    arms = [j.name for j in hal.description.joints if j.role not in ("base", "torso")]
+    position = dict(zip(names, hal.read_state().position, strict=True))
+    slot = Action(
+        control_mode=ControlMode.JOINT_POSITION,
+        horizon=1,
+        joint_targets=[[position[n] for n in names]],  # full-dof row; base and lift held
+        joint_names=arms,
+        tick_index=1,
+        tick_group_size=2,
+        runner_session_id=0x683,
+    )
+    hal.send_action(slot)
+    hal.send_action(_twist(vx=0.5, tick_index=1, tick_group_size=2, runner_session_id=0x683))
+    applied = hal.last_applied_action
+    assert applied is not None and applied.joint_targets is not None
+    record = dict(zip(applied.joint_names or names, applied.joint_targets[-1], strict=True))
+    base_x = hal.description.base_joints[0]
+    assert record[base_x] == pytest.approx(hal.base_pose[0], abs=1e-9)
+    assert record[base_x] > 0.0
+
+
+def test_reset_episode_needs_a_connection(robot_description: Describe) -> None:
+    """Before ``connect`` it is refused: it would skip the width probe and the time base."""
+    desc = robot_description("so101_follower")
+    try:
+        hal = MujocoArmHAL.from_description(desc)
+    except ROSConfigError as exc:
+        skip_if_unavailable(exc, "so101_follower MJCF")
+    with pytest.raises(ROSRuntimeError, match="not connected"):
+        hal.reset_episode()
+    assert hal._connected is False
