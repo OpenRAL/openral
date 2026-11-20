@@ -5,11 +5,12 @@ Isaac side of the backend in ``openral_sim.backends.isaac_sim`` (py3.12),
 auto-spawned under the venv named by ``OPENRAL_ISAAC_SIDECAR_PYTHON``. Launches
 Omniverse Kit headless, builds the robot-agnostic manifest scene
 (``isaac_manifest_scene``: the manifest robot from its URDF, plus an optional
-environment USD and objects), and serves ZMQ REP + msgpack/ndarray framing:
+environment USD and objects), and serves msgpack/ndarray framing on a ZMQ ROUTER socket
+(clients are REQ sockets; ``step`` replies wait on the lockstep, ``_Lockstep``):
 
     ping->{"ok","action_dim","task","layout","environment","spawn","robot","objects","robot_spec_hash","launch_id"}
     reset->{"observation"}
-    step{action, frames?}->{"observation","reward","terminated","truncated","info","renders"}
+    step{action, frames?, robot?, idle?}->{"observation","reward","terminated","truncated","info","renders"}
         frames: "render" (default) | "fresh" | "none" (no frame keys in the observation)
     render->{"frame": uint8 HWC|None}   close->{"ok"}
     contacts->PhysX robot-vs-world contacts, last physics step (scene.contact_ground_truth)
@@ -298,7 +299,7 @@ def main(argv: list[str]) -> int:
         )
         scene.build()
 
-        # 3) Serve the ZMQ REP loop.
+        # 3) Serve the ZMQ ROUTER loop (``_serve``).
         return _serve(
             scene,
             host=args.host,
@@ -328,6 +329,82 @@ def main(argv: list[str]) -> int:
 _SCENE_MESH_MAX_BYTES = 10_000_000
 
 
+#: A commanding robot that sends no step for this long (wall time) is dropped from the lockstep:
+#: the world goes on without it (openral-pro#99; the same bound `openral deploy world` had).
+_BARRIER_TIMEOUT_S = 5.0
+
+
+class _Lockstep:
+    """Which robots' ``step`` requests to answer together (openral-pro#99).
+
+    One action is one control period for every robot of the scene, so the world advances
+    once **every commanding robot** has a step waiting; then every waiting step is answered.
+    A robot is commanding from a step until it sends one marked ``idle`` (its HAL's hold
+    stepper), and an idle robot never holds the world back. A commanding robot silent for
+    ``timeout_s`` is dropped (``drop_late``). With one robot every step is answered at once,
+    as before the lockstep existed. Robots are told apart by the ``robot`` field of a
+    request (``""`` when absent, as every client before #99 sends).
+
+    Example:
+        >>> lock = _Lockstep(timeout_s=5.0)
+        >>> lock.submit("a", b"ra", {"action": 1}, now=0.0)
+        >>> [r for r, *_ in lock.release()]  # alone: answered at once
+        ['a']
+        >>> lock.submit("b", b"rb", {"action": 2}, now=0.1)  # b commands too: it waits for a
+        >>> lock.release()
+        []
+        >>> lock.submit("a", b"ra", {"action": 3}, now=0.2)
+        >>> [r for r, *_ in lock.release()]  # one period for both
+        ['b', 'a']
+        >>> lock.submit("b", b"rb", {"action": 4}, now=0.3)  # and a goes silent
+        >>> lock.drop_late(now=5.3), [r for r, *_ in lock.release()]
+        (['a'], ['b'])
+    """
+
+    def __init__(self, timeout_s: float) -> None:
+        self.timeout_s = timeout_s
+        self.waiting: dict[str, tuple[bytes, dict[str, Any]]] = {}  # robot -> (route, data)
+        self.commanding: dict[str, float] = {}  # robot -> when its last step came
+
+    def submit(self, robot: str, route: bytes, data: dict[str, Any], *, now: float) -> None:
+        """Hold ``robot``'s step until ``release`` says the world may advance."""
+        if robot in self.waiting:
+            raise ValueError(f"robot {robot!r} already has a step waiting")
+        if data.get("idle"):
+            self.commanding.pop(robot, None)
+        else:
+            self.commanding[robot] = now
+        self.waiting[robot] = (route, data)
+
+    def release(self) -> list[tuple[str, bytes, dict[str, Any]]]:
+        """The steps to answer now, in arrival order: all waiting, once every commanding robot is."""
+        if not self.waiting or any(r not in self.waiting for r in self.commanding):
+            return []
+        out = [(r, route, data) for r, (route, data) in self.waiting.items()]
+        self.waiting.clear()
+        return out
+
+    def drop_late(self, *, now: float) -> list[str]:
+        """Drop the commanding robots silent past the timeout while another robot waits."""
+        if not self.waiting:
+            return []
+        late = [
+            r
+            for r, t in self.commanding.items()
+            if r not in self.waiting and now - t > self.timeout_s
+        ]
+        for r in late:
+            del self.commanding[r]
+        return late
+
+    def wait_s(self, *, now: float) -> float | None:
+        """How long the server may block before ``drop_late`` has work, or ``None``."""
+        if not self.waiting:
+            return None
+        silent = [t for r, t in self.commanding.items() if r not in self.waiting]
+        return max(0.0, min(silent) + self.timeout_s - now) if silent else None
+
+
 def _serve(
     scene: Any,
     *,
@@ -347,18 +424,58 @@ def _serve(
     import zmq
 
     ctx = zmq.Context()
-    sock = ctx.socket(zmq.REP)
+    # ROUTER, not REP: a robot's step can wait for the others' (``_Lockstep``) while other
+    # requests are answered. The clients stay REQ sockets: [route, b"", payload] frames.
+    sock = ctx.socket(zmq.ROUTER)
     sock.bind(f"tcp://{host}:{port}")
     print(f"[isaac_sidecar] serving on tcp://{host}:{port}", flush=True)
 
-    running = True
+    lock = _Lockstep(_BARRIER_TIMEOUT_S)
     timing = _StepTiming() if os.environ.get("OPENRAL_SIDECAR_TIMING") == "1" else None
+
+    def send(route: bytes, reply: dict[str, Any]) -> float:
+        payload = msgpack.packb(reply, default=_encode_ndarray, use_bin_type=True)
+        sock.send_multipart([route, b"", payload])
+        return len(payload) / 1e6
+
+    def answer_steps() -> None:
+        for _robot, route, data in lock.release():
+            t_req = time.perf_counter()
+            try:
+                reply = scene.step(
+                    np.asarray(data["action"], dtype=np.float32),
+                    frames=str(data.get("frames", "render")),
+                )
+            except Exception as exc:
+                reply = {"error": f"{type(exc).__name__}: {exc}"}
+            t_pack = time.perf_counter()
+            mb = send(route, reply)
+            if timing is not None:
+                _time_step(timing, scene, data, reply, t_req, t_pack, mb)
+
+    running = True
     while running:
-        raw = sock.recv()
-        t_req = time.perf_counter()
+        wait = lock.wait_s(now=time.monotonic())
+        if not sock.poll(None if wait is None else max(1, int(wait * 1000))):
+            for late in lock.drop_late(now=time.monotonic()):
+                print(
+                    f"[isaac_sidecar] robot {late!r} sent no step for "
+                    f"{_BARRIER_TIMEOUT_S:g} s: dropped from the lockstep",
+                    flush=True,
+                )
+            answer_steps()
+            continue
+        route, _, raw = sock.recv_multipart()
         req = msgpack.unpackb(raw, object_hook=_decode_ndarray, raw=False)
         endpoint = req.get("endpoint")
         data = req.get("data", {}) or {}
+        if endpoint == "step":
+            try:
+                lock.submit(str(data.get("robot", "")), route, data, now=time.monotonic())
+            except ValueError as exc:
+                send(route, {"error": str(exc)})
+            answer_steps()
+            continue
         try:
             if endpoint == "ping":
                 # Identity lets the client reject a stale sidecar serving a
@@ -388,11 +505,6 @@ def _serve(
                     # configured nominal period used to build physics substeps.
                     "sim_dt_per_tick_s": scene._observed_sim_dt_per_tick_s,
                 }
-            elif endpoint == "step":
-                reply = scene.step(
-                    np.asarray(data["action"], dtype=np.float32),
-                    frames=str(data.get("frames", "render")),
-                )
             elif endpoint == "refresh_frames":
                 reply = {"observation": scene.refresh_frames()}
             elif endpoint == "render":
@@ -403,7 +515,7 @@ def _serve(
                 reply = scene.static_collider_boxes()
             elif endpoint == "scene_mesh":
                 # The client may ask for less, never more: the GLB rides the same
-                # REQ/REP connection as the steps.
+                # connection as the steps.
                 limit = min(int(data["limit_bytes"]), _SCENE_MESH_MAX_BYTES)
                 reply = scene.scene_mesh(limit)
             elif endpoint == "scene_ground_truth":
@@ -421,40 +533,42 @@ def _serve(
                 reply = {"error": f"unknown endpoint {endpoint!r}"}
         except Exception as exc:
             reply = {"error": f"{type(exc).__name__}: {exc}"}
-        t_pack = time.perf_counter()
-        payload = msgpack.packb(reply, default=_encode_ndarray, use_bin_type=True)
-        t_sent = time.perf_counter()
-        sock.send(payload)
-        if (
-            timing is not None
-            and endpoint == "step"
-            and data.get("frames") == "fresh"
-            and not timing.sized
-        ):
-            timing.sized = True
-            sizes = _nbytes_tree(reply)
-            print(
-                "[sidecar_timing] reply MB by array: "
-                + ", ".join(
-                    f"{k}={v:.2f}" for k, v in sorted(sizes.items(), key=lambda kv: -kv[1])[:10]
-                ),
-                flush=True,
-            )
-        if timing is not None and endpoint == "step":
-            timing.add(
-                str(data.get("frames", "render")),
-                {
-                    **getattr(scene, "last_step_timing", {}),
-                    "pack": (t_sent - t_pack) * 1e3,
-                    "send": (time.perf_counter() - t_sent) * 1e3,
-                    "bytes": len(payload) / 1e6,
-                    "handler": (t_pack - t_req) * 1e3,
-                },
-            )
+        send(route, reply)
 
     sock.close(linger=0)
     ctx.term()
     return 0
+
+
+def _time_step(
+    timing: _StepTiming,
+    scene: Any,
+    data: dict[str, Any],
+    reply: dict[str, Any],
+    t_req: float,
+    t_pack: float,
+    mb: float,
+) -> None:
+    """``OPENRAL_SIDECAR_TIMING=1``: one step's handler, pack+send time and reply size."""
+    if data.get("frames") == "fresh" and not timing.sized:
+        timing.sized = True
+        sizes = _nbytes_tree(reply)
+        print(
+            "[sidecar_timing] reply MB by array: "
+            + ", ".join(
+                f"{k}={v:.2f}" for k, v in sorted(sizes.items(), key=lambda kv: -kv[1])[:10]
+            ),
+            flush=True,
+        )
+    timing.add(
+        str(data.get("frames", "render")),
+        {
+            **getattr(scene, "last_step_timing", {}),
+            "pack_send": (time.perf_counter() - t_pack) * 1e3,
+            "bytes": mb,
+            "handler": (t_pack - t_req) * 1e3,
+        },
+    )
 
 
 if __name__ == "__main__":
