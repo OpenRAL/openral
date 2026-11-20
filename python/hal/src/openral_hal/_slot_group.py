@@ -414,6 +414,8 @@ class SlotGroupStager:
         """Start with no tick staged and nothing committed."""
         self._actions: list[Action] = []
         self._key: tuple[int, int] | None = None
+        # The group size the tick in flight declared with its first slot.
+        self._size = 0
         self._watermark = TickWatermark()
         self._applied: Action | None = None
 
@@ -522,8 +524,10 @@ class SlotGroupStager:
                 retired session, or a session-less tick ``refuse_stale_tick``
                 refuses; nothing is staged), the staged
                 ``(runner_session_id, tick_index)`` changed before completing,
-                or the group overran its declared size — the last two mean a
-                slot was lost.
+                the group overran its declared size — those two mean a slot
+                was lost — or a slot of the staged tick declares a different
+                group size than its first slot (the tick is discarded, never
+                released short).
         """
         group_size = int(action.tick_group_size)
         tick = int(action.tick_index)
@@ -564,6 +568,7 @@ class SlotGroupStager:
             # the next one too.
             self._actions.clear()
             self._key = key
+            self._size = group_size
             self._actions.append(action)
             raise ROSRuntimeError(
                 f"incomplete slot group: tick {expected} had {staged}/{group_size} "
@@ -573,6 +578,18 @@ class SlotGroupStager:
                 f"Tick {tick} is staged from this slot, so the next complete tick "
                 "commits normally."
             )
+        if self._key == key and group_size != self._size:
+            # A slot of the same tick declaring another size: releasing the group at
+            # the smaller size would apply a short tick, waiting for the larger one an
+            # overrun. Neither is a tick the runner sent, so it is discarded.
+            declared = self._size
+            self.discard()
+            raise ROSRuntimeError(
+                f"slot group for tick {tick} changed its declared size from {declared} to "
+                f"{group_size}; the tick is discarded rather than committed."
+            )
+        if self._key is None:
+            self._size = group_size
         self._key = key
         self._actions.append(action)
         if len(self._actions) < group_size:

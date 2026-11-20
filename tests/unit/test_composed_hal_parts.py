@@ -207,3 +207,29 @@ def test_a_part_that_stops_itself_mid_send_stops_the_whole_robot(amr: RobotDescr
     assert [op for op, _ in transport.switch_calls if op == "deactivate"] == ["deactivate"]
     report = arm.last_stop_report
     assert report is not None and report.stopped
+
+
+def test_a_slot_that_shrinks_the_tick_never_reaches_a_part(base_lift: RobotDescription) -> None:
+    """The composite's stager refuses a resized tick before any part is dispatched (#683).
+
+    Releasing it at the smaller size would hand the parts a partial tick on the real
+    actuation path. Nothing is connected: the refusal comes before routing.
+    """
+    from openral_core.exceptions import ROSRuntimeError
+    from openral_core.schemas import Action, ControlMode
+
+    hal = ComposedHAL(description=base_lift, parts=_parts())
+    lift = Action(
+        control_mode=ControlMode.JOINT_POSITION,
+        horizon=1,
+        joint_targets=[[0.0, 0.0, 0.0, 0.0]],
+        joint_names=["lift_joint"],
+        tick_index=1,
+        tick_group_size=3,
+        runner_session_id=0xA,
+    )
+    hal.send_action(lift)
+    with pytest.raises(ROSRuntimeError, match="changed its declared size from 3 to 2"):
+        hal.send_action(lift.model_copy(update={"tick_group_size": 2}))
+    assert hal.last_committed_tick == 0
+    assert hal.discard_staged_slots() == 0  # the tick was discarded, not left staged
