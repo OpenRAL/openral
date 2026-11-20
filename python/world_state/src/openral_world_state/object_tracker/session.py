@@ -34,8 +34,9 @@ from __future__ import annotations
 import math
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import NamedTuple
 
 import numpy as np
 import structlog
@@ -43,7 +44,10 @@ from numpy.typing import NDArray
 from openral_core import (
     AttachedCollisionObject,
     EmbodimentKind,
+    FixedAttachment,
     GraspDeclaration,
+    JointSpec,
+    MimicJoint,
     ObjectQuery,
     ObjectRole,
     PlaceDeclaration,
@@ -57,12 +61,15 @@ from openral_core import (
 )
 from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import (
+    base_displaced,
+    base_prismatic,
     freeze_released_attachment,
     homogeneous_from_quat_xyz,
     rebase_box,
+    rebase_pose,
     rotation_to_quat_wxyz,
 )
-from openral_core.kinematics import Box, box_gap_lower_bound_m
+from openral_core.kinematics import Box, box_gap_lower_bound_m, link_transform
 from openral_core.perception_geometry import (
     WORKSPACE_MIN_COVER,
     VoxelLattice,
@@ -79,7 +86,7 @@ from openral_world_state.object_tracker.binding import (
 )
 from openral_world_state.object_tracker.cover import Cell, hand_touches
 from openral_world_state.object_tracker.fit import ContainingFit
-from openral_world_state.object_tracker.grounding import in_scope
+from openral_world_state.object_tracker.grounding import centre_within, in_scope
 from openral_world_state.object_tracker.pinch import HandModel
 from openral_world_state.object_tracker.release import JawReleaseMonitor, release_track
 from openral_world_state.object_tracker.stall import JawStallDetector
@@ -155,6 +162,21 @@ _JOINT_SAMPLE_MAX_AGE_NS = round(_R.joint_sample_max_age_s * _NS)
 
 #: A source stamp this far behind the newest one is a reset clock, not a late message.
 _CLOCK_RESET_NS = 1_000_000_000
+
+#: Base displacement (planar metres; rotation radians) past which the station's tracks are
+#: carried to the new base pose (``TrackerSession.on_joint_state``): the safety kernel's
+#: station thresholds (``station_motion_translation_m`` / ``station_motion_rotation_rad``
+#: defaults, which no launch overrides), where it retires their allowances. *Calibration point.*
+STATION_MOTION_M = load_tracking_thresholds().tracker.station_motion_m
+STATION_ROTATION_RAD = load_tracking_thresholds().tracker.station_rotation_rad
+#: Base travel (m) / turn (rad) a track is carried by odometry since its last fit before it is
+#: dropped (``TrackerSession._carry``): at a 2 % odometry drift (*calibration point*) the
+#: carried box stays within the 1.5 cm extrinsic bound the grounding pad already budgets
+#: (``MAX_PLANAR_ERR_M``), the turn at the 0.9 m manipulation reach.
+CARRY_MAX_M = load_tracking_thresholds().tracker.carry_max_m
+CARRY_MAX_RAD = load_tracking_thresholds().tracker.carry_max_rad
+_PLANAR_TOL_M = 1e-6  # a base motion lifting the base frame more than this is not planar
+_PLANAR_COS = math.cos(1e-3)  # nor one tilting it more than 1 mrad
 
 #: Kinds whose base cannot carry a base-frame zone away from the furniture (the deploy's
 #: ``_check_place_zone_frames`` rule, enforced here too: a launch arg bypasses the CLI).
@@ -261,6 +283,98 @@ class _Goal:
             and (q.role is not ObjectRole.TARGET or in_scope(track, self.within))
             for q in self.queries
         )
+
+
+@dataclass
+class _Station:
+    """Where the planar base stood for what the tracker holds in its frame."""
+
+    joints: tuple[str, ...]  # the manifest's ``base_joints``; empty on a fixed base
+    prismatic: tuple[bool, ...]  # per joint (``base_displaced``'s mask)
+    root: str  # the parent link of the base chain (``link_transform``'s root)
+    anchor: tuple[float, ...] | None = None  # their measured positions; ``None``: none yet
+    lost: bool = False  # the base pose was measured, then stopped being measured
+    moved_ns: int = -1  # joint stamp of the last base move
+    #: object id -> (last fit stamp, planar m, turn rad) carried by odometry since that fit.
+    carried: dict[str, tuple[int, float, float]] = field(default_factory=dict)
+    #: (planar m, turn rad) carried since the station was entered (``leave_station`` and a
+    #: discard reset it): the budget of the records
+    #: with no fit of their own (released records, priors, let-go and placed records).
+    travel: tuple[float, float] = (0.0, 0.0)
+
+
+def _station_of(description: RobotDescription) -> _Station:
+    """The robot's station record: its ``base_joints`` and their chain root (none: fixed).
+
+    The root is the parent of the topmost base joint on the chain above ``base_frame``:
+    ``base_joints`` is ordered by axis (forward, side, yaw), not by depth. A manifest whose base
+    joints are not all on that chain gets no station (a fixed base's behaviour), never a root
+    that would leave a dof out of the motion.
+    """
+    base = tuple(description.base_joints or ())
+    if not base:
+        return _Station((), (), "")
+    edge_of: dict[str, JointSpec | MimicJoint | FixedAttachment] = {
+        **{j.child_link: j for j in description.joints},
+        **{m.child_link: m for m in description.mimic_joints},
+        **{a.child_link: a for a in description.fixed_attachments},
+    }
+    chain, link = [], description.base_frame
+    while link in edge_of:
+        chain.append(edge_of[link])
+        link = edge_of[link].parent_link
+    names = [e.name for e in chain]
+    top = max((names.index(b) for b in base if b in names), default=-1)
+    # Above base_frame, up to the topmost base joint: the base joints and fixed attachments
+    # only. Anything else moving there would be left out of the base motion.
+    foreign = [
+        e.name
+        for e in chain[: top + 1]
+        if e.name not in base and not isinstance(e, FixedAttachment)
+    ]
+    if top < 0 or set(base) - set(names) or foreign:
+        log.warning(
+            "object_tracker.base_chain_unsupported",
+            base_joints=list(base),
+            base_frame=description.base_frame,
+            moving_on_chain=foreign,
+            why="the tracker carries nothing across a base move on this manifest",
+        )
+        return _Station((), (), "")
+    return _Station(base, base_prismatic(description), chain[top].parent_link)
+
+
+def _over_budget(planar_m: float, turn_rad: float) -> bool:
+    """Whether odometry carried this far may have drifted past the extrinsic bound.
+
+    Travel and turn share one budget (``CARRY_MAX_M`` / ``CARRY_MAX_RAD`` each spend all of it).
+
+    Example:
+        >>> (
+        ...     _over_budget(0.5 * CARRY_MAX_M, 0.4 * CARRY_MAX_RAD),
+        ...     _over_budget(0.6 * CARRY_MAX_M, 0.5 * CARRY_MAX_RAD),
+        ... )
+        (False, True)
+    """
+    return planar_m / CARRY_MAX_M + turn_rad / CARRY_MAX_RAD > 1.0
+
+
+class StationChange(NamedTuple):
+    """What a measured base move did to the tracker's base-frame state (``on_joint_state``).
+
+    Attributes:
+        why: ``base_moved`` (carried), ``base_unmeasured`` / ``base_measured`` (discarded:
+            the motion over the gap is unknown), ``clock_reset`` (discarded: a sim reset puts
+            the base back) or ``base_untrusted`` (discarded: not a planar motion).
+        carried: Track ids re-expressed at the new pose.
+        dropped: Track ids discarded (a fail-closed case, or carried past ``CARRY_MAX_*``).
+        released: Released records retired (discarded cases only; carried ones move).
+    """
+
+    why: str
+    carried: list[str]
+    dropped: list[str]
+    released: list[str]
 
 
 def _box(region: PlaceRegion) -> Box:
@@ -429,6 +543,9 @@ class TrackerSession:
         # bound (a real ATTACH for that close is then a duplicate, not a second bind).
         self._derived: set[str] = set()
         self._goals: dict[str, _Goal | None] = {"grasp": None, "place": None, "deploy": None}
+        # Station anchor (``_follow_base``): the measured ``base_joints`` pose this
+        # station's tracks hold at; ``None`` until the first pose after the station was left.
+        self._station = _station_of(description)
         self._now_ns = 0
         self._clock_reset = False  # the joint stamps went back at least once (a sim reset)
 
@@ -501,6 +618,7 @@ class TrackerSession:
             # the newest-grid gate would refuse every grid until sim time passed the old one,
             # and a late ATTACH would look up hand poses from the last episode.
             self.grid, self.grid_stamp_ns = None, 0
+            self._station.moved_ns = -1  # a stamp of the old clock would refuse every grid
             self._forget_zones()
             kept = [h for h in self._joint_history if h[0] <= stamp_ns]
             self._joint_history.clear()
@@ -614,6 +732,16 @@ class TrackerSession:
         self._instance_cells = None
         self.tracker.drop_requests()  # a late answer is about the last station's frame
         self._forget_zones()
+        self._station.anchor = None  # the next measured base pose anchors the new station
+        self._station.carried.clear()
+        self._station.travel = (0.0, 0.0)
+        for goal in self._goals.values():
+            if goal is None or goal.scope is None or goal.scope.frame_id == self.frame_id:
+                continue
+            # A fixed-frame scope resolved at the last station is a box in that station's
+            # base frame: unresolved (matching nothing) until tf2 resolves it here.
+            goal.scope_resolved = None
+            self._set_within(goal, goal.scope)
         if released:
             self.attachment_changes += 1
         return dropped, released
@@ -635,7 +763,12 @@ class TrackerSession:
         resolution: float,
         cells: dict[str, frozenset[Cell]],
     ) -> None:
-        """EXPERIMENT: per-track vision-labelled cells, applied on the next frame (our lattice)."""
+        """EXPERIMENT: per-track vision-labelled cells, applied on the next frame (our lattice).
+
+        Cells stamped up to a base move (``base_moved_ns``) are from the old pose: ignored.
+        """
+        if stamp_ns <= self.base_moved_ns:
+            return
         self._instance_cells = (stamp_ns, frame_id, origin, resolution, cells)
 
     def _apply_instance_cells(self, hands: Sequence[PlaceRegion]) -> None:
@@ -673,6 +806,10 @@ class TrackerSession:
         if self._from_old_epoch(source_stamp_ns):
             log.info("object_tracker.grid_before_reset_ignored", stamp_ns=source_stamp_ns)
             return
+        if source_stamp_ns <= self.base_moved_ns:
+            # Built from depth taken before the base moved off the last station (#651).
+            log.info("object_tracker.grid_before_base_move_ignored", stamp_ns=source_stamp_ns)
+            return
         if source_stamp_ns >= self.grid_stamp_ns:
             self.grid, self.grid_stamp_ns = grid, source_stamp_ns
             self._rescope()
@@ -688,9 +825,234 @@ class TrackerSession:
         if detector is not None and math.isfinite(target):
             detector.command(target, stamp_ns)
 
-    def on_joint_state(self, positions: Mapping[str, float], stamp_ns: int) -> None:
-        """Fold measured joints in (manifest names); run the jaw-open release rule."""
+    @property
+    def base_moved_ns(self) -> int:
+        """Joint stamp of the last base move off a station; grids and frames up to it are stale."""
+        return self._station.moved_ns
+
+    def _base_pose(self) -> tuple[float, ...] | None:
+        """The measured ``base_joints`` positions; ``None`` while one is missing or non-finite."""
+        q = [self.positions.get(name) for name in self._station.joints]
+        if any(v is None or not math.isfinite(v) for v in q):
+            return None
+        return tuple(v for v in q if v is not None)
+
+    def _follow_base(self, stamp_ns: int) -> StationChange | None:
+        """Carry the base-frame state across a measured base move (issue #651).
+
+        Tracks, released records and query priors are boxes in the base frame where the base
+        stood when they were measured. A fixed-frame box (a memory node's goal scope, a place
+        zone) is re-expressed where the base stands now; left in place, a track would no
+        longer meet it, or would meet the neighbour's. Once the measured ``base_joints`` pose
+        leaves the anchor by more than ``STATION_MOTION_M`` / ``STATION_ROTATION_RAD`` (the
+        kernel's station thresholds), everything is re-expressed by the rigid base motion
+        from the anchor to the new pose (``link_transform`` over the base chain: the
+        odometry this node already reads, so no tf2 buffer depth limits it) and the anchor
+        moves there (``_carry``). Held payloads ride the hand and stay. Grids, depth frames
+        and requests from before the move are refused or dropped (``base_moved_ns``): cheap
+        to measure again.
+
+        Fail closed (``leave_station``, every unheld track dropped): a base pose that stops
+        being measured (missing or non-finite, ``base_unmeasured``) and the first one after
+        (``base_measured``), since the motion over the gap is unknown; and a motion that is
+        not planar (``base_untrusted``). A track carried further than ``CARRY_MAX_M`` /
+        ``CARRY_MAX_RAD`` since its last fit is dropped (odometry drift past the extrinsic
+        bound).
+
+        Returns:
+            What changed, or ``None`` (a fixed base, the station held, or nothing to do).
+        """
+        pose, anchor = self._base_pose(), self._station.anchor
+        if not self._station.joints or (pose is None and anchor is None):
+            return None  # a fixed base; or never measured yet, or already lost
+        why = (
+            "base_unmeasured"
+            if pose is None
+            else "base_measured"
+            if self._station.lost
+            # A sim reset: the base was put back, not driven there (the kernel leaves its
+            # station on a clock reset too).
+            else "clock_reset"
+            if stamp_ns < self._now_ns - _CLOCK_RESET_NS
+            else ""
+        )
+        if why:
+            return self._discard(why, pose, stamp_ns)
+        assert pose is not None
+        if anchor is None:
+            if self._unheld_ids():
+                # Tracks measured before the first base sample of this station: how far the
+                # base moved since is unknown.
+                return self._discard("base_measured", pose, stamp_ns)
+            self._station.anchor = pose  # a new station: nothing was measured here yet
+            return None
+        if not base_displaced(
+            anchor,
+            pose,
+            self._station.prismatic,
+            planar_m=STATION_MOTION_M,
+            turn_rad=STATION_ROTATION_RAD,
+        ):
+            return None
+        return self._carry(anchor, pose, stamp_ns)
+
+    def _base_transform(self, pose: tuple[float, ...]) -> NDArray[np.float64]:
+        """``T_root<-base`` at the base joint positions ``pose``."""
+        positions = dict(zip(self._station.joints, pose, strict=True))
+        return link_transform(self.description, self._station.root, self.frame_id, positions)
+
+    def _discard(self, why: str, pose: tuple[float, ...] | None, stamp_ns: int) -> StationChange:
+        """Fail closed on a base move that cannot be carried: ``leave_station``."""
+        dropped, released = self.leave_station()
+        self._station.lost = pose is None
+        self._station.anchor = pose
+        self._station.moved_ns = stamp_ns
+        self._station.carried.clear()
+        self._station.travel = (0.0, 0.0)
+        (log.warning if pose is None or dropped or released else log.info)(
+            "object_tracker.base_moved", why=why, pose=pose, dropped_tracks=dropped,
+            released_records=released,
+        )  # fmt: skip
+        return StationChange(why, [], dropped, released)
+
+    def _carry(
+        self, anchor: tuple[float, ...], pose: tuple[float, ...], stamp_ns: int
+    ) -> StationChange:
+        """Re-express every unheld base-frame record from ``anchor`` to ``pose``."""
+        t_new_old = np.linalg.inv(self._base_transform(pose)) @ self._base_transform(anchor)
+        step_m = math.hypot(float(t_new_old[0, 3]), float(t_new_old[1, 3]))
+        step_rad = abs(math.atan2(float(t_new_old[1, 0]), float(t_new_old[0, 0])))
+        if abs(float(t_new_old[2, 3])) > _PLANAR_TOL_M or float(t_new_old[2, 2]) < _PLANAR_COS:
+            # A base chain that lifts or tilts the base frame: not the planar motion the boxes'
+            # heights and gravity alignment are carried under.
+            return self._discard("base_untrusted", pose, stamp_ns)
+        riders = self._riding_robot()
+        carried: list[str] = []
+        dropped: list[str] = []
+        travel: dict[str, tuple[int, float, float]] = {}
+        for t in self.tracker.store.all():
+            fit = t.last_fit_stamp_ns
+            prev = self._station.carried.get(t.object_id)
+            if t.object_id in riders:
+                if prev is not None:
+                    travel[t.object_id] = prev  # it rode this step, its budget stands
+                continue  # in the hand, or on the robot: it moves with the base
+            m, rad = (prev[1], prev[2]) if prev is not None and prev[0] == fit else (0.0, 0.0)
+            m, rad = m + step_m, rad + step_rad
+            if _over_budget(m, rad):
+                dropped.append(t.object_id)
+                continue
+            travel[t.object_id] = (fit, m, rad)
+            carried.append(t.object_id)
+        for oid in dropped:
+            self.tracker.store.drop(oid)
+        self._station.carried = travel
+        m, rad = self._station.travel
+        self._station.travel = (m + step_m, rad + step_rad)
+        records_kept = not _over_budget(*self._station.travel)
+        self.tracker.rebase(t_new_old, frozenset(carried), riders, keep_records=records_kept)
+        released = self._carry_records(t_new_old, keep=records_kept, dropped=dropped)
+        for goal in self._goals.values():
+            if (
+                goal is not None
+                and goal.scope is not None
+                and goal.scope.frame_id != self.frame_id
+                and goal.within is not None
+                and goal.within.frame_id == self.frame_id
+            ):
+                # A resolved fixed-frame scope moves with the base like the tracks (same
+                # odometry); the next grid re-resolves it through tf2 at the new pose.
+                self._set_within(goal, rebase_box(goal.within, t_new_old, self.frame_id))
+        self.grid, self.grid_stamp_ns = None, 0  # built from depth taken at the old pose
+        self._instance_cells = None
+        self._forget_zones()
+        self._station.anchor = pose
+        self._station.moved_ns = stamp_ns
+        if self._released or released:
+            self.attachment_changes += 1  # released records moved or retired
+        self._rekey_live_tracks()
+        (log.info if dropped or released else log.debug)(
+            "object_tracker.base_moved", why="base_moved", anchor=anchor, pose=pose,
+            carried=carried, dropped_tracks=dropped, step_m=round(step_m, 4),
+            step_rad=round(step_rad, 4),
+        )  # fmt: skip
+        return StationChange("base_moved", carried, dropped, released)
+
+    def _carry_records(
+        self, t_new_old: NDArray[np.float64], *, keep: bool, dropped: Sequence[str]
+    ) -> list[str]:
+        """Carry the released records and query priors (``_carry``); return those retired.
+
+        They have no fit of their own, so they share the station's odometry budget: past it
+        (``keep`` False) every one is dropped, as is the record of a track ``dropped`` past
+        its own.
+        """
+        released: list[str] = []
+        for oid, (rec, ns) in list(self._released.items()):
+            if not keep or oid in dropped:
+                # Its pose is past the odometry budget: retired with its track, as
+                # `_expire_released` retires them.
+                del self._released[oid]
+                self._known_at_release.pop(oid, None)
+                if oid not in dropped:
+                    self.tracker.store.drop(oid)
+                released.append(oid)
+            elif rec.attach_link == self.frame_id:
+                pose_in_link = rebase_pose(rec.pose_in_link, t_new_old, self.frame_id)
+                self._released[oid] = (rec.model_copy(update={"pose_in_link": pose_in_link}), ns)
+        for q in self.tracker.queries.queries:
+            if q.prior is not None:
+                q.prior = rebase_box(q.prior, t_new_old, self.frame_id) if keep else None
+        return released
+
+    def _unheld_ids(self) -> list[str]:
+        """Live tracks the base-frame station holds (not riding the robot)."""
+        riders = self._riding_robot()
+        return [
+            t.object_id
+            for t in self.tracker.store.all()
+            if t.object_id not in riders and t.status is not TrackStatus.LOST
+        ]
+
+    def _riding_robot(self) -> frozenset[str]:
+        """Tracks that move with the base: held payloads and objects on the robot.
+
+        A payload in a hand (``BOUND``, or a live hold's candidate) rides the arm. On a mobile
+        base a box declared in the base frame can only describe something on the robot (a tote
+        on its lift; base-frame place zones are refused for that reason,
+        ``zone_frame_refusal``), so a track centred in the live grasp declaration's base-frame
+        ``search_box`` rides it too, and stays in its box.
+        """
+        held = set(self._held_ids())
+        decl = self.grasp_declaration
+        box = decl.search_box if decl is not None else None
+        for t in self.tracker.store.all():
+            if t.status is TrackStatus.BOUND or (
+                box is not None and box.frame_id == self.frame_id and centre_within(t.box, box)
+            ):
+                held.add(t.object_id)
+        return frozenset(held)
+
+    def _set_within(self, goal: _Goal, within: PlaceRegion) -> None:
+        """Set ``goal.within`` and its TARGET queries' ``within`` (``StandingQuery.within``)."""
+        goal.within = within
+        for q in self.tracker.queries.queries:
+            if q.goal_id == goal.goal_id and q.query.role is ObjectRole.TARGET:
+                q.within = within
+
+    def on_joint_state(self, positions: Mapping[str, float], stamp_ns: int) -> StationChange | None:
+        """Fold measured joints in (manifest names); run the jaw-open release rule.
+
+        Returns:
+            What a measured base move did (``_follow_base``), else ``None``: the caller then
+            drops its own queued frames and in-flight request, which are about the old pose.
+        """
         self.positions.update(positions)
+        # Only a sample that carries the base joints says where the base is now; the cached
+        # positions of another source's sample would hold a stale pose.
+        left = (
+            self._follow_base(stamp_ns) if positions.keys() >= set(self._station.joints) else None
+        )
         if self._joints <= self.positions.keys():
             self._joint_history.append((stamp_ns, dict(self.positions)))
         for joint, binder in self.binders.items():
@@ -720,6 +1082,7 @@ class TrackerSession:
             self.on_grasp_event(
                 GraspEventKind.ATTACH, joint, jaw=held, hold=held, stamp_ns=stamp_ns, derived=True
             )
+        return left
 
     def on_grasp_declaration(self, decl: GraspDeclaration) -> None:
         """A grasp declaration (or its retraction) from dispatch."""
@@ -1013,7 +1376,12 @@ class TrackerSession:
     def on_frame(
         self, frame: CameraFrame, *, wall_s: float, results: Sequence[TrackerResult] = ()
     ) -> TrackerOutput:
-        """Feed one depth frame (and answers to requests issued on it) through the tracker."""
+        """Feed one depth frame (and answers to requests issued on it) through the tracker.
+
+        A frame stamped up to a base move (``base_moved_ns``) is from the old pose: not fed.
+        """
+        if frame.stamp_ns <= self.base_moved_ns:
+            return TrackerOutput((), self.snapshot(), (), ())
         self._tick(frame.stamp_ns)
         self.tracker.bound_prompts = self._bound_prompts()
         self.tracker.held_ids = self._held_ids()
@@ -1455,10 +1823,7 @@ class TrackerSession:
                     resolved=resolved,
                     error=error,
                 )
-            goal.within = within
-            for q in self.tracker.queries.queries:
-                if q.goal_id == goal.goal_id and q.query.role is ObjectRole.TARGET:
-                    q.within = within
+            self._set_within(goal, within)
 
     def _clear_declaration_scope(self, key: str) -> None:
         """Remove a closed declaration's ownership key from its tracks."""
