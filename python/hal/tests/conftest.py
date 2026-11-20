@@ -84,13 +84,14 @@ def connect_twin(robot_description: Callable[[str], object]) -> Iterator[Callabl
     connected: list[Any] = []
 
     def _connect(robot: str | Callable[[], Any]) -> Any:  # reason: any sim HAL
-        if isinstance(robot, str):
-            from openral_hal import build_hal
-
-            hal = build_hal(robot_description(robot), mode="sim")  # type: ignore[arg-type]  # reason: a RobotDescription
-        else:
-            hal = robot()
         try:
+            # Construction resolves assets too, so it shares the classified handling.
+            if isinstance(robot, str):
+                from openral_hal import build_hal
+
+                hal = build_hal(robot_description(robot), mode="sim")  # type: ignore[arg-type]  # reason: a RobotDescription
+            else:
+                hal = robot()
             hal.connect()
         except ROSConfigError as exc:
             skip_if_unavailable(exc, f"{robot} twin")

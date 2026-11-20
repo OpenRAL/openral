@@ -17,11 +17,13 @@ import subprocess
 import urllib.error
 
 import pytest
-from openral_core.assets import AssetRefError
+from openral_core.assets import AssetFetchError
 from openral_core.exceptions import ROSConfigError
 
-#: Causes that mean "not available on this host", not "broken".
-_UNAVAILABLE = (AssetRefError, ImportError, subprocess.CalledProcessError, urllib.error.URLError)
+#: Causes that mean "not available on this host", not "broken": a pinned upstream that
+#: could not be fetched (``AssetFetchError``, never a malformed or corrupt reference), an
+#: optional package that is not installed, a failed pinned clone or download.
+_UNAVAILABLE = (AssetFetchError, ImportError, subprocess.CalledProcessError, urllib.error.URLError)
 
 
 def skip_if_unavailable(exc: ROSConfigError, label: str) -> None:

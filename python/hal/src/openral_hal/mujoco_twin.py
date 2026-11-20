@@ -318,6 +318,7 @@ class MujocoTwinRollout:
         # MJCF that already has them loads from the original path unchanged.
         mjcf_path = self.mjcf_path
         rig_path: str | None = None
+        fd = -1
         try:
             from openral_hal._camera_rig import rig_cameras_into_mjcf
 
@@ -333,13 +334,14 @@ class MujocoTwinRollout:
                     suffix=".xml",
                     dir=os.path.dirname(self.mjcf_path),
                 )
-                with os.fdopen(fd, "w") as fh:
-                    fh.write(rigged_xml)
                 mjcf_path = rig_path
         except OSError as exc:
             raise ROSConfigError(f"Could not read MJCF '{self.mjcf_path}': {exc}") from exc
 
         try:
+            if rig_path is not None:  # written inside the cleanup scope
+                with os.fdopen(fd, "w") as fh:
+                    fh.write(rigged_xml)
             return mj.MjModel.from_xml_path(mjcf_path)
         except (OSError, ValueError) as exc:
             raise ROSConfigError(f"Could not load MJCF '{mjcf_path}': {exc}") from exc

@@ -328,7 +328,7 @@ def test_the_twin_runs_without_openral_sim(repo_root: Path) -> None:
         env={**os.environ, "MUJOCO_GL": os.environ.get("MUJOCO_GL", "egl")},
         check=False,
     )
-    if "AssetRefError" in proc.stderr or "AssetFetchError" in proc.stderr:  # not fetchable
+    if "AssetFetchError" in proc.stderr:  # the pinned MJCF could not be fetched here
         pytest.skip(f"so101 MJCF unavailable: {proc.stderr.strip().splitlines()[-1]}")
     assert proc.returncode == 0, proc.stderr[-2000:]
     assert "TWIN_OK" in proc.stdout
@@ -1178,3 +1178,30 @@ def test_reset_episode_needs_a_connection(robot_description: Describe) -> None:
     with pytest.raises(ROSRuntimeError, match="not connected"):
         hal.reset_episode()
     assert hal._connected is False
+
+
+def test_a_failed_load_leaves_no_camera_rig_file(
+    robot_description: Describe, tmp_path: Path
+) -> None:
+    """The rig file is written and removed inside one cleanup scope, also on failure.
+
+    An MJCF that rigs the manifest's cameras but does not compile (a mesh it never
+    declares) refuses the load; its temporary rig must not stay beside it.
+    """
+    desc = robot_description("so101_follower")
+    mjcf = tmp_path / "broken.xml"
+    mjcf.write_text(
+        '<mujoco><worldbody><body name="gripper"><geom type="mesh" mesh="absent"/>'
+        "</body></worldbody></mujoco>"
+    )
+    names = [j.name for j in desc.joints]
+    twin = MujocoTwinRollout(
+        desc,
+        mjcf_path=str(mjcf),
+        joint_qpos_addr={n: i for i, n in enumerate(names)},
+        actuator_index={n: i for i, n in enumerate(names)},
+    )
+    # The message names the rig file: it was written, then removed.
+    with pytest.raises(ROSConfigError, match=r"Could not load MJCF '.*_camrig_.*\.xml'"):
+        twin.load()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["broken.xml"]
