@@ -37,8 +37,8 @@ Public surface:
   cobot, whole-body force sensitivity; structurally like the UR/Franka
   sim HALs.
 - ``OpenArmMujocoHAL`` / ``OPENARM_DESCRIPTION``: Enactic OpenArm v2
-  bimanual, 2 x (7-DoF arm + 1 gripper) = 16-DoF; fresh ``HALBase``
-  subclass (bimanual doesn't fit ``MujocoArmHAL``); native
+  bimanual, 2 x (7-DoF arm + 1 gripper) = 16-DoF; thin manifest-driven
+  ``MujocoArmHAL`` subclass (two grippers in ``sim.grippers``); native
   ``<position>`` actuators write target → ctrl directly; MJCF fetched
   lazily by ``openral_hal._openarm_v2_assets``.
 - ``OpenArmRealHAL`` / ``OPENARM_REAL_DESCRIPTION``: real adapter for the
