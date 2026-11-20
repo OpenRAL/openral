@@ -88,15 +88,16 @@ Over the tunnel, every request carries a 5-minute token openral.com mints for th
 and that robot only. **viewer** may read and press E-STOP; **operator** and **admin**
 may also reset the e-stop, prompt and run skills — but only with
 `OPENRAL_DASHBOARD_REMOTE_CONTROL=1`. A robot linked to openral.com gets it, and
-`OPENRAL_DASHBOARD_WRITE_CONTROLS=1`, from its account at deploy start (ADR-0132): both
-are on unless an org admin turns them off under **Settings** on openral.com. A value set
-on the robot wins in either direction, so a site that wants every reset done where the
-hazard can be seen (IEC 60204-1) sets `OPENRAL_DASHBOARD_REMOTE_CONTROL=0`, and openral.com
-can't turn it back on. Only `0` or `1` is taken from openral.com; any other value, or none,
-leaves remote control off, as on an unlinked robot. A change on openral.com is **not
-live**: the robot reads it when the deploy or `openral dashboard` next starts (restart
-them to apply it), or from the cached copy when openral.com can't be reached. E-STOP is
-always allowed, from every role and listener.
+`OPENRAL_DASHBOARD_WRITE_CONTROLS=1`, from its account (ADR-0132): both are on unless
+turned off as **Remote control** and **Skill controls** under **Settings** on openral.com
+(by an org admin, or by the owner of a free robot). An OFF on either side wins: the
+account's OFF turns a switch off even when the robot sets `1`, and a site that wants every
+reset done where the hazard can be seen (IEC 60204-1) sets
+`OPENRAL_DASHBOARD_REMOTE_CONTROL=0` on the robot, which openral.com can't turn back on.
+Only `1` turns a switch on, a cached copy never does, and an unlinked robot keeps both
+off. A change is **not live**: it applies at the next start (see **At deploy start**;
+restart `openral dashboard` for remote control, the deploy for skills). E-STOP is always
+allowed, from every role and listener.
 **Remote E-STOP is best-effort, not a safety function**: the physical e-stop stays
 authoritative.
 
@@ -186,7 +187,9 @@ none of its own.
 credential (`robot.secret`, 0600), caches them (`settings.json`, 0600) for offline starts,
 and puts them in the environment. A variable already set on the robot wins, so a change made
 on openral.com or in the console reaches the reasoner at the next deploy start, and never
-while that variable is set.
+while that variable is set. The dashboard's switches are the exception: openral.com's OFF
+turns one off over the robot's own `1`, and a cached copy (used when openral.com can't be
+reached) never turns one on.
 
 **The robot's rSkills.** A robot's **Robot settings** page on openral.com lists the
 rSkills it may run (`OPENRAL_RSKILLS`, comma-separated Hugging Face repo ids such as

@@ -363,8 +363,10 @@ CONTROL_SETTINGS = frozenset({REMOTE_CONTROL_ENV, WRITE_CONTROLS_ENV})
 """The dashboard's remote- and write-control switches openral.com may set (ADR-0132).
 
 The account sends both, ``1`` unless an admin turned them off there. Only ``"0"`` and
-``"1"`` are applied, and a variable set on the robot still wins, so a site keeps the
-last word locally (``OPENRAL_DASHBOARD_REMOTE_CONTROL=0``). E-STOP is never gated."""
+``"1"`` are taken, and an OFF on either side wins: openral.com's ``"0"`` turns a switch off
+even over a value set on the robot, and a robot set to ``"0"`` (or anything but ``"1"``)
+stays off whatever openral.com says. A cached ``"1"`` is never applied: openral.com's OFF
+may be newer than the copy. E-STOP is never gated."""
 
 _SWITCH_VALUES = frozenset({"0", "1"})
 
@@ -381,11 +383,12 @@ def apply_account_settings(
     robot: the keys and switches) with the robot's own on top (its reasoner model and rSkills);
     a fleet's settings never reach a robot. They arrive as the variables it reads, e.g.
     ``OPENRAL_REASONER_API_KEY``, and are cached (0600) for offline starts. A variable
-    already in the environment wins; only ``names`` are applied (default: the reasoner's
-    ``ACCOUNT_SETTINGS`` and the dashboard's ``CONTROL_SETTINGS``), and nothing is
-    fetched when every one of them is already set. A refused credential (the robot was
-    removed, or given a new link code) deletes the cache. Returns the names it set;
-    never raises.
+    already in the environment wins, except that openral.com's ``"0"`` turns a
+    ``CONTROL_SETTINGS`` switch off over it; only ``names`` are applied (default: the
+    reasoner's ``ACCOUNT_SETTINGS`` and the dashboard's ``CONTROL_SETTINGS``), and nothing
+    is fetched when every one of them is already set and no switch is on. A refused
+    credential (the robot was removed, or given a new link code) deletes the cache.
+    Returns the names it set; never raises.
     """
     from urllib.parse import urlsplit
 
@@ -406,7 +409,11 @@ def apply_account_settings(
     except ValueError as exc:
         echo(f"account settings: {exc}")
         return []
-    skip = enrolment is None or not secret_file.is_file() or all(k in os.environ for k in names)
+    # A switch on here still asks: openral.com's OFF wins over it.
+    settled = all(k in os.environ for k in names) and not any(
+        os.environ[k] == "1" for k in names & CONTROL_SETTINGS
+    )
+    skip = enrolment is None or not secret_file.is_file() or settled
     secret = None if skip else _robot_secret(secret_file, echo)
     if not secret or enrolment is None:
         return []
@@ -424,7 +431,8 @@ def apply_account_settings(
         # would carry the robot's credential to another host.
         with _open(request, timeout=10) as resp:
             settings = json.loads(resp.read())["settings"]
-        _write_private(_settings_cache(), json.dumps(settings) + "\n")
+        if not isinstance(settings, dict):
+            raise ValueError("settings is not an object")
     except urllib.error.HTTPError as exc:
         if exc.code not in (401, 403):
             return _cached_settings(site, exc, echo, names)
@@ -432,8 +440,12 @@ def apply_account_settings(
         _settings_cache().unlink(missing_ok=True)
         echo(f"account settings: {site} refused this robot's credential; run a new link code")
         return []
-    except (OSError, ValueError, KeyError) as exc:
+    except (OSError, ValueError, KeyError, TypeError) as exc:
         return _cached_settings(site, exc, echo, names)
+    try:
+        _write_private(_settings_cache(), json.dumps(settings) + "\n")
+    except OSError as exc:  # the fresh settings still apply; only the offline copy is lost
+        echo(f"account settings: can't cache them ({exc}); applying them anyway")
     return _apply(settings, site, echo, names)
 
 
@@ -459,24 +471,34 @@ def _cached_settings(
         echo(f"account settings: {site} unreachable ({exc}); none cached")
         return []
     echo(f"account settings: {site} unreachable ({exc}); using the cached ones")
-    return _apply(cached if isinstance(cached, dict) else {}, site, echo, names)
+    cached = cached if isinstance(cached, dict) else {}
+    # openral.com's OFF may be newer than this copy: never switch a control on from it.
+    cached = {k: v for k, v in cached.items() if k not in CONTROL_SETTINGS or v != "1"}
+    return _apply(cached, site, echo, names)
 
 
 def _apply(
     settings: dict[str, object], site: str, echo: Callable[[str], None], names: frozenset[str]
 ) -> list[str]:
+    def overrides_off(k: str, v: object) -> bool:
+        # An OFF on either side wins: openral.com's "0" over a switch set on the robot.
+        return k in CONTROL_SETTINGS and v == "0" and os.environ[k] != "0"
+
     applied = [
         k
         for k, v in settings.items()
         if k in names
         and isinstance(v, str)
-        and k not in os.environ
+        and (k not in os.environ or overrides_off(k, v))
         and (k not in CONTROL_SETTINGS or v in _SWITCH_VALUES)
     ]
+    overridden = sorted(k for k in applied if k in os.environ)
     for name in applied:
         os.environ[name] = str(settings[name])
     if applied:
         echo(f"account settings from {site}: {', '.join(sorted(applied))}")
+    if overridden:
+        echo(f"account settings: {site} turned off {', '.join(overridden)} set on this robot")
     return applied
 
 

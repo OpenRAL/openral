@@ -106,11 +106,16 @@ def _write_controls_enabled() -> bool:
 
 
 _REMOTE_CONTROL_OFF = (
-    "remote control is off on this robot: an org admin turns it on under Settings on "
-    f"openral.com ({REMOTE_CONTROL_ENV} set on the robot wins); a change applies when the "
-    "robot's dashboard next starts, not live"
+    "remote control is off: turn on Remote control in Settings on openral.com, or set "
+    f"{REMOTE_CONTROL_ENV}=1 on the robot (an OFF wins); it applies at the "
+    "next start, not live"
 )
-"""Why the tunnel may not reset, prompt or run skills: where the switch is, and when it applies."""
+_WRITE_CONTROLS_OFF = (
+    "write controls are off: turn on Skill controls in Settings on openral.com, or set "
+    f"{WRITE_CONTROLS_ENV}=1 on the robot (an OFF wins); it applies at the "
+    "next deploy start, not live"
+)
+# Both stay under the console's 200-character cut.
 
 
 def _remote_control_enabled() -> bool:
@@ -1109,7 +1114,7 @@ def _action_refusal(action: ManifestAction, principal: Principal) -> str | None:
     if principal.mode == "remote" and not _remote_control_enabled():
         return _REMOTE_CONTROL_OFF
     if action.kind == "skill" and not _write_controls_enabled():
-        return f"write controls are off on this robot (set {WRITE_CONTROLS_ENV}=1)"
+        return _WRITE_CONTROLS_OFF
     return None
 
 

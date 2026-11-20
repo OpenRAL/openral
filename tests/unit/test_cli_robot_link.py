@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 from openral_cli.main import app
-from openral_core import RobotEnrolment
+from openral_core import REMOTE_CONTROL_ENV, WRITE_CONTROLS_ENV, RobotEnrolment
 from typer.testing import CliRunner
 
 from tests.unit.fakes.fake_robot_settings_site import SettingsResponse, settings_site
@@ -255,14 +255,14 @@ def test_account_settings_set_the_control_switches_but_the_robot_wins(
 @pytest.mark.parametrize(
     ("site", "local", "expected"),
     [
-        ("1", None, "1"),  # an org admin turned it on
-        ("0", None, "0"),  # an org admin turned it off
-        (None, None, None),  # the site says nothing: the dashboard's default, off
-        ("1", "0", "0"),  # the robot's own OFF wins over the site's ON (Safety-WG)
-        ("0", "1", "1"),  # so does its own ON: the site never overrides the robot
+        ("1", None, "1"),  # the account turned it on
+        ("0", None, "0"),  # the account turned it off
+        (None, None, None),  # the account says nothing: the dashboard's default, off
+        ("1", "1", "1"),  # both on
+        ("0", "1", "0"),  # the account's OFF wins over the robot's own ON
     ],
 )
-def test_remote_control_comes_from_the_site_unless_the_robot_sets_it(
+def test_remote_control_comes_from_the_site_and_an_off_wins(
     enrolment: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -270,21 +270,76 @@ def test_remote_control_comes_from_the_site_unless_the_robot_sets_it(
     local: str | None,
     expected: str | None,
 ) -> None:
-    """ADR-0132: openral.com's Remote control switch reaches the dashboard at its next start."""
+    """ADR-0132: openral.com's Remote control switch, with an OFF on either side winning.
+
+    The robot's own OFF over the account's ON is
+    ``test_account_settings_set_the_control_switches_but_the_robot_wins``.
+    """
     from openral_cli import robot
-    from openral_observability.dashboard.app import _remote_control_enabled
 
     _fake_cloudflared(tmp_path, monkeypatch)
     assert CliRunner().invoke(app, ["robot", "link", "--no-service", _CODE]).exit_code == 0
-    body = {} if site is None else {"OPENRAL_DASHBOARD_REMOTE_CONTROL": site}
-    monkeypatch.setattr(robot, "_open", settings_site(body))
-    if local is None:
-        monkeypatch.delenv("OPENRAL_DASHBOARD_REMOTE_CONTROL", raising=False)
-    else:
-        monkeypatch.setenv("OPENRAL_DASHBOARD_REMOTE_CONTROL", local)
+    calls: list[tuple[str, str, str]] = []
+    body = {} if site is None else {REMOTE_CONTROL_ENV: site}
+    monkeypatch.setattr(robot, "_open", settings_site(body, calls))
+    if local is not None:
+        monkeypatch.setenv(REMOTE_CONTROL_ENV, local)
+        monkeypatch.setenv(WRITE_CONTROLS_ENV, "0")  # so only the switch on here asks
     robot.apply_account_settings(echo=lambda _: None, names=robot.CONTROL_SETTINGS)
-    assert os.environ.get("OPENRAL_DASHBOARD_REMOTE_CONTROL") == expected
-    assert _remote_control_enabled() is (expected == "1")
+    assert os.environ.get(REMOTE_CONTROL_ENV) == expected
+    assert len(calls) == 1  # a switch on here still asks openral.com
+
+
+def test_a_cached_copy_never_switches_a_control_on(
+    enrolment: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """openral.com's OFF may be newer than the cache: only a cached OFF applies."""
+    from openral_cli import robot
+
+    _fake_cloudflared(tmp_path, monkeypatch)
+    assert CliRunner().invoke(app, ["robot", "link", "--no-service", _CODE]).exit_code == 0
+    enrolment.with_name("settings.json").write_text(
+        json.dumps({REMOTE_CONTROL_ENV: "1", WRITE_CONTROLS_ENV: "0"})
+    )
+
+    def down(req: urllib.request.Request, timeout: float) -> SettingsResponse:
+        raise urllib.error.HTTPError(req.full_url, 503, "Unavailable", {}, None)  # type: ignore[arg-type]  # reason: no headers needed
+
+    monkeypatch.setattr(robot, "_open", down)
+    assert robot.apply_account_settings(echo=lambda _: None) == [WRITE_CONTROLS_ENV]
+    assert REMOTE_CONTROL_ENV not in os.environ
+
+
+def test_fresh_settings_apply_when_the_cache_cannot_be_written(
+    enrolment: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cache that can't be written must not bring back the stale copy."""
+    from openral_cli import robot
+
+    _fake_cloudflared(tmp_path, monkeypatch)
+    assert CliRunner().invoke(app, ["robot", "link", "--no-service", _CODE]).exit_code == 0
+    enrolment.with_name("settings.json").mkdir()  # writing it fails
+    monkeypatch.setattr(robot, "_open", settings_site({REMOTE_CONTROL_ENV: "0"}))
+    said: list[str] = []
+    assert robot.apply_account_settings(echo=said.append) == [REMOTE_CONTROL_ENV]
+    assert os.environ[REMOTE_CONTROL_ENV] == "0"
+    assert any("can't cache" in line for line in said)
+
+
+@pytest.mark.parametrize("body", [b"null", b"[]", b'{"settings": null}', b'{"settings": []}'])
+def test_a_malformed_answer_does_not_stop_the_start(
+    enrolment: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: bytes
+) -> None:
+    """``apply_account_settings`` never raises, and keeps the cached copy."""
+    from openral_cli import robot
+
+    _fake_cloudflared(tmp_path, monkeypatch)
+    assert CliRunner().invoke(app, ["robot", "link", "--no-service", _CODE]).exit_code == 0
+    cache = enrolment.with_name("settings.json")
+    cache.write_text(json.dumps({REMOTE_CONTROL_ENV: "0"}))
+    monkeypatch.setattr(robot, "_open", lambda req, timeout: SettingsResponse(body))
+    assert robot.apply_account_settings(echo=lambda _: None) == [REMOTE_CONTROL_ENV]
+    assert json.loads(cache.read_text()) == {REMOTE_CONTROL_ENV: "0"}
 
 
 def test_a_control_switch_takes_only_0_or_1(
