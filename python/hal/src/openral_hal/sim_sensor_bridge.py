@@ -3597,9 +3597,10 @@ class SimSensorBridge:
     def _idle_step_tick(self) -> None:
         """Advance the sim one HOLD tick when no recent real action has arrived.
 
-        Yields to active skills via ``should_idle_step``; the camera-publish
-        timer then republishes the freshened ``_last_obs`` (publish path
-        unchanged).
+        Yields to active skills via ``should_idle_step``, and holds while the node's
+        e-stop latch is set (sim physics frozen until ``/openral/estop_cleared``); the
+        camera-publish timer then republishes the freshened ``_last_obs`` (publish
+        path unchanged).
 
         Containment: ``idle_step`` fires autonomously on this timer (with
         ``last_action_ns == 0`` an idle scene starts stepping immediately). If
@@ -3612,6 +3613,13 @@ class SimSensorBridge:
         # Already disabled (e.g. by a prior error) — a callback queued before
         # the cancel must be a no-op, never re-trigger the disabled path.
         if self._idle_timer is None:
+            return
+        # The node's /openral/estop latch freezes sim physics until /openral/estop_cleared:
+        # the node drops every command while latched, and without this an idle tick kept
+        # stepping physics — the twin tracking its last ctrl, the clock running on. The
+        # HAL is not torn down (reads and cameras keep serving the frozen state); a real
+        # HAL never gets this timer. Same latch read as ``MobileBaseBridge``.
+        if getattr(self._node, "_estopped", False):
             return
         idle_step = getattr(self._hal, "idle_step", None)
         if not callable(idle_step):
