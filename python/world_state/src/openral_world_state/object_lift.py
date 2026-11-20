@@ -8,7 +8,9 @@ global state — fully unit-testable.
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Callable, Sequence
+from enum import Enum
 
 import numpy as np
 from numpy.typing import NDArray
@@ -22,10 +24,11 @@ from openral_core.schemas import (
 )
 
 __all__ = [
+    "MissEvidence",
     "ObjectsLiftError",
     "VoxelFrustumLifter",
     "aabb_iou_3d",
-    "build_in_fov_predicate",
+    "build_miss_classifier",
     "decode_occupied_centers",
     "depth_cloud_to_centers_base",
     "homogeneous_from_quat_xyz",
@@ -250,6 +253,7 @@ class VoxelFrustumLifter:
         t_cam_from_base: NDArray[np.float64],
         t_map_from_base: NDArray[np.float64],
         map_frame: str = "map",
+        pad_m: float = 0.0,
     ) -> list[DetectedObject]:
         """Lift each 2D detection to a ``DetectedObject`` in the map frame.
 
@@ -265,6 +269,10 @@ class VoxelFrustumLifter:
             t_map_from_base: ``(4, 4)`` transform mapping base-frame points into
                 the map frame.
             map_frame: tf2 frame id stamped on the returned poses.
+            pad_m: Half the extent one occupied point stands for (half a voxel
+                edge), added on every face of the box. The points are cell
+                *centres*: without it one voxel layer lifts to a zero-volume box,
+                whose IoU is 0 even with itself.
 
         Returns:
             One ``DetectedObject`` per detection with enough in-box voxels;
@@ -318,12 +326,12 @@ class VoxelFrustumLifter:
                         frame_id=map_frame,
                     ),
                     bbox_3d=(
-                        float(mn[0]),
-                        float(mn[1]),
-                        float(mn[2]),
-                        float(mx[0]),
-                        float(mx[1]),
-                        float(mx[2]),
+                        float(mn[0]) - pad_m,
+                        float(mn[1]) - pad_m,
+                        float(mn[2]) - pad_m,
+                        float(mx[0]) + pad_m,
+                        float(mx[1]) + pad_m,
+                        float(mx[2]) + pad_m,
                     ),
                     # Carry the detection-time id through the lift so a
                     # physical object keeps one id across 2D (in_view) and 3D
@@ -335,37 +343,118 @@ class VoxelFrustumLifter:
         return out
 
 
-def build_in_fov_predicate(
+class MissEvidence(str, Enum):
+    """What one sensing run says about a remembered object nothing matched (issue #636).
+
+    ``NONE``: it could not be observed — no box, not wholly in view, out of range,
+    occluded, or no depth behind it to see through to. ``OCCUPIED``: its box still
+    holds occupied points, so it is probably there and merely undetected. ``FREE``:
+    the sensor saw through the box to something behind it — a strong miss.
+    """
+
+    NONE = "none"
+    OCCUPIED = "occupied"
+    FREE = "free"
+
+
+def build_miss_classifier(
     *,
+    occupied_centers_map: NDArray[np.float64],
     intrinsics: IntrinsicsPinhole,
     t_cam_from_map: NDArray[np.float64],
-) -> Callable[[DetectedObject], bool]:
-    """Return a predicate: does a map-frame object project into the camera image?
+    max_range_m: float,
+    min_points: int = 3,
+    margin_m: float = 0.03,
+) -> Callable[[DetectedObject], MissEvidence]:
+    """Return ``classify(obj)``: what this camera's depth evidence says about an undetected object.
 
-    Used by ``ObjectMemory`` to decide whether an unmatched object *should* have
-    been re-seen (in view => a real miss) or is merely out of view (retain).
-    Objects whose centre is behind the camera or outside the image bounds return
-    ``False``. Image bounds are inclusive of the far edge (``0 <= u <= width``),
-    using continuous pixel coordinates.
+    The object is observable only when all eight corners of its ``bbox_3d`` project
+    inside the image, in front of the camera and within ``max_range_m``. Then, over
+    the occupied points (voxel centres or depth returns, map frame):
+
+    * ``min_points`` or more inside the box, grown by ``margin_m`` on every face
+      (the box is a frozen lift of surface points; depth noise and map drift must
+      not empty it), at least one of them more than ``margin_m`` above the box's
+      floor → ``OCCUPIED``. Points in that floor band alone are the shelf a removed
+      object stood on, not the object; a box no taller than twice the margin has
+      no band and is counted whole.
+    * otherwise, among the points projecting into the box's image rectangle:
+      ``min_points`` or more beyond the box by over ``margin_m``, and fewer than
+      ``min_points`` nearer than it → ``FREE``. Anything else (an occluder in front,
+      however partial; a depth hole; nothing mapped behind) → ``NONE``.
+
+    The cloud is projected once, on the first object asked about, and shared by all.
 
     Args:
-        intrinsics: Pinhole intrinsics of the camera; ``width``/``height`` bound
-            the image rectangle.
-        t_cam_from_map: ``(4, 4)`` transform mapping map-frame points into the
-            camera optical frame.
+        occupied_centers_map: ``(N, 3)`` occupied points in the map frame.
+        intrinsics: Pinhole intrinsics of the camera.
+        t_cam_from_map: ``(4, 4)`` transform, map frame → camera optical frame.
+        max_range_m: The detector's working range along the optical axis.
+        min_points: Points needed to call the box occupied or seen through.
+        margin_m: Tolerance on the box's faces and the depth band of its support.
 
     Returns:
-        A callable ``in_fov(obj) -> bool``.
+        ``classify(obj) -> MissEvidence``; ``NONE`` when this camera gives none.
+
+    Example:
+        >>> from openral_core.schemas import DetectedObject, IntrinsicsPinhole, Pose6D
+        >>> cup = DetectedObject(
+        ...     label="cup",
+        ...     confidence=0.9,
+        ...     pose=Pose6D(xyz=(0.0, 0.0, 2.0), quat_xyzw=(0, 0, 0, 1), frame_id="map"),
+        ...     bbox_3d=(-0.1, -0.1, 1.9, 0.1, 0.1, 2.1),
+        ... )
+        >>> k = IntrinsicsPinhole(width=100, height=100, fx=100, fy=100, cx=50, cy=50)
+        >>> wall = np.array([[x, 0.0, 3.0] for x in (-0.05, 0.0, 0.05)])
+        >>> classify = build_miss_classifier(
+        ...     occupied_centers_map=wall, intrinsics=k, t_cam_from_map=np.eye(4), max_range_m=5.0
+        ... )
+        >>> classify(cup).value
+        'free'
     """
-    w, h = float(intrinsics.width), float(intrinsics.height)
+    pts = occupied_centers_map
 
-    def in_fov(obj: DetectedObject) -> bool:
-        x, y, z = obj.pose.xyz
-        p = t_cam_from_map @ np.array([x, y, z, 1.0], dtype=np.float64)
-        if p[2] <= _DEPTH_EPS:
-            return False
-        u = intrinsics.fx * p[0] / p[2] + intrinsics.cx
-        v = intrinsics.fy * p[1] / p[2] + intrinsics.cy
-        return bool(0.0 <= u <= w and 0.0 <= v <= h)
+    def project(points: NDArray[np.float64]) -> tuple[NDArray[np.float64], ...]:
+        cam = points @ t_cam_from_map[:3, :3].T + t_cam_from_map[:3, 3]
+        z = np.where(cam[:, 2] > _DEPTH_EPS, cam[:, 2], np.nan)  # behind the camera → NaN
+        return (
+            intrinsics.fx * cam[:, 0] / z + intrinsics.cx,
+            intrinsics.fy * cam[:, 1] / z + intrinsics.cy,
+            z,
+        )
 
-    return in_fov
+    projected: list[tuple[NDArray[np.float64], ...]] = []
+
+    def classify(obj: DetectedObject) -> MissEvidence:
+        box = obj.bbox_3d
+        if box is None or pts.shape[0] == 0:
+            return MissEvidence.NONE
+        lo = np.asarray(box[:3], dtype=np.float64)
+        hi = np.asarray(box[3:], dtype=np.float64)
+        corners = np.array(list(itertools.product(*zip(lo, hi, strict=True))), dtype=np.float64)
+        cu, cv, cz = project(corners)
+        in_view = (cu >= 0.0) & (cu <= intrinsics.width) & (cv >= 0.0) & (cv <= intrinsics.height)
+        if not (in_view.all() and cz.max() <= max_range_m):  # NaN compares False
+            return MissEvidence.NONE
+
+        inside = pts[((pts >= lo - margin_m) & (pts <= hi + margin_m)).all(axis=1)]
+        band_top = lo[2] + margin_m if hi[2] - lo[2] > 2.0 * margin_m else -np.inf
+        if inside.shape[0] >= min_points and bool((inside[:, 2] > band_top).any()):
+            return MissEvidence.OCCUPIED
+
+        if not projected:
+            projected.append(project(pts))
+        u, v, z = projected[0]
+        in_rect = (u >= cu.min()) & (u <= cu.max()) & (v >= cv.min()) & (v <= cv.max())
+        behind = int((in_rect & (z > cz.max() + margin_m)).sum())
+        in_front = int((in_rect & (z < cz.min() - margin_m)).sum())
+        # ponytail: counts points, not rays — space the depth sensor never observed
+        # (the view is this detection camera's, the points are another sensor's or a
+        # map's) reads the same as free when something is mapped behind it. A
+        # z-buffered depth image from this camera (object_tracker.fit.visible_fraction)
+        # is the upgrade if that bites.
+        if behind >= min_points and in_front < min_points:
+            return MissEvidence.FREE
+        return MissEvidence.NONE
+
+    return classify

@@ -359,6 +359,7 @@ _detected_object_st = st.builds(
     label=_name,
     confidence=_prob,
     pose=_pose6d_st,
+    existence=st.none() | _prob,
 )
 
 # Grasp region: every half-extent <= 0.15 m keeps the box under both

@@ -128,7 +128,7 @@ truthful lift (no `map` TF, no intrinsics, no in-frustum voxels, stale grid) sil
 
 **On the wire:** `openral_msgs/WorldStateStamped` carries `detected_object_*` parallel
 arrays (labels / confidences / `geometry_msgs/Point[]` positions / `int32[]` track ids
-(`-1` = unset) / frame), serialised by `_fill_detected_objects` in
+(`-1` = unset) / frame / `float32[]` existence belief (NaN = none kept)), serialised by `_fill_detected_objects` in
 `build_world_state_stamped_msg` and read back by `world_state_from_idl` — so separate-process
 consumers (e.g. a reasoner reading `/openral/world_state_slow`) see the spatial memory too.
 
@@ -146,8 +146,72 @@ consumers (e.g. a reasoner reading `/openral/world_state_slow`) see the spatial 
 | `object_lift_min_voxels` | `3` | Minimum in-frustum voxels required to lift a detection; below this the detection is skipped. |
 | `object_lift_iou_threshold` | `0.3` | 3D AABB IoU threshold for freeze-on-match association. |
 | `object_lift_memory_cadence_hz` | `2.0` | Rate of the associate+evict memory tick. |
-| `object_lift_max_misses` | `1` | Number of consecutive in-FOV misses before an object is evicted. |
+| `object_lift_hit_log_odds` | `0.85` | Added to an object's existence belief when a detection matches it (one hit per memory tick). |
+| `object_lift_miss_free_log_odds` | `-0.85` | Added when the object went undetected and the depth source shows through its box — the strong miss. |
+| `object_lift_miss_occupied_log_odds` | `-0.1` | Added when it went undetected, its box is still occupied, and its camera's detector delivered a batch this tick. Weak (likely occlusion or a missed detection): a once-seen object lasts 29 such ticks (14 s at 2 Hz), a long-seen one 55. `0` = no evidence — but then a false detection lifted onto a wall is never forgotten. |
+| `object_lift_belief_max` | `3.5` | Upper clamp on the belief: bounds how many clear observations a long-seen object takes to forget (7 at the defaults). |
+| `object_lift_belief_absent` | `-2.0` | Lower clamp and eviction threshold. A once-seen object goes after 4 clear observations at the defaults. |
+| `object_lift_max_range_m` | `5.0` | A miss is weighed only for a box wholly in view and within this range along the optical axis. Set it to the detector's working range. |
+| `object_lift_miss_margin_m` | `0.03` | Tolerance of the miss test: a box's faces are grown by it (the box is a frozen lift of surface points), and points within it above the box's floor are its support, not the object — so the shelf a removed object stood on does not keep it. A box no taller than twice this is counted whole. |
+| `object_memory_path` | `""` (off) | Opt-in persistence: `SceneGraph` JSON the object memory is restored from at configure and saved to whenever its set of objects changes. `deploy_e2e.launch.py` exposes it as the `object_memory_path` launch argument; `openral deploy sim/run --memory-dir <bundle>` sets it when `<bundle>/object_memory.json` exists (create it holding `{}` to opt in). A file that does not validate is neither restored nor overwritten. |
 | `object_lift_voxel_staleness_s` | `1.0` | Voxel grid older than this (seconds) is treated as unavailable. |
+
+The defaults are the same for sim and real hardware; `object_lift_max_range_m` is the
+one to set per detector.
+
+### Existence belief (issue #636)
+
+Each remembered object carries an existence belief in log-odds, the bookkeeping the
+occupancy voxels use. A matched detection adds `hit`; a tick in which nothing matched it
+adds what the depth source says (`build_miss_classifier`):
+
+| Evidence | When | Effect |
+| --- | --- | --- |
+| none | No `bbox_3d`; the box is not wholly inside a detection camera's image, or beyond `object_lift_max_range_m`; `object_lift_min_voxels` or more points in front of the box (an occluder, however partial); fewer than that behind it (a depth hole, nothing mapped there); no fresh depth source, or no TF for the moment it was captured | no change |
+| occupied | `object_lift_min_voxels` or more occupied points still inside the box, at least one above its floor band | `miss_occupied`, and only for a camera whose detector delivered a batch this tick — a detector that published nothing has not missed anything |
+| free | the box is empty and the depth source sees through it to something behind | `miss_free` — no detector needed, the depth source is the witness |
+
+A miss is weighed once per new depth observation (the grid's `source_stamp`, or the
+cloud's stamp): ticking again over the same data adds nothing. The points are placed in
+the map with the base pose of the moment they were captured, and a lifted box is padded
+by half a voxel so one voxel layer still has volume. The object is evicted when its
+belief reaches `object_lift_belief_absent`, never on a single miss. `DetectedObject.existence` carries the belief as a probability
+(`WorldStateStamped.detected_object_existence`): above 0.5 is *present*, at or below it
+*uncertain*. The reasoner's `SpatialMemory` follows it — a node takes its detection's
+state, and a node the remembered set drops is marked *absent* but kept, with its last pose,
+for "where was X". `recall_object` and the `memory_objects` context line flag uncertain
+and absent objects; the `world.scene_objects` span carries `state` per object.
+
+With `object_memory_path` set, a restart restores every remembered object at belief 0
+(*uncertain*) under the track id it had: the first fresh detection confirms it, a clear
+view from a camera whose detector has delivered at least one batch this session removes
+it. Seed the file with a scene graph to have scene-file objects reconciled
+the same way — only its `OBJECT` nodes in the map frame with a `bbox_3d` are taken, and
+the node rewrites the file with its own object set (places and edges are not kept there).
+The poses are map-frame, so persist only where `map` is the same place every deploy (a
+fixed base, a saved map): under a SLAM session that starts its map wherever the robot
+is, restored objects land displaced and only a clear view of the wrong spot removes them.
+
+Known limits:
+
+- An object no taller than twice `object_lift_miss_margin_m` cannot be told from its
+  support and is never cleared by the depth source; with nothing mapped behind an
+  object's place there is no see-through evidence either. Both then decay only through
+  `miss_occupied`.
+- The see-through test counts points, not rays, and the view is the detection camera's
+  while the points are the depth source's: space the depth sensor never observed reads
+  the same as free when something is mapped behind it. Mount the two together (as the
+  AMR's `top` on `head_zed`) or expect false clears where their views differ.
+- A camera's view is known only once its detector has delivered a batch, and a detector
+  publishes nothing when it sees nothing: in a view that has been empty since start,
+  nothing is cleared.
+- An object that goes undetected long enough while its place stays occupied is evicted
+  too (`miss_occupied`), and reads as *absent* downstream exactly like one seen gone.
+- The reasoner learns of an eviction from the object leaving `detected_objects`. A
+  world-state node that restarts *without* persistence publishes an empty set, which
+  the reasoner reads as every followed object evicted; they return to present when
+  re-detected.
+- The safety kernel reads none of this (it uses the voxels and the tracked objects).
 
 ### Additional topics (when lift is enabled)
 

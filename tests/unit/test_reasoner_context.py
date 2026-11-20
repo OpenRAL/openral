@@ -223,8 +223,31 @@ def test_renders_spatial_memory_instance_ids() -> None:
     ) in text
     assert "kitchen" not in text  # only OBJECT nodes are graspable instances
     assert "repeated_labels: box" in text
+    # A node not believed present says so (issue #636); a present one renders as before.
+    from openral_core import ObjectBeliefState
+
+    gone = node("obj_box_2", 0.5).model_copy(update={"state": ObjectBeliefState.ABSENT})
+    r.set_spatial_memory(SceneGraph(nodes=[gone, node("obj_box_1", 0.3)]))
+    text = r.render(world_state=ws)
+    assert "id=obj_box_1@(+0.30,+0.10,+0.05) size=(0.10,0.10,0.10)," in text
+    assert "id=obj_box_2@(+0.50,+0.10,+0.05) size=(0.10,0.10,0.10) [absent]" in text
     r.set_spatial_memory(None)
     assert "memory_objects[" not in r.render(world_state=ws)
+    # A live-list object the memory has not confirmed (restored) is marked too.
+    restored = ws.model_copy(
+        update={
+            "detected_objects": [
+                ws.detected_objects[0].model_copy(update={"existence": 0.5}),
+                ws.detected_objects[1].model_copy(update={"existence": 0.9}),
+            ]
+        }
+    )
+    line = next(
+        ln for ln in r.render(world_state=restored).splitlines() if ln.startswith("scene_objects")
+    )
+    assert (
+        line == "scene_objects[map]: box@(+0.30,+0.10,+0.05) [uncertain], box@(+0.50,+0.10,+0.05)"
+    )
 
 
 def test_failure_buffer_rolls_at_capacity() -> None:
