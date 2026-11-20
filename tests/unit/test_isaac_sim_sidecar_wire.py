@@ -762,6 +762,79 @@ class TestImageTime:
                 rclpy.shutdown()
                 hal.env.close()
 
+    @pytest.mark.parametrize("zed_renders_depth", [True, False])
+    def test_the_shared_mount_optical_frame_has_exactly_one_parent(
+        self, zed_renders_depth: bool
+    ) -> None:
+        """Issue #641: ``top`` (``shares_mount_with: head_zed``) is stamped in
+        ``zed_camera_link_optical_frame``, and the bridge puts that frame on TF once.
+
+        With the ZED a depth camera, Isaac places it: the depth leg broadcasts
+        ``base -> optical`` live and nothing is latched (a second, static parent under
+        ``zed_camera_link`` would fight it). With a ZED whose depth the sim does not
+        synthesise (no intrinsics) there is no depth leg for it, so the bridge latches
+        the mount's REP-103 child for ``top``; it used to ignore ``shares_mount_with``
+        and publish nothing, since it never iterated that mount sensor."""
+        rclpy = pytest.importorskip("rclpy")  # default reason matches the declared `ros` gap
+        from openral_core.depth_extrinsic import image_frame_id
+        from openral_hal.depth_cloud import BODY_TO_OPTICAL_QUAT_XYZW
+        from openral_hal.sim_sensor_bridge import SimSensorBridge
+        from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
+        from tf2_msgs.msg import TFMessage
+
+        optical = "zed_camera_link_optical_frame"
+        with _FakeSidecar(_free_port(), obs_extra=self._FRAMES, sim_time_ns=_STATE_NS) as s:
+            hal = self._hal(s.port)
+            desc = hal.description
+            if not zed_renders_depth:
+                no_cast = [
+                    x.model_copy(update={"intrinsics": None}) if x.name == "head_zed" else x
+                    for x in desc.sensors
+                ]
+                desc = desc.model_copy(update={"sensors": no_cast})
+            top = next(x for x in desc.sensors if x.name == "top")
+            assert image_frame_id(top, desc.sensors) == optical
+            rclpy.init()
+            node = rclpy.create_node("test_isaac_shared_mount_optical")
+            bridge = SimSensorBridge(node=node, hal=hal, description=desc, viewer_enabled=False)
+            parents: set[tuple[str, str]] = set()
+            rotations: list[tuple[float, float, float, float]] = []
+
+            def keep(kind: str) -> Any:
+                def cb(msg: TFMessage) -> None:
+                    for t in msg.transforms:
+                        if t.child_frame_id == optical:
+                            parents.add((kind, t.header.frame_id))
+                            q = t.transform.rotation
+                            rotations.append((q.x, q.y, q.z, q.w))
+
+                return cb
+
+            latched = QoSProfile(depth=10, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+            node.create_subscription(TFMessage, "/tf_static", keep("static"), latched)
+            node.create_subscription(TFMessage, "/tf", keep("live"), qos_profile_sensor_data)
+            try:
+                hal.connect()
+                bridge._setup_cameras()
+                bridge._setup_depth()
+                bridge._publish_depth_clouds_from_obs()
+                deadline = time.monotonic() + 5.0
+                while not parents and time.monotonic() < deadline:
+                    rclpy.spin_once(node, timeout_sec=0.1)
+                settle = time.monotonic() + 0.5  # a second parent would arrive with the first
+                while time.monotonic() < settle:
+                    rclpy.spin_once(node, timeout_sec=0.1)
+                if zed_renders_depth:
+                    assert parents == {("live", desc.base_frame)}
+                else:
+                    assert parents == {("static", "zed_camera_link")}
+                    assert rotations[0] == pytest.approx(BODY_TO_OPTICAL_QUAT_XYZW)
+            finally:
+                bridge.teardown()
+                node.destroy_node()
+                rclpy.shutdown()
+                hal.env.close()
+
     def test_the_cloud_rides_the_camera_optical_frame_so_octomap_casts_from_the_camera(
         self,
     ) -> None:

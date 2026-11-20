@@ -1215,8 +1215,9 @@ def _optical_mounts(sensors: Sequence[SensorSpec], hal_mode: str) -> dict[str, s
     The object lift looks an RGB camera up in
     ``openral_core.depth_extrinsic.image_frame_id``; where that is the REP-103 optical
     child of the camera's mount frame (its own body-convention mount, or the sensor it
-    ``shares_mount_with``), this names ``{mount frame: that child}`` — derived from
-    ``image_frame_id`` itself, so the launch publishes exactly the frame the lift reads.
+    ``shares_mount_with``), this names ``{mount frame: that child}`` — a loop over
+    ``openral_core.depth_extrinsic.optical_mount``, the rule ``image_frame_id`` itself
+    reads, so the launch publishes exactly the frame the lift reads.
     In sim the sensor bridge publishes it; on hardware the launch must, or every
     detection from the camera is dropped. ``sensors`` must be the set the lift resolves
     over (the manifest's sensors and its ``sensor_bundles``'), plus the scene's.
@@ -1229,20 +1230,12 @@ def _optical_mounts(sensors: Sequence[SensorSpec], hal_mode: str) -> dict[str, s
         >>> _optical_mounts(metal, "sim")
         {}
     """
-    from openral_core.depth_extrinsic import image_frame_id
+    from openral_core.depth_extrinsic import optical_mount
 
     if hal_mode == "sim":
         return {}
-    by_name = {s.name: s for s in sensors}
-    mounts: dict[str, str] = {}
-    for s in sensors:
-        if s.modality != "rgb":
-            continue
-        mount = by_name.get(s.shares_mount_with or s.name, s)
-        frame = image_frame_id(s, sensors)
-        if frame != str(mount.frame_id):
-            mounts[str(mount.frame_id)] = frame
-    return mounts
+    placed = (optical_mount(s, sensors) for s in sensors if s.modality == "rgb")
+    return {m.frame: m.optical for m in placed if m is not None and m.optical != m.frame}
 
 
 def _optical_tf_node(parent: str, optical: str) -> Node:
