@@ -56,6 +56,7 @@ from openral_core import (
     ObjectRole,
     PlaceRegion,
     Pose6D,
+    SupportContactWitness,
     TrackedObject,
     TrackStatus,
 )
@@ -390,6 +391,62 @@ def _palm_clipped(
     return out or list(prims)
 
 
+#: The kernel's ``support_witness_max_patch_radius_m`` default. A witness past the kernel's bound
+#: fails the whole attachment message closed, so a wider footprint attests nothing instead.
+# ponytail: mirrors the kernel default; read the deployed parameter if a launch ever changes it.
+_MAX_SUPPORT_PATCH_M = 0.5
+
+
+def _support_witness(
+    prims: Sequence[AttachedCollisionPrimitive],
+    t_fo: NDArray[np.float64],
+    support_z: float,
+    object_id: str,
+    stamp_ns: int,
+) -> SupportContactWitness | None:
+    """The grasped payload rests on the surface at ``support_z``: one bounded witness for it.
+
+    At the grasp the held object still stands on its support (a carton on a tote floor), and
+    the support's top cells meet the payload's bottom face -- the box is cut there
+    (``_support_clipped``), on a voxel boundary, so a few millimetres of hand motion read as
+    a payload-vs-world penetration. The witness (ADR-0092 D6) licenses that one contact: the
+    horizontal plane at ``support_z`` (grid frame, normal up), over the payload's footprint,
+    with no physical penetration; the kernel kills it for good once the payload lifts clear.
+    ``None`` when the footprint is wider than the kernel accepts. Attested once, at attach.
+
+    Example:
+        >>> p = _prim(np.eye(4), (0.05, 0.03, 0.04), "o")
+        >>> t = np.eye(4)
+        >>> t[:3, 3] = (0.3, 0.1, 0.04)
+        >>> w = _support_witness([p], t, 0.0, "o", 7)
+        >>> w.contact_point_in_object, w.contact_normal_in_object, round(w.patch_radius_m, 4)
+        ((0.0, 0.0, -0.04), (0.0, 0.0, 1.0), 0.0583)
+    """
+    r, p = t_fo[:3, :3], t_fo[:3, 3]
+    plane = np.array([p[0], p[1], support_z])
+    reach = 0.0
+    for prim in prims:
+        t = t_fo @ _t(prim.pose_in_object)
+        half = np.asarray(bounding_half_extents(prim.shape), dtype=np.float64)
+        corners = (_UNIT * half) @ t[:3, :3].T + t[:3, 3]
+        reach = max(reach, float(np.max(np.linalg.norm(corners[:, :2] - plane[:2], axis=1))))
+    if not 0.0 < reach <= _MAX_SUPPORT_PATCH_M:
+        return None
+    point = r.T @ (plane - p)
+    normal = r.T @ np.array([0.0, 0.0, 1.0])
+    return SupportContactWitness(
+        support_id=f"tracked_support:z={support_z:.4f}",
+        contact_point_in_object=(float(point[0]), float(point[1]), float(point[2])),
+        contact_normal_in_object=(float(normal[0]), float(normal[1]), float(normal[2])),
+        patch_radius_m=reach,
+        max_penetration_m=0.0,
+        confidence=FALLBACK_CONFIDENCE,
+        evidence_kind=AttachmentEvidenceKind.PERCEPTION_TRACK,
+        evidence_ref=f"support_z:{support_z:.4f}|{object_id}",
+        stamp_ns=stamp_ns,
+    )
+
+
 def _support_clipped(
     prims: Sequence[AttachedCollisionPrimitive],
     t_fo: NDArray[np.float64],
@@ -668,6 +725,7 @@ class GraspBinder:
             evidence_ref=f"{track.declaration_key}|epoch={epoch}",
             stamp_ns=stamp_ns,
             epoch=epoch,
+            support_contact=_support_witness(prims, t_fo, track.support_z, oid, stamp_ns),
         )
         return Binding(BindOutcome.TRACKED, attachment, (oid,), reground=False)
 
@@ -700,10 +758,12 @@ class GraspBinder:
             prims += [_prim(t_of @ _frame(c, r), h, oid, src) for c, r, h in boxes]
         prims = prims[:1] + _palm_clipped(prims[1:], t_ao, fb, oid) if len(prims) > 1 else prims
         floor = min(t.support_z for t in cands) if cands else support_z
+        witness = None
         if floor is not None:
             # Cut at the lowest support the candidates (else the tracked neighbours) stand on.
             t_fo = self.hand.t_frame_from_attach(self.frame_id, positions) @ t_ao
             prims = _support_clipped(prims, t_fo, floor, oid) or prims
+            witness = _support_witness(prims, t_fo, floor, oid, stamp_ns)
         self._shape = prims[:1]
         attachment = AttachedCollisionObject(
             object_id=oid,
@@ -720,6 +780,7 @@ class GraspBinder:
             if cands
             else "untracked_grasp",
             stamp_ns=stamp_ns,
+            support_contact=witness,
         )
         outcome = (
             BindOutcome.PROVISIONAL
