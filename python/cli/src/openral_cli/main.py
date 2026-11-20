@@ -70,7 +70,6 @@ from openral_cli.collision import collision_app
 from openral_cli.compliance import compliance_app
 from openral_cli.dataset import dataset_app
 from openral_cli.deploy_sim import deploy_sim_command
-from openral_cli.deploy_world import deploy_world_command
 from openral_cli.estop import estop_app
 from openral_cli.install import install_app
 from openral_cli.prompt import prompt_command
@@ -4041,15 +4040,6 @@ deploy_app.command(
         "by a DeployScene YAML + rSkill. Sibling of ``deploy run``."
     ),
 )(deploy_sim_command)
-
-deploy_app.command(
-    "world",
-    help=(
-        "Run several robots in ONE MuJoCo world from a SharedWorldScene YAML: one "
-        "physics process, one `deploy sim` graph per robot on its own ROS domain."
-    ),
-    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
-)(deploy_world_command)
 
 
 @deploy_app.command("list")

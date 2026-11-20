@@ -111,8 +111,6 @@ from openral_core.schemas import (
     SensorReaderBackend,
     SensorReaderConfig,
     SensorSpec,
-    SharedWorldRobot,
-    SharedWorldScene,
     SimEnvironment,
     SpatialEdge,
     SpatialNode,
@@ -961,7 +959,7 @@ _force_observer_st = st.builds(
 @given(
     st.dictionaries(
         _name,
-        st.floats(allow_nan=False, allow_infinity=False, min_value=1e-3, max_value=7.0),
+        st.floats(allow_nan=False, allow_infinity=False, min_value=1e-3, max_value=1e3),
         max_size=3,
     )
 )
@@ -1883,37 +1881,3 @@ _ovb_detector_config_st = st.builds(
 def test_fuzz_ovb_detector_config(instance: OvbDetectorConfig) -> None:
     """OvbDetectorConfig (DetectorContract.ovb) round-trips + validates its schema."""
     _round_trip_and_validate(OvbDetectorConfig, instance)
-
-
-# Robots that cannot collide: distinct names, ports, and ROS domains 2 apart (issue #666).
-_shared_world_st = st.builds(
-    lambda count, xyz, yaw, timeout: SharedWorldScene(
-        id="so101_handover_table",
-        arena_mjcf="assets/handover_table.xml",
-        barrier_timeout_s=timeout,
-        robots=[
-            SharedWorldRobot(
-                name=f"arm{i}",
-                scene="../deploy/so101_shared_table.yaml",
-                base_xyz=xyz,
-                base_yaw_deg=yaw,
-                ros_domain_id=102 + 2 * i,
-                dashboard_port=4400 + i,
-                foxglove_port=8800 + i,
-            )
-            for i in range(count)
-        ],
-    ),
-    st.integers(min_value=2, max_value=6),
-    st.tuples(_safe_float, _safe_float, _safe_float),
-    _safe_float,
-    st.floats(allow_nan=False, allow_infinity=False, min_value=1e-3, max_value=7.0),
-)
-
-
-@_FUZZ_SETTINGS
-@given(_shared_world_st)
-def test_fuzz_shared_world_scene(instance: SharedWorldScene) -> None:
-    """SharedWorldScene (and its SharedWorldRobot rows) round-trips + validates its schema."""
-    _round_trip_and_validate(SharedWorldScene, instance)
-    _round_trip_and_validate(SharedWorldRobot, instance.robots[0])
