@@ -346,10 +346,24 @@ class IsaacSceneBase:
 
     @property
     def _observed_sim_dt_per_tick_s(self) -> float | None:
-        """Actual callback cadence over the configured substeps, or ``None`` unseen."""
-        if self._observed_physics_step_dt_s is None or self.physics_substeps is None:
+        """Actual callback cadence over the configured substeps, or ``None`` unseen.
+
+        Robots sharing a world share its physics step: one whose own callback has not
+        reported takes another robot's (seen on q5090: the first robot's never did).
+        """
+        seen = [p._observed_physics_step_dt_s for p in self._peers.values()]
+        dt = self._observed_physics_step_dt_s
+        if dt is None:
+            dt = next((d for d in seen if d is not None), None)
+            if dt is not None and len(seen) > 1:
+                print(
+                    f"[isaac_scene] robot {self.name!r}: no physics callback of its own yet; "
+                    f"using the shared world's ({[p.name for p in self._peers.values() if p._observed_physics_step_dt_s is not None]})",
+                    flush=True,
+                )
+        if dt is None or self.physics_substeps is None:
             return None
-        tick = self._substeps() * self._observed_physics_step_dt_s
+        tick = self._substeps() * dt
         return tick if math.isfinite(tick) and tick > 0.0 else None
 
     def _substeps(self) -> int:

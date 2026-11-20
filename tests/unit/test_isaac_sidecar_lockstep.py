@@ -398,3 +398,14 @@ def test_robot_clients_of_a_shared_sidecar(two_robots: tuple[str, _World, _Robot
     env.close()  # one robot leaving a shared sidecar must not end it for the others
     assert clients["south"].call("ping")["ok"] is True
     clients["south"].close()
+
+
+def test_a_robot_without_its_own_physics_callback_takes_the_shared_world_step(
+    two_robots: tuple[str, _World, _Robot, _Robot],
+) -> None:
+    """Seen on q5090: the first robot's callback never reported; the world's step is one."""
+    _url, _world, south, north = two_robots
+    south._observed_physics_step_dt_s, north._observed_physics_step_dt_s = None, 0.05
+    assert south._observed_sim_dt_per_tick_s == pytest.approx(0.1)  # 2 substeps
+    north._observed_physics_step_dt_s = None
+    assert south._observed_sim_dt_per_tick_s is None  # nothing measured: still fails closed
