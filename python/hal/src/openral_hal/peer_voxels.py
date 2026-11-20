@@ -360,6 +360,12 @@ def main(argv: list[str] | None = None) -> None:
         )
         raise SystemExit(1) from exc
     finally:
+        # The teardown signals arrive more than once (the launch, and `deploy sim`
+        # forwarding Ctrl-C to its group). Python restores the default handlers when it
+        # finalizes, so a repeat during the exit would kill the process by signal and
+        # read as a lost peer source; ignored ones stay ignored.
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(signum, signal.SIG_IGN)
         conn.close()
         node.destroy_node()
         rclpy.try_shutdown()
