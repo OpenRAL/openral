@@ -194,7 +194,9 @@ def _scene_builds_bare_twin(deploy_scene: DeployScene | None) -> bool:
     or names a scene id that ``openral_sim.SCENES`` cannot build (nothing to
     attach to); otherwise the HAL scene-attaches (``SimAttachedHAL`` around
     the scene's ``SimRollout``). No scene at all (``--robot`` only) is a bare
-    twin too.
+    twin too. A bare twin is the ``MujocoArmHAL`` (``SimRolloutHAL``) built from
+    the composition ``openral_hal.resolver.twin_scene_composition`` picks: it has
+    no attachment API, ``reset_episode`` or per-goal grading (#683).
     """
     if deploy_scene is None or deploy_scene.composition is not None:
         return True
@@ -1953,9 +1955,11 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         # (SimAttachedHAL around the scene's SimRollout). Real never attaches.
         hal_params.setdefault("sim_env_yaml", str(config.resolve()))
     if hal_mode == "sim" and deploy_scene is not None and hal.bare_twin_sim:
-        # Bare twin: forward the DeployScene's own MJCF composition (its arena)
-        # so the SCENE owns its environment, not the robot manifest.
-        scene_composition = deploy_scene.composition
+        # Bare twin: forward the MJCF composition the twin is built from (the
+        # DeployScene's own arena, else the manifest's), by the HAL's one rule.
+        from openral_hal.resolver import twin_scene_composition  # reason: deferred
+
+        scene_composition = twin_scene_composition(description, deploy_scene.composition)
         if scene_composition is not None:
             hal_params.setdefault("scene_composition_json", scene_composition.model_dump_json())
     # Every constructor kwarg (DeployScene `hal.defaults` + `--hal`) also rides

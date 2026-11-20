@@ -2566,6 +2566,7 @@ if _ROS2_AVAILABLE:
             from openral_core.exceptions import ROSConfigError
 
             from openral_hal import build_hal
+            from openral_hal.resolver import twin_scene_composition
 
             robot_yaml = self.get_parameter("robot_yaml").get_parameter_value().string_value
             if not robot_yaml:
@@ -2585,10 +2586,9 @@ if _ROS2_AVAILABLE:
             # Declarative MJCF scene composition (issue #191 Phase 3b).
             # When building a bare sim HAL (no scene-attach), call the named
             # composer and thread the resulting MJCF in as the HAL's `mjcf_path`.
-            # The SCENE's `composition` (forwarded as `scene_composition_json`)
-            # wins over the robot manifest's `scene_defaults.composition` — the
-            # scene owns its arena, the robot manifest describes the robot.
-            # The manifest fallback is retained for back-compat.
+            # Which composition is the one rule `twin_scene_composition` (the
+            # scene's, forwarded as `scene_composition_json`, else the manifest's
+            # `scene_defaults.composition`), shared with `deploy sim`.
             import json
 
             from openral_core.schemas import SceneComposition
@@ -2605,11 +2605,10 @@ if _ROS2_AVAILABLE:
             scene_comp_json = (
                 self.get_parameter("scene_composition_json").get_parameter_value().string_value
             )
-            composition: SceneComposition | None = None
-            if scene_comp_json:
-                composition = SceneComposition.model_validate_json(scene_comp_json)
-            elif description.scene_defaults is not None:
-                composition = description.scene_defaults.composition
+            composition = twin_scene_composition(
+                description,
+                SceneComposition.model_validate_json(scene_comp_json) if scene_comp_json else None,
+            )
             if hal_mode == "sim" and sim_env_yaml is None and composition is not None:
                 transport["mjcf_path"] = self._compose_scene_mjcf(description, composition)
             # Real-HW transport overrides (`deploy run` → HAL params file →
