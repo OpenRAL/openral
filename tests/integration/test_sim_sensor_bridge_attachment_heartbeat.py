@@ -19,6 +19,7 @@ three different robots, so the guarantee is the bridge's, not one HAL's.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import time
 from collections.abc import Callable
@@ -378,3 +379,130 @@ def test_reset_episode_publishes_an_empty_attachment_revision() -> None:
             node.destroy_node()
     finally:
         rclpy.try_shutdown()
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_the_hal_nodes_reset_episode_service_forgets_the_payload() -> None:
+    """The HAL node's ``reset_episode`` service drives the attachment reset end to end.
+
+    Production ``ManifestHALLifecycleNode`` (the SO-101 twin), real ``SimSensorBridge``,
+    real ``openral_msgs`` on the wire: a payload staged through ``/openral/attachment_state``
+    and acknowledged is dropped by a ``/openral/so101_follower/reset_episode`` call, the
+    bridge publishes an empty revision, and nothing stays masked.
+    """
+    import threading
+    from pathlib import Path
+
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg", reason="openral_msgs is not built in this env")
+
+    from openral_core import (
+        AttachedCollisionObject,
+        AttachedCollisionPrimitive,
+        AttachmentEvidenceKind,
+        BoxShape,
+        Pose6D,
+    )
+    from openral_hal.lifecycle import ManifestHALLifecycleNode
+    from openral_msgs.msg import AttachedCollisionObject as ObjectMsg
+    from openral_msgs.msg import AttachedCollisionPrimitive as PrimitiveMsg
+    from openral_msgs.msg import AttachmentState
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.node import Node
+    from rclpy.parameter import Parameter
+    from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+    from std_msgs.msg import UInt64
+    from std_srvs.srv import Trigger
+
+    robot_yaml = Path(__file__).resolve().parents[2] / "robots" / "so101_follower" / "robot.yaml"
+    link = "gripper"
+    payload = AttachedCollisionObject(
+        object_id="payload",
+        attach_link=link,
+        touch_links=[link],
+        primitives=[
+            AttachedCollisionPrimitive(
+                shape=BoxShape(half_extents_m=(0.01, 0.01, 0.01)),
+                pose_in_object=Pose6D(
+                    xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="payload"
+                ),
+            )
+        ],
+        pose_in_link=Pose6D(xyz=(0.0, 0.0, 0.03), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=link),
+        confidence=1.0,
+        evidence_kind=AttachmentEvidenceKind.SIM_CONTACT,
+        evidence_ref="mujoco_body:moving_jaw_so101_v1",  # a body of the twin's MJCF
+        stamp_ns=1,
+    )
+
+    def wait_until(predicate: Callable[[], bool], timeout_s: float = 10.0) -> bool:
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.02)
+        return False
+
+    rclpy.init()
+    node: Any = ManifestHALLifecycleNode(
+        "test_attachment_reset_episode_node",
+        parameter_overrides=[
+            Parameter("robot_yaml", value=str(robot_yaml)),
+            Parameter("hal_mode", value="sim"),
+            Parameter("publish_rate_hz", value=20.0),
+            Parameter("viewer_enabled", value=False),
+        ],
+    )
+    peer = Node("test_attachment_reset_episode_peer")
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    executor.add_node(peer)
+    latched = QoSProfile(
+        reliability=QoSReliabilityPolicy.RELIABLE,
+        durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+        depth=1,
+    )
+    state_pub = peer.create_publisher(AttachmentState, "/openral/attachment_state", latched)
+    applied_pub = peer.create_publisher(UInt64, "/openral/attachment_state_applied", latched)
+    received: list[AttachmentState] = []
+    peer.create_subscription(AttachmentState, "/openral/attachment_state", received.append, latched)
+    reset = peer.create_client(Trigger, "/openral/so101_follower/reset_episode")
+    spin = threading.Thread(target=executor.spin, daemon=True)
+    spin.start()
+    try:
+        assert str(node.trigger_configure()).endswith("SUCCESS"), "configure failed"
+        assert str(node.trigger_activate()).endswith("SUCCESS"), "activate failed"
+        bridge, hal = node._bridge, node._hal
+        assert bridge is not None and hal is not None
+
+        msg = AttachmentState()
+        msg.header.stamp = peer.get_clock().now().to_msg()
+        msg.revision = 1
+        item = ObjectMsg()
+        payload.fill_idl(item, primitive_factory=PrimitiveMsg)
+        msg.objects.append(item)
+        state_pub.publish(msg)
+        assert wait_until(lambda: bridge._attachment_revision >= 1), "revision 1 never staged"
+        applied_pub.publish(UInt64(data=1))
+        assert wait_until(lambda: bool(hal.read_attached_body_ids())), "payload never masked"
+
+        assert reset.wait_for_service(timeout_sec=10.0), "reset_episode service not offered"
+        future = reset.call_async(Trigger.Request())
+        assert wait_until(future.done), "reset_episode never replied"
+        assert future.result().success, future.result().message
+
+        assert hal.read_attached_objects() == []
+        assert hal.read_attached_body_ids() == frozenset()
+        assert bridge._attachment_desired == []
+        assert wait_until(lambda: any(m.revision == 2 and not list(m.objects) for m in received)), (
+            "no empty revision published after the reset"
+        )
+    finally:
+        with contextlib.suppress(Exception):  # reason: teardown after a failed assertion
+            node.trigger_deactivate()
+            node.trigger_cleanup()
+        executor.shutdown()
+        node.destroy_node()
+        peer.destroy_node()
+        rclpy.try_shutdown()
+        spin.join(timeout=5.0)
