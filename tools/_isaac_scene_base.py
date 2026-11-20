@@ -20,6 +20,12 @@ and may override ``_on_reset`` (per-episode randomization), the class
 attributes ``warmup_steps`` / ``physics_substeps``, and set
 ``self.action_dim`` in ``__init__``.
 
+Several robots, one world (openral-pro#99): every robot is its own scene object, and they
+share one ``World`` (``_peers``, set by the scene's builder; a lone robot is its own only peer).
+``step_many`` applies each named robot's action, advances the world **once** — every robot's
+per-substep hooks run before each physics step — and answers each named robot with its own
+observation; ``step`` is ``step_many`` for one robot. ``reset`` resets the shared world.
+
 Time base: one ``step()`` is one control period of the robot
 (``action_spec.control_freq_hz``), so a deploy-sim tick advances the world by
 exactly ``1 / control_freq_hz`` — ``build`` calls ``resolve_time_base`` with
@@ -44,6 +50,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
@@ -127,7 +134,12 @@ class IsaacSceneBase:
         instruction: str,
         success_key: str,
         max_steps: int,
+        name: str = "",
     ) -> None:
+        #: The robot's name in a scene of several (``""``: the scene's one robot).
+        self.name = name
+        #: Every robot sharing this scene's world, by name, this one included.
+        self._peers: dict[str, IsaacSceneBase] = {name: self}
         self.obs_height = obs_height
         self.obs_width = obs_width
         self.instruction = instruction
@@ -146,28 +158,51 @@ class IsaacSceneBase:
         self._untimed_cameras: set[str] = set()
         # Renders the last step spent (its rendered substep + catch-up), for the reply.
         self._last_renders = 0
+        #: Where the last step's wall time went (ms), read by the sidecar's timing log.
+        self.last_step_timing: dict[str, float] = {}
         self._catchup_exhausted_warned = False
 
     # ── public sidecar contract ──────────────────────────────────────────────
 
+    def robot(self, name: str) -> IsaacSceneBase:
+        """The robot ``name`` of this scene's world (``KeyError`` naming the robots it has).
+
+        Example:
+            >>> scene = IsaacSceneBase(
+            ...     obs_height=1, obs_width=1, instruction="", success_key="s", max_steps=1
+            ... )
+            >>> scene.robot("") is scene
+            True
+        """
+        try:
+            return self._peers[name]
+        except KeyError:
+            raise KeyError(
+                f"no robot {name!r} in this scene; robots: {sorted(self._peers)}"
+            ) from None
+
     def reset(self, seed: int | None = None) -> dict[str, Any]:
-        """Per-episode reset: randomize, reset physics, warm up, observe."""
-        self._observed_physics_step_dt_s = None
-        self._on_reset(np.random.default_rng(seed))
+        """Per-episode reset of the whole world: randomize, reset physics, warm up, observe.
+
+        Every robot sharing the world is reset with it; the observation is this robot's.
+        """
+        peers = list(self._peers.values())
+        rng = np.random.default_rng(seed)
+        for p in peers:
+            p._observed_physics_step_dt_s = None
+            p._on_reset(rng)
         self._world.reset()
-        self._after_world_reset()
-        self._step_idx = 0
+        for p in peers:
+            p._after_world_reset()
+            p._step_idx = 0
         for _ in range(self.warmup_steps):
-            self._before_render()
-            self._before_substep()
-            self._world.step(render=True)
-        self._after_warmup()
+            self._world_step(render=True)
+        for p in peers:
+            p._after_warmup()
         # The hook may step physics without rendering (a soft-driven arm settling
         # onto its hold target): render once more after it, then drain the RTX
         # pipeline so the first observation shows the settled pose (issue #361).
-        self._before_render()
-        self._before_substep()
-        self._world.step(render=True)
+        self._world_step(render=True)
         self._catch_up_frames()
         return self._observe()
 
@@ -176,57 +211,90 @@ class IsaacSceneBase:
 
         ``frames`` picks the rendering this step does (``FRAME_MODES``, module docstring).
         """
-        if frames not in FRAME_MODES:
-            raise ValueError(f"frames must be one of {FRAME_MODES}, got {frames!r}")
-        action = np.asarray(action, dtype=np.float32).reshape(-1)
-        if action.shape[0] < self.action_dim:
-            # NaN, not 0: slots are absolute targets, and 0 is a legal one ("drive
-            # to 0 rad", "close the gripper"). NaN holds; the scene reads a NaN
-            # base twist as 0 (stop).
-            action = np.pad(action, (0, self.action_dim - action.shape[0]), constant_values=np.nan)
-        self._apply_action(action)
+        return self.step_many({self.name: (action, frames)})[self.name]
+
+    def step_many(
+        self, requests: Mapping[str, tuple[NDArray[np.float32], str]]
+    ) -> dict[str, dict[str, Any]]:
+        """One control period of the shared world for ``{robot: (action, frames)}``.
+
+        Each named robot's action is applied to it, the physics runs one control period
+        **once** (every robot's substep hooks before each physics step; a robot not named
+        holds its last command), then each named robot gets its StepResult dict. The world
+        renders when any request wants frames and drains the RTX pipeline for each robot
+        that asked ``"fresh"``; a robot that asked ``"none"`` gets no frame keys.
+        """
+        for _name, (_action, frames) in requests.items():
+            if frames not in FRAME_MODES:
+                raise ValueError(f"frames must be one of {FRAME_MODES}, got {frames!r}")
+        robots = {name: self.robot(name) for name in requests}
+        for name, (action, _frames) in requests.items():
+            r = robots[name]
+            a: NDArray[np.float32] = np.asarray(action, dtype=np.float32).reshape(-1)
+            if a.shape[0] < r.action_dim:
+                # NaN, not 0: slots are absolute targets, and 0 is a legal one ("drive
+                # to 0 rad", "close the gripper"). NaN holds; the scene reads a NaN
+                # base twist as 0 (stop).
+                a = np.pad(a, (0, r.action_dim - a.shape[0]), constant_values=np.nan)
+            r._apply_action(a)
         # Render only the final substep — it is the frame the obs reads — and only
-        # when the caller wants frames this step.
-        render = frames != "none"
+        # when a caller wants frames this step.
+        render = any(frames != "none" for _a, frames in requests.values())
         t0 = time.perf_counter()
         for _ in range(self._substeps() - 1):
-            self._before_substep()
-            self._world.step(render=False)
-        if render:
-            self._before_render()
-        self._before_substep()
-        self._world.step(render=render)
-        self._last_renders = int(render)
+            self._world_step(render=False)
+        self._world_step(render=render)
+        renders = int(render)
         t1 = time.perf_counter()
-        if frames == "fresh":
-            self._catch_up_frames()
+        for name, (_action, frames) in requests.items():
+            if frames == "fresh":
+                renders += robots[name]._catch_up_frames()
         t2 = time.perf_counter()
-        self._step_idx += 1
-        reward, terminated = self._reward_terminated()
-        info: dict[str, Any] = {self.success_key: bool(terminated)}
-        info.update(self._extra_info())
-        t3 = time.perf_counter()
-        observation = self._observe(with_frames=render)
-        #: Where this step's wall time went (ms), read by the sidecar's timing log.
-        self.last_step_timing = {
-            "physics": (t1 - t0) * 1e3,
-            "catch_up": (t2 - t1) * 1e3,
-            "rest": (t3 - t2) * 1e3,
-            "observe": (time.perf_counter() - t3) * 1e3,
-            "renders": self._last_renders,
-            "depth_frames": getattr(self, "depth_frames_ms", 0.0) if render else 0.0,
-        }
-        return {
-            "observation": observation,
-            "renders": self._last_renders,
-            "reward": float(reward),
-            "terminated": bool(terminated),
-            "truncated": bool(self._step_idx >= self.max_steps),
-            "info": info,
-            # Elapsed sim time so the deploy-sim ROS graph
-            # can run on /clock with an Isaac backend (None if unavailable).
-            "sim_time_ns": self.sim_time_ns(),
-        }
+        replies: dict[str, dict[str, Any]] = {}
+        for name, (_action, frames) in requests.items():
+            r = robots[name]
+            r._last_renders = renders
+            t_robot = time.perf_counter()
+            r._step_idx += 1
+            reward, terminated = r._reward_terminated()
+            info: dict[str, Any] = {r.success_key: bool(terminated)}
+            info.update(r._extra_info())
+            t3 = time.perf_counter()
+            observation = r._observe(with_frames=frames != "none")
+            r.last_step_timing = {
+                "physics": (t1 - t0) * 1e3,
+                "catch_up": (t2 - t1) * 1e3,
+                "rest": (t3 - t_robot) * 1e3,
+                "observe": (time.perf_counter() - t3) * 1e3,
+                "renders": renders,
+                "depth_frames": getattr(r, "depth_frames_ms", 0.0) if frames != "none" else 0.0,
+            }
+            replies[name] = {
+                "observation": observation,
+                "renders": renders,
+                "reward": float(reward),
+                "terminated": bool(terminated),
+                "truncated": bool(r._step_idx >= r.max_steps),
+                "info": info,
+                # Elapsed sim time so the deploy-sim ROS graph
+                # can run on /clock with an Isaac backend (None if unavailable).
+                "sim_time_ns": r.sim_time_ns(),
+            }
+        return replies
+
+    def _world_step(self, *, render: bool) -> None:
+        """One physics step of the shared world, every robot's hooks first."""
+        for p in self._peers.values():
+            if render:
+                p._before_render()
+            p._before_substep()
+        self._world.step(render=render)
+
+    def _world_render(self) -> None:
+        """Render the shared world without stepping it, every robot's cameras posed first."""
+        for p in self._peers.values():
+            p._before_render()
+        self._world.render()
 
     def resolve_time_base(self, physics_dt_s: float, control_freq_hz: float) -> int:
         """Fix the scene's time base: physics dt + substeps so one step = one tick.
@@ -253,7 +321,12 @@ class IsaacSceneBase:
                 raise RuntimeError(
                     f"{type(self).__name__}: Isaac World cannot report actual physics callback dt."
                 )
-            add_physics_callback("openral_observe_physics_step_dt", self._observe_physics_step_size)
+            # One callback per robot sharing the world: a second registration under the
+            # same name would replace the first.
+            add_physics_callback(
+                "openral_observe_physics_step_dt" + (f"_{self.name}" if self.name else ""),
+                self._observe_physics_step_size,
+            )
         print(
             f"[{type(self).__name__}] time base: physics {1.0 / self._physics_dt_s:.4g} Hz, "
             f"control {control_freq_hz:.4g} Hz, physics_substeps={self.physics_substeps} ({how}), "
@@ -329,33 +402,30 @@ class IsaacSceneBase:
         No physics step: sim time does not move. For a caller that holds the stepping
         (the deploy-sim attachment barrier) and needs a frame of the present state.
         """
-        self._before_render()
-        self._world.render()
-        self._last_renders = 1
-        self._catch_up_frames()
+        self._world_render()
+        self._last_renders = 1 + self._catch_up_frames()
         return self._observe()
 
-    def _catch_up_frames(self) -> None:
+    def _catch_up_frames(self) -> int:
         """Render until every timed camera's frame shows the current sim time.
 
         ``world.render()`` draws without stepping physics, so each call moves the
         delivered frame one stage closer to the state just simulated. Bounded by
         ``_MAX_CATCHUP_RENDERS``; a scene whose cameras report no frame time cannot be
         checked and gets no extra render (the frames' own time still says what they show).
+        Returns the renders it spent.
         """
         now = self.sim_time_ns()
         if now is None or self._physics_dt_s is None:
-            return
+            return 0
         # Frame times are float seconds converted twice; half a physics step tells
         # "this step" from "the previous one" without depending on the rounding.
         tol_ns = int(self._physics_dt_s * 0.5e9)
-        for _ in range(_MAX_CATCHUP_RENDERS):
+        for n in range(_MAX_CATCHUP_RENDERS):
             times = self._image_times()
             if not times or min(times.values()) >= now - tol_ns:
-                return
-            self._before_render()
-            self._world.render()
-            self._last_renders += 1
+                return n
+            self._world_render()
         if not self._catchup_exhausted_warned:
             self._catchup_exhausted_warned = True
             print(
@@ -364,6 +434,7 @@ class IsaacSceneBase:
                 f"sim now {now}); fresh frames are only as fresh as their image_time_ns.",
                 flush=True,
             )
+        return _MAX_CATCHUP_RENDERS
 
     # ── template methods (override in subclasses) ────────────────────────────
 
