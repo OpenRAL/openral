@@ -13,6 +13,7 @@ from pathlib import Path
 
 from openral_core import (
     DetectedObject,
+    ObjectBeliefState,
     Pose6D,
     RecallObjectQuery,
     ResolvePlaceQuery,
@@ -25,13 +26,18 @@ _FIXTURE = Path("tests/unit/fixtures/home_scene_graph.json")
 
 
 def _obj(
-    label: str, xyz: tuple[float, float, float], *, track_id: int | None = None
+    label: str,
+    xyz: tuple[float, float, float],
+    *,
+    track_id: int | None = None,
+    existence: float | None = None,
 ) -> DetectedObject:
     return DetectedObject(
         label=label,
         confidence=0.9,
         pose=Pose6D(xyz=xyz, quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="map"),
         track_id=track_id,
+        existence=existence,
     )
 
 
@@ -234,3 +240,118 @@ def test_accumulates_objects_across_snapshots() -> None:
     objects = {n.label: n for n in mem.to_scene_graph().nodes if n.kind is SpatialNodeKind.OBJECT}
     assert set(objects) == {"wine_bottle", "wine_glass"}
     assert objects["wine_bottle"].observation_count == 2
+
+
+# ── Following the world-state object memory's belief (issue #636) ──────────────
+
+
+def _states(mem: SpatialMemory) -> dict[str, ObjectBeliefState]:
+    return {n.label: n.state for n in mem.to_scene_graph().nodes}
+
+
+def test_node_takes_the_belief_state_of_its_detection() -> None:
+    mem = SpatialMemory()
+    mem.ingest_detected_objects(
+        [
+            _obj("mug", (1.0, 0.0, 0.8), track_id=1, existence=0.9),
+            _obj("bowl", (2.0, 0.0, 0.8), track_id=2, existence=0.5),  # restored, unconfirmed
+            _obj("fork", (3.0, 0.0, 0.8), track_id=3),  # a producer that keeps no belief
+        ],
+        now_ns=1,
+    )
+    assert _states(mem) == {
+        "mug": ObjectBeliefState.PRESENT,
+        "bowl": ObjectBeliefState.UNCERTAIN,
+        "fork": ObjectBeliefState.PRESENT,
+    }
+    mem.ingest_detected_objects(
+        [_obj("bowl", (2.0, 0.0, 0.8), track_id=2, existence=0.8)], now_ns=2
+    )
+    assert _states(mem)["bowl"] is ObjectBeliefState.PRESENT
+
+
+def test_object_the_world_state_evicted_is_marked_absent_and_kept() -> None:
+    """A node the remembered set drops was observed gone: absent, with its history."""
+    mem = SpatialMemory()
+    both = [_obj("mug", (1.0, 0.0, 0.8), track_id=1), _obj("bowl", (2.0, 0.0, 0.8), track_id=2)]
+    mem.ingest_detected_objects(both, now_ns=10, follow_eviction=True)
+    mem.ingest_detected_objects(both[:1], now_ns=20, follow_eviction=True)
+
+    nodes = {n.label: n for n in mem.to_scene_graph().nodes}
+    assert nodes["mug"].state is ObjectBeliefState.PRESENT
+    assert nodes["bowl"].state is ObjectBeliefState.ABSENT
+    assert nodes["bowl"].pose.xyz == (2.0, 0.0, 0.8) and nodes["bowl"].last_seen_ns == 10
+
+    # "Where was the bowl" still answers, flagged; a present match outranks an absent one.
+    mem.ingest_detected_objects(
+        [both[0], _obj("bowl", (5.0, 0.0, 0.8), track_id=3)], now_ns=30, follow_eviction=True
+    )
+    matches = mem.recall_object(RecallObjectQuery(label="bowl"), now_ns=30).matches
+    assert [(m.pose.xyz[0], m.state) for m in matches] == [
+        (5.0, ObjectBeliefState.PRESENT),
+        (2.0, ObjectBeliefState.ABSENT),
+    ]
+
+    # Seen again where it was: the same node is present once more.
+    mem.ingest_detected_objects(
+        [_obj("bowl", (2.0, 0.0, 0.8), track_id=9)], now_ns=40, follow_eviction=True
+    )
+    again = [n for n in mem.to_scene_graph().nodes if n.pose.xyz == (2.0, 0.0, 0.8)]
+    assert [n.state for n in again] == [ObjectBeliefState.PRESENT]
+
+
+def test_resolve_place_never_sends_the_robot_to_where_an_object_was() -> None:
+    mem = SpatialMemory()
+    old, new = _obj("mug", (1.0, 0.0, 0.8), track_id=1), _obj("mug", (4.0, 0.0, 0.8), track_id=2)
+    mem.ingest_detected_objects([old], now_ns=1, follow_eviction=True)
+    mem.ingest_detected_objects([new], now_ns=2, follow_eviction=True)  # track 1 evicted
+    assert mem.resolve_place(ResolvePlaceQuery(reference="mug")).goal.xyz == (4.0, 0.0, 0.8)
+    mem.ingest_detected_objects([], now_ns=3, follow_eviction=True)
+    try:
+        mem.resolve_place(ResolvePlaceQuery(reference="mug"))
+    except ROSObjectNotInMemory:
+        pass
+    else:  # pragma: no cover
+        raise AssertionError("an absent-only reference resolved to a goal")
+
+
+def test_an_empty_remembered_set_marks_everything_it_carried_absent() -> None:
+    mem = SpatialMemory()
+    mem.ingest_detected_objects(
+        [_obj("mug", (1.0, 0.0, 0.8), track_id=1)], now_ns=1, follow_eviction=True
+    )
+    mem.ingest_detected_objects([], now_ns=2, follow_eviction=True)
+    assert _states(mem) == {"mug": ObjectBeliefState.ABSENT}
+
+
+def test_without_follow_eviction_a_missing_object_stays_as_it_was() -> None:
+    mem = SpatialMemory()
+    mem.ingest_detected_objects([_obj("mug", (1.0, 0.0, 0.8), track_id=1)], now_ns=1)
+    mem.ingest_detected_objects([], now_ns=2)
+    assert _states(mem) == {"mug": ObjectBeliefState.PRESENT}
+
+
+def test_preloaded_objects_are_never_marked_absent_by_a_snapshot_that_never_had_them() -> None:
+    mem = SpatialMemory.load(_FIXTURE)
+    before = _states(mem)
+    mem.ingest_detected_objects([], now_ns=1, follow_eviction=True)
+    assert _states(mem) == before
+
+
+def test_restored_scene_file_objects_start_uncertain_until_seen() -> None:
+    """Issue #636: a restart (or a scene file) is a memory, not an observation."""
+    mem = SpatialMemory.load(_FIXTURE, restored_uncertain=True)
+    graph = mem.to_scene_graph()
+    objects = [n for n in graph.nodes if n.kind is SpatialNodeKind.OBJECT]
+    assert objects and all(n.state is ObjectBeliefState.UNCERTAIN for n in objects)
+    assert all(
+        n.state is ObjectBeliefState.PRESENT
+        for n in graph.nodes
+        if n.kind is not SpatialNodeKind.OBJECT
+    )
+    seen = objects[0]
+    mem.ingest_detected_objects(
+        [_obj(seen.label, seen.pose.xyz, existence=0.9)], now_ns=seen.last_seen_ns + 1
+    )
+    after = {n.node_id: n.state for n in mem.to_scene_graph().nodes}
+    assert after[seen.node_id] is ObjectBeliefState.PRESENT

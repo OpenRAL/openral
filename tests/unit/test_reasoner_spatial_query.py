@@ -77,6 +77,33 @@ def test_recall_object_bridge_reports_pose_and_occluding_container() -> None:
     assert "INSIDE container 'fridge'" in text  # planner must open the fridge first
 
 
+def test_recall_object_bridge_flags_belief_state() -> None:
+    """Issue #636: the LLM is told when a recalled object is unconfirmed or gone."""
+    from openral_core import DetectedObject, Pose6D
+
+    present = run_spatial_query(RecallObjectTool(query="bottle of wine"), _memory(), now_ns=2)
+    assert "UNCERTAIN" not in present and "ABSENT" not in present
+
+    restored = SpatialMemory.load(_FIXTURE, restored_uncertain=True)
+    assert "UNCERTAIN" in run_spatial_query(
+        RecallObjectTool(query="bottle of wine"), restored, now_ns=2
+    )
+
+    mem = SpatialMemory()
+    mug = DetectedObject(
+        label="mug",
+        confidence=0.9,
+        pose=Pose6D(xyz=(1.0, 0.0, 0.8), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="map"),
+        track_id=1,
+    )
+    mem.ingest_detected_objects([mug], now_ns=1, follow_eviction=True)
+    mem.ingest_detected_objects([], now_ns=2, follow_eviction=True)
+    assert "ABSENT" in run_spatial_query(RecallObjectTool(query="mug"), mem, now_ns=3)
+    # Where it was is not where it is: an absent-only recall is a miss, so the policy
+    # still escalates to a live look.
+    assert not run_spatial_query_detailed(RecallObjectTool(query="mug"), mem, now_ns=3).found
+
+
 def test_recall_object_bridge_miss_suggests_search() -> None:
     text = run_spatial_query(RecallObjectTool(query="teapot"), _memory(), now_ns=2_000_000_000_000)
     assert "not in memory" in text

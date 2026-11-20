@@ -2402,8 +2402,11 @@ def test_deploy_sim_memory_dir_forwards_all_present_bundle_artifacts(tmp_path: P
     bundle.mkdir()
     (bundle / "scene_graph.json").write_text("{}", encoding="utf-8")
     (bundle / "map.yaml").write_text("image: map.pgm\n", encoding="utf-8")
+    (bundle / "object_memory.json").write_text("{}", encoding="utf-8")
     argv = _resolve_with_memory_dir(str(bundle)).argv_template  # type: ignore[attr-defined]
     assert f"memory_md_path:={bundle / 'MEMORY.md'}" in argv
+    # object_memory.json opts the world-state object memory into persistence (issue #636).
+    assert f"object_memory_path:={bundle / 'object_memory.json'}" in argv
     assert f"spatial_memory_path:={bundle / 'scene_graph.json'}" in argv
     assert f"map_path:={bundle / 'map.yaml'}" in argv
 
@@ -2416,6 +2419,7 @@ def test_deploy_sim_memory_dir_omits_absent_artifacts(tmp_path: Path) -> None:
     assert any(a.startswith("memory_md_path:=") for a in argv)
     assert not any(a.startswith("spatial_memory_path:=") for a in argv)
     assert not any(a.startswith("map_path:=") for a in argv)
+    assert not any(a.startswith("object_memory_path:=") for a in argv)
 
 
 def test_deploy_sim_no_memory_dir_forwards_no_bundle_args() -> None:

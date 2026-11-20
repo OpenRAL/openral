@@ -48,9 +48,10 @@ from openral_world_state.grid import (
     refine_approach_pose,
 )
 from openral_world_state.object_lift import (
+    MissEvidence,
     VoxelFrustumLifter,
     aabb_iou_3d,
-    build_in_fov_predicate,
+    build_miss_classifier,
     decode_occupied_centers,
     depth_cloud_to_centers_base,
     homogeneous_from_quat_xyz,
@@ -82,6 +83,7 @@ __all__ = [
     "DEFAULT_STALENESS_S",
     "DEFAULT_STANDOFF_M",
     "FREE_MAX",
+    "MissEvidence",
     "ObjectMemory",
     "OccupancyGridIndex",
     "OpenClipEmbedder",
@@ -91,7 +93,7 @@ __all__ = [
     "VoxelFrustumLifter",
     "WorldStateAggregator",
     "aabb_iou_3d",
-    "build_in_fov_predicate",
+    "build_miss_classifier",
     "compute_approach_viewpoint",
     "compute_gaze_pose",
     "decode_occupied_centers",

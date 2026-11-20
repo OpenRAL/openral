@@ -124,6 +124,17 @@ def test_round_trip_back_to_worldstate() -> None:
     assert o.bbox_3d == (0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
 
 
+def test_existence_belief_round_trips_and_stays_none_when_not_kept() -> None:
+    """Issue #636: the object memory's belief rides the wire; no belief is not 0."""
+    believed = _obj().model_copy(update={"existence": 0.5})
+    back = world_state_from_idl(build_world_state_stamped_msg(None, _ws([believed, _obj()])))
+    assert [o.existence for o in back.detected_objects] == [0.5, None]
+    # An older publisher sends no existence array at all.
+    msg = build_world_state_stamped_msg(None, _ws([believed]))
+    msg.detected_object_existence = []
+    assert world_state_from_idl(msg).detected_objects[0].existence is None
+
+
 def test_an_object_without_a_box_round_trips_without_one() -> None:
     unboxed = _obj().model_copy(update={"bbox_3d": None, "label": "plate"})
     back = world_state_from_idl(build_world_state_stamped_msg(None, _ws([_obj(), unboxed])))

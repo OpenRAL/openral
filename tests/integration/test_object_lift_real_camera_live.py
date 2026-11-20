@@ -123,7 +123,6 @@ def test_a_zed_detection_is_published_lifted_in_openarm_base() -> None:
             rclpy.parameter.Parameter("object_lift_enabled", value=True),
             rclpy.parameter.Parameter("object_lift_memory_cadence_hz", value=20.0),
             rclpy.parameter.Parameter("object_lift_min_voxels", value=3),
-            rclpy.parameter.Parameter("object_lift_max_misses", value=50),
             # What compose.py sets for a robot with no locomotion.
             rclpy.parameter.Parameter("object_lift_map_frame", value=_BASE),
         ]
