@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -51,6 +51,7 @@ __all__ = [
     "is_gravity_aligned",
     "look_at_quat_wxyz",
     "quat_xyzw_to_yaw",
+    "raw_scene_for_robot",
     "rebase_box",
     "rebase_pose",
     "rotation_to_quat_wxyz",
@@ -591,3 +592,49 @@ def scene_for_robot(scene: DeployScene, name: str, *, map_frame: str = "map") ->
             "place_zones": zones,
         }
     )
+
+
+def raw_scene_for_robot(
+    raw: dict[str, Any], name: str, *, map_frame: str = "map"
+) -> dict[str, Any]:
+    """``scene_for_robot`` on a scene YAML's raw mapping, before any loader validates it.
+
+    For the loaders that read a scene as something other than a ``DeployScene`` (the HAL
+    reads it as a ``SimScene``): only ``robots`` and the robot's fields, the nav goals and
+    the place zones change; everything else in ``raw`` is passed on untouched. A mapping
+    with no ``robots`` is returned as is.
+
+    Example:
+        >>> pose = {"xyz": [0, 1, 0], "quat_xyzw": [0, 0, 0, 1], "frame_id": "world"}
+        >>> raw = {
+        ...     "scene": {"id": "aisle", "backend": "isaacsim"},
+        ...     "robots": [
+        ...         {"name": "a", "robot_id": "openamrobot_v2", "base_pose": pose},
+        ...         {
+        ...             "name": "b",
+        ...             "robot_id": "openamrobot_v2",
+        ...             "base_pose": {**pose, "xyz": [0, 2, 0]},
+        ...         },
+        ...     ],
+        ...     "nav_goals": [{"name": "s5", "pose": {**pose, "xyz": [1, 2, 0]}}],
+        ... }
+        >>> view = raw_scene_for_robot(raw, "b")
+        >>> view["robot_id"], "robots" in view, view["nav_goals"][0]["pose"]["xyz"]
+        ('openamrobot_v2', False, [1.0, 0.0, 0.0])
+    """
+    if not raw.get("robots"):
+        return raw
+    scene = DeployScene.model_validate(raw)  # the whole several-robot scene is checked first
+    one = scene_for_robot(scene, name, map_frame=map_frame)
+    out = {k: v for k, v in raw.items() if k != "robots"}
+    out["robot_id"] = one.robot_id
+    out["base_pose"] = one.base_pose.model_dump(mode="json") if one.base_pose else None
+    if one.robot_unit is not None:
+        out["robot_unit"] = one.robot_unit
+    if raw.get("nav_goals"):
+        out["nav_goals"] = [g.model_dump(mode="json", exclude_defaults=True) for g in one.nav_goals]
+    if raw.get("place_zones"):
+        out["place_zones"] = [
+            z.model_dump(mode="json", exclude_defaults=True) for z in one.place_zones
+        ]
+    return out

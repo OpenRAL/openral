@@ -357,3 +357,44 @@ def test_base_footprint_overlaps_are_logged_once_and_never_sent_in_a_step(
     got = _call(s, "footprint_overlaps")
     assert got["overlaps"] == [["north", "south"]]
     assert [e["robots"] for e in got["events"]] == [["north", "south"]]  # one event per start
+
+
+def test_robot_clients_of_a_shared_sidecar(two_robots: tuple[str, _World, _Robot, _Robot]) -> None:
+    """The real client side (``SidecarClient.robot``, ``_IsaacSimSidecar``) against two robots."""
+    from openral_core import SceneSpec, TaskSpec
+    from openral_sim.backends.isaac_sim import _IsaacSimSidecar
+    from openral_sim.sidecar import SidecarClient
+
+    url, world, south, _north = two_robots
+    port = int(url.rsplit(":", 1)[1])
+    clients = {
+        n: SidecarClient(
+            name="isaac",
+            host="127.0.0.1",
+            port=port,
+            timeout_ms=3000,
+            boot_timeout_s=1.0,
+            launch_argv=[],
+            auto_spawn=False,
+            robot=n,
+        )
+        for n in ("south", "north")
+    }
+    for c in clients.values():
+        c.connect()
+    assert clients["north"].call("ping")["action_dim"] == 3  # its own robot's
+    env = _IsaacSimSidecar(
+        scene=SceneSpec(id="isaac_sim", backend="isaacsim"),
+        task=TaskSpec(id="t", scene_id="isaac_sim", instruction=""),
+        _client=clients["north"],
+    )
+    env.set_idle_next_step()  # what SimAttachedHAL.idle_step does before its hold step
+    assert env._step_options() == {"idle": True}
+    assert env._step_options() == {}  # one-shot
+    clients["north"].call("step", {"action": [0.0, 0.0, 0.0], "idle": True})
+    for _ in range(3):  # north holds: south never waits for it
+        clients["south"].call("step", {"action": [1.0, 0.0]})
+    assert south.applied[-1] == [1.0, 0.0] and world.steps == 8
+    env.close()  # one robot leaving a shared sidecar must not end it for the others
+    assert clients["south"].call("ping")["ok"] is True
+    clients["south"].close()

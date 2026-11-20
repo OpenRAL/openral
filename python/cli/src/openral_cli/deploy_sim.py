@@ -1316,12 +1316,20 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     if runtime_overrides:
         deploy_scene = _with_runtime_overrides(deploy_scene, runtime_overrides)
     if deploy_scene is not None and deploy_scene.robots:
-        # ponytail: refused until deploy sim starts a graph per robot (openral-pro#99, step 5).
-        names = [r.name for r in deploy_scene.robots]
-        raise ROSConfigError(
-            f"{config}: lists several robots {names}; `deploy sim` / `deploy run` do not "
-            "run a several-robot scene yet (openral-pro#99)."
+        # A scene of several robots (openral-pro#99): one Isaac world, a graph per robot.
+        # Each graph's own `deploy sim` reads its robot's one-robot view of the scene
+        # ($OPENRAL_SCENE_ROBOT), so it never comes back here.
+        if hal_mode != "sim":
+            raise ROSConfigError(
+                f"{config}: lists several robots; `deploy run` drives one robot per graph "
+                "on its own host: not yet (openral-pro#99)."
+            )
+        from openral_cli.deploy_robots import (
+            run_scene_robots,  # reason: several-robot scenes only
         )
+
+        assert config is not None  # reason: deploy_scene came from it
+        raise typer.Exit(code=run_scene_robots(deploy_scene, config, sys.argv[1:]))
     scene_robot_id = deploy_scene.robot_id if deploy_scene is not None else None
     robot_id = (
         _load_scene_robot_id(config, robot_override, sim=hal_mode == "sim")

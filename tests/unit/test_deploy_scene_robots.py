@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from openral_core import DeployScene, NavGoal, PlaceRegion, PlaceZone, Pose6D, SceneRobot
 from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import scene_for_robot, yaw_to_quat_xyzw
@@ -112,3 +114,26 @@ def test_sim_run_scenes_stay_one_robot() -> None:
     task = {"id": "restock", "scene_id": "aisle", "instruction": "restock"}
     with pytest.raises(ValidationError, match="runs one robot"):
         SimScene.model_validate(_aisle(task=task))
+
+
+def test_a_robot_graph_reads_its_own_scene_in_every_loader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``$OPENRAL_SCENE_ROBOT`` (set by ``deploy sim`` per graph): one robot, everywhere."""
+    from openral_core import load_scene_strict
+    from openral_core.scene_paths import SCENE_ROBOT_ENV
+    from openral_hal.sim_bringup import _load_scene_for_hal
+
+    raw = DeployScene.model_validate(_aisle()).model_dump(mode="json", exclude_defaults=True)
+    path = tmp_path / "aisle.yaml"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    assert len(DeployScene.from_yaml(str(path)).robots) == 2  # the parent sees every robot
+    monkeypatch.setenv(SCENE_ROBOT_ENV, "north")
+    north = DeployScene.model_validate(_aisle()).robots[1]
+    for scene in (DeployScene.from_yaml(str(path)), load_scene_strict(str(path), DeployScene)):
+        assert scene.robots == []
+        assert scene.base_pose == north.base_pose
+        assert scene.nav_goals[0].pose.frame_id == "map"
+        assert scene.nav_goals[0].pose.xyz == pytest.approx((1.3, 0.8, 0.0), abs=1e-9)
+    hal_scene = _load_scene_for_hal(str(path))  # the HAL keeps the scene, robot and start pose
+    assert (hal_scene.robot_id, hal_scene.base_pose) == (north.robot_id, north.base_pose)
