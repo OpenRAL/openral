@@ -26,7 +26,9 @@ imported here, so a bare twin runs on a host without it.
 
 from __future__ import annotations
 
+import contextlib
 import os
+import tempfile
 import threading
 import time
 from collections.abc import Sequence
@@ -178,7 +180,7 @@ class MujocoTwinRollout:
             raise ROSConfigError(
                 f"RobotDescription '{description.name}' has no joints; cannot initialise {backend}."
             )
-        # load() writes ``<name>_camrig.xml`` beside the source MJCF; a
+        # load() writes ``<name>_camrig_*.xml`` beside the source MJCF; a
         # separator in the name would pick a different directory for that write.
         if os.path.basename(description.name) != description.name or (
             os.altsep and os.altsep in description.name
@@ -314,6 +316,7 @@ class MujocoTwinRollout:
         # MJCF when they are absent (a bare-arm twin ships none). Idempotent: an
         # MJCF that already has them loads from the original path unchanged.
         mjcf_path = self.mjcf_path
+        rig_path: str | None = None
         try:
             from openral_hal._camera_rig import rig_cameras_into_mjcf
 
@@ -322,12 +325,14 @@ class MujocoTwinRollout:
                     fh.read(), list(self.description.sensors)
                 )
             if changed:
-                # Write next to the source MJCF so its relative meshdir resolves.
-                rig_path = os.path.join(
-                    os.path.dirname(self.mjcf_path),
-                    f"{self.description.name}_camrig.xml",
+                # Next to the source MJCF so its relative meshdir resolves, and a file
+                # of this load's own: two twins of one MJCF may rig different cameras.
+                fd, rig_path = tempfile.mkstemp(
+                    prefix=f"{self.description.name}_camrig_",
+                    suffix=".xml",
+                    dir=os.path.dirname(self.mjcf_path),
                 )
-                with open(rig_path, "w") as fh:
+                with os.fdopen(fd, "w") as fh:
                     fh.write(rigged_xml)
                 mjcf_path = rig_path
         except OSError as exc:
@@ -337,6 +342,10 @@ class MujocoTwinRollout:
             return mj.MjModel.from_xml_path(mjcf_path)
         except (OSError, ValueError) as exc:
             raise ROSConfigError(f"Could not load MJCF '{mjcf_path}': {exc}") from exc
+        finally:
+            if rig_path is not None:
+                with contextlib.suppress(OSError):  # reason: a leftover file is harmless
+                    os.unlink(rig_path)
 
     def reset(self, seed: int | None = None) -> dict[str, Any]:
         """Put the twin into its initial state: ``load`` it, or reset a loaded one in place.
@@ -431,6 +440,10 @@ class MujocoTwinRollout:
                         "hal.renderer_close_failed", robot=self.description.name, error=str(exc)
                     )
             self.renderers.clear()
+            # The failure latch and camera lookups belong to this load's model.
+            self._render_failed = False
+            self._mjcf_cameras = set()
+            self._render_missing_warned = set()
             self.model = None
             self.data = None
 
@@ -942,6 +955,13 @@ class MujocoTwinRollout:
             return gripper.actuator_index
         return self.actuator_index.get(joint_name)
 
+    @staticmethod
+    def _gripper_reset_addrs(gripper: SimGripperDescription) -> tuple[int, ...]:
+        """The qpos slots ``_reset_gripper_qpos`` writes: the first, or every one summed."""
+        if gripper.read_mode in (GripperReadMode.AFFINE_LOW_HIGH, GripperReadMode.PASSTHROUGH):
+            return (gripper.qpos_addrs[0],)
+        return tuple(gripper.qpos_addrs)
+
     def _reset_gripper_qpos(self, gripper: SimGripperDescription, value: float) -> None:
         """Write a public gripper value into its native qpos representation."""
         assert self.data is not None
@@ -951,8 +971,9 @@ class MujocoTwinRollout:
         if gripper.read_mode is GripperReadMode.PASSTHROUGH:
             self.data.qpos[gripper.qpos_addrs[0]] = value
             return
-        each = max(0.0, min(1.0, value)) * gripper.qpos_scale / len(gripper.qpos_addrs)
-        for addr in gripper.qpos_addrs:
+        addrs = self._gripper_reset_addrs(gripper)
+        each = max(0.0, min(1.0, value)) * gripper.qpos_scale / len(addrs)
+        for addr in addrs:
             self.data.qpos[addr] = each
 
     def _read_gripper_value(self, gripper: SimGripperDescription) -> float:

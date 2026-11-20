@@ -234,7 +234,6 @@ def test_so101_box_deploy_scene_builds_a_working_bare_twin(repo_root: Path) -> N
         hal.update_attached_objects([tube])
         assert [o.object_id for o in hal.read_attached_objects()] == ["tube"]
         assert hal.read_attached_body_ids()
-        hal.update_attached_objects([])
         home = list(hal.read_state().position)
         names = [j.name for j in desc.joints]
         row = [0.2, -0.3, 0.4, 0.1, 0.0, 0.8]
@@ -265,6 +264,9 @@ def test_so101_box_deploy_scene_builds_a_working_bare_twin(repo_root: Path) -> N
 
         assert hal.reset_episode() == 1
         assert hal.read_state().position == pytest.approx(home, abs=1e-6)
+        # The tube is back at its spawn pose: no longer held, no longer masked from depth.
+        assert hal.read_attached_objects() == []
+        assert hal.read_attached_body_ids() == frozenset()
     finally:
         hal.disconnect()
 

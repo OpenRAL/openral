@@ -4344,6 +4344,32 @@ class SimSensorBridge:
         )
         self._publish_attachment_message()
 
+    def reset_attachments(self) -> None:
+        """Forget the previous episode's attachments after the HAL's ``reset_episode``.
+
+        The reset put every object back at its spawn pose, so nothing is held: the
+        MuJoCo evidence tracker restarts from no contact, and when this bridge owns
+        ``/openral/attachment_state`` it publishes an empty revision, staged as any
+        detach is (it masks nothing new, so no barrier is held). Under another
+        authority (the vision leg) that authority is reset by the caller.
+        """
+        handles = getattr(self._hal, "mujoco_handles", lambda: None)()
+        if self._attachment_tracker is not None and handles is not None:
+            from openral_hal._sim_attachment_evidence import SimAttachmentEvidenceTracker
+
+            self._attachment_tracker = SimAttachmentEvidenceTracker(
+                handles[0], self._description, stable_ticks=1
+            )
+        update = getattr(self._hal, "update_attached_objects", None)
+        read = getattr(self._hal, "read_attached_objects", None)
+        if self._attachment_pub is None or not callable(update) or not callable(read):
+            return
+        if self._attachment_desired:
+            self._stage_attachment_objects(
+                [], revision=self._attachment_revision + 1, update=update, read=read
+            )
+        self._publish_attachment_message()
+
     def _publish_attachment_message(self) -> None:
         """Publish the current authoritative attachment snapshot."""
         if self._attachment_pub is None:

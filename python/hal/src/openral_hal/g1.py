@@ -551,8 +551,9 @@ class _G1WalkTwin(_FreeBaseTwin, _GlideTwin):
     def _on_idle(self) -> None:
         # ponytail: pin only while idle; replace with a zero-command
         # standing policy when one is published and validated.
+        # The pin is kept: re-capturing it each slice would read qpos one step's
+        # sag below it, so a held stand sinks. ``_drive_base`` clears it to walk.
         self._walk = None
-        self._base_pin = None
         assert self._controller is not None
         self._controller.reset_state()
 
@@ -688,6 +689,7 @@ class _G1Gr00tTwin(_FreeBaseTwin):
         """
         self._raise_if_fallen()
         result = super().step_action_group(actions)
+        self._latch_if_fallen()  # the state the last mj_step left, before success
         log.debug(
             "hal.send_action",
             robot=self.description.name,
@@ -751,26 +753,16 @@ class _G1Gr00tTwin(_FreeBaseTwin):
         self._s0_command = (0.0, 0.0, 0.0)
 
     def _per_step(self) -> None:
-        """50 Hz policy update and the 29-joint PD torque, before each ``mj_step``.
+        """Fall check, 50 Hz policy update and the 29-joint PD torque, before each ``mj_step``.
 
-        After a fall every torque is held at zero (no actuation) and the policy
-        no longer runs.
+        The fall is sampled every physics step, not on the policy cadence. After a
+        fall every torque is held at zero (no actuation) and the policy no longer runs.
         """
         model, data, policy = self.model, self.data, self._policy
         assert model is not None and data is not None and policy is not None
+        self._latch_if_fallen()
         if not self.fallen and self._counter % self._decimation == 0:
-            if self._detect_fall():
-                self.fallen = True
-                data.ctrl[:] = 0.0
-                log.critical(
-                    "hal.g1.s0_controller.fall_detected",
-                    robot=self.description.name,
-                    pelvis_height_m=round(float(data.qpos[2]), 3),
-                    torso_tilt_deg=round(math.degrees(self._torso_tilt_rad()), 1),
-                    action="all joint torques cut; reset_to_pose or reconnect to re-arm",
-                )
-            else:
-                self._s0_targets = policy.step(data, command=self._s0_command)
+            self._s0_targets = policy.step(data, command=self._s0_command)
         self._counter += 1
         if self.fallen:
             data.ctrl[:] = 0.0
@@ -840,6 +832,21 @@ class _G1Gr00tTwin(_FreeBaseTwin):
         return (
             float(self.data.qpos[2]) < _FALL_PELVIS_HEIGHT_M
             or self._torso_tilt_rad() > _FALL_TILT_RAD
+        )
+
+    def _latch_if_fallen(self) -> None:
+        """Latch a fall the current state shows and cut every torque at once."""
+        if self.fallen or not self._detect_fall():
+            return
+        assert self.data is not None
+        self.fallen = True
+        self.data.ctrl[:] = 0.0
+        log.critical(
+            "hal.g1.s0_controller.fall_detected",
+            robot=self.description.name,
+            pelvis_height_m=round(float(self.data.qpos[2]), 3),
+            torso_tilt_deg=round(math.degrees(self._torso_tilt_rad()), 1),
+            action="all joint torques cut; reset_to_pose or reconnect to re-arm",
         )
 
     def _raise_if_fallen(self) -> None:

@@ -269,3 +269,26 @@ def test_kinematic_group_g1_real_joint_names() -> None:
 def test_kinematic_group_unknown_joint_raises_rosconfigerror() -> None:
     with pytest.raises(ROSConfigError, match="Unknown H1 joint group for joint 'neck_yaw'"):
         _kinematic_group("neck_yaw", ("hip", "knee"), robot="H1")
+
+
+@pytest.mark.parametrize(
+    ("read_mode", "written"),
+    [("sum_over_scale", (7, 8)), ("passthrough", (7,)), ("affine_low_high", (7,))],
+)
+def test_gripper_reset_write_set_follows_the_read_mode(
+    read_mode: str, written: tuple[int, ...]
+) -> None:
+    """The slots a gripper reset writes — what a shared-world pose snap may send (#683).
+
+    The Franka finger pair's two qpos slots, from its manifest: a summed reset writes
+    both, a passthrough / affine reset only the first, so a snap leaves the other slot
+    (which a peer may have moved) alone.
+    """
+    from openral_core.schemas import GripperReadMode
+    from openral_hal.mujoco_twin import MujocoTwinRollout
+
+    desc = RobotDescription.from_yaml("robots/franka_panda/robot.yaml")
+    assert desc.sim is not None
+    gripper = desc.sim.grippers[0].model_copy(update={"read_mode": GripperReadMode(read_mode)})
+    assert gripper.qpos_addrs == (7, 8)
+    assert MujocoTwinRollout._gripper_reset_addrs(gripper) == written

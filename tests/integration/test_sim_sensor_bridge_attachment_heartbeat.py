@@ -293,3 +293,88 @@ def test_a_twin_beside_the_vision_leg_never_holds_the_action_ack() -> None:
             node.destroy_node()
     finally:
         rclpy.try_shutdown()
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_reset_episode_publishes_an_empty_attachment_revision() -> None:
+    """After ``reset_episode`` the bridge forgets the previous episode's payload.
+
+    The reset puts every object back at its spawn pose; a payload left attached would
+    stay masked from depth and stay in the kernel's attached set.
+    """
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg", reason="openral_msgs is not built in this env")
+
+    from openral_core import (
+        AttachedCollisionObject,
+        AttachedCollisionPrimitive,
+        AttachmentEvidenceKind,
+        BoxShape,
+        Pose6D,
+    )
+    from openral_hal.sim_sensor_bridge import SimSensorBridge
+    from openral_msgs.msg import AttachmentState
+    from rclpy.node import Node
+    from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+
+    hal = _openarm()
+    link = "openarm_left_link7"
+    payload = AttachedCollisionObject(
+        object_id="payload",
+        attach_link=link,
+        touch_links=[link],
+        primitives=[
+            AttachedCollisionPrimitive(
+                shape=BoxShape(half_extents_m=(0.02, 0.02, 0.02)),
+                pose_in_object=Pose6D(
+                    xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="payload"
+                ),
+            )
+        ],
+        pose_in_link=Pose6D(xyz=(0.0, 0.0, 0.05), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=link),
+        confidence=1.0,
+        evidence_kind=AttachmentEvidenceKind.SIM_CONTACT,
+        evidence_ref="mujoco_body:openarm_left_ee_inner_finger",  # a body of the twin's MJCF
+        stamp_ns=1,
+    )
+    rclpy.init()
+    try:
+        node = Node("test_attachment_reset_episode")
+        try:
+            received: list[AttachmentState] = []
+            node.create_subscription(
+                AttachmentState,
+                "/openral/attachment_state",
+                received.append,
+                QoSProfile(
+                    reliability=QoSReliabilityPolicy.RELIABLE,
+                    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                    depth=1,
+                ),
+            )
+            hal.connect()
+            bridge = SimSensorBridge(node, hal, hal.description, viewer_enabled=False)
+            try:
+                bridge.setup()
+                update, read = hal.update_attached_objects, hal.read_attached_objects
+                bridge._stage_attachment_objects([payload], revision=1, update=update, read=read)
+                update([payload])
+                assert hal.read_attached_body_ids()
+                assert hal.reset_episode() == 1
+                bridge.reset_attachments()
+                assert hal.read_attached_objects() == []
+                assert bridge._attachment_desired == []
+                assert bridge._attachment_revision == 2
+                assert bridge.attachment_action_ack_ready()
+                deadline = time.monotonic() + 2.0
+                while time.monotonic() < deadline and not (received and received[-1].revision == 2):
+                    rclpy.spin_once(node, timeout_sec=0.05)
+                assert received and received[-1].revision == 2
+                assert list(received[-1].objects) == []
+            finally:
+                bridge.teardown()
+                hal.disconnect()
+        finally:
+            node.destroy_node()
+    finally:
+        rclpy.try_shutdown()

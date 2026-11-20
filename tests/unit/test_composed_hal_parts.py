@@ -233,3 +233,30 @@ def test_a_slot_that_shrinks_the_tick_never_reaches_a_part(base_lift: RobotDescr
         hal.send_action(lift.model_copy(update={"tick_group_size": 2}))
     assert hal.last_committed_tick == 0
     assert hal.discard_staged_slots() == 0  # the tick was discarded, not left staged
+
+
+def test_a_size_one_slot_of_a_staged_tick_never_reaches_a_part(base_lift: RobotDescription) -> None:
+    """A size-1 slot of a tick staged at size 2 is refused, not applied ungrouped.
+
+    It used to take the ungrouped route, which checked only the watermark: the slot
+    reached the parts on its own and moved the watermark past the staged tick. Nothing
+    is connected: the refusal comes before routing.
+    """
+    from openral_core.exceptions import ROSRuntimeError
+    from openral_core.schemas import Action, ControlMode
+
+    hal = ComposedHAL(description=base_lift, parts=_parts())
+    lift = Action(
+        control_mode=ControlMode.JOINT_POSITION,
+        horizon=1,
+        joint_targets=[[0.0, 0.0, 0.0, 0.0]],
+        joint_names=["lift_joint"],
+        tick_index=1,
+        tick_group_size=2,
+        runner_session_id=0xA,
+    )
+    hal.send_action(lift)
+    with pytest.raises(ROSRuntimeError, match="changed its declared size from 2 to 1"):
+        hal.send_action(lift.model_copy(update={"tick_group_size": 1}))
+    assert hal.last_committed_tick == 0
+    assert hal.discard_staged_slots() == 0  # the tick was discarded, not left staged

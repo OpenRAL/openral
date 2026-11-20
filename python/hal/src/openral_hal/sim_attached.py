@@ -525,6 +525,8 @@ class SimAttachedHAL:
     _held_twist_until_ns: int = 0
     #: The Sim scene export per scene source (``export_sim_scene``), made on first use.
     _scene_cache: SceneCache | None = None
+    #: A step finished and its post-step observers have not run yet (``_run_due_observers``).
+    _observers_due: bool = False
 
     def __init__(
         self,
@@ -830,6 +832,9 @@ class SimAttachedHAL:
         self._last_env_action = None
         # Nor may a held base setpoint drive the new episode.
         self._held_twist = None
+        # Every object is back at its spawn pose: nothing is held, nothing masked.
+        self._attached_objects = {}
+        self._attached_body_ids = frozenset()
         self._joint_index = None  # rebuilt on next read_state (model identity stable per env)
         # A reset re-randomises the scene, so the previous episode's success
         # verdict no longer describes anything live. Re-seed the witness from
@@ -1022,6 +1027,10 @@ class SimAttachedHAL:
     def send_action(self, action: Action) -> None:
         """Step the env with the packed action vector.
 
+        The post-step observers run once the command is committed, so they read its
+        applied action and tick watermark, and one that raises cannot leave a stepped
+        tick uncommitted (a resend would step it again).
+
         Args:
             action: Per-tick chunk from the safety supervisor. Already
                 envelope-clamped; this HAL forwards verbatim.
@@ -1033,6 +1042,13 @@ class SimAttachedHAL:
             ROSRuntimeError: when called before `connect` or when
                 `env.step` raises.
         """
+        try:
+            self._send_action(action)
+        finally:
+            self._run_due_observers()
+
+    def _send_action(self, action: Action) -> None:
+        """``send_action`` up to the commit; observers excluded."""
         self._require_connected("send_action")
         if self._estop_latched:
             self._log_latched_drop(action)
@@ -1384,7 +1400,8 @@ class SimAttachedHAL:
         """The bookkeeping after every simulator step, once per step.
 
         Caches the transition, counts the step, polls the task-success witness and
-        runs the post-step observers. ``rendered`` is what ``_request_frames`` said
+        marks the post-step observers due (``send_action`` / ``idle_step`` run them
+        after the commit). ``rendered`` is what ``_request_frames`` said
         before the step.
         """
         if rendered:
@@ -1398,6 +1415,13 @@ class SimAttachedHAL:
         self._cache_step_result(step_result)
         self._step_count += 1
         self._observe_task_success()
+        self._observers_due = True
+
+    def _run_due_observers(self) -> None:
+        """Run the post-step observers once after a step, from the public entry point."""
+        if not self._observers_due:
+            return
+        self._observers_due = False
         for observer in self._post_step_observers:
             observer()
 
@@ -1672,6 +1696,16 @@ class SimAttachedHAL:
         return _spec_id(getattr(self._env, "task", None))
 
     def idle_step(self, wall_dt_s: float | None = None) -> bool:
+        """Advance the wrapped sim one tick with a zero/HOLD action when idle (``_idle_step``).
+
+        The post-step observers run after it, as after ``send_action``.
+        """
+        try:
+            return self._idle_step(wall_dt_s)
+        finally:
+            self._run_due_observers()
+
+    def _idle_step(self, wall_dt_s: float | None = None) -> bool:
         """Advance the wrapped sim one tick with a zero/HOLD action when idle.
 
         SIM-ONLY. Refreshes ``_last_obs`` (camera frames + state) so

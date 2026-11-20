@@ -489,11 +489,20 @@ class SlotGroupStager:
 
         Raises:
             ROSRuntimeError: A replay of the committed session's tick, a retired
-                session, or (session-less) ``refuse_stale_tick``'s refusal.
+                session, (session-less) ``refuse_stale_tick``'s refusal, or a slot of
+                the tick already staged here declaring size 1 (``stage``'s resize rule:
+                the staged tick is discarded and nothing is applied).
         """
         tick = int(action.tick_index)
         if tick > 0:
             self._watermark.check(tick, session=int(action.runner_session_id))
+            if self._key == (int(action.runner_session_id), tick):
+                declared = self._size
+                self.discard()
+                raise ROSRuntimeError(
+                    f"slot group for tick {tick} changed its declared size from {declared} "
+                    "to 1; the tick is discarded rather than committed."
+                )
 
     def commit_tick(self, action: Action) -> None:
         """Record that an ungrouped ``action`` was applied (see ``admit``).

@@ -2786,6 +2786,8 @@ if _ROS2_AVAILABLE:
                 self._vision_attachment.teardown()
                 self._vision_attachment = None
                 self._setup_vision_attachment()
+            if self._bridge is not None:
+                self._bridge.reset_attachments()
             # A reset may have composed a new static scene. Only while active: the
             # publisher is gone after deactivate, and on_activate_post_subs latches the
             # current scene. A failed refresh never fails the reset that already ran.

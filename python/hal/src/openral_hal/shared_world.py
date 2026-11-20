@@ -718,10 +718,11 @@ class _SharedWorldTwin(MujocoTwinRollout):
             super().reset_to_pose(pose)
             data = self.data
             assert data is not None
-            # Only what the base reset set: the named joints (a gripper's every qpos slot).
+            # Only what the base reset set: the named joints and each gripper's
+            # reset write set (a peer may have moved the slots it leaves alone).
             qpos_idx = sorted(
                 {a for n, a in self.joint_qpos_addr.items() if n not in self.grippers_by_joint}
-                | {a for g in self.grippers_by_joint.values() for a in g.qpos_addrs}
+                | {a for g in self.grippers_by_joint.values() for a in self._gripper_reset_addrs(g)}
             )
             qvel_idx = sorted(self.joint_qvel_addr[n] for n in self.joint_names)
             self._sync(

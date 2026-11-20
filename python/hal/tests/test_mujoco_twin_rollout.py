@@ -27,6 +27,7 @@ from typing import Any
 import numpy as np
 import pytest
 from _renderer_probe import requires_renderer
+from _twin_assets import skip_if_unavailable
 from openral_core import Action, ControlMode, RobotDescription
 from openral_core.exceptions import (
     ROSConfigError,
@@ -54,8 +55,8 @@ def rollout(robot_description: Describe) -> Iterator[Callable[[str], MujocoTwinR
         try:
             r = MujocoArmHAL.from_description(robot_description(robot))._twin
             r.load()
-        except ROSConfigError as exc:  # un-fetchable MJCF on an offline host
-            pytest.skip(f"{robot} MJCF unavailable: {exc}")
+        except ROSConfigError as exc:
+            skip_if_unavailable(exc, f"{robot} MJCF")
         loaded.append(r)
         return r
 
@@ -243,8 +244,6 @@ def test_read_images_renders_each_camera_at_its_own_resolution(
     """OpenArm: a 672x376 head ZED and two 960x600 wrists, all from one twin."""
     r = rollout("openarm")
     frames = r.read_images()
-    if not frames:
-        pytest.skip("off-screen MuJoCo render produced no frames on this host")
     rgb = {s.name: s.intrinsics for s in r.description.sensors if s.modality == "rgb"}
     assert set(frames) == set(rgb)
     for name, frame in frames.items():
@@ -255,6 +254,27 @@ def test_read_images_renders_each_camera_at_its_own_resolution(
     assert {(f.shape[0], f.shape[1]) for f in frames.values()} == {(376, 672), (600, 960)}
     r.close()
     assert r.read_images() == {}
+
+
+@requires_renderer
+def test_a_reload_renders_again_after_a_render_failure(
+    rollout: Callable[[str], MujocoTwinRollout],
+) -> None:
+    """The render-failure latch belongs to one load: ``close`` clears it with the model."""
+    r = rollout("openarm")
+    r._render_failed = True  # what a renderer that failed to build leaves
+    assert r.read_images() == {}
+    r.close()
+    r.load()
+    assert set(r.read_images()) == {s.name for s in r.description.sensors if s.modality == "rgb"}
+
+
+def test_load_leaves_no_camera_rig_file_beside_the_mjcf(
+    rollout: Callable[[str], MujocoTwinRollout],
+) -> None:
+    """Each load rigs its cameras into a file of its own and removes it once compiled."""
+    r = rollout("openarm")
+    assert list(Path(r.mjcf_path).parent.glob(f"{r.description.name}_camrig_*.xml")) == []
 
 
 def test_close_releases_the_model_and_is_idempotent(
@@ -308,7 +328,7 @@ def test_the_twin_runs_without_openral_sim(repo_root: Path) -> None:
         env={**os.environ, "MUJOCO_GL": os.environ.get("MUJOCO_GL", "egl")},
         check=False,
     )
-    if "MJCF" in proc.stderr and "ROSConfigError" in proc.stderr:
+    if "AssetRefError" in proc.stderr or "AssetFetchError" in proc.stderr:  # not fetchable
         pytest.skip(f"so101 MJCF unavailable: {proc.stderr.strip().splitlines()[-1]}")
     assert proc.returncode == 0, proc.stderr[-2000:]
     assert "TWIN_OK" in proc.stdout
@@ -496,7 +516,7 @@ def test_an_explicit_twist_interval_off_the_period_is_refused_at_connect(
     with pytest.raises(ROSConfigError) as info:
         hal.connect()
     if "body_twist_dt_s" not in str(info.value):  # an offline host refuses the MJCF first
-        pytest.skip(f"openamrobot_v2 twin unavailable: {info.value}")
+        skip_if_unavailable(info.value, "openamrobot_v2 twin")
     assert hal._connected is False and hal.mujoco_handles() is None
 
 
@@ -611,6 +631,51 @@ def test_g1_glide_idle_keeps_the_pelvis_pinned(connect_twin: ConnectTwin) -> Non
     assert float(data.qpos[2]) == pytest.approx(z0, abs=1e-3)
 
 
+def test_post_step_observers_run_after_the_commit(connect_twin: ConnectTwin) -> None:
+    """Observers read the tick just applied; one that raises leaves it committed.
+
+    They used to run inside the step boundary, before the commit: they saw the previous
+    tick, and a raising observer left a stepped tick uncommitted, so a resend stepped
+    the same tick again.
+    """
+    hal = connect_twin("so101_follower")
+    row = list(hal.read_state().position)
+    seen: list[int] = []
+    hal.add_post_step_observer(lambda: seen.append(hal.last_committed_tick))
+    hal.send_action(_joint_action(row, tick_index=1, runner_session_id=0x683))
+    assert seen == [1]
+
+    def boom() -> None:
+        raise ROSRuntimeError("observer failed")
+
+    hal.add_post_step_observer(boom)
+    with pytest.raises(ROSRuntimeError, match="observer failed"):
+        hal.send_action(_joint_action(row, tick_index=2, runner_session_id=0x683))
+    assert hal.last_committed_tick == 2
+    steps = hal._step_count
+    with pytest.raises(ROSRuntimeError):
+        hal.send_action(_joint_action(row, tick_index=2, runner_session_id=0x683))
+    assert hal._step_count == steps  # the replay is refused, nothing stepped again
+
+
+def test_g1_walk_idle_slices_keep_one_pin(connect_twin: ConnectTwin) -> None:
+    """Consecutive idle slices of the walking twin hold one pin: the stand never sinks.
+
+    Re-capturing the pin each slice read qpos one physics step's sag below it, so every
+    slice lowered the stand a little more.
+    """
+    hal = connect_twin(_g1("playground_walk"))
+    handles = hal.mujoco_handles()
+    assert handles is not None
+    _model, data = handles
+    heights = []
+    for _ in range(60):
+        assert hal.idle_step(0.1) is True
+        heights.append(float(data.qpos[2]))
+    # Held: within the leg PD's jitter (~1e-5 m). Re-capturing sank ~1.5 mm over 60.
+    assert min(heights) == pytest.approx(heights[0], abs=1e-4)
+
+
 @pytest.mark.parametrize("robot", ["g1", "h2"])
 def test_the_glide_pin_is_kept_across_reset_to_pose(robot: str, connect_twin: ConnectTwin) -> None:
     """The snap moves no free joint, so the pin holds: same pose, same height (#683).
@@ -713,7 +778,7 @@ def test_a_dropped_connected_twin_is_freed_by_refcount(
     try:
         hal.connect()
     except ROSConfigError as exc:
-        pytest.skip(f"{twin} twin unavailable: {exc}")
+        skip_if_unavailable(exc, f"{twin} twin")
     assert hal.idle_step(0.02) is True
     hal.read_images()  # creates the renderers when a GL backend exists
     rollout_ref = weakref.ref(hal._twin)
@@ -873,7 +938,7 @@ def test_the_time_base_is_checked_and_logged_once_per_connect(
         with capture_logs() as logs:
             hal.connect()
     except ROSConfigError as exc:
-        pytest.skip(f"so101_follower twin unavailable: {exc}")
+        skip_if_unavailable(exc, "so101_follower twin")
     finally:
         structlog.configure(wrapper_class=previous)
     try:

@@ -74,9 +74,11 @@ def robot_description(repo_root: Path) -> Callable[[str], object]:
 def connect_twin(robot_description: Callable[[str], object]) -> Iterator[Callable[..., Any]]:
     """Connect a sim HAL: ``build_hal(robots/<robot>, mode="sim")``, or a zero-arg builder.
 
-    Skips when the twin's assets cannot be fetched (an offline host: ``ROSConfigError``
-    from ``connect``); every HAL it connected is disconnected at teardown.
+    Skips only when an optional asset or package is unavailable on this host
+    (``_twin_assets.skip_if_unavailable``); a broken twin fails. Every HAL it
+    connected is disconnected at teardown.
     """
+    from _twin_assets import skip_if_unavailable
     from openral_core.exceptions import ROSConfigError
 
     connected: list[Any] = []
@@ -91,7 +93,7 @@ def connect_twin(robot_description: Callable[[str], object]) -> Iterator[Callabl
         try:
             hal.connect()
         except ROSConfigError as exc:
-            pytest.skip(f"{robot} twin unavailable: {exc}")
+            skip_if_unavailable(exc, f"{robot} twin")
         connected.append(hal)
         return hal
 
