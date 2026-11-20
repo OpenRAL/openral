@@ -29,11 +29,12 @@ import base64
 import functools
 import hashlib
 import json
+import math
 import os
 import re
 import urllib.parse
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
 import structlog
@@ -629,6 +630,14 @@ REASONER_API_KEY_ENV: str = "OPENRAL_REASONER_API_KEY"
 REASONER_DIALECT_ENV: str = "OPENRAL_REASONER_DIALECT"
 REASONER_MAX_TOKENS_ENV: str = "OPENRAL_REASONER_MAX_TOKENS"
 REASONER_TIMEOUT_ENV: str = "OPENRAL_REASONER_TIMEOUT_S"
+# Read timeout of an openai-dialect client's requests while its model may be
+# loading (#665) — until the endpoint first replies, and again after a timeout:
+# a cold local model takes longer to load than the per-call timeout, and a
+# server such as Ollama abandons the load when the client hangs up, so every
+# tick timed out and the model never loaded. By default it applies to every
+# endpoint that is not a known cloud one (``_first_call_timeout_s``).
+REASONER_FIRST_CALL_TIMEOUT_ENV: str = "OPENRAL_REASONER_FIRST_CALL_TIMEOUT_S"
+DEFAULT_FIRST_CALL_TIMEOUT_S: float = 120.0
 # Per-tick skill-tool cap override (``resolve_max_skill_tools``); ``0`` = no cap.
 REASONER_MAX_SKILL_TOOLS_ENV: str = "OPENRAL_REASONER_MAX_SKILL_TOOLS"
 # Escape hatch for an uncurated model on a bare URL (openai dialect) or on the
@@ -1009,6 +1018,12 @@ def build_tool_use_client_from_env() -> ToolUseClient:
       cap ``ReasonerCore`` applies.
     * ``OPENRAL_REASONER_{MAX_TOKENS,TIMEOUT_S}`` (optional) — override the
       registry defaults.
+    * ``OPENRAL_REASONER_FIRST_CALL_TIMEOUT_S`` (optional, openai dialect) — the
+      read timeout of each request until the endpoint first replies, and again
+      after a request times out, so a cold local model can load. Default 120 s
+      on a bare URL, a local named endpoint (``ollama`` / ``vllm``) or a
+      locally hosted curated model, and off on a cloud endpoint; at or below
+      the per-call timeout it changes nothing.
     * ``OPENRAL_REASONER_TOOL_CHOICE`` (escape hatch only) — overrides the
       ``tool_choice`` of an uncurated model on a bare URL (openai dialect) or
       on the anthropic dialect (``auto``; ``required`` is sent as Anthropic
@@ -1048,6 +1063,7 @@ def build_tool_use_client_from_env() -> ToolUseClient:
     # Validated on every path, so a bad value fails at build even where it
     # would be ignored.
     tool_choice = parse_reasoner_tool_choice(os.environ.get(REASONER_TOOL_CHOICE_ENV))
+    _first_call_timeout_s(known_cloud=True)  # the anthropic dialect never reads it
     entry = REASONER_MODELS.get(model_key)
     if entry is None:
         return _build_uncurated_model(model_key, tool_choice)
@@ -1160,6 +1176,26 @@ def _reasoner_timeout_s(hosting: str) -> float:
     return 60.0 if hosting == "byo_local" else 10.0
 
 
+def _first_call_timeout_s(*, known_cloud: bool) -> float:
+    """The until-first-reply timeout (#665): env override, else by where the model runs.
+
+    ``DEFAULT_FIRST_CALL_TIMEOUT_S`` unless the endpoint is a known cloud one
+    (``known_cloud``), which has no model to load and keeps its per-call timeout
+    from the first request (``0.0``: nothing above ``timeout_s``).
+
+    Raises:
+        ROSConfigError: When the env value is not a finite number >= 0.
+    """
+    env = _env_float(REASONER_FIRST_CALL_TIMEOUT_ENV)
+    if env is None:
+        return 0.0 if known_cloud else DEFAULT_FIRST_CALL_TIMEOUT_S
+    if not (math.isfinite(env) and env >= 0):
+        raise ROSConfigError(
+            f"{REASONER_FIRST_CALL_TIMEOUT_ENV}={env} must be a finite number of seconds >= 0."
+        )
+    return env
+
+
 def _reasoner_max_tokens(entry: ReasonerModel) -> int | None:
     """Completion cap: env override, else the model's registry default."""
     env = _env_int(REASONER_MAX_TOKENS_ENV)
@@ -1266,6 +1302,13 @@ def _build_curated_model(entry: ReasonerModel) -> ToolUseClient:
         api_key=api_key,
         base_url=base_url,
         timeout_s=timeout_s,
+        # Known cloud: a named endpoint that takes a key, or the registry's own
+        # cloud endpoint. A bare URL could be a local server.
+        first_call_timeout_s=_first_call_timeout_s(
+            known_cloud=preset.auth_required
+            if preset is not None
+            else raw_endpoint is None and entry.hosting == "cloud"
+        ),
         # A named endpoint's quirk wins; an inferred preset never overrides the entry.
         tool_choice=preset.tool_choice
         if preset is not None and raw_endpoint
@@ -1312,6 +1355,7 @@ def _build_managed_local(
         api_key=api_key,
         base_url=base_url,
         timeout_s=timeout_s,
+        first_call_timeout_s=_first_call_timeout_s(known_cloud=False),
         max_tokens=max_tokens,
         auto_start=auto_start,
         boot_timeout_s=float(boot_env) if boot_env else DEFAULT_BOOT_TIMEOUT_S,
@@ -1339,13 +1383,22 @@ def _build_uncurated_model(model_key: str, tool_choice: str | None) -> ToolUseCl
         endpoint, dialect = preset.url, dialect or preset.dialect
     else:
         endpoint = raw_endpoint or None
-    if endpoint is None or dialect not in {"anthropic", "openai"}:
+    if endpoint is None:
         raise ROSConfigError(
             f"{REASONER_MODEL_ENV}={model_key!r} is not a curated model "
             f"({_curated_hint()}); for an uncurated endpoint set "
             f"{REASONER_ENDPOINT_ENV} to a named endpoint "
             f"({sorted(_ENDPOINT_PRESETS)}) or to a URL plus "
             f"{REASONER_DIALECT_ENV} (anthropic|openai)."
+        )
+    if dialect not in {"anthropic", "openai"}:
+        if preset is not None:  # only an explicit, wrong dialect gets here
+            raise ROSConfigError(f"{REASONER_DIALECT_ENV}={dialect!r} must be anthropic or openai.")
+        raise ROSConfigError(
+            f"{REASONER_ENDPOINT_ENV}={raw_endpoint!r} is not a named endpoint "
+            f"({sorted(_ENDPOINT_PRESETS)}), so it is read as a URL, and the uncurated model "
+            f"{model_key!r} on a URL also needs {REASONER_DIALECT_ENV} set to anthropic or "
+            f"openai (got {dialect!r}): nothing else says which wire format a URL speaks."
         )
     log.warning(
         "reasoner.model.uncurated",
@@ -1391,6 +1444,9 @@ def _build_uncurated_model(model_key: str, tool_choice: str | None) -> ToolUseCl
         api_key=api_key,
         base_url=endpoint,
         timeout_s=timeout_s,
+        first_call_timeout_s=_first_call_timeout_s(
+            known_cloud=preset is not None and preset.auth_required
+        ),
         tool_choice=(preset.tool_choice if preset is not None else (tool_choice or "required")),
         max_tokens=max_tokens,
     )
@@ -2326,6 +2382,14 @@ class OpenAICompatibleToolUseClient:
         base_url: Endpoint base URL. Defaults to
             ``https://api.openai.com/v1`` when ``None``.
         timeout_s: Per-call wall-clock timeout in seconds. Defaults to 10 s.
+        first_call_timeout_s: Read timeout of each request while the model may
+            be loading, when longer than ``timeout_s`` (#665): until the
+            endpoint first replies, and again after a request times out. A
+            cold local model loads on a request, and a client that hangs up at
+            ``timeout_s`` makes the server abandon the load, every tick.
+            Logged as ``reasoner.llm.first_call_timeout``. Off by default
+            (``0.0``); ``build_tool_use_client_from_env`` turns it on for
+            endpoints that are not a known cloud one.
         tool_choice: OpenAI ``tool_choice`` mode. ``"required"`` (the default)
             forces exactly one tool call per tick — the reasoner's contract.
             Some endpoints (the HF router) reject ``"required"`` and only honour
@@ -2356,6 +2420,7 @@ class OpenAICompatibleToolUseClient:
         api_key: str | None = None,
         base_url: str | None = None,
         timeout_s: float = 10.0,
+        first_call_timeout_s: float = 0.0,
         tool_choice: str = "required",
         max_tokens: int | None = None,
         max_tokens_param: str = "max_tokens",
@@ -2365,6 +2430,16 @@ class OpenAICompatibleToolUseClient:
         self._api_key = api_key
         self._base_url = base_url
         self._timeout_s = timeout_s
+        self._first_call_timeout_s = first_call_timeout_s
+        # True until the endpoint answers a request (see ``_send``).
+        self._cold = first_call_timeout_s > timeout_s
+        if self._cold:
+            log.info(
+                "reasoner.llm.first_call_timeout",
+                model=model_id,
+                timeout_s=first_call_timeout_s,
+                steady_timeout_s=timeout_s,
+            )
         self._tool_choice = tool_choice
         self._max_tokens = max_tokens
         self._max_tokens_param = max_tokens_param
@@ -2410,6 +2485,36 @@ class OpenAICompatibleToolUseClient:
                 timeout=self._timeout_s,
             )
         return self._sdk_client
+
+    def _send(self, create: Callable[..., Any], **request: Any) -> Any:  # noqa: ANN401  # reason: provider SDK boundary — an SDK ``create`` and its response
+        """One SDK request; while the model may be loading, read under ``first_call_timeout_s``.
+
+        That is until the endpoint first replies, and again after a request
+        times out: a server that unloaded an idle model (Ollama's
+        ``keep_alive``) reloads it on the next request, and hanging up at
+        ``timeout_s`` would abandon that load on every tick, as at start-up.
+        Only the read timeout is raised; connecting stays under ``timeout_s``.
+        """
+        from openai import APITimeoutError, Timeout  # noqa: PLC0415  # reason: optional cloud dep
+
+        loading = self._cold
+        if loading:
+            request["timeout"] = Timeout(self._timeout_s, read=self._first_call_timeout_s)
+        try:
+            response = create(**request)
+        except APITimeoutError:
+            if not loading and self._first_call_timeout_s > self._timeout_s:
+                self._cold = True
+                log.warning(
+                    "reasoner.llm.first_call_timeout",
+                    model=self.model_id,
+                    timeout_s=self._first_call_timeout_s,
+                    steady_timeout_s=self._timeout_s,
+                    reason="a request timed out; the next one waits for a model reload",
+                )
+            raise
+        self._cold = False
+        return response
 
     def select_tool(
         self,
@@ -2515,7 +2620,8 @@ class OpenAICompatibleToolUseClient:
                 {} if self._max_tokens is None else {max_tokens_param: self._max_tokens}
             )
             try:
-                response = client.chat.completions.create(
+                response = self._send(
+                    client.chat.completions.create,
                     model=self.model_id,
                     messages=messages,
                     tools=tools,
@@ -2585,9 +2691,8 @@ class OpenAICompatibleToolUseClient:
             }
         ]
         try:
-            response = client.chat.completions.create(
-                model=self.model_id,
-                messages=messages,
+            response = self._send(
+                client.chat.completions.create, model=self.model_id, messages=messages
             )
         except Exception as exc:  # reason: provider SDK boundary
             raise ROSPlanningError(f"OpenAI-compatible describe_image failed: {exc!s}") from exc
@@ -2656,7 +2761,8 @@ class OpenAIResponsesToolUseClient(OpenAICompatibleToolUseClient):
         )
 
         def create(tool_choice: str) -> Any:  # noqa: ANN401  # reason: provider SDK boundary
-            return client.responses.create(
+            return self._send(
+                client.responses.create,
                 model=self.model_id,
                 instructions=instructions,
                 input=inputs,
@@ -2730,7 +2836,8 @@ class OpenAIResponsesToolUseClient(OpenAICompatibleToolUseClient):
         client = self._client()
         b64 = base64.b64encode(image_jpeg).decode()
         try:
-            response = client.responses.create(
+            response = self._send(
+                client.responses.create,
                 model=self.model_id,
                 input=[
                     {
