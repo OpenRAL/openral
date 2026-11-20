@@ -4177,6 +4177,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     hal_mode=hal_mode,
                     estimated_camera=estimated_depth_camera,
                 ),
+                # Opt-in object-memory persistence (issue #636); "" = off.
+                "object_memory_path": LaunchConfiguration("object_memory_path").perform(context),
                 # 512 px RoboCasa renders can arrive at ~0.6 Hz wall time while
                 # idle. Keep joint/EE diagnostics at 0.5 s, but give simulated
                 # cameras enough room for one slow frame without stale flapping.
@@ -6156,6 +6158,16 @@ def generate_launch_description() -> LaunchDescription:
                 "SpatialMemory and offers the read-only recall_object / "
                 "resolve_place query tools against the preloaded map. Empty = "
                 "disabled."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "object_memory_path",
+            default_value="",
+            description=(
+                "Absolute path the world-state object memory is saved to and "
+                "restored from (SceneGraph JSON, map frame). On start every "
+                "restored object is uncertain until a fresh observation confirms "
+                "or removes it. Empty = no persistence."
             ),
         ),
         DeclareLaunchArgument(

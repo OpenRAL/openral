@@ -4284,6 +4284,9 @@ class DetectedObject(BaseModel):
         pose: 6D pose in the world or camera frame.
         bbox_3d: 3D bounding box (x_min, y_min, z_min, x_max, y_max, z_max).
         track_id: Persistent track ID across frames.
+        existence: The object memory's belief, as a probability in [0, 1], that the
+            object is still where it was remembered (issue #636). ``None`` when the
+            producer keeps no belief (a raw detection, an older publisher).
     """
 
     label: str
@@ -4291,6 +4294,7 @@ class DetectedObject(BaseModel):
     pose: Pose6D
     bbox_3d: tuple[float, float, float, float, float, float] | None = None
     track_id: int | None = None
+    existence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class AttachmentEvidenceKind(str, Enum):
@@ -6787,6 +6791,37 @@ class SpatialRelationKind(str, Enum):
     NEAR = "near"
 
 
+class ObjectBeliefState(str, Enum):
+    """Whether a remembered object is believed to still be where it was seen (issue #636).
+
+    ``PRESENT``: the world-state object memory believes it is there. ``UNCERTAIN``:
+    remembered but not confirmed (restored from disk, or its evidence has decayed).
+    ``ABSENT``: the object memory evicted it — its place was seen clear, or it went
+    undetected for long enough. An absent node keeps its last pose and history, for
+    "where was X".
+    """
+
+    PRESENT = "present"
+    UNCERTAIN = "uncertain"
+    ABSENT = "absent"
+
+
+def belief_state(existence: float | None) -> ObjectBeliefState:
+    """The state a ``DetectedObject.existence`` reads as: present above 0.5, else uncertain.
+
+    0.5 is log-odds 0, neither confirmed nor refuted. ``None`` (a producer that keeps
+    no belief) reads as present, as before #636. ``ABSENT`` is never returned: an
+    absent object is one the memory dropped from its remembered set.
+
+    Example:
+        >>> belief_state(0.5).value, belief_state(0.9).value, belief_state(None).value
+        ('uncertain', 'present', 'present')
+    """
+    if existence is None or existence > 0.5:  # noqa: PLR2004  # reason: p of log-odds 0
+        return ObjectBeliefState.PRESENT
+    return ObjectBeliefState.UNCERTAIN
+
+
 class SpatialNode(BaseModel):
     """A persistent, typed node in the scene-graph spatial memory.
 
@@ -6819,6 +6854,8 @@ class SpatialNode(BaseModel):
         aliases: Other names the node answers to exactly (a declared station's aliases).
         description: What the node is, for the reasoner (a declared station's description).
         declared: Declared task knowledge (``DeployScene.nav_goals``), not perceived.
+        state: Existence belief for an object node (``ObjectBeliefState``); defaults
+            to ``present``, which is what an older scene-graph file migrates to.
 
     Example:
         >>> node = SpatialNode(
@@ -6852,6 +6889,7 @@ class SpatialNode(BaseModel):
     aliases: tuple[str, ...] = ()
     description: str = ""
     declared: bool = False
+    state: ObjectBeliefState = ObjectBeliefState.PRESENT
 
     @model_validator(mode="after")
     def _check_node_invariants(self) -> SpatialNode:
@@ -6899,24 +6937,26 @@ class SceneGraph(BaseModel):
         schema_version: On-disk schema version (CLAUDE.md §1.6). ``"0.2"`` added
             ``SpatialNode.aliases`` / ``description`` / ``declared`` (ADR-0133); a
             ``"0.2"`` graph does not load under a ``"0.1"`` reader (``extra="forbid"``).
-            A ``"0.1"`` file is migrated on load (``_migrate_scene_graph``): the added
-            fields take their defaults, so the migration only restamps the version.
+            ``"0.3"`` added ``SpatialNode.state`` (issue #636), which a ``"0.2"``
+            reader refuses the same way. A ``"0.1"`` or ``"0.2"`` file is migrated on
+            load (``_migrate_scene_graph``): the added fields take their defaults, so
+            the migration only restamps the version.
         nodes: All scene-graph nodes.
         edges: All directed relations between nodes.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["0.2"] = "0.2"
+    schema_version: Literal["0.3"] = "0.3"
     nodes: list[SpatialNode] = Field(default_factory=list)
     edges: list[SpatialEdge] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
     def _migrate_scene_graph(cls, data: object) -> object:
-        """Migrate a ``"0.1"`` graph to ``"0.2"`` (the added node fields default)."""
-        if isinstance(data, Mapping) and data.get("schema_version") == "0.1":
-            return {**data, "schema_version": "0.2"}
+        """Migrate a ``"0.1"`` / ``"0.2"`` graph to ``"0.3"`` (the added node fields default)."""
+        if isinstance(data, Mapping) and data.get("schema_version") in ("0.1", "0.2"):
+            return {**data, "schema_version": "0.3"}
         return data
 
     @model_validator(mode="after")
@@ -6995,6 +7035,8 @@ class RecallObjectMatch(BaseModel):
         approach: Optional computed camera-facing approach viewpoint.
         inside_container_id: Set when the object is inside an occluding container
             that must be opened first; ``None`` otherwise.
+        state: The node's existence belief; an ``absent`` match is where the object
+            was, not where it is.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -7006,6 +7048,7 @@ class RecallObjectMatch(BaseModel):
     last_seen_ns: int = Field(ge=0)
     approach: ApproachViewpoint | None = None
     inside_container_id: str | None = None
+    state: ObjectBeliefState = ObjectBeliefState.PRESENT
 
 
 class RecallObjectResult(BaseModel):

@@ -66,6 +66,7 @@ def scene_objects_payload(
                 "last_seen_ns": node.last_seen_ns,
                 "observation_count": node.observation_count,
                 "is_container": node.is_container,
+                "state": node.state.value,
                 "in_latest_batch": latest_batch_ns is not None
                 and node.last_seen_ns == latest_batch_ns,
             }

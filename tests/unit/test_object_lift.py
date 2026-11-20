@@ -9,10 +9,11 @@ import pytest
 from numpy.typing import NDArray
 from openral_core.schemas import DetectedObject, IntrinsicsPinhole, ObjectDetection2D, Pose6D
 from openral_world_state.object_lift import (
+    MissEvidence,
     ObjectsLiftError,
     VoxelFrustumLifter,
     aabb_iou_3d,
-    build_in_fov_predicate,
+    build_miss_classifier,
     decode_occupied_centers,
     depth_cloud_to_centers_base,
     homogeneous_from_quat_xyz,
@@ -250,26 +251,155 @@ def test_lift_empty_inputs():
     )
 
 
-def test_in_fov_predicate():
-    pred = build_in_fov_predicate(intrinsics=_INTR, t_cam_from_map=np.eye(4))
-    in_view = DetectedObject(
-        label="x",
-        confidence=0.5,
-        pose=Pose6D(xyz=(0.0, 0.0, 2.0), quat_xyzw=(0, 0, 0, 1), frame_id="map"),
-    )
-    behind = DetectedObject(
-        label="x",
-        confidence=0.5,
-        pose=Pose6D(xyz=(0.0, 0.0, -2.0), quat_xyzw=(0, 0, 0, 1), frame_id="map"),
-    )
-    far_side = DetectedObject(
-        label="x",
-        confidence=0.5,
-        pose=Pose6D(xyz=(100.0, 0.0, 2.0), quat_xyzw=(0, 0, 0, 1), frame_id="map"),
-    )
-    assert pred(in_view) is True
-    assert pred(behind) is False
-    assert pred(far_side) is False
+# A 0.2 m cube 2 m in front of the camera, standing on a "shelf" at map z = 1.9.
+_CUBE = DetectedObject(
+    label="carton",
+    confidence=0.9,
+    pose=Pose6D(xyz=(0.0, 0.0, 2.0), quat_xyzw=(0, 0, 0, 1), frame_id="map"),
+    bbox_3d=(-0.1, -0.1, 1.9, 0.1, 0.1, 2.1),
+)
+
+
+def _miss(
+    points: NDArray[np.float64],
+    obj: DetectedObject = _CUBE,
+    *,
+    max_range_m: float = 5.0,
+    margin_m: float = 0.03,
+) -> MissEvidence:
+    return build_miss_classifier(
+        occupied_centers_map=points,
+        intrinsics=_INTR,
+        t_cam_from_map=np.eye(4),
+        max_range_m=max_range_m,
+        margin_m=margin_m,
+    )(obj)
+
+
+def _plane(z: float, half: float = 0.08, n: int = 5) -> NDArray[np.float64]:
+    offs = np.linspace(-half, half, n)
+    return np.array([[x, y, z] for x in offs for y in offs])
+
+
+def test_miss_is_free_when_the_camera_sees_through_the_box():
+    """The object is gone: depth lands on the wall behind where it stood."""
+    assert _miss(_plane(3.0)) is MissEvidence.FREE
+
+
+def test_miss_is_occupied_while_the_box_still_holds_points():
+    """Undetected but still there (a missed detection): never a strong miss."""
+    assert _miss(np.vstack([_cluster((0.0, 0.0, 2.0)), _plane(3.0)])) is MissEvidence.OCCUPIED
+
+
+def test_miss_is_none_when_occluded():
+    """Issue #636: the arm in front of the object hides it — no evidence either way."""
+    assert _miss(_plane(1.0, half=0.04)) is MissEvidence.NONE
+    # A persistent map still remembers the wall behind; a full occluder outweighs it.
+    assert _miss(np.vstack([_plane(1.0, half=0.04, n=7), _plane(3.0, n=4)])) is MissEvidence.NONE
+
+
+def test_miss_ignores_the_support_the_object_stood_on():
+    """A removed carton's shelf keeps the box's floor occupied; that is not the carton."""
+    shelf_in_box = np.array([[x, y, 1.9 + 0.01] for x in (-0.05, 0.0, 0.05) for y in (-0.05, 0.05)])
+    points = np.vstack([shelf_in_box, _plane(3.0)])
+    assert _miss(points) is MissEvidence.FREE
+    assert _miss(points, margin_m=0.0) is MissEvidence.OCCUPIED
+    # A box no taller than twice the margin cannot be told from its support: counted whole.
+    flat = _CUBE.model_copy(update={"bbox_3d": (-0.1, -0.1, 1.9, 0.1, 0.1, 1.92)})
+    assert _miss(points, obj=flat) is MissEvidence.OCCUPIED
+
+
+def test_a_partial_occluder_is_no_evidence_but_stray_points_are_ignored():
+    """The gripper covers part of the box and background shows beside it: not a clear view."""
+    wall = _plane(3.0)
+    front = np.array([[x, 0.0, 1.0] for x in (-0.02, 0.0, 0.02)])
+    assert _miss(np.vstack([front, wall])) is MissEvidence.NONE
+    assert _miss(np.vstack([front[:2], wall])) is MissEvidence.FREE  # < min_points: noise
+
+
+def test_one_voxel_layer_lifts_to_a_box_with_volume_that_associates():
+    """A head-on carton face is one layer of voxel centres: a zero-volume AABB, whose IoU
+    is 0 even with itself — every batch would mint a track. Padded by half a cell it is
+    the cells' real extent, and matches itself and the two-layer lift of the same face."""
+    from openral_world_state import ObjectMemory
+
+    res = 0.015
+    xs = (np.arange(5) - 2) * res + 1e-9  # float noise the mean of the centres never cancels
+    one = np.array([[x, y, 2.0] for x in xs for y in xs])
+    two = np.vstack([one, one + np.array([0.0, 0.0, res])])
+    det = ObjectDetection2D(label="carton", confidence=0.9, bbox_xyxy=(40, 40, 60, 60))
+
+    def lift(points: NDArray[np.float64], pad_m: float) -> list[DetectedObject]:
+        return VoxelFrustumLifter(k_nearest=50, min_voxels=3).lift(
+            detections=[det],
+            occupied_centers_base=points,
+            intrinsics=_INTR,
+            frame_size=(100, 100),
+            t_cam_from_base=np.eye(4),
+            t_map_from_base=np.eye(4),
+            pad_m=pad_m,
+        )
+
+    flat = lift(one, 0.0)[0].bbox_3d
+    assert flat is not None and flat[2] == flat[5]  # the trap: no thickness at all
+    padded = lift(one, res / 2)[0].bbox_3d
+    assert padded is not None and padded[5] - padded[2] == pytest.approx(res)
+
+    mem = ObjectMemory()
+    for t in range(1, 21):
+        out = mem.tick(
+            lift(one if t % 2 else two, res / 2),
+            stamp_ns=t,
+            miss_evidence=lambda o: MissEvidence.NONE,
+        )
+    assert [o.track_id for o in out] == [0]
+
+
+def test_a_minimal_lift_is_confirmed_by_the_points_that_made_it():
+    """Three voxels in a column: the lowest lies in the support band, yet the box is occupied."""
+    column = np.array([[0.0, 0.0, 1.95], [0.0, 0.0, 2.0], [0.0, 0.0, 2.05]])
+    # Camera looking along +y so map z is "up" in the image: y forward.
+    t = np.array([[1.0, 0, 0, 0], [0, 0, -1.0, 2.0], [0, 1.0, 0, 2.0], [0, 0, 0, 1.0]])
+    bottle = _CUBE.model_copy(update={"bbox_3d": (-0.02, -0.02, 1.95, 0.02, 0.02, 2.05)})
+    wall = np.array([[x, 1.0, z] for x in (-0.01, 0.0, 0.01) for z in (1.97, 2.0, 2.03)])
+
+    def classify(points: NDArray[np.float64]) -> MissEvidence:
+        return build_miss_classifier(
+            occupied_centers_map=points, intrinsics=_INTR, t_cam_from_map=t, max_range_m=5.0
+        )(bottle)
+
+    assert classify(np.vstack([column, wall])) is MissEvidence.OCCUPIED
+    # Taken away: only the surface it stood on is left in the box's floor band.
+    shelf = np.array([[x, 0.0, 1.95] for x in (-0.01, 0.0, 0.01)])
+    assert classify(np.vstack([shelf, wall])) is MissEvidence.FREE
+
+
+def test_a_flat_box_keeps_its_own_points_under_jitter():
+    """A box lifted from one voxel layer has zero thickness; a millimetre of map drift
+    must not empty it and turn its own surface into "background seen through"."""
+    face = _CUBE.model_copy(update={"bbox_3d": (-0.1, -0.1, 2.0, 0.1, 0.1, 2.0)})
+    for drift in (0.0, 1e-13, 0.001, -0.001, 0.02):
+        assert _miss(_plane(2.0 + drift), obj=face) is MissEvidence.OCCUPIED, drift
+    assert _miss(_plane(3.0), obj=face) is MissEvidence.FREE
+
+
+def test_miss_is_none_when_not_wholly_in_view_or_out_of_range():
+    wall = _plane(3.0)
+    at_edge = _CUBE.model_copy(update={"bbox_3d": (0.9, -0.1, 1.9, 1.1, 0.1, 2.1)})
+    behind = _CUBE.model_copy(update={"bbox_3d": (-0.1, -0.1, -2.1, 0.1, 0.1, -1.9)})
+    straddling = _CUBE.model_copy(update={"bbox_3d": (-0.1, -0.1, -0.1, 0.1, 0.1, 0.1)})
+    assert _miss(wall, obj=at_edge) is MissEvidence.NONE
+    assert _miss(wall, obj=behind) is MissEvidence.NONE
+    assert _miss(wall, obj=straddling) is MissEvidence.NONE
+    assert _miss(wall, max_range_m=2.0) is MissEvidence.NONE
+    assert _miss(wall, obj=_CUBE.model_copy(update={"bbox_3d": None})) is MissEvidence.NONE
+
+
+def test_miss_is_none_without_depth_behind_the_box():
+    """A depth hole, or nothing mapped behind: no ray is known to have passed through."""
+    assert _miss(np.empty((0, 3))) is MissEvidence.NONE
+    assert _miss(_plane(3.0, n=1)) is MissEvidence.NONE  # 1 point < min_points
+    assert _miss(_plane(3.0) + np.array([1.0, 0.0, 0.0])) is MissEvidence.NONE  # off to the side
 
 
 def test_public_reexports():
@@ -278,7 +408,7 @@ def test_public_reexports():
     assert ws.VoxelFrustumLifter is not None
     assert ws.ObjectMemory is not None
     assert ws.aabb_iou_3d is not None
-    assert ws.build_in_fov_predicate is not None
+    assert ws.build_miss_classifier is not None
     assert ws.decode_occupied_centers is not None
     assert ws.depth_cloud_to_centers_base is not None
 

@@ -134,7 +134,9 @@ robot; no actuation authority.
   `memory_write`, with `consolidate()` (drop duplicates) and a
   `to_context_block(cap=N)` render that bounds the always-on `## MEMORY` block on
   a long-running robot. Loaded at deploy time via `openral deploy sim/run
-  --memory-dir` (alongside `scene_graph.json` and the 2D nav map).
+  --memory-dir` (alongside `scene_graph.json`, the 2D nav map and — when the file is
+  present — the world-state object memory's `object_memory.json`, whose objects a
+  restart restores as uncertain).
 - **Sequential missions.** The operator goal seeds a single-task
   `MissionState`; the LLM decomposes it into the ordered queue via
   `decompose_mission` with at most one `active` (or `verifying`) `TaskState`.

@@ -207,6 +207,32 @@ def test_a_recalled_node_id_disambiguates() -> None:
     assert not _contains(decl, left_bbox)
 
 
+def test_an_absent_node_id_refuses() -> None:
+    """Issue #636: a node whose place was observed clear is not a grasp target."""
+    from openral_core import ObjectBeliefState
+
+    live = _lift({"a": ("box", (0.40, -0.15, -0.10))})
+    memory = SpatialMemory()
+    memory.ingest_detected_objects(live, now_ns=1)
+    node = memory.to_scene_graph().nodes[0]
+    gone = SceneGraph(nodes=[node.model_copy(update={"state": ObjectBeliefState.ABSENT})])
+    with pytest.raises(ROSReasonerInvalidPlan, match="is absent"):
+        _ground(GraspTargetRef(label="box", object_id=node.node_id), live, gone)
+
+
+def test_an_unconfirmed_memory_is_not_a_live_detection() -> None:
+    """A restored object (existence 0.5) neither grounds a bare label nor makes it ambiguous."""
+    live = _lift({"a": ("box", (0.40, -0.15, -0.10)), "b": ("box", (0.40, 0.15, -0.10))})
+    stale = [
+        live[0].model_copy(update={"existence": 0.5}),
+        live[1].model_copy(update={"existence": 0.9}),
+    ]
+    decl = _ground(GraspTargetRef(label="box", contact_links=["openarm_right_finger_pair"]), stale)
+    assert live[1].bbox_3d is not None and _contains(decl, live[1].bbox_3d)
+    with pytest.raises(ROSReasonerInvalidPlan, match="no live 3D detection"):
+        _ground(GraspTargetRef(label="box"), stale[:1])
+
+
 def test_an_unknown_node_id_refuses() -> None:
     with pytest.raises(ROSReasonerInvalidPlan, match="not in spatial memory"):
         _ground(GraspTargetRef(label="box", object_id="nope"), [], SceneGraph())
