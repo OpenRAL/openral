@@ -105,6 +105,19 @@ def _write_controls_enabled() -> bool:
     return os.environ.get(WRITE_CONTROLS_ENV, "") == "1"
 
 
+_REMOTE_CONTROL_OFF = (
+    "remote control is off: turn on Remote control in Settings on openral.com, or set "
+    f"{REMOTE_CONTROL_ENV}=1 on the robot (an OFF wins); it applies at the "
+    "next start, not live"
+)
+_WRITE_CONTROLS_OFF = (
+    "write controls are off: turn on Skill controls in Settings on openral.com, or set "
+    f"{WRITE_CONTROLS_ENV}=1 on the robot (an OFF wins); it applies at the "
+    "next deploy start, not live"
+)
+# Both stay under the console's 200-character cut.
+
+
 def _remote_control_enabled() -> bool:
     """Whether reset, prompt and skills may run over the tunnel (default off; E-STOP always)."""
     return os.environ.get(REMOTE_CONTROL_ENV, "") == "1"
@@ -998,7 +1011,7 @@ def _robot_settings_refusal(method: str, principal: Principal) -> str | None:
     if principal.mode != "remote":
         return None
     if not _remote_control_enabled():
-        return f"remote control is off on this robot (set {REMOTE_CONTROL_ENV}=1 to allow it)"
+        return _REMOTE_CONTROL_OFF
     if method != "GET":
         return "change this robot's settings on openral.com"
     return None
@@ -1099,9 +1112,9 @@ def _action_refusal(action: ManifestAction, principal: Principal) -> str | None:
     if ROLE_RANK[principal.role] < ROLE_RANK[needed]:
         return f"role {principal.role!r} may not run {action.id!r} (needs {needed})"
     if principal.mode == "remote" and not _remote_control_enabled():
-        return f"remote control is off on this robot (set {REMOTE_CONTROL_ENV}=1 to allow it)"
+        return _REMOTE_CONTROL_OFF
     if action.kind == "skill" and not _write_controls_enabled():
-        return f"write controls are off on this robot (set {WRITE_CONTROLS_ENV}=1)"
+        return _WRITE_CONTROLS_OFF
     return None
 
 

@@ -385,6 +385,10 @@ async def test_operator_needs_the_remote_control_flag(
 
         await asyncio.gather(*_BACKGROUND_TASKS)
     assert refused.status_code == 403 and "remote control is off" in refused.json()["error"]
+    # Where to switch it and when it applies, within the console's 200-character cut.
+    error = refused.json()["error"]
+    assert "Settings on openral.com" in error and "next start, not live" in error
+    assert len(error) <= 200
     assert {a["id"]: a["remote"] for a in manifest["actions"]}["estop_reset"] is False
     assert reset.status_code == 200, reset.text
     assert skill.status_code == 202, skill.text

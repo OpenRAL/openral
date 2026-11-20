@@ -517,8 +517,8 @@ safety code changed.
 | `OPENRAL_OTEL_SPAN_SCHEDULE_DELAY_MS` | 30 | `BatchSpanProcessor` flush — ~1.3× the thumbnail rate so the dashboard does not alias |
 | `OPENRAL_ROS2_TRACING` | off | LTTng tracepoints |
 | `OPENRAL_JAEGER_UI_URL` | unset | Enables the trace deep-link in the dashboard header |
-| `OPENRAL_DASHBOARD_WRITE_CONTROLS` | off (linked robot: from the account, on unless turned off) | `1` offers and runs the installed rSkills as dashboard actions (`skill:<id>`) |
-| `OPENRAL_DASHBOARD_REMOTE_CONTROL` | off (linked robot: from the account, on unless turned off) | `1` lets signed-in operators reset, prompt and run skills over the robot's tunnel (E-STOP always may) |
+| `OPENRAL_DASHBOARD_WRITE_CONTROLS` | off (linked robot: from the account at the next deploy start, on unless turned off; an OFF on either side wins) | `1` offers and runs the installed rSkills as dashboard actions (`skill:<id>`) |
+| `OPENRAL_DASHBOARD_REMOTE_CONTROL` | off (linked robot: from the account at the next deploy or dashboard start, on unless turned off; an OFF on either side wins) | `1` lets signed-in operators reset, prompt and run skills over the robot's tunnel (E-STOP always may) |
 | `OPENRAL_DASHBOARD_ALLOWED_ORIGINS` | openral.com's origins | Origins the tunnel listener answers (CORS + `/ws` upgrade) |
 | `OPENRAL_DASHBOARD_UI_DIR` | unset | Serve a local robot-UI build at `/` instead of the pinned release |
 | `OPENRAL_ROBOT_ENROLMENT` | `~/.config/openral/robot.json` | The enrolment `openral robot link` writes; opens the remote listener |
