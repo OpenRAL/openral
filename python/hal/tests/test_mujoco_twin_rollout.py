@@ -27,7 +27,7 @@ from typing import Any
 import numpy as np
 import pytest
 from _renderer_probe import requires_renderer
-from _twin_assets import skip_if_unavailable
+from _twin_assets import expect_refusal, skip_if_unavailable
 from openral_core import Action, ControlMode, RobotDescription
 from openral_core.exceptions import (
     ROSConfigError,
@@ -632,12 +632,16 @@ def test_g1_glide_idle_keeps_the_pelvis_pinned(connect_twin: ConnectTwin) -> Non
 
 
 def test_post_step_observers_run_after_the_commit(connect_twin: ConnectTwin) -> None:
-    """Observers read the tick just applied; one that raises leaves it committed.
+    """Observers read the tick just applied; a failing one never un-applies it.
 
     They used to run inside the step boundary, before the commit: they saw the previous
     tick, and a raising observer left a stepped tick uncommitted, so a resend stepped
-    the same tick again.
+    the same tick again. Raising after the commit would still report an applied tick as
+    unapplied (no ``/openral/action_applied`` ack, a resend refused as stale), so an
+    observer's error is logged and the send completes; a safety violation propagates.
     """
+    from structlog.testing import capture_logs
+
     hal = connect_twin("so101_follower")
     row = list(hal.read_state().position)
     seen: list[int] = []
@@ -649,13 +653,24 @@ def test_post_step_observers_run_after_the_commit(connect_twin: ConnectTwin) -> 
         raise ROSRuntimeError("observer failed")
 
     hal.add_post_step_observer(boom)
-    with pytest.raises(ROSRuntimeError, match="observer failed"):
+    with capture_logs() as logs:
         hal.send_action(_joint_action(row, tick_index=2, runner_session_id=0x683))
     assert hal.last_committed_tick == 2
+    assert seen == [1, 2]
+    failed = [e for e in logs if e["event"] == "hal.post_step_observer_failed"]
+    assert len(failed) == 1 and failed[0]["tick"] == 2
     steps = hal._step_count
     with pytest.raises(ROSRuntimeError):
         hal.send_action(_joint_action(row, tick_index=2, runner_session_id=0x683))
     assert hal._step_count == steps  # the replay is refused, nothing stepped again
+
+    def stop() -> None:
+        raise ROSSafetyViolation("observer saw a violation")
+
+    hal.add_post_step_observer(stop)
+    with pytest.raises(ROSSafetyViolation, match="observer saw a violation"):
+        hal.send_action(_joint_action(row, tick_index=3, runner_session_id=0x683))
+    assert hal.last_committed_tick == 3
 
 
 def test_g1_walk_idle_slices_keep_one_pin(connect_twin: ConnectTwin) -> None:
@@ -1016,11 +1031,7 @@ def test_a_non_finite_twist_interval_is_refused(robot_description: Describe) -> 
     hal = OpenAMRobotV2MujocoHAL(
         description=robot_description("openamrobot_v2"), body_twist_dt_s=float("nan")
     )
-    try:
-        with pytest.raises(ROSConfigError, match="body_twist_dt_s=nan"):
-            hal.connect()
-    except ROSConfigError as exc:  # an unavailable MJCF refuses first
-        skip_if_unavailable(exc, "openamrobot_v2 twin")
+    expect_refusal(hal.connect, "body_twist_dt_s=nan", "openamrobot_v2 twin")
     assert hal._connected is False
 
 
@@ -1117,11 +1128,7 @@ def test_gr00t_refuses_a_manifest_joint_order_it_cannot_slice(
     hal = G1MujocoHAL(
         s0_controller="gr00t_wbc", description=desc.model_copy(update={"joints": joints})
     )
-    try:
-        with pytest.raises(ROSConfigError, match="G1_DESCRIPTION order"):
-            hal.connect()
-    except ROSConfigError as exc:
-        skip_if_unavailable(exc, "g1 gr00t_wbc twin")
+    expect_refusal(hal.connect, "G1_DESCRIPTION order", "g1 gr00t_wbc twin")
 
 
 def test_the_walking_twin_refuses_a_timestep_off_the_policy_cadence(
@@ -1136,11 +1143,7 @@ def test_the_walking_twin_refuses_a_timestep_off_the_policy_cadence(
     hal = G1MujocoHAL(
         s0_controller="playground_walk", description=desc.model_copy(update={"action_spec": spec})
     )
-    try:
-        with pytest.raises(ROSConfigError, match="trained at 20 ms"):
-            hal.connect()
-    except ROSConfigError as exc:
-        skip_if_unavailable(exc, "g1 walking twin")
+    expect_refusal(hal.connect, "trained at 20 ms", "g1 walking twin")
 
 
 def test_a_mixed_amr_tick_records_the_base_it_moved(connect_twin: ConnectTwin) -> None:

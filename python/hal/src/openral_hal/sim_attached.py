@@ -54,7 +54,12 @@ from openral_core import (
     RobotDescription,
     check_time_base,
 )
-from openral_core.exceptions import ROSConfigError, ROSError, ROSRuntimeError
+from openral_core.exceptions import (
+    ROSConfigError,
+    ROSError,
+    ROSRuntimeError,
+    ROSSafetyViolation,
+)
 from openral_core.schemas import Action, ControlMode, JointState
 
 from openral_hal._base import require_connected
@@ -1429,7 +1434,21 @@ class SimAttachedHAL:
             return
         self._observers_due = False
         for observer in self._post_step_observers:
-            observer()
+            try:
+                observer()
+            except ROSSafetyViolation:
+                raise  # never caught here (CLAUDE.md §5)
+            except Exception as exc:  # reason: the tick is already committed and applied
+                # Raising would report an applied tick as unapplied: the node would
+                # skip its /openral/action_applied ack, and a resend is refused as stale.
+                log.error(
+                    "hal.post_step_observer_failed",
+                    robot=self.description.name,
+                    observer=getattr(observer, "__qualname__", repr(observer)),
+                    tick=self.last_committed_tick,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
 
     def set_frame_period_s(self, period_s: float | None) -> None:
         """Render camera frames only every ``period_s`` of sim time (``None``: every step).

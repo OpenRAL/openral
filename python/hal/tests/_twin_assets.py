@@ -13,8 +13,10 @@ Import it via the ``sys.path`` shim in this directory's ``conftest.py``::
 
 from __future__ import annotations
 
+import re
 import subprocess
 import urllib.error
+from collections.abc import Callable
 
 import pytest
 from openral_core.assets import AssetFetchError
@@ -38,3 +40,19 @@ def skip_if_unavailable(exc: ROSConfigError, label: str) -> None:
             pytest.skip(f"{label} unavailable: {exc}")
         cause = cause.__cause__
     raise exc
+
+
+def expect_refusal(connect: Callable[[], object], pattern: str, label: str) -> None:
+    """``connect()`` must raise the ``ROSConfigError`` matching ``pattern``.
+
+    Another ``ROSConfigError`` skips when it comes from an unavailable prerequisite
+    (an MJCF that cannot be fetched refuses before the check under test) and fails
+    otherwise; no error at all fails.
+    """
+    try:
+        connect()
+    except ROSConfigError as exc:
+        if re.search(pattern, str(exc)) is None:
+            skip_if_unavailable(exc, label)
+        return
+    pytest.fail(f"{label}: connect() did not refuse ({pattern!r})")

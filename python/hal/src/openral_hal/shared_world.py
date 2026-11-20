@@ -724,7 +724,19 @@ class _SharedWorldTwin(MujocoTwinRollout):
                 {a for n, a in self.joint_qpos_addr.items() if n not in self.grippers_by_joint}
                 | {a for g in self.grippers_by_joint.values() for a in self._gripper_reset_addrs(g)}
             )
-            qvel_idx = sorted(self.joint_qvel_addr[n] for n in self.joint_names)
+            # And the velocities it zeroed: named joints and each written gripper coordinate.
+            qvel_idx = sorted(
+                {
+                    self.joint_qvel_addr[n]
+                    for n in self.joint_names
+                    if n not in self.grippers_by_joint
+                }
+                | {
+                    self._dof_of_qpos(a)
+                    for g in self.grippers_by_joint.values()
+                    for a in self._gripper_reset_addrs(g)
+                }
+            )
             self._sync(
                 self._request(
                     {
