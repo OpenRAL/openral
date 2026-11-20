@@ -30,9 +30,10 @@ def test_payload_keeps_only_object_nodes() -> None:
     assert object_ids, "the home fixture has object nodes (wine bottle / glass)"
     assert {o["id"] for o in payload} == object_ids
     # Every payload row carries the map-frame pose + recency the dashboard renders.
-    required = {"id", "label", "x", "y", "z", "frame_id", "confidence", "last_seen_ns"}
+    required = {"id", "label", "x", "y", "z", "frame_id", "confidence", "last_seen_ns", "state"}
     for row in payload:
         assert required <= row.keys()
+        assert row["state"] == "present"  # the fixture predates belief; it loads as present
 
 
 def test_emit_publishes_one_span_with_object_list(

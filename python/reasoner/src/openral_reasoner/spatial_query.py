@@ -22,6 +22,7 @@ from typing import NamedTuple, Protocol
 from openral_core import (
     ApproachViewpoint,
     NavGoal,
+    ObjectBeliefState,
     RecallObjectQuery,
     RecallObjectResult,
     RecallObjectTool,
@@ -110,6 +111,10 @@ def format_recall_object_result(
             f"- {m.label!r} (node {m.node_id}) at map {_fmt_xyz(m.pose.xyz)}",
             f"score={m.score:.2f}",
         ]
+        if m.state is ObjectBeliefState.ABSENT:
+            parts.append("ABSENT — it was here; the object memory no longer believes it is")
+        elif m.state is ObjectBeliefState.UNCERTAIN:
+            parts.append("UNCERTAIN — remembered here, not confirmed since; look before acting")
         if m.node_id in blocked_node_ids:
             parts.append(
                 "approach BLOCKED on the occupancy grid (no free viewpoint with "
@@ -203,7 +208,8 @@ def run_spatial_query_detailed(
     """
     if isinstance(call, RecallObjectTool):
         result = querier.recall_object(recall_object_tool_to_query(call), now_ns=now_ns)
-        found = bool(result.matches)
+        # An absent match is where the object was: not found, so the caller still looks.
+        found = any(m.state is not ObjectBeliefState.ABSENT for m in result.matches)
         blocked: set[str] = set()
         if refine_approach is not None and result.matches:
             refined_matches = []
