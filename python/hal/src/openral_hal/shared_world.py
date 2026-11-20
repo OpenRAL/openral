@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-from openral_core import RobotDescription, SharedWorldScene
+from openral_core import Action, RobotDescription, SharedWorldScene
 from openral_core.exceptions import ROSConfigError, ROSError, ROSRuntimeError
 from openral_core.geometry import yaw_to_quat_wxyz
 
@@ -517,6 +517,7 @@ class SharedWorldServer:
         """
         with self._cond:
             j0, j1 = self._joints[robot]
+            writes = []  # all checked before any is applied: a refusal changes nothing
             for key, view_index in (
                 ("qpos", self._view_qpos[robot]),
                 ("qvel", self._view_qvel[robot]),
@@ -524,7 +525,11 @@ class SharedWorldServer:
                 for index, value in msg[key]:
                     if not 0 <= int(index) < j1 - j0:  # the robot's own block, first in its view
                         raise ValueError(f"{key} index {index} is not one of {robot!r}'s joints")
-                    getattr(self._data, key)[view_index[int(index)]] = float(value)
+                    if not math.isfinite(float(value)):
+                        raise ValueError(f"{key}[{index}] = {value!r} is not finite")
+                    writes.append((getattr(self._data, key), view_index[int(index)], float(value)))
+            for array, at, value in writes:
+                array[at] = value
             self._set_ctrl(robot, msg["ctrl"])
             self._mj.mj_forward(self._model, self._data)
             return self._state(robot)
@@ -642,6 +647,10 @@ class SharedWorldArmHAL(MujocoArmHAL):
         self._world_robot = shared_world_robot
         self._conn: Connection | None = None
         self._conn_lock = threading.Lock()
+        # Held across a whole send_action / idle_step / reset_to_pose: an idle sync must
+        # never land between an action's targets and its request (it would carry the
+        # world's older targets back into the mirror).
+        self._world_lock = threading.RLock()
 
     def connect(self) -> None:
         """Compose this robot's view of the world and join it.
@@ -707,8 +716,22 @@ class SharedWorldArmHAL(MujocoArmHAL):
                 log.warning("shared_world.hold_failed", robot=self._world_robot, error=str(exc))
         self._close_conn()
 
+    def send_action(self, action: Action) -> None:
+        """``MujocoArmHAL.send_action``, serialised with the idle steps (``_world_lock``)."""
+        with self._world_lock:
+            super().send_action(action)
+
+    def idle_step(self, wall_dt_s: float | None = None) -> bool:
+        """``MujocoArmHAL.idle_step``, serialised with the actions (``_world_lock``)."""
+        with self._world_lock:
+            return super().idle_step(wall_dt_s)
+
     def reset_to_pose(self, pose: list[float]) -> None:
         """Snap this arm to ``pose`` in the shared world (as ``MujocoArmHAL.reset_to_pose``)."""
+        with self._world_lock:
+            self._reset_to_pose_locked(pose)
+
+    def _reset_to_pose_locked(self, pose: list[float]) -> None:
         super().reset_to_pose(pose)
         assert self._data is not None
         # Only what the base reset set: the named joints (a gripper's every qpos slot).

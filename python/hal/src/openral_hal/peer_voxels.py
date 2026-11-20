@@ -232,6 +232,8 @@ def swept_peer_boxes(
     import mujoco as mj
 
     current = np.asarray(state["qpos"], dtype=np.float64)
+    if not (np.isfinite(current).all() and np.isfinite(state["qvel"]).all()):
+        raise ROSRuntimeError("peer_voxels: the world read is not finite")
     goal = current.copy()
     for qadr, u in targets:
         goal[qadr] = servo_target(model, u, float(state["ctrl"][u]))
@@ -240,6 +242,8 @@ def swept_peer_boxes(
     for qadr, _ in targets:
         drift[qadr] = _SWEEP_HORIZON_S * float(state["qvel"][qadr])
     boxes: list[PeerBox] = []
+    if not (np.isfinite(goal).all() and np.isfinite(drift).all()):
+        raise ROSRuntimeError("peer_voxels: a peer's target or velocity is not finite")
     for reach in (_SWEEP_OVERSHOOT * (goal - current), drift):
         samples = int(np.ceil(np.max(np.abs(reach), initial=0.0) / _SWEEP_STEP)) + 1
         for f in np.linspace(0.0, 1.0, samples):
@@ -352,8 +356,8 @@ def main(argv: list[str] | None = None) -> None:
             started = time.monotonic()
             # Every grid comes from a fresh read: an unanswered read ends the loop.
             state = _ask(conn, {"op": "observe", "robot": args.robot})
-            boxes = swept_peer_boxes(model, data, state, geoms, targets, base_body)
             try:
+                boxes = swept_peer_boxes(model, data, state, geoms, targets, base_body)
                 grid = occupancy_grid(boxes, tuple(args.centre), args.radius, args.resolution)
             except ROSRuntimeError as exc:  # not published: the kernel's deadline refuses
                 node.get_logger().error(f"{exc}; grid withheld", throttle_duration_sec=1.0)

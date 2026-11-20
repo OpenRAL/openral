@@ -2050,6 +2050,11 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # A robot of a shared MuJoCo world (`openral deploy world` binds its HAL with these
     # two keys): the launch also feeds its kernel the peers (openral_hal.peer_voxels).
     if hal_params.get("shared_world"):
+        if hal_mode != "sim":
+            raise ROSConfigError(
+                "--hal shared_world is a simulation binding (`openral deploy world`); a real "
+                "deploy cannot join a shared MuJoCo world."
+            )
         if not hal_params.get("shared_world_robot"):
             raise ROSConfigError(
                 "--hal shared_world needs --hal shared_world_robot (the robot's name in it); "

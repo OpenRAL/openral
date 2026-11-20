@@ -83,11 +83,11 @@ _Several robots in one MuJoCo world, each driven by its own deploy graph on its 
   - `start(self) -> None` (L356) — Listen on the Unix socket; one thread per robot.
   - `close(self) -> None` (L365) — Stop listening. Idempotent.
   - `sim_time_s(self) -> float` (L378) — The world's elapsed simulation time.
-- `class SharedWorldArmHAL(MujocoArmHAL)` (L607) — A `MujocoArmHAL` whose physics is a shared world's: it keeps a mirror model for cameras / joint reads / the sim clock and overrides the two seams `_load_model` (compose its view) and `_step_physics` (ask the world to advance). Built by `build_hal` when the transport names `shared_world` + `shared_world_robot`.
-  - `connect(self) -> None` (L646) — Compose the view, join the world (refused: unknown or already-attached robot, another control period, no declared control rate, no world at the address).
-  - `disconnect(self) -> None` (L682) — Retarget the arm to the pose it has now, leave the world, release the mirror.
-  - `estop(self) -> None` (L687) — Retarget the arm to the pose it has now (it holds there; the other robots keep running), leave the world, then `MujocoArmHAL.estop` (always raises).
-  - `reset_to_pose(self, pose: list[float]) -> None` (L710) — Snap this arm's joints in the shared world.
+- `class SharedWorldArmHAL(MujocoArmHAL)` (L612) — A `MujocoArmHAL` whose physics is a shared world's: it keeps a mirror model for cameras / joint reads / the sim clock and overrides the two seams `_load_model` (compose its view) and `_step_physics` (ask the world to advance). Built by `build_hal` when the transport names `shared_world` + `shared_world_robot`.
+  - `connect(self) -> None` (L655) — Compose the view, join the world (refused: unknown or already-attached robot, another control period, no declared control rate, no world at the address).
+  - `disconnect(self) -> None` (L691) — Retarget the arm to the pose it has now, leave the world, release the mirror.
+  - `estop(self) -> None` (L696) — Retarget the arm to the pose it has now (it holds there; the other robots keep running), leave the world, then `MujocoArmHAL.estop` (always raises).
+  - `reset_to_pose(self, pose: list[float]) -> None` (L729) — Snap this arm's joints in the shared world.
 
 ### `python/hal/src/openral_hal/peer_voxels.py`
 
@@ -98,12 +98,12 @@ _Peer robots as occupied cells of a world grid for each robot's safety kernel (i
 - `occupancy_grid(boxes: list[PeerBox], centre, radius_m, resolution_m) -> tuple[NDArray, tuple[int, int, int], NDArray[np.uint8]]` (L95) — Rasterize the boxes into the axis-aligned grid around a coverage ball (`floor(2r/res + 1/2) + 1` cells per axis, the kernel's `world_voxel_max_cells` for that ball); a cell is occupied when its centre is in a box grown by half a cell diagonal (conservative). Raises `ROSRuntimeError` on a non-finite box rather than drop it.
 - `cells_per_axis(radius_m: float, resolution_m: float) -> int` (L83) — `floor(2r/res + 1/2) + 1`: the peer grid's side; the launch's `_world_voxel_max_cells` (the kernel's reserve) is its cube.
 - `servo_target(model, actuator: int, ctrl: float) -> float` (L182) — The joint position a position servo settles at: equilibrium of `gain*ctrl + b0 + b1*gear*q`, `ctrl` clamped to `ctrlrange` when limited.
-- `own_base_body(model, base_frame: str, own_roots: set[str]) -> int` (L252) — The body this robot's `base_frame` names among its own bodies (never a peer's or the arena's), else its single root; `ROSConfigError` otherwise.
+- `own_base_body(model, base_frame: str, own_roots: set[str]) -> int` (L256) — The body this robot's `base_frame` names among its own bodies (never a peer's or the arena's), else its single root; `ROSConfigError` otherwise.
 - `peer_geoms(model, peer_roots: set[str]) -> NDArray[np.int64]` (L142) — The collision geoms (contype or conaffinity) of the bodies under the peers' top-level bodies (`shared_world.robot_root_bodies`), by kinematic root, not by name.
 - `peer_targets(model, peer_roots: set[str]) -> list[tuple[int, int]]` (L158) — `(qpos address, actuator)` of every peer joint driven by a position servo (affine bias, negative position term): its `ctrl` is the joint target.
 - `peer_boxes(model, data, geoms, base_body: int) -> list[PeerBox]` (L200) — The geoms' local bounding boxes (`geom_aabb`) in the frame of the body `base_frame` names.
 - `swept_peer_boxes(model, data, state, geoms, targets, base_body) -> list[PeerBox]` (L216) — The peers' boxes where they are and at poses at most 0.05 rad apart up to 25% past their servo targets (`servo_target`; `state` = a world read: `qpos`, `ctrl`).
-- `main(argv=None) -> None` (L302) — `python -m openral_hal.peer_voxels --world --robot --frame --centre --radius --resolution`: reads the world (`observe`) as that robot sees it and publishes the swept peers, stamped (`source_stamp`) with the world time read; a non-finite tick is withheld; exits 1 when the world stops answering (the launch then shuts the graph down). Started by `deploy_e2e.launch.py` when `shared_world:=` is set.
+- `main(argv=None) -> None` (L306) — `python -m openral_hal.peer_voxels --world --robot --frame --centre --radius --resolution`: reads the world (`observe`) as that robot sees it and publishes the swept peers, stamped (`source_stamp`) with the world time read; a non-finite tick is withheld; exits 1 when the world stops answering (the launch then shuts the graph down). Started by `deploy_e2e.launch.py` when `shared_world:=` is set.
 
 ### `python/hal/src/openral_hal/_base.py`
 _Shared HAL mixin — `_connected` flag, validation helpers, and a default `disconnect`._

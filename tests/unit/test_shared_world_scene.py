@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 from openral_cli.deploy_world import robot_deploy_argv, world_robot_yamls
 from openral_core import RobotDescription, SharedWorldScene
-from openral_core.exceptions import ROSConfigError
+from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 from openral_hal import build_hal
 from openral_hal.peer_voxels import PeerBox, occupancy_grid
 from pydantic import ValidationError
@@ -150,6 +150,38 @@ def test_a_shared_world_robot_launch_feeds_its_kernel_the_peers() -> None:
         config=config, robot_override=None, dashboard_port=4336, reset_to_pose_service=None
     )
     assert not any(a.startswith("shared_world") for a in plain.argv_template)
+
+
+def test_a_real_deploy_cannot_join_a_shared_world(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The binding is simulation-only: refused while resolving, not later in the launch."""
+    from openral_cli.deploy_sim import resolve_launch_invocation
+
+    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "bench_laptop")  # the SO-101's committed unit
+
+    with pytest.raises(ROSConfigError, match="simulation binding"):
+        resolve_launch_invocation(
+            config=REPO_ROOT / "scenes" / "deploy" / "so101_shared_table.yaml",
+            robot_override=None,
+            dashboard_port=4336,
+            reset_to_pose_service=None,
+            hal_mode="real",
+            hal_param_overrides={"shared_world": "/tmp/w.sock", "shared_world_robot": "a"},
+        )
+
+
+def test_a_non_finite_peer_read_is_refused_not_rasterized() -> None:
+    """A NaN in a world read raises (the producer withholds that grid), never a hole."""
+    import mujoco as mj
+    from openral_hal.peer_voxels import swept_peer_boxes
+
+    model = mj.MjModel.from_xml_string(
+        '<mujoco><worldbody><body name="b_base"><joint name="b_j" type="hinge"/>'
+        '<geom type="box" size=".1 .1 .1"/></body></worldbody>'
+        '<actuator><position joint="b_j" kp="10"/></actuator></mujoco>'
+    )
+    state = {"qpos": [float("nan")], "qvel": [0.0], "ctrl": [0.0]}
+    with pytest.raises(ROSRuntimeError, match="not finite"):
+        swept_peer_boxes(model, mj.MjData(model), state, np.array([0]), [(0, 0)], 0)
 
 
 def test_the_peer_grid_covers_every_cell_a_box_touches() -> None:

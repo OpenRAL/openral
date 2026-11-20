@@ -151,15 +151,21 @@ def test_one_commanding_robot_keeps_one_action_one_period(table: _World) -> None
 
 
 def test_two_commanding_robots_advance_in_lockstep(table: _World) -> None:
-    """Both command 20 actions: the world advances ~20 periods, not 40."""
-    start = table.server.sim_time_s()
+    """Both command 20 actions once both are commanding: the world advances 20 periods, not 40."""
     targets = {"a": [0.3, -0.4, 0.4, 0.2, 0.0, 0.5], "b": [-0.3, -0.2, 0.2, 0.1, 0.0, 0.0]}
-    go = threading.Barrier(2)
+    commanding = threading.Barrier(2)
+    measured = threading.Barrier(2)
+    marks: dict[str, float] = {}
 
     def run(name: str) -> None:
-        go.wait()
+        table.hals[name].send_action(_action(targets[name]))  # in the barrier from here
+        commanding.wait()
+        if measured.wait() == 0:  # both are commanding: start the clock once
+            marks["start"] = table.server.sim_time_s()
         for _ in range(20):
             table.hals[name].send_action(_action(targets[name]))
+        if commanding.wait() == 0:
+            marks["end"] = table.server.sim_time_s()
         table.hals[name].idle_step(wall_dt_s=TICK_S)  # stop commanding: release the peer
 
     threads = [threading.Thread(target=run, args=(n,)) for n in targets]
@@ -168,9 +174,9 @@ def test_two_commanding_robots_advance_in_lockstep(table: _World) -> None:
     for t in threads:
         t.join(timeout=60)
     assert not any(t.is_alive() for t in threads)
-    elapsed = table.server.sim_time_s() - start
-    # One robot's first or last action may be alone in its round; idle steps add wall time.
-    assert 20 * TICK_S - 1e-9 <= elapsed < 23 * TICK_S
+    # In lockstep: 20 paired actions are 20 periods (a robot's first may close a round
+    # its peer's warm-up action opened, so 19 at the least).
+    assert 19 * TICK_S - 1e-9 <= marks["end"] - marks["start"] <= 21 * TICK_S + 1e-9
     for name, target in targets.items():
         assert abs(table.hals[name].read_state().position[0] - target[0]) < 0.2
 

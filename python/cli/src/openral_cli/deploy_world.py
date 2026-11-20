@@ -198,13 +198,13 @@ def deploy_world_command(
         # whatever $TMPDIR says.
         run_dir = Path(tempfile.mkdtemp(prefix=f"openral-world-{world.id[:24]}-", dir="/tmp"))
         address = str(run_dir / "world.sock")
+        logs = (log_dir or run_dir).resolve()
+        logs.mkdir(parents=True, exist_ok=True)  # before the server: nothing to clean up yet
         server = SharedWorldServer(world, config.parent / world.arena_mjcf, robot_yamls, address)
         server.start()
     except (ROSConfigError, ValidationError, OSError, yaml.YAMLError) as exc:
         _console.print(f"{config}: {exc}", style="red", markup=False)
         raise typer.Exit(code=2) from exc
-    logs = (log_dir or run_dir).resolve()
-    logs.mkdir(parents=True, exist_ok=True)
     _console.print(f"[bold]shared world[/bold] {world.id}: physics at {address}")
 
     children: dict[str, subprocess.Popen[bytes]] = {}
