@@ -1409,6 +1409,12 @@ class SimAttachedHAL:
             ROSRuntimeError: when ``env.step`` raises.
         """
         rendered = self._request_frames()
+        if source == "idle_step":
+            # A hold step: in a shared sidecar the other robots never wait for it
+            # (openral-pro#99); a backend without the hook steps as before.
+            mark_idle = getattr(self._env, "set_idle_next_step", None)
+            if callable(mark_idle):
+                mark_idle()
         try:
             step_result = self._env.step(env_action)
         except Exception as exc:
