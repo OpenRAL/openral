@@ -1007,6 +1007,15 @@ _Resolve a `SimScene` or `BenchmarkScene` YAML path to a live `SimRollout`. Used
 - const `HAL_TRANSITION_TIMEOUT_MARGIN_S = 60.0` (L251) — see above.
 - `_synthesise_deploy_task_id(scene_id) -> str` (L54) — The inert `"<scene_id>/_hal_deploy_noop"` task id for a taskless DeployScene; each backend interprets it (LIBERO → task 0), so no scene-id list lives here.
 
+### `python/hal/src/openral_hal/sim_scene.py`
+_The robot console's Sim scene layer, HAL side (platform#133, #137, #139): turns a `scene_mesh(limit_bytes)` reply (the Isaac sidecar's, or `mujoco_scene_mesh` on a live MuJoCo model) into `/openral/viz/sim_scene`'s payload. `SimAttachedHAL` (the one sim HAL shell, `MujocoArmHAL` included) exposes it as `export_sim_scene()`, which the lifecycle node calls when it latches the topic, so nothing is exported outside a deploy._
+
+- `write_sim_scene(scene_mesh) -> dict[str, object]` (L45) — Asks `scene_mesh` for the static scene GLB (at `SIM_SCENE_LIMIT_BYTES`) and, once the reply checks out, writes it as `<sha12>.glb` into `SIM_SCENE_PACKAGE`, sweeping GLBs untouched for a week. Returns `{"uri", "bytes", "triangles"}` or `{"note"}`: an export failure is a note, never a failed connect, but a `ROSSafetyViolation` is re-raised. Logs `sim.scene_export`.
+- `class SceneCache` (L89) — One `write_sim_scene` result per scene source (`key`: the live `MjModel`, or one constant for an Isaac stage); a failed export, or a GLB another deploy's sweep removed, is redone on the next call.
+  - `get(key, scene_mesh) -> dict[str, object]` (L113) — The cached payload for `key`, exporting through `scene_mesh` when the key changed, the last export failed or its GLB is gone; touches a still-present GLB so the week-old sweep keeps it.
+- `odom_from_base(hal) -> NDArray[np.float64]` (L131) — The base frame's 4×4 pose in `/openral/viz/sim_scene`'s frame, as `MobileBaseBridge` sees it: identity for a fixed base; for a mobile base the `odom → base` pose from `base_pose_6dof()` when the HAL has one, else the planar `base_pose`.
+- `mujoco_scene_mesh(model, data, description, limit_bytes, odom_from_base_link=None) -> dict[str, Any]` (L189) — `scene_mesh` for a live MuJoCo model (platform#139): `tools/scene_glb.py`'s `mujoco_static_scene_glb` in `odom_from_base_link · base_from_world`, the base body being the one `resolve_base_frame_body_name` names, else the root body of the actuated joints; with no base body the scene stays in the MuJoCo world.
+
 ### `python/hal/src/openral_hal/sim_attached.py`
 _The one sim HAL shell, `SimAttachedHAL` — HAL Protocol adapter over any in-process `SimRollout` / `SimEnv`, with the attachment API, `reset_episode` and per-goal grading. It serves `panda_mobile` and every scene-attached deploy-sim HAL; every `MujocoArmHAL` twin (whose env is a `MujocoTwinRollout`, #683) is a `SimAttachedHAL`. Its scene-backend paths need `openral_sim` + `mujoco`; a twin built with an explicit `env_action_dim` never imports `openral_sim`._
 
