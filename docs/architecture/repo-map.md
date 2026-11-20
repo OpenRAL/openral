@@ -10,7 +10,7 @@ openral/                      ← THIS monorepo
 │  ├─ core/         (openral_core)        ← Pydantic v2 schemas (normative) ✓
 │  ├─ cli/          (openral_cli)         ← `openral` entry point (bare → REPL, with args → one-shot) ✓
 │  ├─ detect/       (openral_detect)      ← `openral detect` auto-provisioning → robot.yaml ✓
-│  ├─ hal/          (openral_hal)         ← `HAL` Protocol + manifest-driven `MujocoArmHAL` sim adapters (each a `SimRolloutHAL` — the one sim HAL shell `SimAttachedHAL` extends for scene-attached backends — over a `MujocoTwinRollout` or a robot's subclass of it; SO-100/101, Franka, UR5e/10e, ALOHA, OpenArm, Anvil-OpenArm-v2, Rizon4, Makermods Metal, H1, H2, G1, OpenAMRobot 2.0) + the standalone `PandaMobileHAL` (panda_mobile) + real-HW adapters (SO-100/101, Franka, UR, Sawyer, ALOHA, OpenArm, Galaxea A1) ✓
+│  ├─ hal/          (openral_hal)         ← `HAL` Protocol + manifest-driven `MujocoArmHAL` sim adapters (each a `SimAttachedHAL` — the one sim HAL shell — over a `MujocoTwinRollout` or a robot's subclass of it; SO-100/101, Franka, UR5e/10e, ALOHA, OpenArm, Anvil-OpenArm-v2, Rizon4, Makermods Metal, H1, H2, G1, OpenAMRobot 2.0) + the standalone `PandaMobileHAL` (panda_mobile) + real-HW adapters (SO-100/101, Franka, UR, Sawyer, ALOHA, OpenArm, Galaxea A1) ✓
 │  ├─ sensors/      (openral_sensors)     ← Sensor catalog + vendor adapters ✓
 │  ├─ world_state/  (openral_world_state) ← `WorldStateAggregator` (30 Hz snapshot, staleness latching, detected-objects fold-in) ✓
 │  ├─ rskill/       (openral_rskill)      ← `rSkillBase` ABC, `rSkill` loader, runtime adapters (PyTorch/ONNX; TensorRT is an OpenRAL Pro plugin), VLA + detector adapters ✓

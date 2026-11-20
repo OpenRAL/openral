@@ -1,14 +1,17 @@
-"""Every sim HAL heartbeats a fresh, empty attachment set — not only the ones with attach mechanics.
+"""Every sim HAL heartbeats a fresh, empty attachment set until something is attached.
 
 The deploy launch enables the kernel's attached-payload check for every
 sim robot with collision capsules, and that check is fail-closed on a payload
 it cannot verify — including one it has never heard about: a world state
 whose ``attachment_stamp_ns`` is still 0 is unverifiable, so every joint
-chunk is dropped as ``attached_overflow``. A ``MujocoArmHAL`` twin has no
-attachment API at all, so "nothing attached, fresh" is the exact truth for
-it, and saying so is what lets the kernel certify its motion. Seen on the
-OpenArm twin (lab Orin, 2026-09-22): zero publishers on
-``/openral/attachment_state`` and not one joint chunk reached the arm.
+chunk is dropped as ``attached_overflow``. Before anything is attached,
+"nothing attached, fresh" is the exact truth, and saying so is what lets the
+kernel certify its motion. Seen on the OpenArm twin (lab Orin, 2026-09-22):
+zero publishers on ``/openral/attachment_state`` and not one joint chunk
+reached the arm. Since #683 every twin has the attachment API too, so the
+attachment staging subscription is open beside the heartbeat; the MuJoCo
+evidence tracker (and with it the declaration subscriptions) still arms on
+none of these robots' twins.
 
 Real ``SimSensorBridge`` on a real rclpy node against real MuJoCo twins of
 three different robots, so the guarantee is the bridge's, not one HAL's.
@@ -64,7 +67,7 @@ def _sim_attached_tabletop() -> Any:
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 @pytest.mark.parametrize(
-    "make_hal", [_openarm, _sim_attached_tabletop], ids=["no_attachment_api", "attachment_api"]
+    "make_hal", [_openarm, _sim_attached_tabletop], ids=["twin", "scene_attached"]
 )
 def test_the_heartbeat_yields_to_another_attachment_authority(make_hal: Callable[[], Any]) -> None:
     """``attachment_heartbeat=False``: no publisher, no timer, nothing on the latched topic.
@@ -107,7 +110,7 @@ def test_the_heartbeat_yields_to_another_attachment_authority(make_hal: Callable
 @pytest.mark.parametrize(
     "make_hal", [_openarm, _so100, _franka], ids=["openarm_v2", "so100", "franka_panda"]
 )
-def test_a_hal_without_the_attachment_api_still_heartbeats_an_empty_fresh_set(
+def test_a_twin_heartbeats_an_empty_fresh_set(
     make_hal: Callable[[], Any],
 ) -> None:
     rclpy = pytest.importorskip("rclpy")
@@ -119,7 +122,7 @@ def test_a_hal_without_the_attachment_api_still_heartbeats_an_empty_fresh_set(
     from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 
     hal = make_hal()
-    assert not hasattr(hal, "update_attached_objects"), "fixture must lack the attachment API"
+    assert callable(getattr(hal, "update_attached_objects", None)), "a twin has the API (#683)"
 
     rclpy.init()
     try:
@@ -142,13 +145,12 @@ def test_a_hal_without_the_attachment_api_still_heartbeats_an_empty_fresh_set(
             bridge = SimSensorBridge(node, hal, hal.description, viewer_enabled=False)
             try:
                 bridge.setup()
-                # Publisher and heartbeat exist; the staging path (which needs
-                # the API to have anything to stage) does not.
+                # Publisher, heartbeat and attachment staging exist. The evidence
+                # tracker refuses these twins' gripper layouts, so nothing can
+                # measure a declared target: no declaration is subscribed.
                 assert bridge._attachment_pub is not None
                 assert bridge._attachment_timer is not None
-                assert bridge._attachment_sub is None
-                # Nothing here can measure a declared target, so no declaration is
-                # subscribed or relayed (the envelope carries none).
+                assert bridge._attachment_sub is not None
                 assert bridge._place_declaration_sub is None
                 assert bridge._grasp_declaration_sub is None
 
@@ -210,6 +212,83 @@ def test_a_real_arm_without_the_vision_leg_claims_nothing_about_its_jaws() -> No
                 assert node.count_publishers("/openral/attachment_state") == 0
             finally:
                 bridge.teardown()
+        finally:
+            node.destroy_node()
+    finally:
+        rclpy.try_shutdown()
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_a_twin_beside_the_vision_leg_never_holds_the_action_ack() -> None:
+    """A vision-leg attachment (no MuJoCo body) is recorded unmasked; the ack barrier releases.
+
+    Since #683 a twin has the attachment API, so with the vision leg as the authority
+    the bridge stages its revisions into the twin. Its evidence (``segmenter_mask:…``)
+    names no MuJoCo body; refusing it left the kernel-accepted revision pending, and
+    ``attachment_action_ack_ready`` stayed False for every following action.
+    """
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg", reason="openral_msgs is not built in this env")
+
+    from openral_core import (
+        AttachedCollisionObject,
+        AttachedCollisionPrimitive,
+        AttachmentEvidenceKind,
+        BoxShape,
+        Pose6D,
+    )
+    from openral_hal.sim_sensor_bridge import SimSensorBridge
+    from openral_msgs.msg import AttachedCollisionObject as ObjectMsg
+    from openral_msgs.msg import AttachedCollisionPrimitive as PrimitiveMsg
+    from openral_msgs.msg import AttachmentState
+    from rclpy.node import Node
+    from std_msgs.msg import UInt64
+
+    hal = _openarm()
+    link = "openarm_left_link7"
+    cup = AttachedCollisionObject(
+        object_id="cup",
+        attach_link=link,
+        touch_links=[link],
+        primitives=[
+            AttachedCollisionPrimitive(
+                shape=BoxShape(half_extents_m=(0.02, 0.02, 0.02)),
+                pose_in_object=Pose6D(
+                    xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="cup"
+                ),
+            )
+        ],
+        pose_in_link=Pose6D(xyz=(0.0, 0.0, 0.05), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=link),
+        confidence=0.9,
+        evidence_kind=AttachmentEvidenceKind.GRIPPER_FORCE,
+        evidence_ref="segmenter_mask:cup@1#0/1",
+        stamp_ns=1,
+    )
+    msg = AttachmentState()
+    msg.revision = 1
+    item = ObjectMsg()
+    cup.fill_idl(item, primitive_factory=PrimitiveMsg)
+    msg.objects.append(item)
+
+    rclpy.init()
+    try:
+        node = Node("test_attachment_twin_vision_ack")
+        try:
+            hal.connect()
+            bridge = SimSensorBridge(
+                node, hal, hal.description, viewer_enabled=False, attachment_heartbeat=False
+            )
+            try:
+                bridge.setup()
+                assert bridge._attachment_sub is not None
+                bridge._on_attachment_state(msg)
+                bridge._on_attachment_state_applied(UInt64(data=1))
+                assert bridge.attachment_action_ack_ready()
+                assert [o.object_id for o in hal.read_attached_objects()] == ["cup"]
+                assert hal.read_attached_body_ids() == frozenset()  # recorded, masks nothing
+            finally:
+                bridge.teardown()
+                hal.disconnect()
         finally:
             node.destroy_node()
     finally:

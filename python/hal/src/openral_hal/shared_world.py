@@ -37,7 +37,12 @@ from typing import Any, Unpack
 
 import structlog
 from openral_core import Action, RobotDescription, SharedWorldScene
-from openral_core.exceptions import ROSConfigError, ROSError, ROSRuntimeError
+from openral_core.exceptions import (
+    ROSCapabilityMismatch,
+    ROSConfigError,
+    ROSError,
+    ROSRuntimeError,
+)
 from openral_core.geometry import yaw_to_quat_wxyz
 
 from openral_hal._camera_rig import rig_cameras_into_mjcf
@@ -825,4 +830,15 @@ class SharedWorldArmHAL(MujocoArmHAL):
             twin=functools.partial(
                 _SharedWorldTwin, world_address=shared_world, world_robot=shared_world_robot
             ),
+        )
+
+    def reset_episode(self) -> int:
+        """Refused: one robot cannot reset a world its peers share.
+
+        Raises:
+            ROSCapabilityMismatch: Always; restart ``openral deploy world`` for a fresh world.
+        """
+        raise ROSCapabilityMismatch(
+            f"{self.description.name}: reset_episode is not offered in a shared world "
+            "(its peers keep running in it); restart `openral deploy world` instead."
         )

@@ -194,9 +194,9 @@ def _scene_builds_bare_twin(deploy_scene: DeployScene | None) -> bool:
     or names a scene id that ``openral_sim.SCENES`` cannot build (nothing to
     attach to); otherwise the HAL scene-attaches (``SimAttachedHAL`` around
     the scene's ``SimRollout``). No scene at all (``--robot`` only) is a bare
-    twin too. A bare twin is the ``MujocoArmHAL`` (``SimRolloutHAL``) built from
-    the composition ``openral_hal.resolver.twin_scene_composition`` picks: it has
-    no attachment API, ``reset_episode`` or per-goal grading (#683).
+    twin too. A bare twin is the ``MujocoArmHAL`` (``SimAttachedHAL``) built from
+    the composition ``openral_hal.resolver.twin_scene_composition`` picks, with the
+    same attachment API, ``reset_episode`` and per-goal grading (#683).
     """
     if deploy_scene is None or deploy_scene.composition is not None:
         return True

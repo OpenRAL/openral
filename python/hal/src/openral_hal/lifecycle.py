@@ -2664,7 +2664,7 @@ if _ROS2_AVAILABLE:
             reflect on the just-built HAL and wire the service only when it
             exposes ``reset_to_pose`` (the sim-arm starting-pose snap the
             ``skill_runner`` calls before the first inference tick). Robots whose
-            HAL has no such method (panda_mobile, scene-attached twins) get no
+            HAL has no such method (panda_mobile, scene-attached backends) get no
             service — the call site falls back to its no-op exactly as today.
             """
             assert self._hal is not None

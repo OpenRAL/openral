@@ -1,10 +1,10 @@
 """``MujocoTwinRollout`` and the ``MujocoArmHAL`` shell around it (issue #683).
 
-``MujocoArmHAL`` is a ``SimRolloutHAL`` (the sim HAL shell, without the scene-attached
-extras) whose env is a ``MujocoTwinRollout``, the one MuJoCo driver of the bare twins.
+``MujocoArmHAL`` is a ``SimAttachedHAL`` (the one sim HAL shell) whose env is a
+``MujocoTwinRollout``, the one MuJoCo driver of the bare twins.
 These tests pin the rollout's own contract (time base, reset, gripper units, idle
-slice, lazy renders, teardown, no ``openral_sim``), the shell surface a twin keeps or
-does not offer, and each robot's twin (PD, glide, walking, GR00T WBC, differential
+slice, lazy renders, teardown, no ``openral_sim``), the shell surface a twin
+offers, and each robot's twin (PD, glide, walking, GR00T WBC, differential
 base) driven through the shell.
 
 Real manifests from ``robots/``, real MuJoCo, no mocks (CLAUDE.md §1.11). A host
@@ -37,7 +37,7 @@ from openral_core.exceptions import (
 from openral_hal._mujoco_arm import MujocoArmHAL
 from openral_hal.mujoco_twin import _IDLE_STEP_CAP, MujocoTwinRollout
 from openral_hal.openamrobot_v2 import OpenAMRobotV2MujocoHAL
-from openral_hal.sim_attached import SimAttachedHAL, SimRolloutHAL
+from openral_hal.sim_attached import SimAttachedHAL
 
 pytest.importorskip("mujoco")
 
@@ -120,8 +120,10 @@ def test_reset_reloads_the_loaded_state_and_time_base(
     for _ in range(10):
         r.step(row)
     assert float(r.data.time) > 0.0
+    model = r.model
     assert r.reset() == {}
-    assert r.data is not None and r.model is not None
+    assert r.model is model  # in place: the bridge's handles stay valid
+    assert r.data is not None
     np.testing.assert_array_equal(r.data.qpos, qpos0)
     np.testing.assert_array_equal(r.data.ctrl, ctrl0)
     assert float(r.data.time) == 0.0
@@ -316,16 +318,16 @@ def test_the_twin_runs_without_openral_sim(repo_root: Path) -> None:
 
 
 @pytest.mark.parametrize("robot", ["so101_follower", "ur5e"])
-def test_twin_offers_only_the_rollout_shell_surface(robot: str, connect_twin: ConnectTwin) -> None:
-    """A twin is a ``SimRolloutHAL``, not a scene-attached ``SimAttachedHAL``.
+def test_twin_offers_the_scene_attached_surface(robot: str, connect_twin: ConnectTwin) -> None:
+    """A twin is a full ``SimAttachedHAL``: one sim HAL surface for every deploy scene (#683).
 
     The lifecycle node and the sensor bridge switch the attachment staging, the
     ``reset_episode`` service and the ``/openral/reward/active_task`` subscription on
-    by ``getattr``; none of them is offered by a twin.
+    by ``getattr``, so a composed (bare-twin) scene gets the same deploy graph as a
+    scene-attached one.
     """
     hal = connect_twin(robot)
-    assert isinstance(hal, SimRolloutHAL)
-    assert not isinstance(hal, SimAttachedHAL)
+    assert isinstance(hal, SimAttachedHAL)
     for name in (
         "update_attached_objects",
         "read_attached_objects",
@@ -333,11 +335,21 @@ def test_twin_offers_only_the_rollout_shell_surface(robot: str, connect_twin: Co
         "reset_episode",
         "set_active_task",
     ):
-        assert getattr(hal, name, None) is None, name
-    # The exact expression SimSensorBridge evaluates.
+        assert callable(getattr(hal, name, None)), name
+    # The exact expression SimSensorBridge evaluates: nothing attached yet.
     assert getattr(hal, "read_attached_objects", list)() == []
+    hal.set_active_task("pick the cube")  # a twin grades nothing: a logged no-op
+    home = list(hal.read_state().position)
+    handles = hal.mujoco_handles()
+    assert handles is not None
+    hal.send_action(_joint_action([0.3] * len(home)))
+    assert hal.read_state().position != pytest.approx(home, abs=1e-3)
+    assert hal.reset_episode() == 1
+    assert hal.read_state().position == pytest.approx(home, abs=1e-6)
+    after = hal.mujoco_handles()
+    assert after is not None and after[0] is handles[0]  # the bridge's model stays live
     assert callable(getattr(hal, "reset_to_pose", None))
-    assert not hasattr(SimRolloutHAL, "reset_to_pose")
+    assert not hasattr(SimAttachedHAL, "reset_to_pose")
 
 
 def test_fixed_base_twin_reports_the_origin_not_its_first_three_joints(

@@ -310,19 +310,19 @@ class SimRollout(Protocol):
             skips both the MuJoCo viewer path AND the per-step
             ``viewer_render`` pump.
 
-        The sim HAL shell, ``openral_hal.sim_attached.SimRolloutHAL`` (which
+        The sim HAL shell, ``openral_hal.sim_attached.SimAttachedHAL`` (which
         ``SimAttachedHAL`` and the bare twin's ``MujocoArmHAL`` both are), reads
         these hooks:
 
         ``read_joint_state(self) -> openral_core.JointState``
             — a backend that reads its own joint state (manifest joint
             addresses, grippers in their public units) returns it here;
-            ``SimRolloutHAL.read_state`` then serves it instead of walking
+            ``SimAttachedHAL.read_state`` then serves it instead of walking
             the MJCF joints by name or reading ``obs["joint_positions"]``.
 
         ``read_images(self) -> dict[str, NDArray[np.uint8]]``
             — a backend that renders on demand returns the current state's
-            ``{camera: HxWx3 uint8}`` frames here; ``SimRolloutHAL.read_images``
+            ``{camera: HxWx3 uint8}`` frames here; ``SimAttachedHAL.read_images``
             serves them instead of the cached ``obs["images"]``. Such frames
             show the current step, so the backend reports no
             ``obs["image_time_ns"]`` (``read_image_times`` stays empty).
@@ -330,7 +330,7 @@ class SimRollout(Protocol):
         ``idle_step(self, wall_dt_s: float | None) -> bool``
             — a backend that can advance a wall-time slice of physics without
             a new command (``ctrl`` untouched) does it here;
-            ``SimRolloutHAL.idle_step`` calls it instead of stepping
+            ``SimAttachedHAL.idle_step`` calls it instead of stepping
             ``idle_action`` and runs its usual post-step bookkeeping when it
             returns ``True``.
 
@@ -352,11 +352,11 @@ class SimRollout(Protocol):
             — a backend that knows its own planar base pose / held velocity
             command (the twins' pinned or free base, the OpenAMRobot's planar
             joints, the G1 GR00T WBC command) reports it;
-            ``SimRolloutHAL.base_pose`` / ``base_twist`` serve it.
+            ``SimAttachedHAL.base_pose`` / ``base_twist`` serve it.
 
         ``clock_id: str`` / ``physics_dt_s: float | None`` /
         ``time_base_fields: dict[str, str | float | int]``
-            — the clock id ``SimRolloutHAL.clock_authority`` reports (else the
+            — the clock id ``SimAttachedHAL.clock_authority`` reports (else the
             backend's class name), the physics timestep it reports while the
             backend declares no ``sim_dt_per_tick_s`` (a wall-paced twin), and
             extra fields of the one ``sim.time_base`` line per connect.

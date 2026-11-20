@@ -1,13 +1,13 @@
 """The sim HAL shell's optional env hooks: ``read_joint_state``, ``read_images``, ``idle_step``.
 
-Issue #683 made the bare MuJoCo twin a ``SimRolloutHAL`` (the shell ``SimAttachedHAL``
-extends) whose env (``MujocoTwinRollout``) answers getattr-gated hooks. These tests
+Issue #683 made the bare MuJoCo twin a ``SimAttachedHAL`` (the one sim
+HAL shell) whose env (``MujocoTwinRollout``) answers getattr-gated hooks. These tests
 wrap a real ``MujocoTwinRollout`` in a PLAIN ``SimAttachedHAL`` (not ``MujocoArmHAL``)
 to show the shell itself uses each hook, then show the hooks are opt-in: the
 native-MuJoCo ``so101_box`` rollout (``openral_sim``, a real backend that defines
 none of them) still takes the shell's other paths. The so101_box deploy-scene test
 builds its composed bare twin the way the HAL node does and checks the five gaps
-#682 measured.
+#682 measured plus the scene-attached surface it now has.
 
 Real manifests, real MuJoCo, no mocks (CLAUDE.md §1.11).
 """
@@ -21,7 +21,17 @@ from typing import Any
 import numpy as np
 import pytest
 from _renderer_probe import requires_renderer
-from openral_core import Action, ControlMode, DeployScene, RobotDescription
+from openral_core import (
+    Action,
+    AttachedCollisionObject,
+    AttachedCollisionPrimitive,
+    AttachmentEvidenceKind,
+    BoxShape,
+    ControlMode,
+    DeployScene,
+    Pose6D,
+    RobotDescription,
+)
 from openral_core.code_refs import import_code_ref
 from openral_core.exceptions import ROSConfigError
 from openral_hal import build_hal
@@ -179,6 +189,9 @@ def test_hooks_are_opt_in_a_backend_without_them_keeps_the_previous_paths(
 def test_so101_box_deploy_scene_builds_a_working_bare_twin(repo_root: Path) -> None:
     """``scenes/deploy/so101_box.yaml`` through the shell: the five gaps #682 measured.
 
+    And the composed scene gets the scene-attached surface (#683): the attachment API
+    resolves the arena's ``tube`` body, and ``reset_episode`` reloads the arena.
+
     Builds the HAL the way ``_ManifestHALLifecycleNode._create_hal`` does for a
     bare-twin scene (``_compose_scene_mjcf``: run the scene's composer, write the
     XML beside ``meshdir``, thread it as ``transport["mjcf_path"]`` into
@@ -195,9 +208,34 @@ def test_so101_box_deploy_scene_builds_a_working_bare_twin(repo_root: Path) -> N
 
     hal = build_hal(desc, mode="sim", transport={"mjcf_path": str(scene_path)})
     assert isinstance(hal, MujocoArmHAL)
-    assert not isinstance(hal, SimAttachedHAL)  # a bare twin: no scene-attached surface
+    assert isinstance(hal, SimAttachedHAL)
     hal.connect()
     try:
+        tube = AttachedCollisionObject(
+            object_id="tube",
+            attach_link="gripper",
+            touch_links=["moving_jaw_so101_v1"],
+            primitives=[
+                AttachedCollisionPrimitive(
+                    shape=BoxShape(half_extents_m=(0.01, 0.01, 0.04)),
+                    pose_in_object=Pose6D(
+                        xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="tube"
+                    ),
+                )
+            ],
+            pose_in_link=Pose6D(
+                xyz=(0.0, 0.0, 0.05), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="gripper"
+            ),
+            confidence=1.0,
+            evidence_kind=AttachmentEvidenceKind.SIM_CONTACT,
+            evidence_ref="mujoco_body:tube",
+            stamp_ns=1,
+        )
+        hal.update_attached_objects([tube])
+        assert [o.object_id for o in hal.read_attached_objects()] == ["tube"]
+        assert hal.read_attached_body_ids()
+        hal.update_attached_objects([])
+        home = list(hal.read_state().position)
         names = [j.name for j in desc.joints]
         row = [0.2, -0.3, 0.4, 0.1, 0.0, 0.8]
         assert len(row) == len(names) == 6
@@ -224,6 +262,9 @@ def test_so101_box_deploy_scene_builds_a_working_bare_twin(repo_root: Path) -> N
         assert top.intrinsics is not None
         assert frames["top"].shape == (top.intrinsics.height, top.intrinsics.width, 3)
         assert frames["top"].std() > 1.0
+
+        assert hal.reset_episode() == 1
+        assert hal.read_state().position == pytest.approx(home, abs=1e-6)
     finally:
         hal.disconnect()
 
