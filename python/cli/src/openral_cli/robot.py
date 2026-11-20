@@ -27,6 +27,7 @@ a ``_joint``-suffix strip.
 
 from __future__ import annotations
 
+import http
 import json
 import os
 import re
@@ -365,8 +366,9 @@ CONTROL_SETTINGS = frozenset({REMOTE_CONTROL_ENV, WRITE_CONTROLS_ENV})
 The account sends both, ``1`` unless an admin turned them off there. Only ``"0"`` and
 ``"1"`` are taken, and an OFF on either side wins: openral.com's ``"0"`` turns a switch off
 even over a value set on the robot, and a robot set to ``"0"`` (or anything but ``"1"``)
-stays off whatever openral.com says. A cached ``"1"`` is never applied: openral.com's OFF
-may be newer than the copy. E-STOP is never gated."""
+stays off whatever openral.com says. A cached ``"1"`` is never applied, and remote control
+is off whenever openral.com couldn't confirm it at start (unreachable, an error, a cache
+that can't be written): its OFF may be newer. E-STOP is never gated."""
 
 _SWITCH_VALUES = frozenset({"0", "1"})
 
@@ -388,7 +390,7 @@ def apply_account_settings(
     reasoner's ``ACCOUNT_SETTINGS`` and the dashboard's ``CONTROL_SETTINGS``), and nothing
     is fetched when every one of them is already set and no switch is on. A refused
     credential (the robot was removed, or given a new link code) deletes the cache.
-    Returns the names it set; never raises.
+    Fails closed: see ``CONTROL_SETTINGS``. Returns the names it set; never raises.
     """
     from urllib.parse import urlsplit
 
@@ -434,19 +436,41 @@ def apply_account_settings(
         if not isinstance(settings, dict):
             raise ValueError("settings is not an object")
     except urllib.error.HTTPError as exc:
-        if exc.code not in (401, 403):
-            return _cached_settings(site, exc, echo, names)
+        # Only a refused credential (401); a 403 may be Cloudflare's, not the site's verdict.
+        if exc.code != http.HTTPStatus.UNAUTHORIZED:
+            return _cached_settings(site, exc, echo, names) + _fail_closed(echo, names)
         # Revoked: no cached copy outlives the credential.
         _settings_cache().unlink(missing_ok=True)
         echo(f"account settings: {site} refused this robot's credential; run a new link code")
-        return []
+        return _fail_closed(echo, names)
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        return _cached_settings(site, exc, echo, names)
+        return _cached_settings(site, exc, echo, names) + _fail_closed(echo, names)
+    closed: list[str] = []
     try:
         _write_private(_settings_cache(), json.dumps(settings) + "\n")
-    except OSError as exc:  # the fresh settings still apply; only the offline copy is lost
-        echo(f"account settings: can't cache them ({exc}); applying them anyway")
-    return _apply(settings, site, echo, names)
+    except OSError as exc:
+        # Fail closed: the other settings apply, but no switch goes on from this start.
+        echo(f"account settings: can't cache them ({exc}); the dashboard switches stay off")
+        settings, closed = _no_switch_on(settings), _fail_closed(echo, names)
+    return _apply(settings, site, echo, names) + closed
+
+
+def _no_switch_on(settings: dict[str, object]) -> dict[str, object]:
+    """``settings`` without a ``"1"`` for a ``CONTROL_SETTINGS`` switch."""
+    return {k: v for k, v in settings.items() if k not in CONTROL_SETTINGS or v != "1"}
+
+
+def _fail_closed(echo: Callable[[str], None], names: frozenset[str]) -> list[str]:
+    """Remote control off when openral.com couldn't confirm it this start (its OFF may be new).
+
+    Only remote control: write controls also gate the robot's own screen, which must keep
+    working while openral.com is down. Returns ``[REMOTE_CONTROL_ENV]`` when it turned it off.
+    """
+    if REMOTE_CONTROL_ENV not in names or os.environ.get(REMOTE_CONTROL_ENV) != "1":
+        return []
+    os.environ[REMOTE_CONTROL_ENV] = "0"
+    echo("account settings: openral.com could not confirm remote control; it stays off")
+    return [REMOTE_CONTROL_ENV]
 
 
 def _robot_secret(path: Path, echo: Callable[[str], None]) -> str | None:
@@ -471,10 +495,8 @@ def _cached_settings(
         echo(f"account settings: {site} unreachable ({exc}); none cached")
         return []
     echo(f"account settings: {site} unreachable ({exc}); using the cached ones")
-    cached = cached if isinstance(cached, dict) else {}
     # openral.com's OFF may be newer than this copy: never switch a control on from it.
-    cached = {k: v for k, v in cached.items() if k not in CONTROL_SETTINGS or v != "1"}
-    return _apply(cached, site, echo, names)
+    return _apply(_no_switch_on(cached if isinstance(cached, dict) else {}), site, echo, names)
 
 
 def _apply(
