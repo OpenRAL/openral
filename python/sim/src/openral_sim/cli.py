@@ -556,8 +556,11 @@ def _discover_sim_configs() -> list[Path]:
     scenes_root = repo_root / "scenes"
     if not scenes_root.is_dir():
         return []
+    # `worlds/` holds SharedWorldScene files (`openral deploy world`), not sim configs.
     return sorted(
-        p for p in scenes_root.rglob("*.yaml") if "local" not in p.relative_to(scenes_root).parts
+        p
+        for p in scenes_root.rglob("*.yaml")
+        if not {"local", "worlds"} & set(p.relative_to(scenes_root).parts)
     )
 
 

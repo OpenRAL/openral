@@ -1,0 +1,15 @@
+<!-- Shared arena of scenes/worlds/so101_handover_table.yaml: a table whose top is the
+     world's z = 0 plane (the robots' bases sit on it) and one 3 cm cube at its centre,
+     within reach of both arms. The arena's frame is the world frame. -->
+<mujoco model="handover_table">
+  <worldbody>
+    <light name="ceiling" pos="0 0 1.2" dir="0 0 -1" diffuse="0.8 0.8 0.8" castshadow="false"/>
+    <geom name="table" type="box" pos="0 0 -0.01" size="0.35 0.45 0.01"
+          rgba="0.75 0.68 0.58 1" friction="1 0.01 0.001"/>
+    <body name="handover_cube" pos="0 0 0.015">
+      <freejoint name="handover_cube_joint"/>
+      <geom name="handover_cube_geom" type="box" size="0.015 0.015 0.015" mass="0.02"
+            rgba="0.85 0.2 0.2 1" friction="1 0.01 0.001"/>
+    </body>
+  </worldbody>
+</mujoco>

@@ -148,7 +148,12 @@ from openral_core import (
 )
 from openral_core.depth_extrinsic import MAX_PLANAR_ERR_M
 from openral_core.exceptions import ROSConfigError
-from openral_core.geometry import freeze_released_attachment, homogeneous_from_quat_xyz
+from openral_core.geometry import base_displaced as _base_displaced
+from openral_core.geometry import (
+    base_prismatic,
+    freeze_released_attachment,
+    homogeneous_from_quat_xyz,
+)
 from openral_core.kinematics import (
     bounding_half_extents,
     box_gap_lower_bound_m,
@@ -782,16 +787,8 @@ def base_displaced(
 ) -> bool:
     """Whether a mobile base's planar dofs left ``reference`` (``BASE_STILL_M`` / ``_RAD``).
 
-    The prismatic dofs' planar distance and each revolute dof's wrapped angle are tested
-    separately. Unknown (``None``) on either side counts as moved: fail-closed.
-
-    Args:
-        reference: The ``base_joints`` positions to compare against, in manifest order.
-        now: The same dofs now.
-        prismatic: Per dof, whether it is prismatic (else revolute / continuous).
-
-    Returns:
-        ``True`` past either bound, or when either side is unknown.
+    ``openral_core.geometry.base_displaced`` at this module's bounds. Unknown (``None``) on
+    either side counts as moved: fail-closed.
 
     Example:
         >>> base_displaced((0.0, 0.0, 3.14), (0.005, 0.0, -3.14), (True, True, False))
@@ -799,21 +796,9 @@ def base_displaced(
         >>> base_displaced((0.0, 0.0, 0.0), (0.02, 0.0, 0.0), (True, True, False))
         True
     """
-    if reference is None or now is None:
-        return True
-    deltas = [b - a for a, b in zip(reference, now, strict=True)]
-    planar = math.hypot(*(d for d, p in zip(deltas, prismatic, strict=True) if p))
-    turn = max(
-        (abs(math.remainder(d, math.tau)) for d, p in zip(deltas, prismatic, strict=True) if not p),
-        default=0.0,
+    return _base_displaced(
+        reference, now, prismatic, planar_m=BASE_STILL_M, turn_rad=BASE_STILL_RAD
     )
-    return planar > BASE_STILL_M or turn > BASE_STILL_RAD
-
-
-def base_prismatic(description: RobotDescription) -> tuple[bool, ...]:
-    """Per ``base_joints`` entry, whether it is prismatic (``base_displaced``'s mask)."""
-    kinds = {j.name: j.joint_type for j in description.joints}
-    return tuple(kinds[name] is JointType.PRISMATIC for name in description.base_joints or ())
 
 
 @dataclass(frozen=True)
