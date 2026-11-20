@@ -235,17 +235,17 @@ def test_constructor_settle_steps_override_is_stored() -> None:
 
 def test_constructor_gravity_enabled_default_is_true() -> None:
     arm = _make_arm()
-    assert arm._gravity_enabled is True
+    assert arm._twin.gravity_enabled is True
 
 
 def test_constructor_gravity_enabled_override_is_stored() -> None:
     arm = _make_arm(gravity_enabled=False)
-    assert arm._gravity_enabled is False
+    assert arm._twin.gravity_enabled is False
 
 
 def test_constructor_staleness_limit_default_is_half_second() -> None:
     arm = _make_arm()
-    assert arm._staleness_limit_s == 0.5
+    assert arm._twin.staleness_limit_s == 0.5
 
 
 # ── _kinematic_group (shared by the G1/H1 humanoid adapters) ────────────────

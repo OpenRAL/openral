@@ -1,7 +1,7 @@
 """Force/contact layer (#373) feasibility tools on the MuJoCo OpenArm v2 right arm.
 
 Both score what ``/joint_states.effort`` can resolve: the sim's ``qfrc_actuator`` (exactly
-what the MuJoCo HALs publish, ``openral_hal._mujoco_arm.joint_actuator_effort``) plus a model.
+what the MuJoCo HALs publish, ``openral_hal.mujoco_twin.joint_actuator_effort``) plus a model.
 Analysis only — not on any control path.
 
 ``probe`` — an offline momentum observer over free sinusoidal motion, with a known push on

@@ -104,7 +104,7 @@ def test_estop_closes_the_render_contexts() -> None:
             pytest.skip(f"offscreen MuJoCo render unavailable: {exc}")
         if not frames:
             pytest.skip("offscreen MuJoCo render produced no frames (no GL context)")
-        renderers = list(hal._renderers.values())
+        renderers = list(hal._twin.renderers.values())
         assert renderers
 
         with pytest.raises(ROSEStopRequested):

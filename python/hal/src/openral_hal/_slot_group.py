@@ -13,9 +13,10 @@ than an inline branch:
 
 * **Atomicity.** A group whose slot the safety kernel rejected must never
   commit its surviving slots — that would leave one arm driven from the new
-  chunk while the other holds an older setpoint. Mirrors
-  ``openral_hal.sim_attached.SimAttachedHAL._stage_action_group``, which
-  established this contract for the simulator side.
+  chunk while the other holds an older setpoint. ``SlotGroupStager`` is the one
+  staging machine that enforces it, for every HAL that reassembles a tick: the
+  sim HAL shell (``sim_attached.SimRolloutHAL``), ``GroupedRosControlHAL`` and
+  ``ComposedHAL``.
 * **Addressing by name, not position.** ``JOINT_*`` slots are zero-padded to
   full dof (the C++ kernel enforces ``chunk.n_dof == envelope.n_dof``), so a
   padded row cannot say which joints it owns — ``0.0`` is a legal joint
@@ -39,6 +40,7 @@ __all__ = [
     "TickWatermark",
     "compose_slot_group",
     "compose_slot_group_action",
+    "joint_position_command",
     "refuse_stale_tick",
     "slot_group_targets",
 ]
@@ -240,11 +242,24 @@ def compose_slot_group_action(
     Raises:
         ROSConfigError: The group is unplaceable (see ``compose_slot_group``).
     """
-    first = group[0]
+    return joint_position_command(compose_slot_group(group, joint_names, hold=hold), group[0])
+
+
+def joint_position_command(row: list[float], first: Action) -> Action:
+    """A one-step full-dof ``JOINT_POSITION`` action of ``row``, stamped like ``first``.
+
+    The composed command a HAL applied for one slot group (``first`` is the group's
+    first slot: its stamp and confidence carry over, its tick fields do not).
+
+    Example:
+        >>> slot = Action(control_mode=ControlMode.BODY_TWIST, body_twist=[[0.0] * 6])
+        >>> joint_position_command([0.1, 0.2], slot).joint_targets
+        [[0.1, 0.2]]
+    """
     return Action(
         control_mode=ControlMode.JOINT_POSITION,
         horizon=1,
-        joint_targets=[compose_slot_group(group, joint_names, hold=hold)],
+        joint_targets=[list(row)],
         stamp_ns=first.stamp_ns,
         confidence=first.confidence,
     )
@@ -425,6 +440,11 @@ class SlotGroupStager:
         return len(self._actions)
 
     @property
+    def staged(self) -> tuple[Action, ...]:
+        """The slots staged for the tick in flight, in arrival order."""
+        return tuple(self._actions)
+
+    @property
     def last_committed_tick(self) -> int:
         """Tick of the last group the HAL applied (``0`` = none since ``reset``)."""
         return self._watermark.tick
@@ -438,18 +458,20 @@ class SlotGroupStager:
     def last_applied_action(self) -> Action | None:
         """The command the last commit applied (``None`` = none since ``reset``).
 
-        For a group, the composed action the HAL actually sent — never one slot; for an
-        ungrouped action (``commit_tick``), the action itself. Moves in step with
-        ``last_committed_tick``, so a reader that matched the tick reads its command.
+        For a group, the composed action the HAL actually sent — never one slot (``None``
+        when the HAL could not say what it was); for an ungrouped action
+        (``commit_tick``), the action itself. Moves in step with ``last_committed_tick``,
+        so a reader that matched the tick reads its command.
         """
         return self._applied
 
-    def commit(self, group: list[Action], *, applied: Action) -> None:
+    def commit(self, group: list[Action], *, applied: Action | None) -> None:
         """Record that a group ``stage`` released was applied to the robot as ``applied``.
 
         Call only after the apply succeeded: the lifecycle node acknowledges
         ``last_committed_tick``, so committing a group that failed would ack a
-        tick the robot never received. ``applied`` is the composed command sent.
+        tick the robot never received. ``applied`` is the composed command sent, or
+        ``None`` when it cannot be stated (a sim group that is not one joint command).
         """
         first = group[0]
         self._watermark.commit(int(first.tick_index), session=int(first.runner_session_id))
@@ -507,12 +529,15 @@ class SlotGroupStager:
         self._watermark.reset()
         self._applied = None
 
-    def stage(self, action: Action) -> list[Action] | None:
+    def stage(self, action: Action, *, group_size: int | None = None) -> list[Action] | None:
         """Add one slot; return the whole group once complete, else ``None``.
 
         Args:
             action: One slot action carrying ``tick_index`` /
                 ``tick_group_size``.
+            group_size: How many slots complete the tick, when the backend rather
+                than the action declares it (a sim backend that steps a fixed-size
+                group of ungrouped slots); ``None`` reads ``action.tick_group_size``.
 
         Returns:
             Every action of the tick when the last slot lands, else ``None``.
@@ -529,7 +554,7 @@ class SlotGroupStager:
                 group size than its first slot (the tick is discarded, never
                 released short).
         """
-        group_size = int(action.tick_group_size)
+        group_size = int(action.tick_group_size) if group_size is None else int(group_size)
         tick = int(action.tick_index)
         if tick <= 0:
             raise ROSConfigError(

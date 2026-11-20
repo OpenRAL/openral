@@ -19,26 +19,27 @@ _Sim rollout protocol — the typed contract every scene adapter must satisfy._
   fields: `observation, reward, terminated, truncated, info`
 - `class SimRollout(Protocol)` — Minimal gym-style env contract. (L234)
   - attr `scene: SceneSpec`, `task: TaskSpec`
-  - `reset(seed=None) -> Observation` (L322)
-  - `step(action) -> StepResult` (L325)
-  - `render() -> NDArray[np.uint8] | None` — HWC uint8 RGB or `None`. (L328)
-  - `close() -> None` (L331)
+  - `reset(seed=None) -> Observation` (L378)
+  - `step(action) -> StepResult` (L381)
+  - `render() -> NDArray[np.uint8] | None` — HWC uint8 RGB or `None`. (L384)
+  - `close() -> None` (L387)
   - duck-typed extension: `mujoco_handles() -> tuple[mujoco.MjModel, mujoco.MjData] | None` — Optional, not part of the Protocol; MuJoCo-backed adapters implement it so `sim run --view` can open a passive viewer. Callers must `getattr(...)` and tolerate `None`.
   - duck-typed extension: `task_success() -> bool | None` — Optional, not part of the Protocol: the backend's own live task-success predicate, read on demand and side-effect free (not latched — an undone task reads `False` again). `None` means no predicate and must never be read as failure; used by `deploy sim`'s `SimAttachedHAL`, not by `sim run`/benchmark.
   - duck-typed extension: `sim_time_ns() -> int | None` — Optional, not part of the Protocol: the backend's elapsed sim time in ns, feeding a `/clock` publisher. Monotonic only within an episode; callers must treat missing and `None` alike as “no clock” (fall back to wall time).
   - duck-typed extension: `enable_intrinsic_viewer() -> None` — Optional, not part of the Protocol; adapters with their own render window (e.g. gym_pusht) implement it so `SimRunner` uses live-view mode instead of the MuJoCo viewer.
+  - duck-typed extensions the sim HAL shell (`openral_hal.sim_attached.SimRolloutHAL`) reads, none part of the Protocol: `read_joint_state()`, `read_images()`, `idle_step(wall_dt_s)`, `step_action_group(actions)` with its explicit send route (`action_group_size` > 0: fixed-size groups of ungrouped slots, BEHAVIOR; `steps_every_command_as_group = True`: every command, an ungrouped action as a group of one, the MuJoCo twin; neither: multi-slot groups only), `read_base_pose()` / `read_base_twist()`, `clock_id`, `physics_dt_s`, `time_base_fields`. `openral_hal.mujoco_twin.MujocoTwinRollout` implements them all (`read_base_twist` on the G1 GR00T WBC twin only); the `SimRollout` docstring is the contract.
 - `pin_robosuite_time_base(control_freq_hz) -> float` — Sets the process-global `robosuite.macros.SIMULATION_TIMESTEP` (L23) to the `openral_core.physics_steps_per_tick` dt (shrunk, never grown; logged as `robosuite.time_base.timestep_shrunk`) **before** an env is built, always derived from robosuite's native dt (recorded on the macros module at the first pin) so an earlier pin in the process never carries over, so robosuite's `int(control_timestep / model_timestep)` step loop integrates exactly one control period (1/30 s is 16.67 default steps). Called by the RoboCasa kitchen factory and every LIBERO build (the eval path pins the native 20 Hz) (issue #358); returns the pinned dt.
 - `sim_dt_per_tick_from_robosuite_env(env) -> float | None` — Walks `env` / `.env` / `.unwrapped` / `._env` (L68) to robosuite's `MujocoEnv` and returns what its step loop really integrates, `int(control_timestep / model_timestep) * model_timestep` — the `sim_dt_per_tick_s` `SimAttachedHAL.connect` holds to the robot; `None` when unreachable.
 - `sim_time_ns_from_mujoco_handles(handles: tuple[Any, Any] | None) -> int | None` — Shared helper: `round(MjData.time * 1e9)` from a `mujoco_handles()` pair, `None` when `handles` is `None`. (L106)
 - `env_action_dim(env: object) -> int | None` — The one action-width probe: `env.action_dim`, then `env._env.action_dim`, then a wrapped gym `Box` shape; `None` when not introspectable. Used by `SimAttachedHAL._probe_env_action_dim` and by `SimRunner` to size mock policies. (L175)
 - `render_named_rgb_mujoco(renderer, model, data, camera_name, *, height, width) -> tuple[Any, NDArray[np.uint8]]` — Render one named MuJoCo camera, lazily building `mujoco.Renderer` when absent; returns `(renderer, rgb)` so the caller can cache the expensive-to-build renderer. Shared by the `tabletop_push` and `so101_box` scene backends. (L137)
-- `class EpisodeResult` — Outcome of one episode; `contact_stats` lists the robot-vs-world contact pairs the backend reported over the episode (`fold_robot_contacts`), deepest first, and is written to `summary.json`. `frame_grades` holds, per `frames` entry, the `(placement_grade, placement_score)` of the step before it (the world videos' live border); `final_info` the last step's JSON-scalar `info` entries (per-episode reports, `grade_counts`). (L432)
-  - `EpisodeResult.summary() -> str` — Human-readable single-line summary of the episode. (L496)
-- `DEFAULT_SUCCESS_KEY = "is_success"` — Step `info` key read for success when `TaskSpec.success_key` is unset; the Isaac / RoboTwin / RLBench sidecars start with it, and `SimRunner` reads the same key. (L335)
-- `ROBOT_CONTACTS_INFO_KEY = "robot_contacts"` — Step `info` key a backend fills with that step's robot-vs-world contacts (`{link, other_prim, min_separation_m, impulse_ns}`); Isaac fills it from the PhysX contact report. (L344)
-- `fold_robot_contacts(stats, contacts, step) -> None` — Folds one step's contacts into per-(link, other prim) episode records: `steps`, `first_step`/`last_step`, `min_separation_m`, `max_penetration_m`, `max_impulse_ns`; `SimRunner` calls it every step the info carries `robot_contacts`. (L353)
+- `class EpisodeResult` — Outcome of one episode; `contact_stats` lists the robot-vs-world contact pairs the backend reported over the episode (`fold_robot_contacts`), deepest first, and is written to `summary.json`. `frame_grades` holds, per `frames` entry, the `(placement_grade, placement_score)` of the step before it (the world videos' live border); `final_info` the last step's JSON-scalar `info` entries (per-episode reports, `grade_counts`). (L488)
+  - `EpisodeResult.summary() -> str` — Human-readable single-line summary of the episode. (L552)
+- `DEFAULT_SUCCESS_KEY = "is_success"` — Step `info` key read for success when `TaskSpec.success_key` is unset; the Isaac / RoboTwin / RLBench sidecars start with it, and `SimRunner` reads the same key. (L391)
+- `ROBOT_CONTACTS_INFO_KEY = "robot_contacts"` — Step `info` key a backend fills with that step's robot-vs-world contacts (`{link, other_prim, min_separation_m, impulse_ns}`); Isaac fills it from the PhysX contact report. (L400)
+- `fold_robot_contacts(stats, contacts, step) -> None` — Folds one step's contacts into per-(link, other prim) episode records: `steps`, `first_step`/`last_step`, `min_separation_m`, `max_penetration_m`, `max_impulse_ns`; `SimRunner` calls it every step the info carries `robot_contacts`. (L409)
   fields: `success, steps, total_reward, mean_step_latency_ms, max_step_latency_ms, latency_budget_ms, budget_violations, frames, metadata`
-  - `summary() -> str` — Human-readable single line. (L496)
+  - `summary() -> str` — Human-readable single line. (L552)
 
 ### `python/sim/src/openral_sim/registry.py`
 _Registries that map ID strings to backend factories._
@@ -857,7 +858,7 @@ _BEHAVIOR-1K / OmniGibson scene adapter. Runs the official evaluator environment
 - `class _BehaviorSidecar` — ZMQ-backed `SimRollout`; surfaces 61-D `state`/`policy_state`, manifest-order 22-joint positions/velocities, three RGB views, and sim time.
 - `step_action_group(actions) -> StepResult` — Validate six equal-tick safety-approved slots and commit them as one official 23-D action.
 - `_compose_action_group(actions) -> NDArray[float32]` — Compose base twist + torso/arm joint targets + dual grippers into the official action order.
-- `provision_behavior() -> None` — Pre-launch provisioner: locates the externally-installed OmniGibson + BEHAVIOR dataset environment (set up via upstream's `./setup.sh`) or raises the setup command. Covers provisioning only — the OmniGibson boot still runs inside the HAL's 300s-bounded `on_configure`, and the scene's boot timeout is set well past that bound. (L362)
+- `provision_behavior() -> None` — Pre-launch provisioner: locates the externally-installed OmniGibson + BEHAVIOR dataset environment (set up via upstream's `./setup.sh`) or raises the setup command. Covers provisioning only — the OmniGibson boot still runs inside the HAL's 300s-bounded `on_configure`, and the scene's boot timeout is set well past that bound. (L363)
 - `const _SCENE_ID = 'behavior'` (L27)
 - `const _ROBOT_ID = 'r1pro'` (L28)
 - `const _SIDECAR_PYTHON_ENV = 'OPENRAL_BEHAVIOR_SIDECAR_PYTHON'` (L29)

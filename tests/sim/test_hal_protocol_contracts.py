@@ -353,9 +353,9 @@ class TestMujocoModelContracts:
         hal.connect()
         try:
             assert hal._data is not None
-            for name in hal._joint_names:
-                qpos_idx = hal._joint_qpos_addr[name]
-                act_idx = hal._actuator_index[name]
+            for name in hal._twin.joint_names:
+                qpos_idx = hal._twin.joint_qpos_addr[name]
+                act_idx = hal._twin.actuator_index[name]
                 assert hal._data.ctrl[act_idx] == pytest.approx(
                     float(hal._data.qpos[qpos_idx]), abs=1e-6
                 )

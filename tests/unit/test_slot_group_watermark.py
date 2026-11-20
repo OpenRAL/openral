@@ -201,3 +201,12 @@ def test_a_slot_that_changes_its_ticks_group_size_discards_the_tick() -> None:
     assert stager.last_committed_tick == 0
     _apply(stager, 2, _A)
     assert stager.last_committed_tick == 2
+
+
+def test_a_backend_declared_group_size_is_the_ticks_size() -> None:
+    """``group_size=`` (a fixed-size backend) is what a later slot is compared against."""
+    stager = SlotGroupStager()
+    first, second = (s.model_copy(update={"tick_group_size": 1}) for s in _slots(1, _A))
+    assert stager.stage(first, group_size=2) is None
+    group = stager.stage(second, group_size=2)
+    assert group is not None and len(group) == 2
