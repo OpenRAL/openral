@@ -75,6 +75,7 @@ __all__ = [
     "enrolment_path",
     "parse_robot_link_code",
     "robot_instance_id",
+    "robot_secret_path",
     "rskill_matches_robot",
 ]
 
@@ -547,6 +548,11 @@ def enrolment_path() -> Path:
     """``$OPENRAL_ROBOT_ENROLMENT``, else ``~/.config/openral/robot.json``."""
     env = os.environ.get(ENROLMENT_PATH_ENV)
     return Path(env) if env else Path.home() / ".config" / "openral" / "robot.json"
+
+
+def robot_secret_path() -> Path:
+    """``robot.secret`` beside :func:`enrolment_path`: the robot's openral.com credential."""
+    return enrolment_path().with_name("robot.secret")
 
 
 def robot_instance_id() -> str:
