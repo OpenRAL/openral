@@ -216,3 +216,80 @@ def test_a_real_arm_without_the_vision_leg_claims_nothing_about_its_jaws() -> No
             node.destroy_node()
     finally:
         rclpy.try_shutdown()
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_a_twin_beside_the_vision_leg_never_holds_the_action_ack() -> None:
+    """A vision-leg attachment (no MuJoCo body) is recorded unmasked; the ack barrier releases.
+
+    Since #683 a twin has the attachment API, so with the vision leg as the authority
+    the bridge stages its revisions into the twin. Its evidence (``segmenter_mask:…``)
+    names no MuJoCo body; refusing it left the kernel-accepted revision pending, and
+    ``attachment_action_ack_ready`` stayed False for every following action.
+    """
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg", reason="openral_msgs is not built in this env")
+
+    from openral_core import (
+        AttachedCollisionObject,
+        AttachedCollisionPrimitive,
+        AttachmentEvidenceKind,
+        BoxShape,
+        Pose6D,
+    )
+    from openral_hal.sim_sensor_bridge import SimSensorBridge
+    from openral_msgs.msg import AttachedCollisionObject as ObjectMsg
+    from openral_msgs.msg import AttachedCollisionPrimitive as PrimitiveMsg
+    from openral_msgs.msg import AttachmentState
+    from rclpy.node import Node
+    from std_msgs.msg import UInt64
+
+    hal = _openarm()
+    link = "openarm_left_link7"
+    cup = AttachedCollisionObject(
+        object_id="cup",
+        attach_link=link,
+        touch_links=[link],
+        primitives=[
+            AttachedCollisionPrimitive(
+                shape=BoxShape(half_extents_m=(0.02, 0.02, 0.02)),
+                pose_in_object=Pose6D(
+                    xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="cup"
+                ),
+            )
+        ],
+        pose_in_link=Pose6D(xyz=(0.0, 0.0, 0.05), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=link),
+        confidence=0.9,
+        evidence_kind=AttachmentEvidenceKind.GRIPPER_FORCE,
+        evidence_ref="segmenter_mask:cup@1#0/1",
+        stamp_ns=1,
+    )
+    msg = AttachmentState()
+    msg.revision = 1
+    item = ObjectMsg()
+    cup.fill_idl(item, primitive_factory=PrimitiveMsg)
+    msg.objects.append(item)
+
+    rclpy.init()
+    try:
+        node = Node("test_attachment_twin_vision_ack")
+        try:
+            hal.connect()
+            bridge = SimSensorBridge(
+                node, hal, hal.description, viewer_enabled=False, attachment_heartbeat=False
+            )
+            try:
+                bridge.setup()
+                assert bridge._attachment_sub is not None
+                bridge._on_attachment_state(msg)
+                bridge._on_attachment_state_applied(UInt64(data=1))
+                assert bridge.attachment_action_ack_ready()
+                assert [o.object_id for o in hal.read_attached_objects()] == ["cup"]
+                assert hal.read_attached_body_ids() == frozenset()  # recorded, masks nothing
+            finally:
+                bridge.teardown()
+                hal.disconnect()
+        finally:
+            node.destroy_node()
+    finally:
+        rclpy.try_shutdown()

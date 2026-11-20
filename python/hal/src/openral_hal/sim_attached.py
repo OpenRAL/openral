@@ -2673,13 +2673,15 @@ class SimAttachedHAL:
         depth/OctoMap through child geoms. A backend without MuJoCo handles (Isaac)
         records the set and masks nothing, as on real hardware: only a tracker-bound
         payload is cleared from the map (by identity), a geometry-only one stays.
+        On a MuJoCo backend an object whose evidence names no MuJoCo body (the
+        vision leg's) is recorded the same way: kept, masking nothing.
 
         Args:
             objects: Complete current attachment set.
 
         Raises:
-            ROSConfigError: On duplicate ids, malformed MuJoCo evidence refs, or
-                unknown body names. The previous snapshot is preserved on failure.
+            ROSConfigError: On duplicate ids or an unknown ``mujoco_body:`` name.
+                The previous snapshot is preserved on failure.
         """
         by_id = {obj.object_id: obj for obj in objects}
         if len(by_id) != len(objects):
@@ -2704,10 +2706,11 @@ class SimAttachedHAL:
         for obj in objects:
             prefix = "mujoco_body:"
             if obj.evidence_ref is None or not obj.evidence_ref.startswith(prefix):
-                raise ROSConfigError(
-                    f"Attached object {obj.object_id!r} requires "
-                    "evidence_ref='mujoco_body:<body-name>' in deploy sim."
-                )
+                # Evidence that names no MuJoCo body (the vision attachment leg's
+                # ``segmenter_mask:…``) is recorded and masks nothing, as on Isaac
+                # and real hardware above. Refusing it left the kernel-accepted
+                # revision pending, which held every following action ack.
+                continue
             body_name = obj.evidence_ref.removeprefix(prefix)
             body_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name))
             if body_id < 0:
