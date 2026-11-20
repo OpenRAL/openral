@@ -78,9 +78,15 @@ refused when stale). In a shared world that grid holds **the other robots**:
   occupied there before it moves.
 - **Tight freshness.** The kernel accepts a peer grid for 0.2 s of world time
   (receipt deadline and data-age budget), four of `peer_voxels`' 20 Hz periods,
-  instead of the octomap's 1 s / 1.5 s. What remains is the race between two
-  robots commanded in the same instant, each checked against the other's last
-  grid: bounded by the peer's motion over those 0.2 s.
+  instead of the octomap's 1 s / 1.5 s; a peer still moving is also swept along
+  its measured joint velocity for those 0.2 s.
+- **The rule for simultaneous moves (a stated limit).** The barrier does not
+  compare two robots' new targets with each other before it releases them: two
+  robots commanded in the same instant are each checked against the other's
+  last grid (its pose, targets and velocity, at most 0.2 s of world time old).
+  Their simultaneous moves are protected only to that extent. A pairwise check
+  at the barrier or a reservation of the shared volume is the follow-up, and
+  belongs with the shared-workspace hazard-log entry.
 - **Fail-closed.** Every grid is built from a fresh read of the world and is
   stamped with that world time (`source_stamp`). A non-finite pose withholds the
   grid. When the world stops answering, `peer_voxels` exits, the kernel's

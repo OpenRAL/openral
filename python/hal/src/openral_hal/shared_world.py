@@ -24,6 +24,7 @@ The wire is JSON over a Unix socket in a private directory: local, sim only.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
@@ -304,6 +305,7 @@ class SharedWorldServer:
             self._joints[name] = (j, j + n_joint)
             self._actuators[name] = (u, u + n_act)
             j, u = j + n_joint, u + n_act
+        self._seed_ctrl(descriptions)
         # World index of each slot of a robot's view: its own block, then the rest in order.
         self._view_qpos: dict[str, Any] = {}
         self._view_qvel: dict[str, Any] = {}
@@ -331,20 +333,47 @@ class SharedWorldServer:
         self._tick_steps = 0  # physics steps per control period; 0 until the first join
         self._last_advance = time.monotonic()
         self._listener: Listener | None = None
+        self._acceptor: threading.Thread | None = None
+
+    def _seed_ctrl(self, descriptions: dict[str, RobotDescription]) -> None:
+        """Hold the initial pose of every robot that seeds its targets from it.
+
+        A robot with ``sim.seed_ctrl_from_qpos`` holds its initial pose from the start:
+        the world may advance on another robot's idle steps before this one joins.
+        """
+        mj, m = self._mj, self._model
+        for name, (u0, u1) in self._actuators.items():
+            sim = descriptions[name].sim
+            if sim is None or not sim.seed_ctrl_from_qpos:
+                continue
+            for u in range(u0, u1):
+                if m.actuator_trntype[u] == mj.mjtTrn.mjTRN_JOINT:
+                    joint = int(m.actuator_trnid[u, 0])
+                    self._data.ctrl[u] = self._data.qpos[m.jnt_qposadr[joint]]
 
     # ── Serving ────────────────────────────────────────────────────────────────
 
     def start(self) -> None:
         """Listen on ``address``; each robot's HAL is served on its own thread."""
         self._listener = Listener(self._address, family="AF_UNIX")
-        threading.Thread(target=self._accept, name="shared-world-accept", daemon=True).start()
+        self._acceptor = threading.Thread(
+            target=self._accept, name="shared-world-accept", daemon=True
+        )
+        self._acceptor.start()
         log.info("shared_world.serving", world=self._world.id, address=self._address)
 
     def close(self) -> None:
         """Stop listening.  Idempotent; a robot still attached is served until it leaves."""
         listener, self._listener = self._listener, None
-        if listener is not None:
-            listener.close()
+        if listener is None:
+            return
+        # Closing a listening socket from another thread does not reliably wake a
+        # blocked accept(): connect once, so the acceptor sees the listener is gone.
+        with contextlib.suppress(OSError):
+            Client(self._address, family="AF_UNIX").close()
+        if self._acceptor is not None:  # set by start(), with the listener
+            self._acceptor.join(timeout=5.0)
+        listener.close()
 
     def sim_time_s(self) -> float:
         """The world's elapsed simulation time, seconds."""
@@ -357,14 +386,18 @@ class SharedWorldServer:
                 conn = listener.accept()
             except OSError:  # closed
                 return
+            if self._listener is None:  # close()'s wake-up connection
+                conn.close()
+                return
             threading.Thread(target=self._serve, args=(conn,), daemon=True).start()
 
     def _serve(self, conn: Connection) -> None:
         robot: str | None = None
         try:
             while True:
-                msg = json.loads(conn.recv_bytes())
+                raw = conn.recv_bytes()  # EOF / socket errors: the connection ends below
                 try:
+                    msg = json.loads(raw)
                     if msg["op"] == "hello":
                         reply: dict[str, object] = self._hello
                     elif msg["op"] == "observe":  # a reader (peer_voxels), never attached
@@ -432,7 +465,13 @@ class SharedWorldServer:
             return self._state(robot)
 
     def _step(self, robot: str, msg: dict[str, Any]) -> dict[str, object]:
-        """One ``send_action``: advance one control period with every commanding robot."""
+        """One ``send_action``: advance one control period with every commanding robot.
+
+        The barrier does not check the released targets against each other: each was
+        checked by its own robot's kernel against the others' last peer grid
+        (``peer_voxels``). That is the stated limit for simultaneous moves
+        (``docs/reference/shared-world-sim.md``).
+        """
         with self._cond:
             self._set_ctrl(robot, msg["ctrl"])
             self._commanding[robot] = time.monotonic()
@@ -472,12 +511,20 @@ class SharedWorldServer:
             return self._state(robot)
 
     def _poke(self, robot: str, msg: dict[str, Any]) -> dict[str, object]:
-        """``reset_to_pose``: overwrite the robot's own joint state and targets."""
+        """``reset_to_pose``: set the joints the pose names (view indices), and the targets.
+
+        Only those entries: a passive joint of the robot keeps its world state.
+        """
         with self._cond:
             j0, j1 = self._joints[robot]
-            n = j1 - j0  # the robot's block is first in its view
-            self._data.qpos[j0:j1] = msg["qpos"][:n]
-            self._data.qvel[j0:j1] = msg["qvel"][:n]
+            for key, view_index in (
+                ("qpos", self._view_qpos[robot]),
+                ("qvel", self._view_qvel[robot]),
+            ):
+                for index, value in msg[key]:
+                    if not 0 <= int(index) < j1 - j0:  # the robot's own block, first in its view
+                        raise ValueError(f"{key} index {index} is not one of {robot!r}'s joints")
+                    getattr(self._data, key)[view_index[int(index)]] = float(value)
             self._set_ctrl(robot, msg["ctrl"])
             self._mj.mj_forward(self._model, self._data)
             return self._state(robot)
@@ -664,12 +711,18 @@ class SharedWorldArmHAL(MujocoArmHAL):
         """Snap this arm to ``pose`` in the shared world (as ``MujocoArmHAL.reset_to_pose``)."""
         super().reset_to_pose(pose)
         assert self._data is not None
+        # Only what the base reset set: the named joints (a gripper's every qpos slot).
+        qpos_idx = sorted(
+            {a for n, a in self._joint_qpos_addr.items() if n not in self._grippers_by_joint}
+            | {a for g in self._grippers_by_joint.values() for a in g.qpos_addrs}
+        )
+        qvel_idx = sorted(self._joint_qvel_addr[n] for n in self._joint_names)
         self._sync(
             self._request(
                 {
                     "op": "poke",
-                    "qpos": self._data.qpos.tolist(),
-                    "qvel": self._data.qvel.tolist(),
+                    "qpos": [[i, float(self._data.qpos[i])] for i in qpos_idx],
+                    "qvel": [[i, float(self._data.qvel[i])] for i in qvel_idx],
                     "ctrl": self._data.ctrl.tolist(),
                 }
             )

@@ -8,6 +8,7 @@ domain); the world's server and its Unix-socket wire are the real ones.
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from collections.abc import Iterator
@@ -215,6 +216,43 @@ def test_the_world_refuses_what_it_cannot_serve(table: _World, tmp_path: Path) -
         orphan.connect()
 
 
+def test_the_world_refuses_a_malformed_request_and_closes_promptly(tmp_path: Path) -> None:
+    """Invalid JSON gets a refusal, not a dropped connection; close() returns at once."""
+    from multiprocessing.connection import Client
+
+    world = SharedWorldScene.from_yaml(str(WORLD_YAML))
+    address = str(tmp_path / "w.sock")
+    server = SharedWorldServer(
+        world, WORLD_YAML.parent / world.arena_mjcf, {"a": ROBOT_YAML, "b": ROBOT_YAML}, address
+    )
+    server.start()
+    conn = Client(address, family="AF_UNIX")
+    conn.send_bytes(b"{not json")
+    reply = json.loads(conn.recv_bytes())
+    assert reply["ok"] is False
+    conn.send_bytes(b'{"op": "hello"}')  # the connection is still served
+    assert json.loads(conn.recv_bytes())["ok"] is True
+    conn.close()
+    started = time.monotonic()
+    server.close()  # no client is connecting: the acceptor must still be woken and joined
+    assert time.monotonic() - started < 2.0
+    assert server._acceptor is not None and not server._acceptor.is_alive()
+
+
+def test_reset_to_pose_leaves_what_it_does_not_name(table: _World) -> None:
+    """Only the named joints are written: the peer's state is the world's, untouched."""
+    a, b = table.hals["a"], table.hals["b"]
+    b.send_action(_action([0.3, -0.3, 0.3, 0.1, 0.0, 0.2]))  # B moves; A's mirror is behind
+    for _ in range(10):
+        b.send_action(_action([0.3, -0.3, 0.3, 0.1, 0.0, 0.2]))
+    _, b_data = b.mujoco_handles()  # type: ignore[misc]
+    b_joints = np.array(b_data.qpos[:6])
+    a.reset_to_pose([0.1, -0.1, 0.1, 0.0, 0.0, 0.0])  # from A's stale mirror
+    b.idle_step(wall_dt_s=TICK_S)
+    np.testing.assert_allclose(b_data.qpos[:6], b_joints, atol=0.02)  # B not rewound
+    np.testing.assert_allclose(a.read_state().position[:5], [0.1, -0.1, 0.1, 0.0, 0.0], atol=1e-9)
+
+
 def test_a_stopped_or_silent_robot_neither_moves_on_nor_freezes_the_world(
     tmp_path: Path,
 ) -> None:
@@ -301,15 +339,24 @@ def test_each_robot_sees_its_peer_as_occupied_cells(table: _World) -> None:
     # A's links at rest are clear of where B is, not of where B is going.
     a_rest = cells_of(own, data.qpos)
     assert not (a_rest & b_now).any()
-    state = {"qpos": list(data.qpos), "ctrl": list(data.ctrl)}
+    state = {"qpos": list(data.qpos), "qvel": [0.0] * model.nv, "ctrl": list(data.ctrl)}
     b_targets = peer_targets(model, b_roots)
     assert len(b_targets) == 6  # five joints and the jaw, each a position servo
     pan_qadr, pan_actuator = b_targets[0]
     assert pan_qadr == 6  # B's block follows A's six joints in A's view
     assert servo_target(model, pan_actuator, 0.9) == pytest.approx(0.9)  # unit-gear kp servo
-    state["ctrl"][pan_actuator] = 0.9
-    swept = swept_peer_boxes(model, mj.MjData(model), state, b_geoms, b_targets, base)
+    at_rest = swept_peer_boxes(model, mj.MjData(model), state, b_geoms, b_targets, base)
+    assert not (occupancy_grid(at_rest, *ball)[2] & a_rest).any()
+    commanded = {**state, "ctrl": list(state["ctrl"])}
+    commanded["ctrl"][pan_actuator] = 0.9
+    swept = swept_peer_boxes(model, mj.MjData(model), commanded, b_geoms, b_targets, base)
     assert (occupancy_grid(swept, *ball)[2] & a_rest).any()
+    # B already at its target but still swinging towards A (an overshoot in progress):
+    # swept along its measured velocity for the grid's lifetime.
+    moving = {**state, "qvel": list(state["qvel"])}
+    moving["qvel"][pan_qadr] = 6.0  # rad/s: 1.2 rad over the 0.2 s horizon
+    drifting = swept_peer_boxes(model, mj.MjData(model), moving, b_geoms, b_targets, base)
+    assert (occupancy_grid(drifting, *ball)[2] & a_rest).any()
 
 
 def test_an_arena_that_breaks_a_robot_view_is_refused_at_startup(tmp_path: Path) -> None:

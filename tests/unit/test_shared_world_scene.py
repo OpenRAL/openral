@@ -94,6 +94,29 @@ def test_a_robot_scene_that_owns_an_arena_is_refused() -> None:
         world_robot_yamls(world, WORLD_YAML)
 
 
+def test_a_robot_that_composes_its_own_arena_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A manifest's `scene_defaults.composition` would compose an arena the world ignores."""
+    import yaml
+
+    robot_dir = tmp_path / "robots" / "so101_own_arena"
+    robot_dir.mkdir(parents=True)
+    manifest = yaml.safe_load((REPO_ROOT / "robots" / "so101_follower" / "robot.yaml").read_text())
+    manifest["scene_defaults"] = {
+        "composition": {"composer": "openral_sim.backends.so101_box._assets:compose_so101_box_mjcf"}
+    }
+    (robot_dir / "robot.yaml").write_text(yaml.safe_dump(manifest))
+    scene = tmp_path / "scene.yaml"
+    scene.write_text(
+        "scene:\n  id: so101_own_arena_table\n  backend: mujoco\nrobot_id: so101_own_arena\n"
+    )
+    world = SharedWorldScene.model_validate(_world(scene=str(scene)))
+    monkeypatch.setenv("OPENRAL_ROBOTS_DIR", str(tmp_path / "robots"))
+    with pytest.raises(ROSConfigError, match=r"scene_defaults\.composition"):
+        world_robot_yamls(world, WORLD_YAML)
+
+
 def test_build_hal_refuses_shared_world_off_the_bare_sim_twin() -> None:
     transport: dict[str, object] = {"shared_world": "/tmp/w.sock", "shared_world_robot": "a"}
     so101 = RobotDescription.from_yaml(str(REPO_ROOT / "robots" / "so101_follower" / "robot.yaml"))

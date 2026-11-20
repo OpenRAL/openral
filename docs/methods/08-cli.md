@@ -241,9 +241,9 @@ _`openral deploy sim` — boot the full ROS graph against a digital-twin HAL via
 
 _`openral deploy world` — several robots in one MuJoCo world (issue #666)._
 
-- `deploy_world_command(ctx, --config, --log-dir)` (L154) — Typer callback for `deploy world`: loads a `SharedWorldScene`, starts its `SharedWorldServer` in this process, and spawns one unchanged `openral deploy sim` per robot (own `ROS_DOMAIN_ID`, dashboard / Foxglove ports, output in `<log-dir>/<name>.log`). Arguments after `--` go to every `deploy sim`. Ctrl-C / SIGTERM, or any robot's graph ending, stops them all.
-- `world_robot_yamls(world: SharedWorldScene, world_path: Path) -> dict[str, str]` (L37) — Each robot's `robot.yaml` from its `DeployScene`; refuses a scene with no `robot_id`, with its own `composition`, or with a registered (scene-attach) `scene.id`.
-- `robot_deploy_argv(robot: SharedWorldRobot, world_path: Path, address: str, extra: list[str]) -> list[str]` (L79) — One robot's `openral deploy sim` command line: its scene, ports, `--hal shared_world=<socket>` and `--hal shared_world_robot=<name>`, then `extra`.
+- `deploy_world_command(ctx, --config, --log-dir)` (L169) — Typer callback for `deploy world`: loads a `SharedWorldScene`, starts its `SharedWorldServer` in this process, and spawns one unchanged `openral deploy sim` per robot (own `ROS_DOMAIN_ID`, dashboard / Foxglove ports, output in `<log-dir>/<name>.log`). Arguments after `--` go to every `deploy sim`. Ctrl-C / SIGTERM, or any robot's graph ending, stops them all.
+- `world_robot_yamls(world: SharedWorldScene, world_path: Path) -> dict[str, str]` (L43) — Each robot's `robot.yaml` from its `DeployScene`; refuses a scene with no `robot_id`, with its own `composition`, or with a registered (scene-attach) `scene.id`.
+- `robot_deploy_argv(robot: SharedWorldRobot, world_path: Path, address: str, extra: list[str]) -> list[str]` (L94) — One robot's `openral deploy sim` command line: its scene, ports, `--hal shared_world=<socket>` and `--hal shared_world_robot=<name>`, then `extra`.
 
 ### `python/cli/src/openral_cli/_launch_guard.py`
 _Issue #418 (r4dr_shadow2): a SIGKILLed or crashed `openral deploy sim` CLI never runs `_run_launch`'s teardown, and `ros2 launch` puts each node in its own process group (a sim sidecar in its own session), so they outlived it on the ROS domain. Stdlib only, run as a script._

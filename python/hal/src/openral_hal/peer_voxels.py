@@ -60,6 +60,10 @@ _SWEEP_STEP = 0.05
 #: How far past its target a peer is swept: a P servo overshoots (the SO-101 elbow
 #: commanded +0.8 rad peaks 17% past it in this sim), so 25% more of the move.
 _SWEEP_OVERSHOOT = 1.25
+#: How long ahead a peer is swept at its measured joint velocity, s: the kernel's
+#: acceptance of a peer grid (the launch's ``_PEER_GRID_BUDGET_S``). Covers a peer
+#: still moving where its target says it has arrived (an overshoot in progress).
+_SWEEP_HORIZON_S = 0.2
 
 
 class PeerBox(NamedTuple):
@@ -222,7 +226,8 @@ def swept_peer_boxes(
     ``state`` is a world read in this robot's view (``qpos``, ``ctrl``). Poses are
     sampled at most ``_SWEEP_STEP`` apart per joint, up to ``_SWEEP_OVERSHOOT`` of
     the move, so a peer commanded into the space between the arms is occupied there
-    before it arrives. ``data`` is scratch: its kinematics are overwritten.
+    before it arrives; and along its measured joint velocity for ``_SWEEP_HORIZON_S``,
+    so a peer still moving past its target is too. ``data`` is scratch.
     """
     import mujoco as mj
 
@@ -230,13 +235,17 @@ def swept_peer_boxes(
     goal = current.copy()
     for qadr, u in targets:
         goal[qadr] = servo_target(model, u, float(state["ctrl"][u]))
-    reach = _SWEEP_OVERSHOOT * (goal - current)
-    samples = int(np.ceil(np.max(np.abs(reach), initial=0.0) / _SWEEP_STEP)) + 1
+    # Hinge / slide joints only (refused otherwise), so a qpos slot is a qvel slot.
+    drift = np.zeros_like(current)
+    for qadr, _ in targets:
+        drift[qadr] = _SWEEP_HORIZON_S * float(state["qvel"][qadr])
     boxes: list[PeerBox] = []
-    for f in np.linspace(0.0, 1.0, samples):
-        data.qpos[:] = current + f * reach
-        mj.mj_kinematics(model, data)
-        boxes += peer_boxes(model, data, geoms, base_body)
+    for reach in (_SWEEP_OVERSHOOT * (goal - current), drift):
+        samples = int(np.ceil(np.max(np.abs(reach), initial=0.0) / _SWEEP_STEP)) + 1
+        for f in np.linspace(0.0, 1.0, samples):
+            data.qpos[:] = current + f * reach
+            mj.mj_kinematics(model, data)
+            boxes += peer_boxes(model, data, geoms, base_body)
     return boxes
 
 

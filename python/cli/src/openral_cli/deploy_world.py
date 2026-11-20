@@ -21,7 +21,13 @@ from pathlib import Path
 
 import typer
 import yaml
-from openral_core import DeployScene, SharedWorldRobot, SharedWorldScene, load_scene_strict
+from openral_core import (
+    DeployScene,
+    RobotDescription,
+    SharedWorldRobot,
+    SharedWorldScene,
+    load_scene_strict,
+)
 from openral_core.exceptions import ROSConfigError
 from pydantic import ValidationError
 from rich.console import Console
@@ -70,9 +76,18 @@ def world_robot_yamls(world: SharedWorldScene, world_path: Path) -> dict[str, st
                 f"{scene_path}: scene id {scene.scene.id!r} is a registered sim scene "
                 "(it would scene-attach); a shared-world robot is a bare MuJoCo twin."
             )
-        yamls[robot.name] = str(
-            resolve_robot_manifest(scene.robot_id, repo_root=_repo_root_from(Path(__file__)))
+        robot_yaml = resolve_robot_manifest(
+            scene.robot_id, repo_root=_repo_root_from(Path(__file__))
         )
+        defaults = RobotDescription.from_yaml(str(robot_yaml)).scene_defaults
+        if defaults is not None and defaults.composition is not None:
+            # The HAL node would compose (and write) that arena before joining a world
+            # that ignores it: refused, the world's `arena_mjcf` is the arena.
+            raise ROSConfigError(
+                f"{robot_yaml}: robot {scene.robot_id!r} composes its own arena "
+                "(`scene_defaults.composition`); a shared-world robot cannot."
+            )
+        yamls[robot.name] = str(robot_yaml)
     return yamls
 
 

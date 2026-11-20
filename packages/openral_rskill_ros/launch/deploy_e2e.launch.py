@@ -3073,6 +3073,25 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             f"shared_world_robot={shared_world_robot!r}, enable_octomap={enable_octomap}): "
             "the peers are this robot's only /openral/world_voxels producer."
         )
+    if shared_world:
+        # The HAL joins the world as the robot its params name; the peers are read for
+        # the robot named here. On a bare `ros2 launch` the two could differ, and the
+        # kernel would then avoid the wrong arm (or its own). `deploy sim` writes both
+        # from one binding; a file the launch cannot read is refused by launch_ros.
+        bound = _hal_file_params(
+            hal_params_file, LaunchConfiguration("hal_node_name").perform(context)
+        )
+        if bound and (
+            bound.get("shared_world") != shared_world
+            or bound.get("shared_world_robot") != shared_world_robot
+        ):
+            from openral_core.exceptions import ROSConfigError
+
+            raise ROSConfigError(
+                f"shared_world={shared_world!r} / shared_world_robot={shared_world_robot!r} "
+                f"differ from the HAL's binding in {hal_params_file} "
+                f"({bound.get('shared_world')!r} / {bound.get('shared_world_robot')!r})."
+            )
     if static_geometry_file and not enable_octomap:
         # Declared walls must never be dropped silently: with the octomap leg off there
         # is no world grid to mark them in, and the kernel would run without them.

@@ -129,6 +129,21 @@ def test_the_kernel_reads_the_peers_over_its_coverage_ball() -> None:
     assert argv[argv.index("--frame") + 1] == "base"
 
 
+def test_the_hal_must_be_bound_to_the_robot_the_peers_are_read_for(tmp_path: Path) -> None:
+    """A bare launch whose HAL params name another robot than shared_world_robot is refused."""
+    import yaml
+    from openral_core.exceptions import ROSConfigError
+
+    params = tmp_path / "hal.yaml"
+    binding = {"shared_world": "/tmp/w.sock", "shared_world_robot": "b"}
+    params.write_text(yaml.safe_dump({"/**": {"ros__parameters": binding}}))
+    with pytest.raises(ROSConfigError, match="differ from the HAL's binding"):
+        _compose(shared_world="/tmp/w.sock", shared_world_robot="a", hal_params_file=str(params))
+    assert _peer_producer(
+        _compose(shared_world="/tmp/w.sock", shared_world_robot="b", hal_params_file=str(params))
+    )
+
+
 def test_without_a_shared_world_nothing_changes() -> None:
     entities = _compose()
     kernel = _kernel(entities)
