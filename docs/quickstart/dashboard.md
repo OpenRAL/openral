@@ -90,9 +90,13 @@ may also reset the e-stop, prompt and run skills — but only with
 `OPENRAL_DASHBOARD_REMOTE_CONTROL=1`. A robot linked to openral.com gets it, and
 `OPENRAL_DASHBOARD_WRITE_CONTROLS=1`, from its account at deploy start (ADR-0132): both
 are on unless an org admin turns them off under **Settings** on openral.com. A value set
-on the robot wins, so a site that wants every reset done where the hazard can be seen
-(IEC 60204-1) sets `OPENRAL_DASHBOARD_REMOTE_CONTROL=0`. An unlinked robot keeps both
-off. E-STOP is always allowed, from every role and listener.
+on the robot wins in either direction, so a site that wants every reset done where the
+hazard can be seen (IEC 60204-1) sets `OPENRAL_DASHBOARD_REMOTE_CONTROL=0`, and openral.com
+can't turn it back on. Only `0` or `1` is taken from openral.com; any other value, or none,
+leaves remote control off, as on an unlinked robot. A change on openral.com is **not
+live**: the robot reads it when the deploy or `openral dashboard` next starts (restart
+them to apply it), or from the cached copy when openral.com can't be reached. E-STOP is
+always allowed, from every role and listener.
 **Remote E-STOP is best-effort, not a safety function**: the physical e-stop stays
 authoritative.
 

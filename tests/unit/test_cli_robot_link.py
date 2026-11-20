@@ -252,6 +252,41 @@ def test_account_settings_set_the_control_switches_but_the_robot_wins(
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize(
+    ("site", "local", "expected"),
+    [
+        ("1", None, "1"),  # an org admin turned it on
+        ("0", None, "0"),  # an org admin turned it off
+        (None, None, None),  # the site says nothing: the dashboard's default, off
+        ("1", "0", "0"),  # the robot's own OFF wins over the site's ON (Safety-WG)
+        ("0", "1", "1"),  # so does its own ON: the site never overrides the robot
+    ],
+)
+def test_remote_control_comes_from_the_site_unless_the_robot_sets_it(
+    enrolment: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    site: str | None,
+    local: str | None,
+    expected: str | None,
+) -> None:
+    """ADR-0132: openral.com's Remote control switch reaches the dashboard at its next start."""
+    from openral_cli import robot
+    from openral_observability.dashboard.app import _remote_control_enabled
+
+    _fake_cloudflared(tmp_path, monkeypatch)
+    assert CliRunner().invoke(app, ["robot", "link", "--no-service", _CODE]).exit_code == 0
+    body = {} if site is None else {"OPENRAL_DASHBOARD_REMOTE_CONTROL": site}
+    monkeypatch.setattr(robot, "_open", settings_site(body))
+    if local is None:
+        monkeypatch.delenv("OPENRAL_DASHBOARD_REMOTE_CONTROL", raising=False)
+    else:
+        monkeypatch.setenv("OPENRAL_DASHBOARD_REMOTE_CONTROL", local)
+    robot.apply_account_settings(echo=lambda _: None, names=robot.CONTROL_SETTINGS)
+    assert os.environ.get("OPENRAL_DASHBOARD_REMOTE_CONTROL") == expected
+    assert _remote_control_enabled() is (expected == "1")
+
+
 def test_a_control_switch_takes_only_0_or_1(
     enrolment: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
