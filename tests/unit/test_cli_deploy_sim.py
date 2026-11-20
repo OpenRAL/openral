@@ -1394,7 +1394,7 @@ def test_bh_preflight_refuses_when_just_is_missing(
     if not franka_yaml.is_file():
         pytest.skip(f"missing fixture: {franka_yaml}")
 
-    monkeypatch.setenv("OPENRAL_AUTO_INSTALL_DEPS", "0")
+    monkeypatch.setenv("OPENRAL_AUTO_INSTALL_DEPS", "1")  # the install is wanted
     monkeypatch.setattr(
         _pd, "can_import_policy_family", lambda _family: (False, "forced miss for test")
     )
@@ -1413,6 +1413,38 @@ def test_bh_preflight_refuses_when_just_is_missing(
     assert "OPENRAL_AUTO_INSTALL_DEPS=0" in message, (
         f"the refusal must name the way past it; got:\n{message}"
     )
+
+
+def test_bh_preflight_without_just_proceeds_when_the_install_is_declined(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``OPENRAL_AUTO_INSTALL_DEPS=0`` skips the install, so a rig without `just` proceeds.
+
+    The refusal above names this as the way past it; the preflight must then not
+    demand the tool it will not run. Every skill is forced blocked here, so the
+    declined install ends in the empty-palette exit, not the `just` refusal.
+    """
+    import sys as _sys
+
+    import typer
+    from openral_sim import policy_deps as _pd
+
+    franka_yaml = _REPO_ROOT / "robots" / "franka_panda" / "robot.yaml"
+    if not franka_yaml.is_file():
+        pytest.skip(f"missing fixture: {franka_yaml}")
+
+    monkeypatch.setenv("OPENRAL_AUTO_INSTALL_DEPS", "0")
+    monkeypatch.setattr(
+        _pd, "can_import_policy_family", lambda _family: (False, "forced miss for test")
+    )
+    monkeypatch.setattr(_sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(_sys.stdout, "isatty", lambda: False)
+    monkeypatch.setattr(
+        shutil, "which", lambda name: None if name == "just" else "/usr/bin/" + name
+    )
+
+    with pytest.raises(typer.Exit):
+        _preflight_palette_deps(repo_root=_REPO_ROOT, robot_yaml=franka_yaml)
 
 
 @pytest.mark.usefixtures("_just_on_path")
