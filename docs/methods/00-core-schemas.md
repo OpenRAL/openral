@@ -776,8 +776,11 @@ _The depth-camera extrinsic a real world-voxel deploy runs on. OpenRAL does not 
 ### `python/core/src/openral_core/robot_ui.py`
 _Contracts between a robot and its dashboard UI (ADR-0129): the robot manifest (Interface A) the deploy emits and `GET /api/manifest` serves, and the robot enrolment (Interface B) `openral robot link` writes. Re-exported by `openral_core.__init__`._
 
-- `RSKILLS_ENV = "OPENRAL_RSKILLS"` — The robot's curated rSkill list (comma-separated rSkill ids), set per robot on openral.com and applied as an account setting; the reasoner's palette and the manifest's `skill:*` actions admit only these. Unset or empty: every installed rSkill.
-- `allowed_rskills_from_env(environ=None) -> frozenset[str] | None` — The ids in `OPENRAL_RSKILLS`, trimmed; `None` when it lists none (no restriction).
+- `RSKILLS_ENV = "OPENRAL_RSKILLS"` (L86) — The robot's curated rSkill list (comma-separated rSkill ids), set per robot on openral.com and applied as an account setting; the reasoner's palette and the manifest's `skill:*` actions admit only these. Unset or empty: every installed rSkill.
+- `allowed_rskills_from_env(environ=None) -> frozenset[str] | None` (L294) — The ids in `OPENRAL_RSKILLS` (`os.environ` when `environ` is `None`), trimmed and casefolded (Hugging Face repo ids are case-insensitive), so compare with `rskill_listed`, never `in`; `None` when it lists none (no restriction).
+- `rskill_listed(rskill_id, allowed) -> bool` (L321) — Whether the robot's rSkill list (`allowed_rskills_from_env`) admits `rskill_id`: `True` when `allowed` is `None`, else a casefolded membership test.
+- `casefold_rskills(ids) -> frozenset[str] | None` (L333) — A caller's rSkill list casefolded, as `rskill_listed` compares it; `None` kept.
+- `CORRELATION_ID_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"` (L132) — A caller's id for one prompt (echoed into the mission, telemetry and the dashboard): 1–128 chars, alphanumeric first, no spaces, quotes or control characters. Match it with `re.fullmatch` (under `re.search` a `$` lets a trailing newline through); the `prompt` action's `args_schema` anchors it with `(?![\s\S])`.
 - `WRITE_CONTROLS_ENV = "OPENRAL_DASHBOARD_WRITE_CONTROLS"` (L82) — `1` (only) puts `skill:*` actions in the manifest and lets the dashboard run them.
 - `REMOTE_CONTROL_ENV = "OPENRAL_DASHBOARD_REMOTE_CONTROL"` (L84) — `1` (only) allows reset, prompt and skills over the tunnel listener.
 - `ENROLMENT_PATH_ENV = "OPENRAL_ROBOT_ENROLMENT"` (L91) — Overrides where the enrolment lives.
