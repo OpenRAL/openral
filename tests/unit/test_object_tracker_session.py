@@ -842,8 +842,10 @@ def test_a_memory_node_scope_narrows_the_grasp_region_to_its_instance() -> None:
         assert region is not None
         assert region.evidence_ref.startswith(f"tracked:{expected}|")
         assert region.evidence_ref.endswith("|within:search_box+scope")
+        # The extent is the track's own box, never the scope's (3 cm) nor the search box's.
         track = s.tracker.store.get(expected)
-        assert track is not None and region.pose.xyz == track.box.pose.xyz
+        assert track is not None and region.half_extents == track.box.half_extents
+        assert max(region.half_extents) < 0.03 < max(wide.half_extents)
 
     # A scope that never resolves (no tf2) keys no track: fail closed.
     s.zone_transform = lambda _frame, _ns: None
@@ -852,6 +854,58 @@ def test_a_memory_node_scope_narrows_the_grasp_region_to_its_instance() -> None:
         decl.model_copy(update={"target_queries": (seeded,), "stamp_ns": decl.stamp_ns + 9})
     )
     assert s.grasp_region() is None
+
+
+def _two_oranges_scoped_to_the_first() -> tuple[TrackerSession, str, str, NDArray[np.float64]]:
+    """Two oranges 12 cm apart in one wide ``search_box``; the goal's memory-node scope (in
+    ``map``, identity tf2) is centred on the first."""
+    s, oid, _, centre = _grasp_region_rig()
+    other = _mint(s, centre + np.array([0.12, 0.0, 0.0]))
+    decl = s.grasp_declaration
+    assert decl is not None and decl.search_box is not None
+    wide = decl.search_box.model_copy(update={"half_extents": (0.15, 0.15, 0.15)})
+    (query,) = decl.target_queries
+    seeded = query.model_copy(update={"seed": _search_box("map", centre, half=0.03)})
+    s.zone_transform = lambda frame, _ns: np.eye(4) if frame == "map" else None
+    s.on_grasp_declaration(
+        decl.model_copy(update={"search_box": wide, "target_queries": (seeded,)})
+    )
+    region = s.grasp_region()
+    assert region is not None and region.evidence_ref.startswith(f"tracked:{oid}|")
+    return s, oid, other, centre
+
+
+def test_a_held_neighbour_outside_the_memory_node_scope_gets_no_grasp_region() -> None:
+    """Issue #652 review: a BOUND track passes ``in_scope`` (a lifted payload leaves its box),
+    so a same-label neighbour the hand closed on is keyed to the declaration. It still gets no
+    allowance: beside the scoped orange it is ambiguous, and alone its centre is not in the
+    scope."""
+    s, oid, other, _ = _two_oranges_scoped_to_the_first()
+    store = s.tracker.store
+    held = store.get(other)
+    assert held is not None
+    store.replace(held.model_copy(update={"status": TrackStatus.BOUND}))
+    s.on_grasp_declaration(s.grasp_declaration)  # type: ignore[arg-type]  # rekeys
+    assert store.get(other).declaration_key == "orange@1"  # type: ignore[union-attr]
+    assert s.grasp_region() is None, "the scoped orange and a held neighbour: ambiguous"
+    store.drop(oid)  # the remembered orange is gone from the map
+    assert s.grasp_region() is None, "the held neighbour is not the memory node's instance"
+
+
+def test_a_scope_moved_by_a_new_grid_rebinds_the_grasp_region_at_once() -> None:
+    """Issue #652 review: a base move re-expresses the map scope over the other orange on the
+    next grid. The region follows on that grid, not a camera frame later, and never stays on
+    the orange the scope left."""
+    s, oid, other, _ = _two_oranges_scoped_to_the_first()
+    shift = np.eye(4)
+    shift[0, 3] = 0.12  # grid <- map: the same map box now lies over the other orange
+    s.zone_transform = lambda frame, _ns: shift if frame == "map" else None
+    s.on_grid(s.grid, s.grid_stamp_ns + 1)  # type: ignore[arg-type]  # no camera frame
+    region = s.grasp_region()
+    assert region is not None
+    assert region.evidence_ref.startswith(f"tracked:{other}|")
+    assert region.evidence_ref.endswith("|within:search_box+scope")
+    assert s.tracker.store.get(oid).declaration_key == ""  # type: ignore[union-attr]
 
 
 def _amr() -> tuple[TrackerSession, dict[str, float], tuple[str, str, str]]:

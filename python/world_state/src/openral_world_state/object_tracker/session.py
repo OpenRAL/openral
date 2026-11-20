@@ -813,6 +813,7 @@ class TrackerSession:
         if source_stamp_ns >= self.grid_stamp_ns:
             self.grid, self.grid_stamp_ns = grid, source_stamp_ns
             self._rescope()
+            self._rekey_live_tracks()  # a moved scope re-owns its tracks now, not next frame
             self._tick(source_stamp_ns)
 
     def on_jaw_command(self, gripper_joint: str, target: float, stamp_ns: int) -> None:
@@ -1657,12 +1658,15 @@ class TrackerSession:
         ``kMaxGraspRegionVolumeM3``).
 
         A goal naming one memory node (a TARGET query's ``seed``, #631) narrows WHICH track
-        this is, never the box's extent: only tracks centred in the resolved scope carry the
-        declaration's key (``_Goal.owns``), so a same-label neighbour inside the ``search_box``
-        gets no allowance, and an unresolved scope keys no track (``None``). The extent stays
-        bounded by the ``search_box`` alone (issue #652; ADR-0117 D1, the scope only filters
-        perception). ``evidence_ref`` ends ``within:search_box+scope`` when a resolved scope
-        chose the track, else ``within:search_box``.
+        this is, never the box's extent: the one keyed track must also have its centre in the
+        goal's scope (``_Goal.within``, re-expressed in the grid frame), checked here for every
+        status, BOUND included, so a same-label neighbour -- even one the hand holds -- gets no
+        allowance; an unresolved scope (still in its own frame) matches nothing (``None``). A
+        held payload carried out of the scope ends the region, which retires a latched
+        declaration (the kernel's ``no_region``) -- earlier than ``handover_exit`` only when the
+        scope is tighter than the track box. The extent stays bounded by the ``search_box``
+        alone (issue #652; ADR-0117 D1, the scope only filters perception). ``evidence_ref``
+        ends ``within:search_box+scope`` when the scope was checked, else ``within:search_box``.
 
         The region keeps being published through the hold, as a HAL-measured one is: the
         kernel latches the box the first snapshot carrying the declared attachment brings,
@@ -1704,11 +1708,16 @@ class TrackerSession:
         t_box = homogeneous_from_quat_xyz(tb.pose.xyz, tb.pose.quat_xyzw)
         signs = np.array([(a, b, c) for a in (-1, 1) for b in (-1, 1) for c in (-1, 1)], float)
         corners = (signs * np.asarray(tb.half_extents)) @ t_box[:3, :3].T + t_box[:3, 3]
-        if not all(inside(c) for c in corners):
-            return None
+        # The scope is checked here, after the count, not only through the declaration key: a
+        # BOUND track passes `in_scope` (a held same-label neighbour is keyed too). A neighbour
+        # keyed beside the scoped one stays ambiguous above.
         goal = self._goals["grasp"]
-        scoped = goal is not None and goal.key == key and bool(goal.scope_resolved)
-        within = "search_box+scope" if scoped else "search_box"
+        scope = goal.within if goal is not None and goal.scope is not None else None
+        if not all(inside(c) for c in corners) or (
+            scope is not None and not centre_within(tb, scope)
+        ):
+            return None
+        within = "search_box" if scope is None else "search_box+scope"
         return tb.model_copy(
             update={
                 "stamp_ns": t.last_confirmed_stamp_ns,
