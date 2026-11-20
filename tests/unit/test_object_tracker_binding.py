@@ -12,9 +12,11 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 from openral_core import (
+    AttachedCollisionObject,
     AttachmentEvidenceKind,
     ObjectRole,
     RobotDescription,
+    SupportContactWitness,
     TrackStatus,
 )
 from openral_core.geometry import homogeneous_from_quat_xyz
@@ -592,3 +594,60 @@ def test_a_thin_object_below_the_pad_centre_still_binds_but_a_neighbour_beside_d
     binding = binder.on_attach(DictStore([thin, beside]), q, stamp_ns=10)
     assert binding.outcome is BindOutcome.TRACKED, binding
     assert binding.candidates == ("trk:1",)
+
+
+def _witness_plane_in_grid(
+    binder: GraspBinder, q: dict[str, float], attachment: AttachedCollisionObject
+) -> tuple[SupportContactWitness, NDArray[np.float64], NDArray[np.float64]]:
+    """The attested support plane (point, normal) re-expressed in the binder's grid frame."""
+    from openral_world_state.object_tracker.binding import _t
+
+    w = attachment.support_contact
+    assert w is not None
+    t_fo = binder.hand.t_frame_from_attach(binder.frame_id, q) @ _t(attachment.pose_in_link)
+    point = t_fo[:3, :3] @ np.asarray(w.contact_point_in_object) + t_fo[:3, 3]
+    normal = t_fo[:3, :3] @ np.asarray(w.contact_normal_in_object)
+    return w, point, normal
+
+
+@pytest.mark.parametrize("robot", list(ROBOTS))
+def test_a_grasp_attests_the_support_it_rests_on(robot: str) -> None:
+    """q5090 restock A/B (2026-11-20): an ambiguous grasp's payload is cut at its candidates'
+    support, on a voxel boundary, so the first millimetres of hand motion read as penetrating
+    the tote floor (3 of 5 stops with openral#697). The binder attests that one contact as a
+    support witness (ADR-0092 D6): the horizontal plane at the support, normal up, over the
+    payload's footprint, no physical penetration. The kernel kills it once the payload lifts."""
+    binder, q, centre = arm_at_hold(robot)
+    frame = binder.frame_id
+    b_axis = binder.hand.t_frame_from_attach(frame, q)[:3, :3] @ binder.hand.axes[:, 2]
+    pair = [
+        track(f"trk:{i}", frame, centre + s * 0.012 * b_axis, (0.012, 0.012, 0.012))
+        for i, s in ((1, -1.0), (2, 1.0))
+    ]
+    b = binder.on_attach(DictStore(pair), q, stamp_ns=10)
+    assert b.outcome is BindOutcome.AMBIGUOUS
+    w, point, normal = _witness_plane_in_grid(binder, q, b.attachment)
+    support = min(t.support_z for t in pair)
+    assert point[2] == pytest.approx(support, abs=1e-9)
+    assert normal == pytest.approx((0.0, 0.0, 1.0), abs=1e-9)
+    assert w.max_penetration_m == 0.0 and w.stamp_ns == 10
+    assert w.evidence_kind is AttachmentEvidenceKind.PERCEPTION_TRACK
+    assert 0.0 < w.patch_radius_m <= 0.5  # inside the kernel's support_witness_max_patch_radius_m
+
+    held = track("trk:1", frame, centre, (0.024, 0.024, 0.024))
+    t = binder.on_attach(DictStore([held]), q, stamp_ns=11)
+    assert t.outcome is BindOutcome.TRACKED
+    _, point, normal = _witness_plane_in_grid(binder, q, t.attachment)
+    assert point[2] == pytest.approx(held.support_z, abs=1e-9)
+    assert normal == pytest.approx((0.0, 0.0, 1.0), abs=1e-9)
+
+
+def test_a_footprint_wider_than_the_kernel_accepts_attests_nothing() -> None:
+    """A witness past the kernel's ``support_witness_max_patch_radius_m`` fails the whole
+    attachment message closed; the binder attests nothing instead."""
+    from openral_world_state.object_tracker.binding import _prim, _support_witness
+
+    wide = _prim(np.eye(4), (0.6, 0.1, 0.05), "o")
+    assert _support_witness([wide], np.eye(4), -0.05, "o", 1) is None
+    narrow = _prim(np.eye(4), (0.1, 0.1, 0.05), "o")
+    assert _support_witness([narrow], np.eye(4), -0.05, "o", 1) is not None
