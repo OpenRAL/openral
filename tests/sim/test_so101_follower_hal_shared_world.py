@@ -27,6 +27,7 @@ else:
     _SIM_ERROR = None
 
 import numpy as np
+from numpy.typing import NDArray
 from openral_core import Action, ControlMode, RobotDescription, SharedWorldScene
 from openral_core.exceptions import ROSConfigError, ROSEStopRequested
 from openral_hal import build_hal
@@ -106,7 +107,7 @@ def _action(targets: list[float]) -> Action:
     )
 
 
-def _cube_xyz(hal: SharedWorldArmHAL) -> np.ndarray:
+def _cube_xyz(hal: SharedWorldArmHAL) -> NDArray[np.float64]:
     handles = hal.mujoco_handles()
     assert handles is not None
     return np.array(handles[1].body("handover_cube").xpos)
