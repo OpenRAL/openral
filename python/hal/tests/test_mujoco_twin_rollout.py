@@ -1208,3 +1208,49 @@ def test_a_failed_load_leaves_no_camera_rig_file(
     with pytest.raises(ROSConfigError, match=r"Could not load MJCF '.*_camrig_.*\.xml'"):
         twin.load()
     assert sorted(p.name for p in tmp_path.iterdir()) == ["broken.xml"]
+
+
+def test_a_failed_rig_write_leaves_no_camera_rig_file(repo_root: Path, tmp_path: Path) -> None:
+    """A rig file that cannot be written is removed too: the write is inside the cleanup.
+
+    A real write failure, in a child process: ``RLIMIT_FSIZE=0`` lets ``mkstemp`` create
+    the empty rig file but fails writing into it (``EFBIG``; ``SIGXFSZ`` ignored).
+    """
+    if sys.platform != "linux":
+        pytest.skip("RLIMIT_FSIZE write failure is exercised on Linux")
+    desc_path = repo_root / "robots" / "so101_follower" / "robot.yaml"
+    mjcf = tmp_path / "arm.xml"
+    mjcf.write_text('<mujoco><worldbody><body name="gripper"/></worldbody></mujoco>')
+    probe = textwrap.dedent(
+        """
+        import resource, signal, sys
+        from openral_core import RobotDescription
+        from openral_core.exceptions import ROSConfigError
+        from openral_hal.mujoco_twin import MujocoTwinRollout
+
+        desc = RobotDescription.from_yaml(sys.argv[1])
+        names = [j.name for j in desc.joints]
+        twin = MujocoTwinRollout(
+            desc,
+            mjcf_path=sys.argv[2],
+            joint_qpos_addr={n: i for i, n in enumerate(names)},
+            actuator_index={n: i for i, n in enumerate(names)},
+        )
+        signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+        resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))
+        try:
+            twin.load()
+        except ROSConfigError as exc:
+            print("REFUSED", exc)
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", probe, str(desc_path), str(mjcf)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert "REFUSED" in proc.stdout and "File too large" in proc.stdout, proc.stdout
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["arm.xml"]
