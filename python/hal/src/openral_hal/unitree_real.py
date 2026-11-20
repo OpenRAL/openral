@@ -86,6 +86,7 @@ from openral_core.exceptions import (
 )
 from openral_core.schemas import Action, ControlMode, RobotDescription
 
+from openral_hal._base import require_supported_control_mode
 from openral_hal._real_description import make_real_description
 from openral_hal.g1 import G1_DESCRIPTION
 from openral_hal.protocol import EStopRecovery, HALHealthReport
@@ -480,12 +481,7 @@ class UnitreeHgRealHAL(RosControlHAL):
     # ── Internals ─────────────────────────────────────────────────────────────
 
     def _validate_action(self, action: Action) -> None:
-        supported = self.description.capabilities.supported_control_modes
-        if supported and action.control_mode not in supported:
-            raise ROSConfigError(
-                f"Action control_mode '{action.control_mode}' is not in "
-                f"supported_control_modes {supported} for robot '{self.description.name}'."
-            )
+        require_supported_control_mode(self.description, action)
         if action.control_mode != ControlMode.BODY_TWIST.value:
             self._validate_action_dims(action, len(self._joint_names))
 

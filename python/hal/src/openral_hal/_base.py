@@ -50,23 +50,78 @@ def resolve_staleness_limit_s(description: RobotDescription, override: float | N
     return float(declared)
 
 
+def require_connected(connected: bool, backend: str, operation: str) -> None:
+    """The one "not connected" refusal every HAL (and the MuJoCo twin) raises.
+
+    Raises:
+        ROSRuntimeError: ``connected`` is false: before ``connect`` / after ``disconnect``.
+
+    Example:
+        >>> require_connected(True, "UR5eHAL", "read_state")
+    """
+    if not connected:
+        raise ROSRuntimeError(
+            f"{backend}.{operation}() called while not connected (before connect() or "
+            "after disconnect()). Call connect() first."
+        )
+
+
+def require_supported_control_mode(description: RobotDescription, action: Action) -> None:
+    """Refuse a mode outside the manifest's ``supported_control_modes`` (empty: any).
+
+    Raises:
+        ROSConfigError: ``action.control_mode`` is not supported by the robot.
+    """
+    supported = description.capabilities.supported_control_modes
+    if supported and action.control_mode not in supported:
+        raise ROSConfigError(
+            f"Action control_mode '{action.control_mode}' is not in "
+            f"supported_control_modes {supported} for robot '{description.name}'."
+        )
+
+
+def require_control_mode(action: Action, allowed: ControlMode, backend: str) -> None:
+    """Refuse every mode but ``allowed`` (a HAL that drives one mode).
+
+    Raises:
+        ROSConfigError: ``action.control_mode`` is not ``allowed``.
+    """
+    if action.control_mode != allowed:
+        raise ROSConfigError(
+            f"{backend} only supports {allowed.value}; got {action.control_mode!r}."
+        )
+
+
+def validate_action_dims(action: Action, joint_count: int, robot: str) -> None:
+    """Refuse a ``joint_targets`` row that is not one target per joint (no rows: nothing).
+
+    Raises:
+        ROSConfigError: A row of the wrong width.
+    """
+    if action.joint_targets is None:
+        return
+    for step_idx, step in enumerate(action.joint_targets):
+        if len(step) != joint_count:
+            raise ROSConfigError(
+                f"Action joint_targets[{step_idx}] has {len(step)} values "
+                f"but robot '{robot}' has {joint_count} joints."
+            )
+
+
 class HALBase:
     """Shared state + helpers for every HAL adapter.
 
     Subclasses set `self.description` and `self._connected = False` in their
     own `__init__` (the explicit assignment avoids constraining the long
-    per-adapter constructor signatures).
+    per-adapter constructor signatures). The checks are the module-level
+    validators above, shared with the sim HAL shell and the MuJoCo twin.
     """
 
     description: RobotDescription
     _connected: bool
 
     def _require_connected(self, operation: str) -> None:
-        if not self._connected:
-            raise ROSRuntimeError(
-                f"{type(self).__name__}.{operation}() called while not connected. "
-                "Call connect() first."
-            )
+        require_connected(self._connected, type(self).__name__, operation)
 
     def disconnect(self) -> None:
         """Close the connection.  Idempotent.
@@ -81,20 +136,10 @@ class HALBase:
         self._connected = False
 
     def _require_control_mode(self, action: Action, allowed: ControlMode) -> None:
-        if action.control_mode != allowed:
-            raise ROSConfigError(
-                f"{type(self).__name__} only supports {allowed.value}; got {action.control_mode!r}."
-            )
+        require_control_mode(action, allowed, type(self).__name__)
 
     def _validate_action_dims(self, action: Action, joint_count: int) -> None:
-        if action.joint_targets is None:
-            return
-        for step_idx, step in enumerate(action.joint_targets):
-            if len(step) != joint_count:
-                raise ROSConfigError(
-                    f"Action joint_targets[{step_idx}] has {len(step)} values "
-                    f"but robot '{self.description.name}' has {joint_count} joints."
-                )
+        validate_action_dims(action, joint_count, self.description.name)
 
 
 def _raw_floats(raw: dict[str, object], key: str, width: int) -> list[float]:
