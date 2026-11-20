@@ -22,7 +22,9 @@ from __future__ import annotations
 import contextlib
 import json
 import math
+import os
 import struct
+import sys
 import time
 from collections import deque
 from typing import TYPE_CHECKING, Any
@@ -5831,6 +5833,17 @@ class SimSensorBridge:
         if not self._viewer_enabled or handles is None:
             return
         model, data = handles
+        if sys.platform.startswith("linux") and not (
+            os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+        ):
+            # Checked up front: with no display, MuJoCo's GLFW init fails inside C
+            # (``mju_error``) and ends the whole process before the ``except`` below
+            # can turn it into a warning.
+            self._node.get_logger().warning(
+                "SimSensorBridge: no DISPLAY / WAYLAND_DISPLAY; viewer skipped, "
+                "continuing headless."
+            )
+            return
         try:
             import mujoco.viewer  # reason: optional dep — robosuite/mujoco ships it
 
