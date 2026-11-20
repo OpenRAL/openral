@@ -6,7 +6,10 @@
 #
 # Bare twin, explicitly: ``composition`` below makes ``deploy sim`` build the
 # arm's own ``MujocoArmHAL`` twin inside the composed box arena (a registered
-# scene id with no ``composition`` would scene-attach instead). Scene-attach is
+# scene id with no ``composition`` would scene-attach instead). Both run through
+# the one sim HAL shell (``SimAttachedHAL``); the twin's env is a
+# ``MujocoTwinRollout`` over the composed MJCF (#683), with the shell's attachment
+# API, ``reset_episode`` and per-goal grading. Scene-attach is
 # not usable here yet; issue #669 tracks it. The so101_box rollout's ``step``
 # takes the SO-101's 6-wide joint-position action, but behind ``SimAttachedHAL``:
 #   * the default packer (robosuite layout) refuses a 6-wide JOINT_POSITION row,

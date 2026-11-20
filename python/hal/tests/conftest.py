@@ -15,8 +15,9 @@ so ``from conftest import ...`` here would resolve to the wrong file.
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -49,3 +50,54 @@ def _build_so101_hal() -> Callable[[], object]:
         return hal
 
     return _build_so101_hal
+
+
+@pytest.fixture(scope="session")
+def repo_root() -> Path:
+    """The repository root (``robots/``, ``scenes/``)."""
+    return _TEST_DIR.parents[2]
+
+
+@pytest.fixture
+def robot_description(repo_root: Path) -> Callable[[str], object]:
+    """Load ``robots/<robot>/robot.yaml`` as a real ``RobotDescription``."""
+
+    def _load(robot: str) -> object:
+        from openral_core import RobotDescription
+
+        return RobotDescription.from_yaml(str(repo_root / "robots" / robot / "robot.yaml"))
+
+    return _load
+
+
+@pytest.fixture
+def connect_twin(robot_description: Callable[[str], object]) -> Iterator[Callable[..., Any]]:
+    """Connect a sim HAL: ``build_hal(robots/<robot>, mode="sim")``, or a zero-arg builder.
+
+    Skips only when an optional asset or package is unavailable on this host
+    (``_twin_assets.skip_if_unavailable``); a broken twin fails. Every HAL it
+    connected is disconnected at teardown.
+    """
+    from _twin_assets import skip_if_unavailable
+    from openral_core.exceptions import ROSConfigError
+
+    connected: list[Any] = []
+
+    def _connect(robot: str | Callable[[], Any]) -> Any:  # reason: any sim HAL
+        try:
+            # Construction resolves assets too, so it shares the classified handling.
+            if isinstance(robot, str):
+                from openral_hal import build_hal
+
+                hal = build_hal(robot_description(robot), mode="sim")  # type: ignore[arg-type]  # reason: a RobotDescription
+            else:
+                hal = robot()
+            hal.connect()
+        except ROSConfigError as exc:
+            skip_if_unavailable(exc, f"{robot} twin")
+        connected.append(hal)
+        return hal
+
+    yield _connect
+    for hal in reversed(connected):
+        hal.disconnect()

@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import structlog
 from openral_core import RobotDescription
-from openral_core.exceptions import ROSConfigError, ROSEStopRequested
+from openral_core.exceptions import ROSConfigError, ROSEStopRequested, ROSRuntimeError
 from openral_core.schemas import Action, ControlMode, JointState
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
@@ -461,12 +461,22 @@ class ComposedHAL:
     def _dispatch(self, shares: list[tuple[int, Action]]) -> None:
         """Ask every part that can refuse (``check_action``) first, then send all.
 
-        A held lift or a twist-only base then refuses before any part has moved. A send
+        A held lift or a twist-only base then refuses before any part has moved, and so
+        does a part whose own e-stop latch is set (``estop_latched``, a sim part): its
+        latch drops the share, so acknowledging the tick would report a command it never
+        applied (``reset_estop`` re-arms it). A send
         that fails once a part has already taken its share (or a part that stopped
         itself mid-send, ``ROSEStopRequested``) leaves the robot commanded
         inconsistently, so every part is stopped (``estop``, which raises
         ``ROSEStopRequested``) rather than the tick half-applied.
         """
+        for i, _sub in shares:
+            if getattr(self._parts[i], "estop_latched", False):
+                raise ROSRuntimeError(
+                    f"ComposedHAL '{self.description.name}': part "
+                    f"{type(self._parts[i]).__name__} is e-stop latched; reset_estop() "
+                    "before commanding it."
+                )
         for i, sub in shares:
             check = getattr(self._parts[i], "check_action", None)
             if check is not None:
@@ -688,18 +698,35 @@ class ComposedHAL:
         return EStopRecovery.RESTART_REQUIRED
 
     def reset_estop(self) -> None:
-        """Re-arm every ros2_control part; refused unless all are ``RESETTABLE``."""
-        from openral_core.exceptions import ROSRuntimeError  # noqa: PLC0415
+        """Re-arm every part that can be: the sim parts' latches and the ros2_control parts.
 
+        A ros2_control part's re-arm is refused unless all of them are ``RESETTABLE``
+        (then nothing is reset). A sim part (one that is not ros2_control and has a
+        ``reset_estop``: a MuJoCo twin's or scene's latch) is cleared too; no real part
+        outside ros2_control has a ``reset_estop``.
+
+        Raises:
+            ROSConfigError: No part can be re-armed.
+            ROSRuntimeError: A ros2_control part declares ``RESTART_REQUIRED``.
+        """
         from openral_hal.protocol import EStopRecovery  # noqa: PLC0415
 
-        self._require_ros_parts()  # ROSConfigError, not estop_recovery's AttributeError
-        if self.estop_recovery is not EStopRecovery.RESETTABLE:
+        ros = self._ros_parts()
+        sims: list[Callable[[], None]] = [
+            reset
+            for p in self._parts
+            if not any(p is r for r in ros) and callable(reset := getattr(p, "reset_estop", None))
+        ]
+        if not sims:
+            self._require_ros_parts()  # ROSConfigError, not estop_recovery's AttributeError
+        if ros and self.estop_recovery is not EStopRecovery.RESETTABLE:
             raise ROSRuntimeError(
                 f"ComposedHAL '{self.description.name}': a ros2_control part declares "
                 "estop_recovery=restart_required; restart the lifecycle node and re-align."
             )
-        for part in self._require_ros_parts():
+        for reset in sims:
+            reset()
+        for part in ros:
             part.reset_estop()
 
     @property

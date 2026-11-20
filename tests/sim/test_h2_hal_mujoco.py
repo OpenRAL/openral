@@ -465,6 +465,19 @@ class TestBodyTwistGlide:
         assert x1 - x0 == pytest.approx(0.5 * 0.05, rel=1e-6)
         assert (y1, yaw1) == pytest.approx((y0, yaw0), abs=1e-9)
 
+    def test_default_twist_interval_without_a_control_rate(self) -> None:
+        # The H2 manifest declares no control rate, so the deploy HAL (no settle pin)
+        # keeps the 0.05 s glide interval, not one 2 ms physics step per twist.
+        hal = H2MujocoHAL()
+        hal.connect()
+        try:
+            x0, _, _ = hal.base_pose
+            hal.send_action(_twist_action(vx=0.5))
+            x1, _, _ = hal.base_pose
+            assert x1 - x0 == pytest.approx(0.5 * 0.05, rel=1e-6)
+        finally:
+            hal.disconnect()
+
     def test_twist_follows_heading(self, glide_hal: H2MujocoHAL) -> None:
         for _ in range(32):  # 32 * 1.0 rad/s * 0.05 s ≈ 92°
             glide_hal.send_action(_twist_action(wz=1.0))

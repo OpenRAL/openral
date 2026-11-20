@@ -59,11 +59,21 @@ def _twist(vx: float, wz: float, vy: float = 0.0) -> Action:
 
 
 def test_body_twist_drives_the_base_on_an_arc(hal: OpenAMRobotV2MujocoHAL) -> None:
-    """40 x 0.05 s of (0.2 m/s, 0.5 rad/s) lands on the exact arc."""
-    for _ in range(40):
+    """2 s of (0.2 m/s, 0.5 rad/s) — one control period per command — lands on the exact arc.
+
+    One command advances one period of physics and integrates the same period, so the
+    base moves at the commanded speed on the sim clock (#683).
+    """
+    period = hal.sim_dt_per_tick_s
+    assert period is not None
+    t0 = hal.sim_time_ns()
+    assert t0 is not None
+    for _ in range(round(2.0 / period)):
         hal.send_action(_twist(0.2, 0.5))
     x, y, yaw = hal.base_pose
-    t = 2.0
+    t = round(2.0 / period) * period
+    elapsed = hal.sim_time_ns()
+    assert elapsed is not None and (elapsed - t0) / 1e9 == pytest.approx(t, abs=1e-6)
     assert yaw == pytest.approx(0.5 * t, abs=1e-6)
     assert x == pytest.approx(0.2 / 0.5 * math.sin(0.5 * t), abs=1e-4)
     assert y == pytest.approx(0.2 / 0.5 * (1 - math.cos(0.5 * t)), abs=1e-4)

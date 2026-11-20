@@ -328,6 +328,7 @@ ISOLATED_TARGETS=(
     tests/integration/test_real_bringup_graph_gate_live.py
     tests/integration/test_real_hal_estop_ros2_control_live.py
     tests/integration/test_record_profile_full_live.py
+    tests/integration/test_sim_estop_freezes_physics_live.py
     tests/integration/test_sim_idle_stepper_wiring.py
     tests/integration/test_smolvla_eraser_place_rskill.py
     tests/integration/test_so100_digital_twin_e2e.py

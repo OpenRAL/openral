@@ -29,6 +29,7 @@ import numpy as np
 import pytest
 from openral_core import (
     Action,
+    ActionSpec,
     AttachedCollisionObject,
     AttachedCollisionPrimitive,
     AttachmentEvidenceKind,
@@ -332,14 +333,23 @@ def test_new_session_adopted_on_commit_old_session_refused_after() -> None:
 
 
 def test_a_same_numbered_tick_of_two_sessions_never_merges() -> None:
-    """The group in flight is keyed by (session, tick), not the tick alone."""
+    """The group in flight is keyed by (session, tick), not the tick alone.
+
+    A new runner's first slot drops the old runner's partial tick (logged, not raised:
+    that run is over) and opens its own tick, which commits on its own slots only.
+    """
     env = FakeSimEnv(action_dim=11)
     hal = SimAttachedHAL(env, _two_dof_description())
     hal.connect()
     hal.send_action(_slot_tick(3, _RUNNER_A)[0])
-    with pytest.raises(ROSRuntimeError, match="incomplete action group"):
-        hal.send_action(_slot_tick(3, _RUNNER_B)[1])
+    hal.send_action(_slot_tick(3, _RUNNER_B)[1])
     assert env.step_calls == 0
+    hal.send_action(_slot_tick(3, _RUNNER_B)[0])
+    assert (env.step_calls, hal.last_committed_tick, hal.last_committed_session) == (
+        1,
+        3,
+        _RUNNER_B,
+    )
 
 
 def test_one_lost_slot_costs_one_tick_not_the_rest_of_the_run() -> None:
@@ -354,7 +364,7 @@ def test_one_lost_slot_costs_one_tick_not_the_rest_of_the_run() -> None:
     hal.connect()
     hal.send_action(_slot_tick(1, _RUNNER_A)[0])  # tick 1's second slot is lost
     first, second = _slot_tick(2, _RUNNER_A)
-    with pytest.raises(ROSRuntimeError, match="incomplete action group"):
+    with pytest.raises(ROSRuntimeError, match="incomplete slot group"):
         hal.send_action(first)
     assert env.step_calls == 0  # the partial tick never steps
     hal.send_action(second)
@@ -1609,7 +1619,7 @@ def test_reset_episode_resets_the_live_env_with_the_next_seed_each_time() -> Non
     assert hal.reset_episode() == 8
     assert hal.reset_episode() == 9
     assert env.reset_calls == [7, 8, 9]
-    assert len(hal._pending_actions) == 0
+    assert hal.discard_staged_slots() == 0
     hal.connect()  # a lifecycle re-connect keeps the base seed
     assert env.reset_calls[-1] == 7
 
@@ -1648,3 +1658,99 @@ def test_reset_episode_without_a_base_seed_counts_from_zero() -> None:
     hal.connect()
     assert [hal.reset_episode(), hal.reset_episode()] == [1, 2]
     assert env.reset_calls == [None, 1, 2]
+
+
+# ── The shell's send-route, stamp and step-boundary contracts (#683 review) ──
+
+
+def _arm_row_action(**ticked: int) -> Action:
+    return Action(
+        control_mode=ControlMode.JOINT_POSITION,
+        horizon=1,
+        joint_targets=[[0.0] * 7],
+        **ticked,
+    )
+
+
+def test_a_groups_only_backend_refuses_an_ungrouped_action() -> None:
+    """``step_action_group`` without ``action_group_size`` or the twin's declaration.
+
+    Such a backend takes multi-slot groups only; an ungrouped action is refused before
+    anything steps (as at 18d7a011a), and its groups still step.
+    """
+    env = GroupStepFakeSimEnv(action_dim=12)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    with pytest.raises(ROSConfigError, match="needs a positive group size"):
+        hal.send_action(_arm_row_action(tick_index=1))
+    assert env.step_calls == 0
+    assert hal.last_committed_tick == 0
+    assert hal.last_action_ns == 0, "a refused command does not mark the HAL active"
+
+
+def test_a_refused_or_latched_command_leaves_last_action_ns_alone() -> None:
+    """Only an accepted (staged or applied) command pauses the idle stepper (#683)."""
+    env = FakeSimEnv(action_dim=11)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    with pytest.raises(ROSConfigError):
+        hal.send_action(Action(control_mode=ControlMode.JOINT_VELOCITY, joint_velocities=[[0.0]]))
+    assert hal.last_action_ns == 0
+    hal.estop()
+    hal.send_action(_arm_row_action())
+    assert hal.last_action_ns == 0, "a latch-dropped command does not mark the HAL active"
+    hal.reset_estop()
+    hal.send_action(_arm_row_action())
+    assert hal.last_action_ns > 0
+    assert env.step_calls == 1
+
+
+class _RaisingStepEnv(FakeSimEnv):
+    """A backend whose ``step`` fails with the configured exception."""
+
+    error: Exception = RuntimeError("engine fault")
+
+    def step(self, action: Any) -> Any:  # reason: the backend's own vector
+        raise self.error
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (ROSConfigError("bad slot"), ROSConfigError),
+        (RuntimeError("engine fault"), ROSRuntimeError),
+    ],
+)
+def test_the_step_boundary_keeps_typed_errors_and_types_the_rest(
+    error: Exception, expected: type[Exception]
+) -> None:
+    """One step boundary for every route: a ``ROSError`` keeps its type, anything else
+    becomes ``ROSRuntimeError``; nothing is counted as a step (#683)."""
+    env = _RaisingStepEnv(action_dim=11)
+    env.error = error
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    fired: list[int] = []
+    hal.add_post_step_observer(lambda: fired.append(1))
+    with pytest.raises(expected) as info:
+        hal.send_action(_arm_row_action())
+    assert type(info.value) is expected
+    with pytest.raises(expected):
+        hal.idle_step(0.05)
+    assert fired == []
+    assert hal.last_committed_tick == 0
+
+
+def test_a_refused_time_base_leaves_a_scene_attached_hal_disconnected() -> None:
+    """``connect`` refusing the env's tick leaves the HAL disconnected (#683)."""
+    env = FakeSimEnv(action_dim=11)
+    env.sim_dt_per_tick_s = 0.5  # type: ignore[attr-defined]  # reason: the backend's declared tick, 2 Hz
+    desc = _two_dof_description().model_copy(
+        update={"action_spec": ActionSpec(control_freq_hz=30.0)}
+    )
+    hal = SimAttachedHAL(env, desc)
+    with pytest.raises(ROSConfigError):
+        hal.connect()
+    with pytest.raises(ROSRuntimeError, match="not connected"):
+        hal.read_state()
+    assert hal.idle_step(0.05) is False

@@ -273,7 +273,7 @@ def test_incomplete_action_group_fails_on_first_tick_transition() -> None:
         )
 
     hal.send_action(one_slot(1))  # stages tick 1 (1/2 slots)
-    with pytest.raises(ROSRuntimeError, match="incomplete action group"):
+    with pytest.raises(ROSRuntimeError, match="incomplete slot group"):
         hal.send_action(one_slot(2))
     assert env.steps == 0  # atomicity preserved: nothing partial ever stepped
 
@@ -300,7 +300,7 @@ def test_a_stop_boundary_discards_a_half_staged_group() -> None:
     hal.send_action(slot(4))  # tick 4 half-staged when the stop lands
     assert hal.discard_staged_slots() == 1
     assert hal.discard_staged_slots() == 0
-    hal.send_action(slot(5))  # no "incomplete action group"
+    hal.send_action(slot(5))  # no "incomplete slot group"
     hal.send_action(slot(5, ControlMode.GRIPPER_POSITION))
     assert env.steps == 2
     from openral_core.exceptions import ROSRuntimeError

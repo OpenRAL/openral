@@ -3,8 +3,8 @@
 ``SharedWorldServer`` owns the physics of a ``SharedWorldScene``: every robot's
 MJCF and one shared arena, composed into one model. Each robot's deploy graph
 (its own ROS domain, unchanged) runs a ``SharedWorldArmHAL``: a ``MujocoArmHAL``
-that keeps a *mirror* of the world for its cameras and joint reads, and asks the
-server to advance instead of stepping the mirror itself.
+whose twin (``_SharedWorldTwin``) keeps a *mirror* of the world for its cameras and
+joint reads, and asks the server to advance instead of stepping the mirror itself.
 
 A robot's mirror is the world **in that robot's base frame, with its own MJCF
 elements unprefixed and first** (``compose_shared_world(view=<robot>)``), so
@@ -25,6 +25,7 @@ The wire is JSON over a Unix socket in a private directory: local, sim only.
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import math
 import os
@@ -32,15 +33,21 @@ import threading
 import time
 from multiprocessing.connection import Client, Connection, Listener
 from pathlib import Path
-from typing import Any
+from typing import Any, Unpack
 
 import structlog
 from openral_core import Action, RobotDescription, SharedWorldScene
-from openral_core.exceptions import ROSConfigError, ROSError, ROSRuntimeError
+from openral_core.exceptions import (
+    ROSCapabilityMismatch,
+    ROSConfigError,
+    ROSError,
+    ROSRuntimeError,
+)
 from openral_core.geometry import yaw_to_quat_wxyz
 
 from openral_hal._camera_rig import rig_cameras_into_mjcf
-from openral_hal._mujoco_arm import _IDLE_STEP_CAP, MujocoArmHAL, _resolve_mjcf_path
+from openral_hal._mujoco_arm import MujocoArmHAL, _resolve_mjcf_path
+from openral_hal.mujoco_twin import _IDLE_STEP_CAP, MujocoTwinRollout, TwinKwargs, TwinStepResult
 
 __all__ = [
     "SharedWorldArmHAL",
@@ -609,8 +616,196 @@ class SharedWorldServer:
         }
 
 
+class _SharedWorldTwin(MujocoTwinRollout):
+    """A ``MujocoTwinRollout`` whose physics is a shared world's (see the module docstring).
+
+    Its model is this robot's view of the world, a *mirror* for cameras, joint reads and
+    the sim clock: ``_load_model`` compiles the view (``open_view``), ``_on_load`` joins
+    the world, a command's ``advance`` asks the world to step one control period and
+    ``idle_step`` asks it to advance on wall time; each reply is copied into the mirror.
+    ``close`` first retargets the arm to the pose it has at that moment (not its last
+    commanded target, and not zeroed targets), then leaves the world, whose other
+    robots keep running.
+    """
+
+    def __init__(
+        self,
+        description: RobotDescription,
+        *,
+        world_address: str,
+        world_robot: str,
+        **kwargs: Unpack[TwinKwargs],
+    ) -> None:
+        """Bind the configuration; the world is not joined until ``load``."""
+        super().__init__(description, **kwargs)
+        self.world_address = world_address
+        self.world_robot = world_robot
+        self._conn: Connection | None = None
+        self._conn_lock = threading.Lock()
+        self._joined = False
+        # Held across a whole command / idle step / pose snap: an idle sync must never
+        # land between a command's targets and its request (it would carry the world's
+        # older targets back into the mirror).
+        self._world_lock = threading.RLock()
+
+    def load(self) -> None:
+        """``MujocoTwinRollout.load`` on the world's view; a refused load leaves the world.
+
+        Raises:
+            ROSConfigError: No world at the address, the world refuses the robot (unknown
+                name, already attached, another control period), or the manifest
+                declares no control rate.
+        """
+        try:
+            super().load()
+        except BaseException:
+            self._close_conn()  # a load refused before ``_on_load`` never reaches ``close``
+            raise
+
+    def _load_model(self, mj: Any) -> Any:  # reason: mujoco module / MjModel
+        del mj  # the view is composed by open_view
+        self._conn, _, _, model = open_view(self.world_address, self.world_robot)
+        return model
+
+    def _on_load(self) -> None:
+        super()._on_load()
+        model, data = self.model, self.data
+        assert model is not None and data is not None
+        if self.sim_dt_per_tick_s is None:
+            raise ROSConfigError(
+                f"shared world: robot {self.description.name!r} needs "
+                "action_spec.control_freq_hz (one action = one control period)."
+            )
+        self._sync(
+            self._request(
+                {
+                    "op": "join",
+                    "robot": self.world_robot,
+                    "tick_steps": self.settle_steps,
+                    "timestep": float(model.opt.timestep),
+                    "shape": [model.nq, model.nv, model.nu, model.nbody, model.ngeom],
+                    "ctrl": data.ctrl.tolist(),
+                }
+            )
+        )
+        self._joined = True
+
+    def step_action_group(self, actions: list[Action]) -> TwinStepResult:
+        """``MujocoTwinRollout.step_action_group``, serialised with the idle steps."""
+        with self._world_lock:
+            return super().step_action_group(actions)
+
+    def advance(self, steps: int) -> None:
+        """Ask the world to advance one commanded control period with the mirror's targets."""
+        del steps  # the world advances the joined control period
+        assert self.data is not None
+        self._sync(self._request({"op": "step", "ctrl": self.data.ctrl.tolist()}))
+        self.last_state_time = time.monotonic()
+
+    def idle_step(self, wall_dt_s: float | None = None) -> bool:
+        """Ask the world to advance on wall time (it holds every robot's last targets)."""
+        del wall_dt_s  # the world advances on its own wall clock while no robot commands
+        with self._world_lock:
+            if self.data is None or not self._joined:
+                return False
+            self._sync(self._request({"op": "idle"}))
+            self.last_state_time = time.monotonic()
+            return True
+
+    def reset_to_pose(self, pose: list[float]) -> None:
+        """Snap this arm to ``pose`` in the shared world (as ``MujocoTwinRollout``)."""
+        with self._world_lock:
+            super().reset_to_pose(pose)
+            data = self.data
+            assert data is not None
+            # Only what the base reset set: the named joints and each gripper's
+            # reset write set (a peer may have moved the slots it leaves alone).
+            qpos_idx = sorted(
+                {a for n, a in self.joint_qpos_addr.items() if n not in self.grippers_by_joint}
+                | {a for g in self.grippers_by_joint.values() for a in self._gripper_reset_addrs(g)}
+            )
+            # And the velocities it zeroed: named joints and each written gripper coordinate.
+            qvel_idx = sorted(
+                {
+                    self.joint_qvel_addr[n]
+                    for n in self.joint_names
+                    if n not in self.grippers_by_joint
+                }
+                | {
+                    self._dof_of_qpos(a)
+                    for g in self.grippers_by_joint.values()
+                    for a in self._gripper_reset_addrs(g)
+                }
+            )
+            self._sync(
+                self._request(
+                    {
+                        "op": "poke",
+                        "qpos": [[i, float(data.qpos[i])] for i in qpos_idx],
+                        "qvel": [[i, float(data.qvel[i])] for i in qvel_idx],
+                        "ctrl": data.ctrl.tolist(),
+                    }
+                )
+            )
+
+    def close(self) -> None:
+        """Hold the arm where it is, leave the world, then release the mirror. Idempotent."""
+        self._hold_and_leave()
+        super().close()
+
+    def _hold_and_leave(self) -> None:
+        """Retarget this arm to its current pose in the world, then close the socket.
+
+        Without it the world would keep servoing a stopped arm to its last commanded
+        target. A world that is already gone is not an error here: stopping goes on.
+        """
+        if self._joined and self._conn is not None and self.data is not None:
+            try:
+                self._sync(self._request({"op": "idle"}))  # the arm's pose now
+                pose = self.read_joint_state().position
+                self.apply_arm_targets(pose)
+                if self.grippers_by_joint:
+                    self.apply_gripper_targets(pose)
+                self._request({"op": "hold", "ctrl": self.data.ctrl.tolist()})
+            except ROSError as exc:
+                log.warning("shared_world.hold_failed", robot=self.world_robot, error=str(exc))
+        self._close_conn()
+
+    def _request(self, msg: dict[str, object]) -> dict[str, Any]:
+        with self._conn_lock:  # one request / reply at a time
+            conn = self._conn
+            if conn is None:
+                raise ROSRuntimeError("SharedWorldArmHAL: not attached to a shared world.")
+            try:
+                return _ask(conn, msg)
+            except (EOFError, OSError) as exc:
+                raise ROSRuntimeError(
+                    f"shared world at {self.world_address!r} went away: {exc}"
+                ) from exc
+
+    def _sync(self, state: dict[str, Any]) -> None:
+        """Copy the world's state into the mirror."""
+        import mujoco as mj  # reason: optional sim-only dep
+
+        assert self.model is not None and self.data is not None
+        self.data.time = state["time"]
+        self.data.qpos[:] = state["qpos"]
+        self.data.qvel[:] = state["qvel"]
+        self.data.ctrl[:] = state["ctrl"]
+        mj.mj_forward(self.model, self.data)
+
+    def _close_conn(self) -> None:
+        # Under the lock: never close the socket beneath a request in flight (it waits
+        # at most ``barrier_timeout_s``, with this arm's targets held).
+        with self._conn_lock:
+            conn, self._conn = self._conn, None
+            self._joined = False
+            if conn is not None:
+                conn.close()
+
+
 class SharedWorldArmHAL(MujocoArmHAL):
-    """A ``MujocoArmHAL`` whose physics is a shared world's (see the module docstring).
+    """A ``MujocoArmHAL`` whose twin is a shared world's (``_SharedWorldTwin``).
 
     Built by ``build_hal`` when the HAL transport names a ``shared_world``
     (``openral deploy world`` passes it as ``--hal shared_world=...``).
@@ -642,156 +837,24 @@ class SharedWorldArmHAL(MujocoArmHAL):
         staleness_limit_s: float = 0.5,
     ) -> None:
         """Initialise the adapter; the world is not joined until ``connect()``."""
-        self._init_from_description(description, staleness_limit_s=staleness_limit_s)
-        self._world_address = shared_world
-        self._world_robot = shared_world_robot
-        self._conn: Connection | None = None
-        self._conn_lock = threading.Lock()
-        # Held across a whole send_action / idle_step / reset_to_pose: an idle sync must
-        # never land between an action's targets and its request (it would carry the
-        # world's older targets back into the mirror).
-        self._world_lock = threading.RLock()
+        self._init_from_description(
+            description,
+            staleness_limit_s=staleness_limit_s,
+            twin=functools.partial(
+                _SharedWorldTwin, world_address=shared_world, world_robot=shared_world_robot
+            ),
+        )
 
-    def connect(self) -> None:
-        """Compose this robot's view of the world and join it.
+    #: Not advertised as ``/openral/<robot>/reset_episode`` (the node checks it).
+    episode_reset_supported = False
+
+    def reset_episode(self) -> int:
+        """Refused: one robot cannot reset a world its peers share.
 
         Raises:
-            ROSConfigError: No world at the address, the world refuses the robot
-                (unknown name, already attached, another control period), or the
-                manifest declares no control rate.
-            ROSRuntimeError: If already connected.
+            ROSCapabilityMismatch: Always; restart ``openral deploy world`` for a fresh world.
         """
-        if self._conn is not None:
-            raise ROSRuntimeError(f"SharedWorldArmHAL({self._world_robot!r}) is already connected.")
-        try:
-            super().connect()
-            assert self._model is not None and self._data is not None
-            if self._sim_dt_per_tick_s is None:
-                raise ROSConfigError(
-                    f"shared world: robot {self.description.name!r} needs "
-                    "action_spec.control_freq_hz (one action = one control period)."
-                )
-            m = self._model
-            self._sync(
-                self._request(
-                    {
-                        "op": "join",
-                        "robot": self._world_robot,
-                        "tick_steps": self._settle_steps,
-                        "timestep": float(m.opt.timestep),
-                        "shape": [m.nq, m.nv, m.nu, m.nbody, m.ngeom],
-                        "ctrl": self._data.ctrl.tolist(),
-                    }
-                )
-            )
-        except Exception:
-            self.disconnect()
-            raise
-
-    def disconnect(self) -> None:
-        """Hold the arm where it is, leave the world, and release the mirror."""
-        self._hold_and_leave()
-        super().disconnect()
-
-    def estop(self) -> None:
-        """Hold the arm where it is, leave the world, then ``MujocoArmHAL.estop`` (raises)."""
-        self._hold_and_leave()
-        super().estop()
-
-    def _hold_and_leave(self) -> None:
-        """Retarget this arm to its current pose in the world, then close the socket.
-
-        Without it the world would keep servoing a stopped arm to its last commanded
-        target. A world that is already gone is not an error here: stopping goes on.
-        """
-        if self._connected and self._conn is not None and self._data is not None:
-            try:
-                self._sync(self._request({"op": "idle"}))  # the arm's pose now
-                pose = self.read_state().position
-                self._apply_arm_targets(pose)
-                if self._grippers_by_joint:
-                    self._apply_gripper_targets(pose)
-                self._request({"op": "hold", "ctrl": self._data.ctrl.tolist()})
-            except ROSError as exc:
-                log.warning("shared_world.hold_failed", robot=self._world_robot, error=str(exc))
-        self._close_conn()
-
-    def send_action(self, action: Action) -> None:
-        """``MujocoArmHAL.send_action``, serialised with the idle steps (``_world_lock``)."""
-        with self._world_lock:
-            super().send_action(action)
-
-    def idle_step(self, wall_dt_s: float | None = None) -> bool:
-        """``MujocoArmHAL.idle_step``, serialised with the actions (``_world_lock``)."""
-        with self._world_lock:
-            return super().idle_step(wall_dt_s)
-
-    def reset_to_pose(self, pose: list[float]) -> None:
-        """Snap this arm to ``pose`` in the shared world (as ``MujocoArmHAL.reset_to_pose``)."""
-        with self._world_lock:
-            self._reset_to_pose_locked(pose)
-
-    def _reset_to_pose_locked(self, pose: list[float]) -> None:
-        super().reset_to_pose(pose)
-        assert self._data is not None
-        # Only what the base reset set: the named joints (a gripper's every qpos slot).
-        qpos_idx = sorted(
-            {a for n, a in self._joint_qpos_addr.items() if n not in self._grippers_by_joint}
-            | {a for g in self._grippers_by_joint.values() for a in g.qpos_addrs}
+        raise ROSCapabilityMismatch(
+            f"{self.description.name}: reset_episode is not offered in a shared world "
+            "(its peers keep running in it); restart `openral deploy world` instead."
         )
-        qvel_idx = sorted(self._joint_qvel_addr[n] for n in self._joint_names)
-        self._sync(
-            self._request(
-                {
-                    "op": "poke",
-                    "qpos": [[i, float(self._data.qpos[i])] for i in qpos_idx],
-                    "qvel": [[i, float(self._data.qvel[i])] for i in qvel_idx],
-                    "ctrl": self._data.ctrl.tolist(),
-                }
-            )
-        )
-
-    def _load_model(self, mj: Any) -> Any:
-        del mj  # the view is composed by open_view
-        self._conn, _, _, model = open_view(self._world_address, self._world_robot)
-        return model
-
-    def _step_physics(self, steps: int, targets: list[float] | None = None) -> None:
-        """Ask the world to advance: a commanded period (``targets``) or an idle step."""
-        del steps  # the world advances the joined control period, or wall time when idle
-        assert self._data is not None
-        if targets is None:
-            self._sync(self._request({"op": "idle"}))
-        else:
-            self._sync(self._request({"op": "step", "ctrl": self._data.ctrl.tolist()}))
-
-    def _request(self, msg: dict[str, object]) -> dict[str, Any]:
-        with self._conn_lock:  # one request / reply at a time
-            conn = self._conn
-            if conn is None:
-                raise ROSRuntimeError("SharedWorldArmHAL: not attached to a shared world.")
-            try:
-                return _ask(conn, msg)
-            except (EOFError, OSError) as exc:
-                raise ROSRuntimeError(
-                    f"shared world at {self._world_address!r} went away: {exc}"
-                ) from exc
-
-    def _sync(self, state: dict[str, Any]) -> None:
-        """Copy the world's state into the mirror."""
-        import mujoco as mj  # reason: optional sim-only dep
-
-        assert self._model is not None and self._data is not None
-        self._data.time = state["time"]
-        self._data.qpos[:] = state["qpos"]
-        self._data.qvel[:] = state["qvel"]
-        self._data.ctrl[:] = state["ctrl"]
-        mj.mj_forward(self._model, self._data)
-
-    def _close_conn(self) -> None:
-        # Under the lock: never close the socket beneath a request in flight (it waits
-        # at most ``barrier_timeout_s``, with this arm's targets held).
-        with self._conn_lock:
-            conn, self._conn = self._conn, None
-            if conn is not None:
-                conn.close()

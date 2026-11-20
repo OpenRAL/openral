@@ -20,7 +20,7 @@ def test_sim_env_yaml_returns_sim_attached_hal() -> None:
 
     desc = RobotDescription.from_yaml(_FRANKA)
     hal = build_hal(desc, mode="sim", sim_env_yaml=_SCENE)
-    assert isinstance(hal, SimAttachedHAL)
+    assert type(hal) is SimAttachedHAL  # the scene-attach route, not a bare twin
     assert hal.description.name == "franka_panda"
 
 

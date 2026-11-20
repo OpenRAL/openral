@@ -42,9 +42,9 @@ or open its dashboard.
   launch file, the safety kernel and the runner are untouched; the two graphs
   never see each other on DDS.
 - **The HAL is the only thing that knows.** Each graph's HAL is a
-  `SharedWorldArmHAL`: a `MujocoArmHAL` that keeps a *mirror* of the world for
-  its cameras, joint reads and `/clock`, and asks the server to advance instead
-  of stepping the mirror.
+  `SharedWorldArmHAL`: a `MujocoArmHAL` whose twin keeps a *mirror* of the
+  world for its cameras, joint reads and `/clock`, and asks the server to
+  advance instead of stepping the mirror.
 - **Each robot sees the world in its own base frame.** A robot's mirror has its
   own base at the origin and its own MJCF elements unprefixed, exactly like a
   single-robot twin; the other robots appear as `<name>_…` bodies. So sensor

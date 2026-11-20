@@ -1,87 +1,51 @@
-"""Internal MuJoCo-backed HAL implementation shared by UR/Franka adapters.
+"""Internal MuJoCo-backed HAL implementation shared by every bare-twin adapter.
 
-This module provides ``MujocoArmHAL``, a HAL Protocol implementation that
-drives a MuJoCo ``MjModel`` / ``MjData`` pair through position-controlled
-actuators.  It is the simulation backbone behind ``UR5eHAL``,
-``UR10eHAL`` and ``FrankaPandaHAL``.
+``MujocoArmHAL`` is the ``SimAttachedHAL`` shell around a ``MujocoTwinRollout``:
+the rollout owns the physics (the robot's own MJCF, its time base, command
+composition and validation, ctrl writes, base driving, the one stepping loop,
+joint-state reads and lazy camera renders), the shell owns everything a deploy-sim
+HAL exposes around it (the send path and its slot-group staging, the idle stepper,
+clock, scene export, step bookkeeping, post-step observers, the attachment API,
+``reset_episode`` and per-goal grading). It is the simulation
+backbone behind ``UR5eHAL``, ``FrankaPandaHAL``, the OpenArm, ALOHA, SO-100, Rizon 4,
+OpenAMRobot and humanoid twins; a robot whose twin behaves differently passes its
+own rollout subclass (``twin``).
 
 The class is **not** part of the public ``openral_hal`` surface (leading
-underscore module name).  Adapters subclass or wrap it and expose a typed
-constructor specific to their robot.
+underscore module name).  Adapters subclass it and expose a typed constructor
+specific to their robot.
 
 Design notes
 ------------
-* ``mujoco`` is imported lazily inside ``MujocoArmHAL.connect`` so the
-  module loads cleanly on hosts without it (matches the ``SO100FollowerHAL``
-  convention for ``lerobot``).
-* ``send_action`` writes the **last** waypoint of an action chunk into
-  ``data.ctrl`` and steps the simulator ``settle_steps`` times — by default
-  one control period of ``description.control_rate_hz`` (issue #358), so the
-  twin's clock is the robot's clock.  The HAL is a thin adapter — trajectory
-  interpolation is the job of the controller above it (a ``ros2_control``
-  joint trajectory controller in production, or the test directly here).
-* The gripper joint, when present, is a synthetic 1-DoF channel reported in
-  ``[0, 1]`` regardless of the underlying actuator's native range.  The
-  conversion is done by the per-robot adapter via ``gripper_ctrl_range``.
+* ``mujoco`` is imported lazily (``MujocoTwinRollout.load``) so the module loads
+  cleanly on hosts without it; ``openral_sim`` is never needed.
+* ``send_action`` (the shell's) hands every command to the rollout's
+  ``step_action_group``: the **last** waypoint of the chunk goes into ``data.ctrl``
+  and the simulator steps ``settle_steps`` times — by default one control period of
+  ``description.control_rate_hz`` (issue #358), so the twin's clock is the robot's
+  clock.  Trajectory interpolation is the job of the controller above it.
+* Slot groups are staged in the shell's ``SlotGroupStager`` (the one staging
+  machine, shared with the real ros2_control HALs); the twin keeps the HAL
+  Protocol's raising ``estop``.
 """
 
 from __future__ import annotations
 
-import contextlib
-import os
-import threading
-import time
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, TypedDict
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING, Unpack
 
 import structlog
 from openral_core.assets import AssetRefError, resolve_asset
-from openral_core.exceptions import (
-    ROSConfigError,
-    ROSEStopRequested,
-    ROSRuntimeError,
-)
-from openral_core.schemas import (
-    Action,
-    ClockAuthority,
-    ControlMode,
-    GripperReadMode,
-    GripperWriteMode,
-    JointState,
-    RobotDescription,
-    SimGripperDescription,
-)
-from openral_core.time_base import check_time_base, physics_steps_per_tick
+from openral_core.exceptions import ROSConfigError, ROSEStopRequested, ROSRuntimeError
+from openral_core.schemas import RobotDescription
 
-from openral_hal._base import HALBase
-from openral_hal._slot_group import SlotGroupStager, compose_slot_group_action
+from openral_hal.mujoco_twin import MujocoTwinRollout, TwinKwargs
+from openral_hal.sim_attached import SimAttachedHAL
 
 if TYPE_CHECKING:
     import mujoco
 
-    from openral_hal.sim_scene import SceneCache
-
 __all__ = ["MujocoArmHAL"]
-
-
-class _MujocoArmInitKwargs(TypedDict):
-    """Typed shape of the kwargs accepted by ``MujocoArmHAL.__init__``.
-
-    Lets ``MujocoArmHAL._sim_kwargs_for`` return a value that unpacks
-    cleanly into the constructor under ``mypy --strict`` without the
-    ``# type: ignore[arg-type]`` hatch every thin subclass used to need.
-    """
-
-    mjcf_path: str
-    joint_qpos_addr: dict[str, int]
-    joint_qvel_addr: dict[str, int]
-    actuator_index: dict[str, int]
-    grippers: Sequence[SimGripperDescription]
-    keyframe_index: int | None
-    seed_ctrl_from_qpos: bool
-    settle_steps: int | None
-    gravity_enabled: bool
-    staleness_limit_s: float
 
 
 def _resolve_mjcf_path(desc: RobotDescription) -> str:
@@ -136,35 +100,24 @@ def _kinematic_group(joint_name: str, groups: Sequence[str], *, robot: str) -> s
     raise ROSConfigError(f"Unknown {robot} joint group for joint {joint_name!r}.")
 
 
-# Upper bound on how much sim time one idle tick may advance, in physics
-# steps. Guards the wall-time catch-up below: if the executor stalls (a long
-# render, a GC pause) the next tick must not fast-forward the world by seconds.
-_IDLE_STEP_CAP = 200
-
-
-def joint_actuator_effort(data: Any, dof: int) -> float:  # noqa: ANN401  # reason: mujoco.MjData
-    """The sim's ``/joint_states.effort`` for one joint: MuJoCo ``qfrc_actuator`` at its DOF.
-
-    The generalized actuator force on the joint (gear and transmission applied, every
-    actuator on the DOF summed), gravity load included — what a current-sensing drive
-    reports. The one definition every MuJoCo-backed HAL publishes (#373).
-    """
-    return float(data.qfrc_actuator[dof])
-
-
 log = structlog.get_logger(__name__)
-# Shared with ``SimAttachedHAL``: one logger / event per time base (telemetry.md).
-_TIME_BASE_LOGGER = "openral.sim.time_base"
-_EVENT_TIME_BASE = "sim.time_base"
 
 
-class MujocoArmHAL(HALBase):
+class MujocoArmHAL(SimAttachedHAL):
     """Generic MuJoCo-backed HAL adapter for position-controlled arms.
 
     Supports single-arm robots, floating-base humanoids (via
     ``joint_qvel_addr`` offset), and bimanual robots (via multiple
     ``SimGripperDescription`` entries with optional
     ``mirror_actuator_index`` for parallel-jaw configurations like Aloha).
+
+    A ``SimAttachedHAL`` whose env is a ``MujocoTwinRollout`` (or the ``twin``
+    subclass a robot passes) built from these arguments; the shell drives it. What a
+    robot's twin does differently lives in its rollout subclass, never here.
+    ``_model`` / ``_data`` / ``_settle_steps`` are the rollout's live values.
+
+    The keyword arguments are ``mujoco_twin.TwinKwargs`` (the one typed shape of the
+    twin's wiring), forwarded to the rollout with ``backend`` set to this class's name.
 
     Args:
         description: Normative ``RobotDescription``; ``description.joints``
@@ -203,664 +156,94 @@ class MujocoArmHAL(HALBase):
             (useful for closed-loop tests asserting exact convergence).
         staleness_limit_s: Age (seconds) of the cached state above which
             ``read_state`` emits a one-shot starvation WARNING (the read
-            still returns live ``MjData`` — see ``read_state``).
+            still returns live ``MjData`` — see ``MujocoTwinRollout.read_joint_state``).
+        body_twist_dt_s: Seconds one ``BODY_TWIST`` integrates a twin's base by;
+            ``None`` is one control period (``MujocoTwinRollout``).
+        twin: The rollout class (or a factory taking its keyword arguments) a robot's
+            twin runs on; ``MujocoTwinRollout`` for a position-controlled arm.
 
     Raises:
         ROSConfigError: If ``description.joints`` is empty.
     """
 
-    # Wall-time idle stepping during an active skill: needed while send_action
-    # advances only a pinned/legacy step count (else /clock and cameras starve);
-    # switched off by ``_resolve_time_base`` once one action is one control
-    # period, so the sim clock is then driven by the runner's ticks alone.
-    _step_while_active = True
-
     def __init__(
         self,
         description: RobotDescription,
         *,
-        mjcf_path: str,
-        joint_qpos_addr: dict[str, int],
-        actuator_index: dict[str, int],
-        joint_qvel_addr: dict[str, int] | None = None,
-        grippers: Sequence[SimGripperDescription] = (),
-        keyframe_index: int | None = None,
-        seed_ctrl_from_qpos: bool = False,
-        settle_steps: int | None = None,
-        gravity_enabled: bool = True,
-        staleness_limit_s: float = 0.5,
+        twin: Callable[..., MujocoTwinRollout] = MujocoTwinRollout,
+        **kwargs: Unpack[TwinKwargs],
     ) -> None:
         """Initialise the adapter; the MJCF is not loaded until ``connect()``."""
-        if not description.joints:
-            raise ROSConfigError(
-                f"RobotDescription '{description.name}' has no joints; "
-                "cannot initialise MujocoArmHAL."
-            )
-        # connect() writes ``<name>_camrig.xml`` beside the source MJCF; a
-        # separator in the name would pick a different directory for that write.
-        if os.path.basename(description.name) != description.name or (
-            os.altsep and os.altsep in description.name
-        ):
-            raise ROSConfigError(
-                f"RobotDescription name {description.name!r} contains a path separator; "
-                "MujocoArmHAL uses it as a file name."
-            )
+        kwargs["backend"] = type(self).__name__
+        rollout = twin(description, **kwargs)
+        # The explicit width means the shell never probes the env through openral_sim.
+        SimAttachedHAL.__init__(self, rollout, description, env_action_dim=rollout.action_dim)
+        self._twin = rollout  # the env, typed: the twin operations (reset_to_pose, ...)
 
-        self.description = description
-        self._mjcf_path = mjcf_path
-        self._joint_qpos_addr = dict(joint_qpos_addr)
-        self._joint_qvel_addr = (
-            dict(joint_qvel_addr) if joint_qvel_addr is not None else dict(joint_qpos_addr)
-        )
-        self._actuator_index = dict(actuator_index)
-        self._grippers_by_joint: dict[str, SimGripperDescription] = {g.joint: g for g in grippers}
-        if len(self._grippers_by_joint) != len(list(grippers)):
-            duplicates = [g.joint for g in grippers]
-            raise ROSConfigError(f"grippers contains duplicate joint names: {duplicates}")
-        joint_name_set = {j.name for j in description.joints}
-        for g_joint in self._grippers_by_joint:
-            if g_joint not in joint_name_set:
-                raise ROSConfigError(
-                    f"grippers[].joint={g_joint!r} is not present in "
-                    f"description.joints (have: {sorted(joint_name_set)})"
-                )
-        self._keyframe_index = keyframe_index
-        self._seed_ctrl_from_qpos = seed_ctrl_from_qpos
-        self._settle_steps_pinned = settle_steps
-        # Resolved at ``connect`` (``_resolve_time_base``); the pinned count or
-        # the legacy single step until then.
-        self._settle_steps: int = 1 if settle_steps is None else int(settle_steps)
-        # Sim seconds one ``send_action`` advances once held to the control
-        # rate; ``None`` while pinned / rate-less (not timing-faithful).
-        self._sim_dt_per_tick_s: float | None = None
-        self._gravity_enabled = gravity_enabled
-        self._staleness_limit_s = staleness_limit_s
+    # ── The rollout's live state, under the names subclasses use ────────────
 
-        self._joint_names: list[str] = [j.name for j in description.joints]
+    @property
+    def _model(self) -> mujoco.MjModel | None:
+        return self._twin.model
 
-        self._connected: bool = False
-        self._last_state_time: float = 0.0
-        # The idle-step hand-off timestamp the
-        # SimSensorBridge reads to decide when an idle scene may auto-step
-        # (``should_idle_step``). ``0`` = never actuated → idle-stepping starts
-        # immediately so a parked arm keeps its cameras + joint_state snapshot
-        # live. Stamped by every ``send_action``.
-        self._last_action_ns: int = 0
-        # One-shot guard so a sustained executor stall logs a single starvation
-        # WARNING from ``read_state`` instead of spamming one per tick.
-        self._starvation_warned: bool = False
-        self._model: mujoco.MjModel | None = None
-        self._data: mujoco.MjData | None = None
-        #: The Sim scene export per loaded model (``export_sim_scene``), made on first use.
-        self._scene_cache: SceneCache | None = None
-        # Lazily-created offscreen renderers for read_images() (issue #191
-        # Phase 3b), keyed by (height, width). One renderer per distinct camera
-        # resolution so every camera renders at ITS OWN declared intrinsics
-        # rather than a shared max (a 256x256 wrist camera alongside a 640x480
-        # overhead must publish 256x256, not 640x480). Created on the first
-        # read_images() call so the EGL context binds on the caller's thread
-        # (SimSensorBridge's camera timer on the node's single-threaded
-        # executor) — EGL contexts are thread-affine.
-        self._renderers: dict[tuple[int, int], Any] = {}  # (h, w) -> mujoco.Renderer
-        # Serialises a render (the bridge's camera timer, on the executor's spin
-        # thread) against the renderers' teardown (``disconnect`` / ``estop``, from
-        # a lifecycle transition on another thread): closing a GL context mid
-        # ``render()`` is a use-after-free (docker-build live suite, OSMesa:
-        # segfault in ``Renderer.render`` while ``on_cleanup`` closed it).
-        self._render_lock = threading.RLock()
-        self._render_failed: bool = False
-        self._mjcf_cameras: set[str] = set()
-        self._render_missing_warned: set[str] = set()
-        # ADR-0102 slot groups: a slot-dispatched tick arrives as one typed
-        # action per slot (arm JOINT_POSITION slots, GRIPPER_POSITION slots),
-        # none a whole-robot command. They are staged here and applied as ONE
-        # step once the tick is complete, for every twin in this hierarchy.
-        self._slot_group = SlotGroupStager()
-        # Joints a slot group may leave uncommanded; they keep their current ctrl
-        # target (``compose_slot_group(hold=...)``). Empty = every joint must be
-        # commanded. ``OpenAMRobotV2MujocoHAL`` lists its base and lift.
-        self._hold_if_uncommanded: frozenset[str] = frozenset()
+    @property
+    def _data(self) -> mujoco.MjData | None:
+        return self._twin.data
+
+    @property
+    def _settle_steps(self) -> int:
+        return self._twin.settle_steps
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
+    @property
+    def _step_while_active(self) -> bool:
+        """Keep the wall-time idle stepper running during a skill while wall-paced.
+
+        Needed while an action advances only a pinned / legacy step count (else
+        ``/clock`` and the cameras starve); off once one action is one control period
+        (``sim_dt_per_tick_s``), so the sim clock is then driven by the runner's ticks.
+        """
+        return self._sim_dt_per_tick_s is None
+
     def connect(self) -> None:
-        """Load the MJCF and prepare an ``MjData`` buffer.
+        """Load the MJCF into a fresh twin (``SimAttachedHAL.connect``: ``env.reset`` loads).
+
+        Unlike a scene-attached env's idempotent re-connect, the HAL Protocol refuses a
+        second connect.
 
         Raises:
-            ROSConfigError: If ``mujoco`` is not installed or the MJCF path is
-                invalid.
-            ROSRuntimeError: If already connected.
+            ROSRuntimeError: Already connected.
+            ROSConfigError: ``mujoco`` is missing or the MJCF cannot be loaded.
         """
         if self._connected:
-            raise ROSRuntimeError(f"MujocoArmHAL('{self.description.name}') is already connected.")
-        try:
-            import mujoco as mj  # reason: optional sim-only dep
-        except ModuleNotFoundError as exc:
-            raise ROSConfigError(
-                "mujoco is not installed. Install the sim extras with: "
-                "just sync --all-packages --group sim"
-            ) from exc
-
-        self._model = self._load_model(mj)
-
-        if not self._gravity_enabled:
-            self._model.opt.gravity[:] = 0.0
-        self._data = mj.MjData(self._model)
-        if self._keyframe_index is not None:
-            if self._keyframe_index >= self._model.nkey:
-                raise ROSConfigError(
-                    f"keyframe_index={self._keyframe_index} but the MJCF has "
-                    f"only {self._model.nkey} keyframes ({self._mjcf_path})"
-                )
-            mj.mj_resetDataKeyframe(self._model, self._data, self._keyframe_index)
-        mj.mj_forward(self._model, self._data)
-        if self._seed_ctrl_from_qpos:
-            for name in self._joint_names:
-                act_idx = self._actuator_index.get(name)
-                qpos_addr = self._joint_qpos_addr.get(name)
-                if act_idx is None or qpos_addr is None:
-                    continue
-                self._data.ctrl[act_idx] = float(self._data.qpos[qpos_addr])
-
-        self._resolve_time_base()
-        self._connected = True
-        self._last_state_time = time.monotonic()
-        log.info(
-            "hal.connect",
-            robot=self.description.name,
-            mjcf=self._mjcf_path,
-            n_joints=len(self._joint_names),
-        )
-
-    def _load_model(self, mj: Any) -> Any:  # noqa: ANN401  # reason: the mujoco module / MjModel
-        """Load the ``MjModel`` ``connect`` runs on (rigging the manifest's cameras in).
-
-        A seam: ``SharedWorldArmHAL`` composes its view of a shared world instead.
-        """
-        # Generic camera rig: splice the manifest's declared RGB
-        # cameras into the MJCF when they are absent (a bare-arm twin ships
-        # none), so deploy sim renders them without a per-robot scene composer.
-        # Idempotent: a scene-attached / already-composed MJCF that already has
-        # the cameras passes through and we load the original path unchanged.
-        mjcf_path = self._mjcf_path
-        try:
-            from openral_hal._camera_rig import rig_cameras_into_mjcf
-
-            with open(self._mjcf_path) as fh:
-                rigged_xml, changed = rig_cameras_into_mjcf(
-                    fh.read(), list(self.description.sensors)
-                )
-            if changed:
-                # Write next to the source MJCF so its relative meshdir resolves.
-                rig_path = os.path.join(
-                    os.path.dirname(self._mjcf_path),
-                    f"{self.description.name}_camrig.xml",
-                )
-                with open(rig_path, "w") as fh:
-                    fh.write(rigged_xml)
-                mjcf_path = rig_path
-        except OSError as exc:
-            raise ROSConfigError(f"Could not read MJCF '{self._mjcf_path}': {exc}") from exc
-
-        try:
-            return mj.MjModel.from_xml_path(mjcf_path)
-        except (OSError, ValueError) as exc:
-            raise ROSConfigError(f"Could not load MJCF '{mjcf_path}': {exc}") from exc
-
-    def _resolve_time_base(self) -> None:
-        """Make one ``send_action`` one control period of the robot (issue #358).
-
-        With no pinned ``settle_steps`` and a declared
-        ``description.control_rate_hz``, derives the physics steps per action
-        via ``physics_steps_per_tick`` — shrinking ``opt.timestep`` (never
-        growing it) so the period is a whole number of steps — holds the result
-        with ``check_time_base``, switches the wall-time idle stepper off while
-        a skill is active, and logs ``sim.time_base`` once per connect. A pinned
-        count is honoured and logged as an override (``hal.time_base.pinned``);
-        a manifest without a rate keeps the legacy single step
-        (``hal.time_base.unresolved``). Neither of those is timing-faithful:
-        ``sim_dt_per_tick_s`` stays ``None`` and the idle stepper keeps pacing
-        the twin on wall time.
-        """
-        assert self._model is not None
-        rate = self.description.control_rate_hz
-        physics_dt = float(self._model.opt.timestep)
-        backend = type(self).__name__
-        if self._settle_steps_pinned is not None:
-            self._settle_steps = int(self._settle_steps_pinned)
-            log.warning(
-                "hal.time_base.pinned",
-                robot=self.description.name,
-                settle_steps=self._settle_steps,
-                sim_dt_per_action_s=round(self._settle_steps * physics_dt, 6),
-                control_freq_hz=rate,
-                hint="pinned settle_steps: wall-paced, not one control period per action",
+            raise ROSRuntimeError(
+                f"{type(self).__name__}('{self.description.name}') is already connected."
             )
-            return
-        if rate is None:
-            self._settle_steps = 1
-            log.warning(
-                "hal.time_base.unresolved",
-                robot=self.description.name,
-                hint="declare action_spec.control_freq_hz so one action is one control period",
-            )
-            return
-        steps, dt = physics_steps_per_tick(rate, physics_dt)
-        if dt != physics_dt:
-            self._model.opt.timestep = dt
-            log.info(
-                "hal.time_base.timestep_shrunk",
-                robot=self.description.name,
-                mjcf_timestep_s=physics_dt,
-                timestep_s=round(dt, 9),
-                control_freq_hz=rate,
-            )
-        tick = steps * dt
-        check_time_base(tick, rate, backend=backend, robot=self.description.name)
-        self._settle_steps = steps
-        self._sim_dt_per_tick_s = tick
-        self._step_while_active = False
-        structlog.get_logger(_TIME_BASE_LOGGER).info(
-            _EVENT_TIME_BASE,
-            backend=backend,
-            sim_dt_per_tick_s=round(tick, 6),
-            control_freq_hz=rate,
-            robot=self.description.name,
-            physics_dt_s=round(dt, 9),
-            physics_steps=steps,
-        )
-
-    @property
-    def sim_dt_per_tick_s(self) -> float | None:
-        """Sim seconds one ``send_action`` advances, once held to the control rate.
-
-        ``None`` before ``connect``, with a pinned ``settle_steps`` or a manifest
-        that declares no rate — the twin is then wall-paced, not timing-faithful.
-        """
-        return self._sim_dt_per_tick_s
+        try:
+            super().connect()
+        except BaseException:
+            # A refused connect (a time base the manifest disagrees with) leaves no
+            # loaded model behind: the shell's own teardown never closes the env.
+            self._release_twin()
+            raise
 
     def disconnect(self) -> None:
-        """Release the MuJoCo model + renderer; drop any staged slot group.  Idempotent.
+        """``SimAttachedHAL.disconnect``, then release the twin (model, renderers).  Idempotent."""
+        if self._connected:
+            log.info("hal.disconnect", robot=self.description.name)
+        super().disconnect()
+        self._release_twin()
 
-        Also restarts slot-group tick numbering (``last_committed_tick`` -> 0),
-        including after an ``estop`` (which already released the model).
+    def _release_twin(self) -> None:
+        """Close the rollout: its renderers' GL contexts, model and data.
+
+        The sim time it reached is folded into the shell's cross-reset offset first,
+        so the next connect's fresh model does not rewind ``sim_time_ns``.
         """
-        self._slot_group.reset()
-        if not self._connected:
-            return
-        log.info("hal.disconnect", robot=self.description.name)
-        self._close_renderers()
-        self._model = None
-        self._data = None
+        self._accumulate_sim_time_before_reset()
+        self._twin.close()
         self._scene_cache = None  # holds the model: release it too
-        self._connected = False
-
-    def _close_renderers(self) -> None:
-        with self._render_lock:
-            for renderer in self._renderers.values():
-                with contextlib.suppress(Exception):
-                    renderer.close()
-            self._renderers.clear()
-
-    def export_sim_scene(self) -> dict[str, object] | None:
-        """``/openral/viz/sim_scene``'s payload for the loaded scene, or ``None`` before connect.
-
-        ``sim_scene.mujoco_scene_mesh`` on the live model, cached per model
-        (``SceneCache``); called by the lifecycle node when it latches the topic, so a
-        connect outside a deploy (tests, ``sim run``) exports nothing (platform#139).
-        """
-        from openral_hal.sim_scene import SceneCache, mujoco_scene_mesh, odom_from_base
-
-        model, data = self._model, self._data
-        if model is None or data is None:
-            return None
-        if self._scene_cache is None:
-            self._scene_cache = SceneCache()
-        return self._scene_cache.get(
-            model,
-            lambda limit: mujoco_scene_mesh(
-                model, data, self.description, limit, odom_from_base(self)
-            ),
-        )
-
-    def mujoco_handles(self) -> tuple[Any, Any] | None:
-        """Expose the live MuJoCo ``(model, data)`` for the bare-twin arm.
-
-        Mirrors ``SimAttachedHAL.mujoco_handles`` so
-        ``SimSensorBridge``'s offscreen
-        cinecam can render a 3rd-person view of a composed-scene arm (openarm /
-        so101 / franka bare twins). Returns ``None`` until connected.
-        """
-        if self._model is None or self._data is None:
-            return None
-        return self._model, self._data
-
-    def sim_time_ns(self) -> int | None:
-        """Return this bare MuJoCo twin's authoritative elapsed simulation time.
-
-        Bare-twin HALs (OpenArm / SO-100 / SO-101 / manifest-driven arm sims)
-        own a live ``MjData`` just like scene-attached MuJoCo HALs do. Exposing
-        ``data.time`` here lets deploy-sim safely derive
-        ``ClockAuthority.origin=simulation`` and publish ROS ``/clock`` instead
-        of leaving these graphs on host-wall time.
-
-        Returns:
-            Elapsed simulator time in nanoseconds, or ``None`` before connect /
-            after disconnect or e-stop.
-        """
-        if not self._connected or self._data is None:
-            return None
-        return round(float(self._data.time) * 1_000_000_000)
-
-    def clock_authority(self) -> ClockAuthority:
-        """Return the timestamp authority this bare MuJoCo HAL contributes.
-
-        Once connected, the live MuJoCo ``MjData.time`` is the authoritative
-        simulation clock. Before connect / after disconnect there is no live sim
-        clock to project onto ROS ``/clock``, so report host-wall.
-        """
-        if self.sim_time_ns() is None or self._model is None:
-            return ClockAuthority.host_wall()
-        return ClockAuthority.simulation(
-            "mujoco",
-            timestep_s=self._sim_dt_per_tick_s or float(self._model.opt.timestep),
-        )
-
-    def read_images(self) -> dict[str, object]:
-        """Render the manifest's RGB cameras off the live MJCF (issue #191 Phase 3b).
-
-        Returns a ``{sensor.name: HxWx3 uint8 ndarray}`` dict — the same contract
-        ``SimAttachedHAL.read_images`` exposes, which
-        ``SimSensorBridge`` consumes — so a
-        composed-scene arm (openarm) publishes ``/openral/cameras/<name>/image``
-        through the shared bridge instead of a bespoke node renderer.
-
-        Each RGB ``SensorSpec`` is rendered from the
-        MJCF camera ``sensor.sim_camera_name or sensor.name`` at **its own**
-        ``intrinsics`` resolution (one ``mujoco.Renderer`` is cached per distinct
-        ``(height, width)``), so the published frame size always matches the
-        sensor's camera model — a 256x256 wrist camera alongside a 640x480
-        overhead publishes 256x256, not the larger of the two. A camera absent
-        from the MJCF (or a render error) is skipped with a one-shot warning,
-        never raising — a missing camera must not crash the actuation path.
-        Returns ``{}`` when not connected, when no RGB sensors are declared, or
-        after a renderer failure.
-
-        Renderers are created lazily on the first call that needs each resolution
-        so their EGL context binds on the caller's thread (the bridge's camera
-        timer runs on the node's single-threaded executor; EGL contexts are
-        thread-affine). The whole render holds ``_render_lock``, so a concurrent
-        ``disconnect`` / ``estop`` waits for it and the connection is re-checked
-        under the lock.
-        """
-        with self._render_lock:
-            return self._read_images_locked()
-
-    def _read_images_locked(self) -> dict[str, object]:
-        if not self._connected or self._model is None or self._data is None:
-            return {}
-        rgb = [s for s in self.description.sensors if s.modality == "rgb"]
-        if not rgb or self._render_failed:
-            return {}
-        try:
-            import mujoco as mj  # reason: optional sim-only dep
-        except ModuleNotFoundError:
-            self._render_failed = True
-            return {}
-
-        if not self._mjcf_cameras:
-            self._mjcf_cameras = {
-                mj.mj_id2name(self._model, mj.mjtObj.mjOBJ_CAMERA, i)
-                for i in range(int(self._model.ncam))
-            }
-
-        frames: dict[str, object] = {}
-        for s in rgb:
-            cam = s.sim_camera_name or s.name
-            if cam not in self._mjcf_cameras:
-                if cam not in self._render_missing_warned:
-                    self._render_missing_warned.add(cam)
-                    log.warning(
-                        "hal.read_images.camera_absent",
-                        robot=self.description.name,
-                        camera=cam,
-                        available=sorted(c for c in self._mjcf_cameras if c),
-                    )
-                continue
-            # One renderer per distinct resolution so each camera renders at ITS
-            # declared intrinsics (not a shared max) — the published frame size
-            # then matches the sensor's camera model for every robot.
-            height = s.intrinsics.height if s.intrinsics is not None else 480
-            width = s.intrinsics.width if s.intrinsics is not None else 640
-            renderer = self._renderers.get((height, width))
-            if renderer is None:
-                # The MJCF's offscreen framebuffer (default 640x480) must fit the
-                # sensor raster, e.g. the OpenArm ZED's 672x376 — grow it first.
-                vis = self._model.vis.global_
-                vis.offwidth = max(int(vis.offwidth), width)
-                vis.offheight = max(int(vis.offheight), height)
-                try:
-                    renderer = mj.Renderer(self._model, height=height, width=width)
-                except Exception as exc:  # reason: GL/MJCF render setup is non-fatal
-                    log.warning(
-                        "hal.read_images.renderer_failed",
-                        robot=self.description.name,
-                        error=str(exc),
-                    )
-                    self._render_failed = True
-                    self._renderers.clear()
-                    return {}
-                self._renderers[(height, width)] = renderer
-            try:
-                renderer.update_scene(self._data, camera=cam)
-                frames[s.name] = renderer.render()
-            except Exception as exc:  # reason: a per-tick render hiccup skips one frame
-                log.warning(
-                    "hal.read_images.render_failed",
-                    robot=self.description.name,
-                    camera=cam,
-                    error=str(exc),
-                )
-        return frames
-
-    # ── Hot path ───────────────────────────────────────────────────────────────
-
-    def read_state(self) -> JointState:
-        """Return the latest joint state in the order of ``description.joints``.
-
-        Raises:
-            ROSRuntimeError: If not connected.
-
-        Returns:
-            ``JointState`` with positions / velocities for every controllable
-            joint in ``description.joints``.  The gripper position (if any) is
-            reported in ``[0, 1]``.
-
-        Note:
-            The read below returns the live in-process ``MjData`` — always the
-            *current* simulator state — so a large gap since the last service is
-            never bad data. It means this HAL's publish loop was starved (e.g. a
-            slow camera render hogging the single-threaded executor). We surface
-            that as a one-shot diagnostic WARNING and refresh the clock, rather
-            than latching a fatal ``ROSPerceptionStale``: the previous behaviour
-            raised *before* refreshing the clock, so a single transient stall
-            bricked the HAL permanently (every subsequent read raised too). Live
-            joint feedback from an async source (a real robot) is policed by the
-            subscription-based HALs (``ros_control``/``aloha``), not here.
-        """
-        self._require_connected("read_state")
-        age = time.monotonic() - self._last_state_time
-        if age > self._staleness_limit_s:
-            if not self._starvation_warned:
-                self._starvation_warned = True
-                log.warning(
-                    "hal.read_state.starved",
-                    robot=self.description.name,
-                    age_s=round(age, 3),
-                    limit_s=self._staleness_limit_s,
-                    note=(
-                        "publish loop starved > staleness_limit_s (likely the "
-                        "single-threaded executor blocked on rendering); serving "
-                        "live MjData and refreshing the clock — not latching stale"
-                    ),
-                )
-        else:
-            # Healthy read — re-arm the one-shot so a *later* starvation episode
-            # warns again rather than staying silent after the first.
-            self._starvation_warned = False
-
-        assert self._data is not None  # guaranteed by _require_connected
-        positions: list[float] = []
-        velocities: list[float] = []
-        efforts: list[float] = []
-        for name in self._joint_names:
-            gripper = self._grippers_by_joint.get(name)
-            if gripper is not None:
-                positions.append(self._read_gripper_value(gripper))
-                # qvel reporting for a gripper joint — for PASSTHROUGH grippers
-                # the qvel index is meaningful (single revolute / prismatic),
-                # for normalised grippers it isn't (the public surface is unit-
-                # less); use 0.0 there to avoid surprising clients.
-                if gripper.read_mode is GripperReadMode.PASSTHROUGH:
-                    velocities.append(float(self._data.qvel[gripper.qpos_addrs[0]]))
-                else:
-                    velocities.append(0.0)
-                efforts.append(joint_actuator_effort(self._data, gripper.qpos_addrs[0]))
-            else:
-                qpos_addr = self._joint_qpos_addr[name]
-                qvel_addr = self._joint_qvel_addr[name]
-                positions.append(float(self._data.qpos[qpos_addr]))
-                velocities.append(float(self._data.qvel[qvel_addr]))
-                efforts.append(joint_actuator_effort(self._data, qvel_addr))
-
-        self._last_state_time = time.monotonic()
-        return JointState(
-            name=list(self._joint_names),
-            position=positions,
-            velocity=velocities,
-            effort=efforts,
-            stamp_ns=time.time_ns(),
-        )
-
-    @property
-    def last_applied_action(self) -> Action | None:
-        """The command the robot was last actually given, as applied (``None`` = none yet).
-
-        For a slot group this is the composed full-dof ``JOINT_POSITION`` action, not any
-        one slot; set only once the apply succeeded, in step with ``last_committed_tick``.
-        The lifecycle node folds it into the grasp trigger, which must measure "short of
-        the command" against what the jaw was really told.
-        """
-        return self._slot_group.last_applied_action
-
-    @property
-    def last_committed_tick(self) -> int:
-        """Inference tick of the last slot group applied to MuJoCo (0 = none).
-
-        Read by the HAL lifecycle node to acknowledge a grouped tick on
-        ``/openral/action_applied`` only once every slot has landed.
-        """
-        return self._slot_group.last_committed_tick
-
-    @property
-    def last_committed_session(self) -> int:
-        """``runner_session_id`` of ``last_committed_tick`` (0 = none / session-less)."""
-        return self._slot_group.last_committed_session
-
-    def discard_staged_slots(self) -> int:
-        """Drop a half-staged slot group, keeping the committed watermark.
-
-        Called by the HAL lifecycle node on every ``/openral/estop`` latch and
-        ``/openral/estop_cleared`` — for any HAL, opted into the hardware estop
-        or not — so a tick cut short by a stop never outlives it into the next
-        goal. ``SlotGroupStager.discard`` semantics: a pre-stop tick replayed
-        afterwards is still refused as stale.
-
-        Returns:
-            How many staged slots were dropped.
-        """
-        return self._slot_group.discard()
-
-    def send_action(self, action: Action) -> None:
-        """Forward the **last** waypoint of *action* to MuJoCo and step.
-
-        A slot action (``tick_group_size > 1``, ADR-0102) is staged until its
-        tick is complete, then composed by name (joints via
-        ``Action.joint_names``, grippers via ``ee_name``) into one full-dof
-        ``JOINT_POSITION`` step, so one arm / the gripper never moves on a new
-        chunk while the rest holds a stale one. A slot of a tick at or below
-        ``last_committed_tick`` of the same runner session is refused as a replay;
-        a new runner session is adopted when its first group commits and the
-        old one is refused from then on (``TickWatermark``).
-
-        Args:
-            action: ``Action`` produced by a Skill.  Must declare a
-                ``control_mode`` in ``description.capabilities.supported_control_modes``.
-
-        Raises:
-            ROSRuntimeError: If not connected, the slot group is stale or
-                incomplete (see ``SlotGroupStager.stage``).
-            ROSConfigError: If the action's control mode is unsupported, if
-                the joint dimensions do not match the robot, or the slot group
-                cannot be composed (see ``compose_slot_group``).
-        """
-        self._require_connected("send_action")
-        group: list[Action] | None = None
-        if int(action.tick_group_size) > 1:
-            group = self._slot_group.stage(action)
-            if group is None:
-                return
-            action = compose_slot_group_action(
-                group, self._joint_names, hold=self._held_ctrl_targets()
-            )
-        else:
-            # Ungrouped ticked actions (starting-pose ramp, approach) share the
-            # watermark, so a restarted runner's renumbering is seen here too.
-            self._slot_group.admit(action)
-            if action.joint_names and set(action.joint_names) != set(self._joint_names):
-                # A row naming a subset (the ramp of a slot-subset starting_pose) is
-                # zero-padded at the joints it leaves out; compose it like a one-slot
-                # group, so those joints hold (or the row is refused) instead of
-                # being driven to the padding.
-                # Keep the tick fields, so commit_tick advances the watermark and a
-                # replay of this ramp tick is refused.
-                action = compose_slot_group_action(
-                    [action], self._joint_names, hold=self._held_ctrl_targets()
-                ).model_copy(
-                    update={
-                        "tick_index": action.tick_index,
-                        "runner_session_id": action.runner_session_id,
-                    }
-                )
-        self._validate_action(action)
-
-        assert self._data is not None and self._model is not None
-
-        last_step = self._last_arm_targets(action)
-        self._apply_arm_targets(last_step)
-        if self._grippers_by_joint:
-            self._apply_gripper_targets(last_step)
-
-        self._step_physics(self._settle_steps, last_step)
-        # Refresh the staleness clock so multi-thousand-step settles don't trip
-        # a starvation warning on the next ``read_state``, and stamp the
-        # idle-step hand-off so the SimSensorBridge yields to this real action.
-        self._last_state_time = time.monotonic()
-        self._last_action_ns = time.monotonic_ns()
-
-        if group is not None:
-            self._slot_group.commit(group, applied=action)
-        else:
-            self._slot_group.commit_tick(action)
-
-        log.debug(
-            "hal.send_action",
-            robot=self.description.name,
-            control_mode=action.control_mode,
-            horizon=action.horizon,
-            settle_steps=self._settle_steps,
-            slots=len(group) if group is not None else 1,
-        )
 
     # ── Pose reset ─────────────────────────────────────────────────────────────
 
@@ -889,282 +272,39 @@ class MujocoArmHAL(HALBase):
             >>> # hal.reset_to_pose([0.0] * len(hal.description.joints))
         """
         self._require_connected("reset_to_pose")
-        assert self._data is not None and self._model is not None
-        if len(pose) != len(self._joint_names):
-            raise ROSConfigError(
-                f"reset_to_pose: {len(pose)} entries, expected "
-                f"{len(self._joint_names)} (description.joints order).",
-            )
-        import mujoco as mj  # reason: optional sim-only dep
-
-        for name, value in zip(self._joint_names, pose, strict=True):
-            qpos_addr = self._joint_qpos_addr.get(name)
-            if qpos_addr is None:
-                continue
-            gripper = self._grippers_by_joint.get(name)
-            if gripper is None:
-                self._data.qpos[qpos_addr] = float(value)
-            else:
-                self._reset_gripper_qpos(gripper, float(value))
-            qvel_addr = self._joint_qvel_addr.get(name)
-            if qvel_addr is not None:
-                # Zero qvel too so the snap doesn't carry momentum.
-                self._data.qvel[qvel_addr] = 0.0
-        mj.mj_forward(self._model, self._data)
-        # Re-seed ctrl from qpos so position actuators hold the new pose
-        # on the next ``mj_step``.
-        for name, value in zip(self._joint_names, pose, strict=True):
-            gripper = self._grippers_by_joint.get(name)
-            if gripper is not None:
-                primary_idx = self._effective_actuator_index_for(gripper, name)
-                if primary_idx is not None:
-                    raw = self._gripper_command_to_raw(gripper, float(value))
-                    self._data.ctrl[primary_idx] = raw
-                    if gripper.mirror_actuator_index is not None:
-                        self._data.ctrl[gripper.mirror_actuator_index] = -raw
-                continue
-            act_idx = self._actuator_index.get(name)
-            qpos_addr = self._joint_qpos_addr.get(name)
-            if act_idx is None or qpos_addr is None:
-                continue
-            self._data.ctrl[act_idx] = float(self._data.qpos[qpos_addr])
-        self._last_state_time = time.monotonic()
+        self._twin.reset_to_pose(pose)
         log.info(
             "hal.reset_to_pose",
             robot=self.description.name,
-            n_joints=len(self._joint_names),
+            n_joints=len(self._twin.joint_names),
         )
 
     # ── Safety ─────────────────────────────────────────────────────────────────
 
     def estop(self) -> None:
-        """Trigger an emergency stop: zero ``ctrl`` and raise.
+        """Latch the stop (``SimAttachedHAL.estop``), zero ``ctrl``, tear the twin down and raise.
+
+        The twin's difference from the shell's latch: the HAL Protocol's raising stop,
+        and the twin is released at once — its GL contexts closed now, because
+        ``disconnect`` would find nothing connected and a renderer left to the GC is
+        finalized at interpreter teardown, after its GL library (a segfault on exit).
+        ``estop_latched`` reads ``True`` until ``reset_estop``: a later ``connect``
+        builds a fresh twin but stays latched, so actions are dropped and idle does
+        not step until the stop is explicitly cleared.
 
         Raises:
             ROSEStopRequested: Always.
         """
         log.critical("hal.estop", robot=self.description.name)
-        # The survivors of a half-staged tick must never be committed later;
-        # the committed watermark stays (a stop is not a renumbering).
-        self._slot_group.discard()
-        if self._data is not None:
-            self._data.ctrl[:] = 0.0
-        # Close the GL contexts now: ``disconnect`` is a no-op once
-        # ``_connected`` is False, and a renderer left to the GC is finalized
-        # at interpreter teardown, after its GL library — a segfault on exit.
-        self._close_renderers()
-        self._model = None
-        self._data = None
-        self._scene_cache = None  # holds the model: release it too
+        super().estop()
+        data = self._data
+        if data is not None:
+            data.ctrl[:] = 0.0
+        # Disconnected before the model goes: a reader on another thread (the bridge's
+        # camera timer) is refused by the connected guard, never handed a released twin.
         self._connected = False
+        self._release_twin()
         raise ROSEStopRequested(f"Emergency stop triggered on robot '{self.description.name}'.")
-
-    @property
-    def last_action_ns(self) -> int:
-        """``time.monotonic_ns()`` of the last ``send_action`` (``0`` if never).
-
-        The SimSensorBridge reads this (``should_idle_step``) to yield the idle
-        stepper to a recently-commanded skill. Mirrors the same surface on
-        ``SimAttachedHAL``.
-        """
-        return self._last_action_ns
-
-    def idle_step(self, wall_dt_s: float | None = None) -> bool:
-        """Advance the sim one HOLD tick so cameras + state stay live while idle.
-
-        Gives a bare ``MujocoArmHAL`` the idle-cameras
-        + off-executor joint_state (via ``ProprioSnapshot``) treatment that the
-        lifecycle node gates on a *callable* ``idle_step``. ``ctrl`` is left
-        untouched — it already holds the last commanded / seeded pose, so a HOLD
-        step does not move the arm; it only re-integrates physics and refreshes
-        the staleness clock.
-
-        SAFETY: this is defined only on the sim-only ``MujocoArmHAL`` hierarchy
-        (no real HAL inherits it), and it is a no-op returning ``False`` once the
-        HAL has e-stopped (``estop()`` disconnects), so it can never autonomously
-        drive an e-stopped robot. ``False`` also signals the bridge to leave the
-        cached frame frozen.
-
-        Args:
-            wall_dt_s: Wall-clock seconds this tick represents. The sim is
-                advanced by that much sim time (capped at
-                ``_IDLE_STEP_CAP`` steps so a long stall cannot fast-forward
-                the world). ``None`` keeps the legacy single-step behaviour.
-
-        Returns:
-            ``True`` if the sim advanced, ``False`` if the HAL is not connected
-            (e.g. after ``estop``).
-        """
-        if not self._connected or self._data is None or self._model is None:
-            return False
-
-        # Advance a WALL-TIME slice, not a single physics step: one `mj_step`
-        # per idle tick makes sim time crawl at `timestep * tick_rate`
-        # (0.002 s * 10 Hz = 2% of real time on this arm), and every other
-        # timer in the HAL node runs on that same crawling clock under
-        # `use_sim_time` — camera/TF/cinecam timers then fire 50x slower than
-        # nominal, the world-state aggregator latches every camera STALE, and
-        # the policy is fed seconds-old pixels. Stepping the tick's worth of
-        # sim time keeps the clocks in step.
-        steps = 1
-        if wall_dt_s is not None and wall_dt_s > 0:
-            timestep = float(self._model.opt.timestep)
-            if timestep > 0:
-                steps = max(1, min(_IDLE_STEP_CAP, round(wall_dt_s / timestep)))
-        self._step_physics(steps)
-        self._last_state_time = time.monotonic()
-        return True
-
-    # ── Internal helpers ───────────────────────────────────────────────────────
-
-    def _step_physics(self, steps: int, targets: list[float] | None = None) -> None:
-        """Advance the world ``steps`` physics steps.
-
-        ``targets`` are a ``send_action``'s arm targets (``_per_step_update`` runs
-        before every step); ``None`` is an idle HOLD advance. A seam:
-        ``SharedWorldArmHAL`` asks the shared world to advance instead.
-        """
-        import mujoco as mj  # reason: optional sim-only dep
-
-        for _ in range(steps):
-            if targets is not None:
-                self._per_step_update(targets)
-            mj.mj_step(self._model, self._data)
-
-    def _require_connected(self, operation: str) -> None:
-        if not self._connected or self._data is None or self._model is None:
-            raise ROSRuntimeError(
-                f"{type(self).__name__}.{operation}() called while not connected. "
-                "Call connect() first."
-            )
-
-    def _validate_action(self, action: Action) -> None:
-        supported = self.description.capabilities.supported_control_modes
-        if supported and action.control_mode not in supported:
-            raise ROSConfigError(
-                f"Action control_mode '{action.control_mode}' is not in "
-                f"supported_control_modes {supported} for robot "
-                f"'{self.description.name}'."
-            )
-        self._require_control_mode(action, ControlMode.JOINT_POSITION)
-        if not action.joint_targets or not action.joint_targets[0]:
-            raise ROSConfigError("action.joint_targets[0] is required.")
-        self._validate_action_dims(action, len(self._joint_names))
-
-    def _held_ctrl_targets(self) -> dict[str, float]:
-        """Current ctrl target of each ``_hold_if_uncommanded`` joint."""
-        assert self._data is not None
-        return {
-            name: float(self._data.ctrl[self._actuator_index[name]])
-            for name in self._hold_if_uncommanded
-            if name in self._actuator_index
-        }
-
-    def _last_arm_targets(self, action: Action) -> list[float]:
-        assert action.joint_targets is not None
-        return list(action.joint_targets[-1])
-
-    def _apply_arm_targets(self, targets: list[float]) -> None:
-        assert self._data is not None
-        for name, value in zip(self._joint_names, targets, strict=True):
-            if name in self._grippers_by_joint:
-                continue
-            act_idx = self._actuator_index.get(name)
-            if act_idx is None:
-                continue
-            self._data.ctrl[act_idx] = float(value)
-
-    def _per_step_update(self, targets: list[float]) -> None:
-        """Hook invoked before every ``mj_step`` inside the settle loop.
-
-        Default: no-op — the base class assumes position-controlled
-        actuators (with an internal PD law) where ``ctrl`` set once
-        outside the loop is enough.  Subclasses that drive torque-mode
-        actuators (e.g. ``openral_hal.H1MujocoHAL`` for the
-        Unitree H1's ``motor`` actuators) override this to recompute
-        the torque each step from current ``qpos`` / ``qvel``.
-
-        Args:
-            targets: The last-waypoint joint targets handed to
-                ``_apply_arm_targets``, in the same order as
-                ``self._joint_names``.
-        """
-        del targets  # base no-op; param kept so the override signature lines up
-
-    def _apply_gripper_targets(self, last_step: list[float]) -> None:
-        """Write the per-gripper command to ``ctrl`` (and mirror, if any).
-
-        For ``NORMALISED`` write mode the input is clipped to ``[0, 1]``
-        and mapped affinely to ``gripper.ctrl_range``.  For
-        ``PASSTHROUGH`` mode the input is written verbatim; MuJoCo's
-        actuator ``ctrlrange`` does the clipping at simulation time.
-        """
-        assert self._data is not None
-        for joint_name, gripper in self._grippers_by_joint.items():
-            joint_idx = self._joint_names.index(joint_name)
-            command = float(last_step[joint_idx])
-            raw = self._gripper_command_to_raw(gripper, command)
-            primary_idx = self._effective_actuator_index_for(gripper, joint_name)
-            if primary_idx is None:
-                raise ROSConfigError(
-                    f"Gripper {joint_name!r} has no actuator index — set "
-                    "sim.grippers[].actuator_index or include the joint in "
-                    "sim.actuator_index."
-                )
-            self._data.ctrl[primary_idx] = raw
-            if gripper.mirror_actuator_index is not None:
-                self._data.ctrl[gripper.mirror_actuator_index] = -raw
-
-    @staticmethod
-    def _gripper_command_to_raw(gripper: SimGripperDescription, command: float) -> float:
-        """Map the public gripper command to the actuator's native range."""
-        if gripper.write_mode is GripperWriteMode.PASSTHROUGH:
-            return command
-        low, high = gripper.ctrl_range
-        return low + max(0.0, min(1.0, command)) * (high - low)
-
-    def _reset_gripper_qpos(self, gripper: SimGripperDescription, value: float) -> None:
-        """Write a public gripper value into its native qpos representation."""
-        assert self._data is not None
-        if gripper.read_mode is GripperReadMode.AFFINE_LOW_HIGH:
-            self._data.qpos[gripper.qpos_addrs[0]] = self._gripper_command_to_raw(gripper, value)
-            return
-        if gripper.read_mode is GripperReadMode.PASSTHROUGH:
-            self._data.qpos[gripper.qpos_addrs[0]] = value
-            return
-        each = max(0.0, min(1.0, value)) * gripper.qpos_scale / len(gripper.qpos_addrs)
-        for addr in gripper.qpos_addrs:
-            self._data.qpos[addr] = each
-
-    def _read_gripper_value(self, gripper: SimGripperDescription) -> float:
-        """Report the gripper's public position according to ``gripper.read_mode``."""
-        assert self._data is not None
-        if gripper.read_mode is GripperReadMode.PASSTHROUGH:
-            return float(self._data.qpos[gripper.qpos_addrs[0]])
-        if gripper.read_mode is GripperReadMode.AFFINE_LOW_HIGH:
-            low, high = gripper.ctrl_range
-            span = high - low
-            if span == 0.0:
-                return 0.0
-            qpos = float(self._data.qpos[gripper.qpos_addrs[0]])
-            return max(0.0, min(1.0, (qpos - low) / span))
-        # SUM_OVER_SCALE (default)
-        total = sum(float(self._data.qpos[i]) for i in gripper.qpos_addrs)
-        if gripper.qpos_scale == 0.0:
-            return 0.0
-        return max(0.0, min(1.0, total / gripper.qpos_scale))
-
-    def _effective_actuator_index_for(
-        self, gripper: SimGripperDescription, joint_name: str
-    ) -> int | None:
-        """Resolve the MJCF actuator index that receives this gripper's command.
-
-        ``gripper.actuator_index`` (if set) wins; otherwise fall back to
-        the joint-wide ``actuator_index`` map.
-        """
-        if gripper.actuator_index is not None:
-            return gripper.actuator_index
-        return self._actuator_index.get(joint_name)
 
     # ── Manifest-driven constructor ────────────────────────────────────────────
 
@@ -1176,16 +316,14 @@ class MujocoArmHAL(HALBase):
         gravity_enabled: bool = True,
         staleness_limit_s: float = 0.5,
         mjcf_path_override: str | None = None,
-    ) -> _MujocoArmInitKwargs:
+    ) -> TwinKwargs:
         """Translate ``description.sim`` to the kwarg dict accepted by ``__init__``.
 
         This is the single seam where the declarative manifest is mapped to
         the imperative constructor.  Both ``from_description`` /
         ``_init_from_description`` and any caller that wants to
-        post-process the kwargs delegate here.  The
-        ``_MujocoArmInitKwargs`` return type lets ``**kwargs``
-        unpack into the constructor under ``mypy --strict`` without an
-        ``arg-type`` ignore.
+        post-process the kwargs delegate here.  The ``TwinKwargs`` return type
+        lets ``**kwargs`` unpack into the constructor under ``mypy --strict``.
 
         Raises:
             ROSConfigError: If ``description.sim`` is None, or if
@@ -1231,7 +369,7 @@ class MujocoArmHAL(HALBase):
                     f"sim.joint_qpos_addr references unknown joint {name!r} (known: {joint_names})"
                 )
 
-        return _MujocoArmInitKwargs(
+        return TwinKwargs(
             mjcf_path=mjcf_path_override or _resolve_mjcf_path(description),
             joint_qpos_addr=joint_qpos_addr,
             joint_qvel_addr=joint_qvel_addr,
@@ -1306,6 +444,8 @@ class MujocoArmHAL(HALBase):
         settle_steps: int | None = None,
         gravity_enabled: bool = True,
         staleness_limit_s: float = 0.5,
+        body_twist_dt_s: float | None = None,
+        twin: Callable[..., MujocoTwinRollout] = MujocoTwinRollout,
     ) -> None:
         """Initialise *self* from a fully-populated ``description.sim`` block.
 
@@ -1330,6 +470,9 @@ class MujocoArmHAL(HALBase):
                 ``connect`` time.
             staleness_limit_s: Age above which ``read_state`` emits a
                 one-shot starvation WARNING (it still returns live state).
+            body_twist_dt_s: Seconds one ``BODY_TWIST`` integrates the base by;
+                ``None`` is one control period (``MujocoTwinRollout``).
+            twin: The rollout class (or factory) the robot's twin runs on.
 
         Raises:
             ROSConfigError: Propagated from ``_sim_kwargs_for`` /
@@ -1342,4 +485,5 @@ class MujocoArmHAL(HALBase):
             staleness_limit_s=staleness_limit_s,
             mjcf_path_override=mjcf_path,
         )
-        MujocoArmHAL.__init__(self, description, **kwargs)
+        kwargs["body_twist_dt_s"] = body_twist_dt_s
+        MujocoArmHAL.__init__(self, description, twin=twin, **kwargs)

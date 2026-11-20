@@ -7,7 +7,7 @@ pre-clamp (``rskill_runner_node._make_policy_adapter_skill``), and the
 supervisor's ``gripper_min``/``gripper_max``.
 
 ``sim.grippers[].write_mode: normalised`` means the HAL contract is a
-``[0,1]`` jaw fraction (``openral_hal._mujoco_arm.MujocoArmHAL._gripper_command_to_raw``
+``[0,1]`` jaw fraction (``openral_hal.mujoco_twin._gripper_command_to_raw``
 clips to ``[0,1]`` before mapping onto ``ctrl_range``). Declaring the jaw's
 mechanical radian range instead stops the envelope constraining that channel:
 a malformed ``1.5`` fraction sat inside ``[-0.1745, 1.7453]``, cleared both

@@ -37,7 +37,7 @@ def _connected_rendering_arm() -> object:
 def test_disconnect_waits_for_an_in_flight_render() -> None:
     """While a render holds the lock, ``disconnect`` blocks; it completes once released."""
     hal = _connected_rendering_arm()
-    lock = hal._render_lock  # type: ignore[attr-defined]  # reason: MujocoArmHAL internal
+    lock = hal._twin.render_lock  # type: ignore[attr-defined]  # reason: MujocoArmHAL internal
     done = threading.Event()
 
     def teardown() -> None:

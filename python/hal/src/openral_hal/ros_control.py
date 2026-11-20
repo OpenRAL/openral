@@ -54,7 +54,12 @@ from openral_core.exceptions import (
 )
 from openral_core.schemas import Action, JointState, RobotDescription
 
-from openral_hal._base import HALBase, _raw_floats, resolve_staleness_limit_s
+from openral_hal._base import (
+    HALBase,
+    _raw_floats,
+    require_supported_control_mode,
+    resolve_staleness_limit_s,
+)
 from openral_hal._slot_group import GRIPPER_MODES, SlotGroupStager, compose_slot_group_action
 from openral_hal.protocol import EStopRecovery
 
@@ -921,13 +926,7 @@ class RosControlHAL(HALBase):
     # ── Internal helpers ───────────────────────────────────────────────────────
 
     def _validate_action(self, action: Action) -> None:
-        supported = self.description.capabilities.supported_control_modes
-        if supported and action.control_mode not in supported:
-            raise ROSConfigError(
-                f"Action control_mode '{action.control_mode}' is not in "
-                f"supported_control_modes {supported} for robot "
-                f"'{self.description.name}'."
-            )
+        require_supported_control_mode(self.description, action)
         self._validate_action_dims(action, len(self._joint_names))
 
 

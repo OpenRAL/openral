@@ -234,7 +234,7 @@ def test_build_hal_steps_the_scene_at_60hz_and_the_manifest_rate_is_refused() ->
     from openral_hal.sim_attached import SimAttachedHAL
 
     hal = build_hal(_robot(), mode="sim", sim_env_yaml=str(_SCENE))
-    assert isinstance(hal, SimAttachedHAL)
+    assert type(hal) is SimAttachedHAL  # the scene-attach route, not a bare twin
     try:
         assert hal.description.control_rate_hz == 60.0
         assert "top_depth" in {s.name for s in hal.description.sensors}

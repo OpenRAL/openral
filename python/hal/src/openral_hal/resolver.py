@@ -25,7 +25,7 @@ from __future__ import annotations
 import inspect
 from typing import Literal, cast
 
-from openral_core import RobotDescription, sim_scene_description
+from openral_core import RobotDescription, SceneComposition, sim_scene_description
 from openral_core.code_refs import import_code_ref
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -38,11 +38,36 @@ __all__ = [
     "build_hal",
     "hal_joint_states_topic",
     "ros_control_hal",
+    "twin_scene_composition",
     "urdf_joint_map",
     "urdf_joint_names",
 ]
 
 HalMode = Literal["sim", "real"]
+
+
+def twin_scene_composition(
+    description: RobotDescription, scene_composition: SceneComposition | None
+) -> SceneComposition | None:
+    """The MJCF composition a bare MuJoCo twin of ``description`` is built from, or ``None``.
+
+    The one rule, used by ``deploy sim`` (what it forwards to the HAL node) and by the
+    HAL node (what it composes into the twin's ``mjcf_path``): the scene's own
+    ``composition`` wins — the scene owns its arena — else the robot manifest's
+    ``scene_defaults.composition``; ``None`` builds the bare robot MJCF. A composed
+    scene runs on the twin (``MujocoArmHAL``), never scene-attached: whether a deploy
+    scene is a bare twin at all is ``openral_cli.deploy_sim._scene_builds_bare_twin``.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> d = RobotDescription.from_yaml("robots/ur5e/robot.yaml")
+        >>> twin_scene_composition(d, None) is None
+        True
+    """
+    if scene_composition is not None:
+        return scene_composition
+    defaults = description.scene_defaults
+    return defaults.composition if defaults is not None else None
 
 
 def build_hal(

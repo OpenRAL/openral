@@ -478,14 +478,15 @@ class TestHalTimeBaseGuard:
                 hal.env.close()
 
     def test_a_nan_tick_is_refused(self) -> None:
-        from openral_core.exceptions import ROSRuntimeError
+        """The backend's typed refusal reaches the caller as raised (``ROSConfigError``)."""
+        from openral_core.exceptions import ROSConfigError
 
         with _FakeSidecar(
             _free_port(), sim_dt_per_tick_s=1 / 30, reset_sim_dt_per_tick_s=float("nan")
         ) as s:
             hal = self._hal(s.port)
             try:
-                with pytest.raises(ROSRuntimeError, match="no valid observed time base"):
+                with pytest.raises(ROSConfigError, match="no valid observed time base"):
                     hal.connect()
             finally:
                 hal.env.close()

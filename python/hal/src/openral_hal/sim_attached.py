@@ -1,7 +1,12 @@
 """SimAttachedHAL — wrap any ``openral_sim.SimRollout`` as a HAL adapter.
 
 Generic bridge between ``openral_sim.SimRollout`` and the
-``openral_hal.HAL`` Protocol the ROS lifecycle nodes consume. Runs the
+``openral_hal.HAL`` Protocol the ROS lifecycle nodes consume. ``SimAttachedHAL`` is
+the one sim HAL shell (send path and slot-group staging, idle stepper, clock and
+time base, estop latch, state / image / depth reads, scene export, step
+bookkeeping, the attachment API, ``reset_episode``, per-goal placement grading),
+for a scene backend and a bare twin alike: the MuJoCo twin, ``MujocoArmHAL``, is a
+``SimAttachedHAL`` over a ``MujocoTwinRollout``. Runs the
 HAL and the env in one process — a split HAL/env process pair left ``/scan``
 unable to ray-cast live MJCF geometry (no handle to ``MjModel``/``MjData``) —
 so the lifecycle node's ``mujoco_handle_provider`` can bind to
@@ -33,11 +38,10 @@ the C++ kernel.
 from __future__ import annotations
 
 import json
-import logging
 import re
 import time
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import numpy as np
 import structlog
@@ -50,20 +54,27 @@ from openral_core import (
     RobotDescription,
     check_time_base,
 )
-from openral_core.exceptions import ROSConfigError, ROSError, ROSRuntimeError
+from openral_core.exceptions import (
+    ROSConfigError,
+    ROSError,
+    ROSRuntimeError,
+    ROSSafetyViolation,
+)
 from openral_core.schemas import Action, ControlMode, JointState
 
-from openral_hal._mujoco_arm import joint_actuator_effort
+from openral_hal._base import require_connected
+from openral_hal._floating_base import integrate_planar_twist, validate_planar_body_twist
 from openral_hal._slot_group import (
-    TickWatermark,
+    SlotGroupStager,
     compose_slot_group_action,
     slot_group_targets,
 )
-from openral_hal.depth_cloud import cloud_from_depth_frame
+from openral_hal.mobile_base_bridge import describes_mobile_base
+from openral_hal.mujoco_twin import joint_actuator_effort
 
-# Module logger — falls through to stderr via the rclpy logging bridge in a
-# ROS node, else plain stdlib logging.
-_log = logging.getLogger(__name__)
+log = structlog.get_logger(__name__)
+
+_ZERO_TWIST = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 # Dotted under ``openral.`` (not this module's own name): stdlib logger
 # ancestry is dotted and openral_observability's structlog bridge attaches
@@ -92,9 +103,24 @@ _EVENT_TIME_BASE = "sim.time_base"
 
 if TYPE_CHECKING:
     from openral_core import IntrinsicsPinhole
-    from openral_sim.rollout import SimRollout
 
     from openral_hal.sim_scene import SceneCache
+
+
+class SimEnv(Protocol):
+    """What ``SimAttachedHAL`` calls on its env directly; every other hook is ``getattr``-gated.
+
+    An ``openral_sim.SimRollout`` satisfies it, and so does a ``MujocoTwinRollout``.
+    """
+
+    def reset(self, seed: int | None = ...) -> Any:  # noqa: ANN401  # reason: an Observation dict, or a backend's own
+        """Reset the simulator; its initial observation."""
+
+    def step(self, action: Any) -> Any:  # noqa: ANN401  # reason: a backend's action vector / StepResult
+        """Apply one action; the transition."""
+
+    def close(self) -> None:
+        """Release the backend."""
 
 
 def _task_success_logger() -> Any:  # noqa: ANN401  # reason: structlog's BoundLogger is untyped
@@ -124,6 +150,7 @@ __all__ = [
     "SIM_EXECUTABLE_CONTROL_MODES",
     "ActionPacker",
     "SimAttachedHAL",
+    "SimEnv",
     "gripper_targets_action",
     "normalized_joint_index",
     "pack_action_for_env",
@@ -226,47 +253,11 @@ def normalized_joint_index(model_joint_names: list[str]) -> dict[str, int]:
     return index
 
 
-# Default mapping for robosuite BASIC-controller compositions that
-# expose an 11-D action vector: ``[base_x, base_y, base_yaw,
-# arm_j1..arm_j7, gripper]``. Each entry maps a row of
-# ``Action.joint_targets`` (URDF-ordered) into the env action slot.
-# Override per-robot via the ``action_packer`` factory passed to
-# ``SimAttachedHAL``.
-
-# Tolerance for non-planar twist components (vz / wx / wy) — anything
-# above this is rejected with ROSConfigError. Mirror of
-# ``openral_hal.panda_mobile._PLANAR_TWIST_EPS``.
-_PLANAR_TWIST_EPS = 1e-6
-
 # How long a /cmd_vel-style BODY_TWIST setpoint keeps driving a kinematic base
 # with no new command: diff_drive_controller's cmd_vel_timeout default (0.5 s), in
 # sim time when the backend has a clock (_twist_hold_clock_ns). A publisher that
 # dies stops the base within this window.
 _BASE_TWIST_HOLD_NS = 500_000_000
-
-
-def _refuse_lateral_twist(description: RobotDescription, *actions: Action) -> None:
-    """Refuse a BODY_TWIST with lateral velocity on a manifest-declared differential base.
-
-    The sim bases integrate any planar twist (the Isaac kinematic base, the MuJoCo
-    qpos write), so a differential robot would slide sideways in sim, which it cannot
-    do on hardware. Raise rather than drop the vy, so the caller sees the command it
-    sent is not executable.
-    """
-    if description.base_kinematics != "differential":
-        return
-    rows = [
-        row
-        for action in actions
-        if action.control_mode is ControlMode.BODY_TWIST
-        for row in action.body_twist or []
-    ]
-    for row in rows:
-        if len(row) > 1 and abs(float(row[1])) > _PLANAR_TWIST_EPS:
-            raise ROSConfigError(
-                f"SimAttachedHAL: '{description.name}' has a differential base; a "
-                f"BODY_TWIST with vy={float(row[1])} cannot be executed."
-            )
 
 
 # Atomic action-group fail-loud bounds: after this many CONSECUTIVE
@@ -464,6 +455,39 @@ def pack_action_for_env(  # noqa: PLR0912  # reason: one branch per supported co
     )
 
 
+def _group_route(env: object) -> tuple[Callable[[list[Action]], Any] | None, int, bool]:
+    """How ``SimAttachedHAL`` sends to a backend that takes typed commands (``step_action_group``).
+
+    Decided from what the env declares (see ``openral_sim.rollout.SimRollout``):
+    ``action_group_size`` > 0 groups every run of that many ungrouped slots (BEHAVIOR);
+    ``steps_every_command_as_group`` takes an ungrouped action as a group of one (the
+    MuJoCo twin); with neither, only multi-slot groups reach it and an ungrouped action
+    is refused at send.
+
+    Returns:
+        ``(step_action_group or None, the fixed group size or 0, every command a group)``.
+    """
+    group_step = getattr(env, "step_action_group", None)
+    if not callable(group_step):
+        return None, 0, False
+    size = int(getattr(env, "action_group_size", 0) or 0)
+    if size > 0:
+        return group_step, size, False
+    return group_step, 0, bool(getattr(env, "steps_every_command_as_group", False))
+
+
+def _group_twist_row(actions: list[Action]) -> list[float] | None:
+    """The first ``BODY_TWIST`` slot's row of a command, ``None`` when it carries none."""
+    return next(
+        (
+            list(a.body_twist[0])
+            for a in actions
+            if a.control_mode is ControlMode.BODY_TWIST and a.body_twist
+        ),
+        None,
+    )
+
+
 class SimAttachedHAL:
     """HAL Protocol adapter that wraps an in-process ``SimRollout``.
 
@@ -506,10 +530,14 @@ class SimAttachedHAL:
     _held_twist_until_ns: int = 0
     #: The Sim scene export per scene source (``export_sim_scene``), made on first use.
     _scene_cache: SceneCache | None = None
+    #: A step finished and its post-step observers have not run yet (``_run_due_observers``).
+    _observers_due: bool = False
+    #: ``reset_episode`` can start a fresh episode (the HAL node advertises the service).
+    episode_reset_supported: bool = True
 
     def __init__(
         self,
-        env: SimRollout,
+        env: SimEnv,
         description: RobotDescription,
         *,
         action_packer: ActionPacker | None = None,
@@ -563,6 +591,10 @@ class SimAttachedHAL:
         else:
             self._action_packer = pack_action_for_env
         self._reset_seed = env_reset_seed
+        # The send route for a backend that takes typed commands, decided once.
+        self._group_step, self._fixed_group_size, self._every_command_is_group = _group_route(env)
+        # One "dropped while latched" line per latch episode (estop .. reset_estop).
+        self._latched_drop_logged = False
         # Episodes started by `reset_episode` since construction (its seed offset).
         self._episode_index = 0
         self._env_action_dim: int | None = env_action_dim
@@ -570,12 +602,13 @@ class SimAttachedHAL:
         self._estop_latched: bool = False
         self._last_state_ns: int = 0
         # Monotonic timestamp (added by the 2026-06-04 idle-stepper amendment)
-        # of the last real actuation that passed through ``send_action`` (the
+        # of the last command ``send_action`` accepted — staged or applied (the
         # single choke point both ``_on_safe_action`` and ``_on_cmd_vel``
         # reach). The sim-only free-running idle stepper reads this to yield
         # the env to an active skill: it skips an idle tick whenever a real
-        # action arrived within the idle-hold window. ``0`` until the first
-        # ``send_action`` (always "stale" so an idle scene starts stepping).
+        # action arrived within the idle-hold window. A refused or latch-dropped
+        # command, and a base velocity setpoint the idle stepper itself drives,
+        # leave it. ``0`` until the first one (so an idle scene starts stepping).
         self._last_action_ns: int = 0
         # Cached observation from the most recent ``reset`` / ``step``.
         # Used by ``read_images`` so the lifecycle node's camera
@@ -605,17 +638,15 @@ class SimAttachedHAL:
         # arm's OSC-delta slot is RE-ZEROED right before each step so
         # the policy's per-step delta is applied once, not accumulated.
         self._last_env_action: NDArray[np.float32] | None = None
-        # Optional atomic multi-surface action staging. Backends that expose
-        # ``step_action_group(actions)`` receive every safety-approved slot from
-        # one ActionChunk.tick_index and step exactly once when their declared
-        # ``action_group_size`` is complete.
-        # Keyed by (runner_session_id, tick_index): ticks restart per runner.
-        self._pending_action_key: tuple[int, int] | None = None
-        self._pending_actions: list[Action] = []
-        self._watermark = TickWatermark()
-        # What the last applied command was (``last_applied_action``).
-        self._last_applied_action: Action | None = None
-        # Wall-clock stamp of the oldest pending slot so a skill that dies
+        # Atomic slot-group staging, the one machine every HAL that reassembles a
+        # tick uses (``SlotGroupStager``, shared with the real ros2_control HALs):
+        # a tick's safety-approved slots, keyed by (runner_session_id, tick_index),
+        # step the env exactly once when the group is complete; the committed
+        # watermark refuses replays of grouped and ungrouped ticked actions alike,
+        # and ``last_applied_action`` is the command each commit applied. Backends
+        # that expose ``step_action_group(actions)`` receive the whole group.
+        self._stager = SlotGroupStager()
+        # Wall-clock stamp of the newest staged slot so a skill that dies
         # mid-tick cannot block ``idle_step`` forever.
         self._pending_since_ns: int = 0
         # send_action tick counter for the throttled diagnostic log.
@@ -692,10 +723,16 @@ class SimAttachedHAL:
         # (the lifecycle node re-resets on each configure→cleanup cycle) never
         # makes the published ``/clock`` jump backwards. On the very first
         # connect a freshly built env reads ~0, so this is a no-op there.
+        # The estop latch survives a reconnect: only ``reset_estop`` clears it, so a
+        # configure → cleanup → configure cycle never re-arms a stopped robot.
         self._reset_env(self._reset_seed, "connect")
-        if self._env_action_dim is None:
-            self._env_action_dim = self._probe_env_action_dim()
-        self._check_time_base()
+        try:
+            if self._env_action_dim is None:
+                self._env_action_dim = self._probe_env_action_dim()
+            self._check_time_base()
+        except BaseException:
+            self._connected = False  # a refused connect leaves the HAL disconnected
+            raise
 
     def export_sim_scene(self) -> dict[str, object] | None:
         """``/openral/viz/sim_scene``'s payload for the live scene, or ``None`` (no exporter).
@@ -732,13 +769,16 @@ class SimAttachedHAL:
         """Refuse an env whose step is not one control period of the robot.
 
         Only a backend that declares ``sim_dt_per_tick_s`` (the Isaac sidecar,
-        RoboCasa, LIBERO) is checked: the runner ticks at
-        ``action_spec.control_freq_hz`` and calls ``env.step`` once per tick,
+        RoboCasa, LIBERO, a ``MujocoTwinRollout`` held to its control rate) is
+        checked: the runner ticks at ``action_spec.control_freq_hz`` and steps the env
+        once per tick,
         so a step that advances the sim by any other interval traverses every
         trajectory at the wrong speed and every kernel velocity / tracking
         check reads the wrong clock (issues #355, #358). The rule itself is
         ``openral_core.check_time_base``. Logs ``sim.time_base`` once per
-        connect so a trace records the time base it was captured on.
+        connect so a trace records the time base it was captured on, with the
+        backend's ``time_base_fields`` (the twin's HAL class as ``backend``, its physics
+        dt and steps per tick).
 
         Raises:
             ROSConfigError: the manifest declares no control rate, or the env's
@@ -752,60 +792,60 @@ class SimAttachedHAL:
         dt = float(dt)
         backend = type(self._env).__name__
         rate = self.description.control_rate_hz
-        check_time_base(dt, rate, backend=f"SimAttachedHAL[{backend}]", robot=self.description.name)
+        check_time_base(
+            dt, rate, backend=f"{type(self).__name__}[{backend}]", robot=self.description.name
+        )
         self._sim_dt_per_tick_s = dt
+        fields = dict(getattr(self._env, "time_base_fields", None) or {})
         structlog.get_logger(_TIME_BASE_LOGGER).info(
             _EVENT_TIME_BASE,
-            backend=backend,
+            backend=fields.pop("backend", backend),
             sim_dt_per_tick_s=round(dt, 6),
             control_freq_hz=rate,
             robot=self.description.name,
+            **fields,
         )
 
-    def reset_episode(self) -> int:
-        """Start a fresh episode on the live env without rebuilding it (sim only).
+    @property
+    def sim_dt_per_tick_s(self) -> float | None:
+        """Sim seconds one command advances, once held to the control rate (``connect``).
 
-        Re-runs exactly what ``connect`` does to the scene (``env.reset`` plus the
-        HAL's per-episode bookkeeping) with the next seed of a deterministic
-        sequence: the base reset seed plus the episode index (1, 2, ...). A scene
-        with per-reset randomisation (Isaac ``pose_noise``) therefore draws a new
-        layout each episode, reproducible from the returned seed. Keeps the env,
-        its sidecar and every ROS node up: a multi-episode harness pays the boot
-        and policy load once. Call between goals, never during one.
-
-        Returns:
-            The seed the env was reset with.
-
-        Raises:
-            ROSRuntimeError: ``env.reset`` raised.
-
+        ``None`` before connect, or for a backend that declares no tick (a twin with a
+        pinned ``settle_steps`` or a manifest without a rate is wall-paced).
         """
-        self._episode_index += 1
-        seed = (self._reset_seed or 0) + self._episode_index
-        self._reset_env(seed, "reset_episode")
-        return seed
+        return self._sim_dt_per_tick_s
 
     def _reset_env(self, seed: int | None, caller: str) -> None:
         """``env.reset(seed)`` and reset the HAL's per-episode state."""
-        self._accumulate_sim_time_before_reset()
+        # Read before the reset, folded into the offset only once it succeeded: a
+        # refused reset leaves the clock where it was (and a retry counts nothing twice).
+        elapsed = self._rollout_sim_time_ns()
         try:
             obs = self._env.reset(seed=seed)
+        except ROSError:
+            raise  # a typed refusal (a twin's MJCF that does not load) keeps its type
         except Exception as exc:
-            raise ROSRuntimeError(f"SimAttachedHAL.{caller}: env.reset failed: {exc}") from exc
+            raise ROSRuntimeError(
+                f"{type(self).__name__}.{caller}: env.reset failed: {exc}"
+            ) from exc
+        if elapsed is not None:
+            self._sim_time_offset_ns += elapsed
         self._last_obs = dict(obs) if isinstance(obs, dict) else None
         self._keep_depth_frames(self._last_obs)
         self._last_state_ns = time.time_ns()
         self._connected = True
-        self._pending_action_key = None
-        self._pending_actions.clear()
-        self._watermark.reset()
-        self._last_applied_action = None
+        # A half-staged tick never outlives a reset; the watermark is cleared by
+        # ``disconnect`` / ``reset_episode`` only (a stop is not a renumbering).
+        self._stager.discard()
         # The reset re-seeded the scene: commands from before it must not ride
         # along as the next pack's ``prev`` (an absolute-target env would move
         # the arm back to its pre-reset pose on the first base twist).
         self._last_env_action = None
         # Nor may a held base setpoint drive the new episode.
         self._held_twist = None
+        # Every object is back at its spawn pose: nothing is held, nothing masked.
+        self._attached_objects = {}
+        self._attached_body_ids = frozenset()
         self._joint_index = None  # rebuilt on next read_state (model identity stable per env)
         # A reset re-randomises the scene, so the previous episode's success
         # verdict no longer describes anything live. Re-seed the witness from
@@ -816,6 +856,14 @@ class SimAttachedHAL:
         self._task_success_first_ns = None
         self._task_success_transitions = 0
         self._step_count = 0
+
+    def _require_connected(self, operation: str) -> None:
+        """Refuse ``operation`` before ``connect`` / after ``disconnect``.
+
+        Raises:
+            ROSRuntimeError: The HAL is not connected (``_base.require_connected``).
+        """
+        require_connected(self._connected, type(self).__name__, operation)
 
     def _probe_env_action_dim(self) -> int:
         """Return the env's flat action dimensionality, or raise.
@@ -841,7 +889,7 @@ class SimAttachedHAL:
             return dim
         backend = type(self._env).__name__
         raise ROSConfigError(
-            f"SimAttachedHAL: cannot resolve the env action width — backend "
+            f"{type(self).__name__}: cannot resolve the env action width — backend "
             f"{backend!r} exposes no `action_dim` (nor does its inner `_env`), "
             "and no `env_action_dim` override was supplied to the constructor. "
             "Add an `action_dim` property to the backend's rollout (reporting "
@@ -871,6 +919,8 @@ class SimAttachedHAL:
             if self._active_task:
                 self._emit_placement_grade_final()
         self._connected = False
+        # The tick numbering restarts with the next connection.
+        self._stager.reset()
 
     def release_env(self) -> None:
         """Hand a ``keep_alive`` backend's sidecar over to the next launch (process teardown).
@@ -906,8 +956,13 @@ class SimAttachedHAL:
             ROSRuntimeError: when called before `connect` or when the
                 env hasn't been reset (no obs cached).
         """
-        if not self._connected:
-            raise ROSRuntimeError("SimAttachedHAL.read_state called before connect().")
+        self._require_connected("read_state")
+        # A backend that reads its own joint state (``read_joint_state``, the
+        # bare MuJoCo twin: manifest addresses, grippers in public units) owns it.
+        read_joint_state = getattr(self._env, "read_joint_state", None)
+        if callable(read_joint_state):
+            state: JointState = read_joint_state()
+            return state
         positions: list[float] = []
         velocities: list[float] = []
         handles = self._mujoco_handles()
@@ -975,73 +1030,6 @@ class SimAttachedHAL:
             stamp_ns=self._last_state_ns,
         )
 
-    def update_attached_objects(self, objects: list[AttachedCollisionObject]) -> None:
-        """Atomically replace attached objects and resolve their MuJoCo bodies.
-
-        Sim evidence uses ``evidence_ref="mujoco_body:<body-name>"``. Every
-        descendant body is masked too, so multipart payloads cannot leak into
-        depth/OctoMap through child geoms. A backend without MuJoCo handles (Isaac)
-        records the set and masks nothing, as on real hardware: only a tracker-bound
-        payload is cleared from the map (by identity), a geometry-only one stays.
-
-        Args:
-            objects: Complete current attachment set.
-
-        Raises:
-            ROSConfigError: On duplicate ids, malformed MuJoCo evidence refs, or
-                unknown body names. The previous snapshot is preserved on failure.
-        """
-        by_id = {obj.object_id: obj for obj in objects}
-        if len(by_id) != len(objects):
-            raise ROSConfigError("Attached collision object ids must be unique.")
-        handles = self._mujoco_handles()
-        if handles is None:
-            # No MuJoCo model to mask payload bodies in (Isaac and other sidecar
-            # backends): the attachment is recorded and nothing is masked, so the
-            # payload stays in the simulated depth exactly as it stays in a real
-            # camera's — the real-hardware path. The octomap bridge clears its cells
-            # only for a tracker-bound attachment (``OctomapVoxelBridge::clear_by_identity``,
-            # ``object_tracking: tracking | on``); a geometry-only one stays occupied and the kernel
-            # may stop on it: never looser than masking.
-            self._attached_objects = by_id
-            self._attached_body_ids = frozenset()
-            return
-
-        import mujoco  # noqa: PLC0415  # reason: optional sim dependency guarded by handles
-
-        model, _data = handles
-        roots: set[int] = set()
-        for obj in objects:
-            prefix = "mujoco_body:"
-            if obj.evidence_ref is None or not obj.evidence_ref.startswith(prefix):
-                raise ROSConfigError(
-                    f"Attached object {obj.object_id!r} requires "
-                    "evidence_ref='mujoco_body:<body-name>' in deploy sim."
-                )
-            body_name = obj.evidence_ref.removeprefix(prefix)
-            body_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name))
-            if body_id < 0:
-                raise ROSConfigError(
-                    f"Attached object {obj.object_id!r} references unknown "
-                    f"MuJoCo body {body_name!r}."
-                )
-            roots.add(body_id)
-
-        body_ids = set(roots)
-        for body_id in range(1, int(model.nbody)):
-            if int(model.body_parentid[body_id]) in body_ids:
-                body_ids.add(body_id)
-        self._attached_objects = by_id
-        self._attached_body_ids = frozenset(body_ids)
-
-    def read_attached_objects(self) -> list[AttachedCollisionObject]:
-        """Return the current attachment snapshot in stable object-id order."""
-        return [self._attached_objects[key] for key in sorted(self._attached_objects)]
-
-    def read_attached_body_ids(self) -> frozenset[int]:
-        """Return exact MuJoCo payload body ids excluded from world perception."""
-        return self._attached_body_ids
-
     def add_post_step_observer(self, observer: Callable[[], None]) -> None:
         """Register a synchronous observer invoked after each simulator step."""
         if observer not in self._post_step_observers:
@@ -1049,6 +1037,10 @@ class SimAttachedHAL:
 
     def send_action(self, action: Action) -> None:
         """Step the env with the packed action vector.
+
+        The post-step observers run once the command is committed, so they read its
+        applied action and tick watermark, and one that raises cannot leave a stepped
+        tick uncommitted (a resend would step it again).
 
         Args:
             action: Per-tick chunk from the safety supervisor. Already
@@ -1061,27 +1053,39 @@ class SimAttachedHAL:
             ROSRuntimeError: when called before `connect` or when
                 `env.step` raises.
         """
-        # Stamp the real-actuation clock FIRST — before any early return — so
-        # the idle stepper yields even on a dropped (estop) or rejected tick:
-        # a skill is still actively trying to drive, and the idle stepper must
-        # not race its env.step. This is the single choke point every real
-        # action passes (both _on_safe_action and _on_cmd_vel reach here).
-        # Except a base velocity setpoint (_is_base_twist_setpoint): it steps
-        # nothing itself, so the idle stepper must keep running to move the base.
-        if not self._is_base_twist_setpoint(action):
-            self._last_action_ns = time.monotonic_ns()
-        if not self._connected:
-            raise ROSRuntimeError("SimAttachedHAL.send_action called before connect().")
+        try:
+            self._send_action(action)
+        finally:
+            self._run_due_observers()
+
+    def _send_action(self, action: Action) -> None:
+        """``send_action`` up to the commit; observers excluded."""
+        self._require_connected("send_action")
         if self._estop_latched:
+            self._log_latched_drop(action)
             return
         if self._env_action_dim is None:
             raise ROSRuntimeError(
-                "SimAttachedHAL.send_action: env_action_dim resolved to None; "
+                f"{type(self).__name__}.send_action: env_action_dim resolved to None; "
                 "re-connect or pass it explicitly to the constructor."
             )
-        group_step = getattr(self._env, "step_action_group", None)
-        if action.tick_group_size > 1 or callable(group_step):
-            self._stage_action_group(action, group_step if callable(group_step) else None)
+        if action.tick_group_size > 1 or self._fixed_group_size > 0:
+            self._stage_action_group(action)
+            return
+        group_step = self._group_step
+        if group_step is not None and not self._every_command_is_group:
+            raise ROSConfigError(
+                f"{type(self).__name__}: {type(self._env).__name__} steps typed slot groups "
+                "(step_action_group) but declares neither action_group_size nor "
+                "steps_every_command_as_group: an ungrouped action needs a positive group size."
+            )
+        # Ungrouped ticked actions (starting-pose ramp, approach) share the
+        # watermark, so a replay is refused and a restarted runner is seen here too.
+        self._stager.admit(action)
+        self._check_twists([action])
+        if group_step is not None:
+            self._step_env_group([action], group_step)
+            self._commit_ungrouped(action)
             return
         # BODY_TWIST direct-qpos path: robosuite's BASIC controller doesn't
         # interpret ``pack_action_for_env``'s slots 0-2 as OmronMobileBase
@@ -1091,22 +1095,19 @@ class SimAttachedHAL:
         # directly, and skip ``env.step()`` so the arm dynamics don't churn.
         # JOINT_POSITION still flows through ``env.step()``.
         if action.control_mode is ControlMode.BODY_TWIST:
-            # body_twist has its own typed Action field (not joint_targets).
-            if not action.body_twist:
-                raise ROSConfigError(
-                    "SimAttachedHAL.send_action: empty Action.body_twist for BODY_TWIST."
-                )
-            _refuse_lateral_twist(self.description, action)
-            row = list(action.body_twist[0])
+            assert action.body_twist  # _check_twists
+            row = [float(v) for v in action.body_twist[0]]
             # MuJoCo integrates the base by direct qpos write (skips env.step so the
             # arm dynamics don't churn). A non-MuJoCo backend (Isaac kinematic base)
-            # has no qpos handle — it integrates the base inside env.step,
-            # so route the twist through the env action vector instead.
+            # has no qpos handle — it integrates the base inside env.step, so the
+            # twist becomes a held velocity setpoint the idle stepper drives: it does
+            # not mark the HAL active (that would stop the very stepper moving it).
             if self._mujoco_handles() is not None:
                 self._apply_body_twist_to_qpos(row)
+                self._commit_ungrouped(action)
             else:
-                self._apply_body_twist_via_env_step(row, action)
-            self._last_applied_action = action
+                self._apply_body_twist_via_env_step(row)
+                self._stager.commit_tick(action)
             return
         # Robosuite composite controllers expose part-name
         # → action-slot mapping via ``cc._action_split_indexes``. The
@@ -1139,7 +1140,7 @@ class SimAttachedHAL:
         # cost a debug session. ``print`` (not stdlib logging) is used
         # so the line survives ros2 launch's subprocess stdout capture —
         # Python's stdlib logging is unconfigured in those subprocesses,
-        # so an ``_log.info`` call would vanish.
+        # so a stdlib ``logging`` call would vanish.
         self._send_log_tick += 1
         if self._send_log_tick == 1 or self._send_log_tick % 50 == 0:
             head = ",".join(f"{float(v):+.3f}" for v in env_action[:8])
@@ -1153,7 +1154,45 @@ class SimAttachedHAL:
         # setpoint is live (arm actions suppress the idle stepper that applies it).
         env_action = self._drive_held_twist(env_action)
         self._step_and_cache(env_action, source="send_action")
-        self._last_applied_action = action
+        self._commit_ungrouped(action)
+
+    def _commit_ungrouped(self, action: Action) -> None:
+        """An ungrouped command was applied: it is the record, and the HAL is active."""
+        self._stager.commit_tick(action)
+        self._mark_active()
+
+    def _mark_active(self) -> None:
+        """Stamp ``last_action_ns``: a command was accepted (staged or applied)."""
+        self._last_action_ns = time.monotonic_ns()
+
+    def _log_latched_drop(self, action: Action) -> None:
+        """Say once per latch episode that commands are being dropped (CLAUDE.md §1.4)."""
+        if self._latched_drop_logged:
+            return
+        self._latched_drop_logged = True
+        log.warning(
+            "hal.send_action.dropped_estop_latched",
+            backend=type(self).__name__,
+            robot=self.description.name,
+            control_mode=action.control_mode.value,
+            tick_index=int(action.tick_index),
+            hint="the estop latch drops every command until reset_estop()",
+        )
+
+    def _check_twists(self, actions: list[Action] | tuple[Action, ...]) -> None:
+        """Refuse every ``BODY_TWIST`` a planar sim base cannot execute, before any steps.
+
+        ``_floating_base.validate_planar_body_twist`` (the one rule): a 6-float row, no
+        linear-z / angular-x / angular-y, and no lateral ``vy`` on a manifest-declared
+        differential base — a sim base would slide sideways where the robot cannot.
+
+        Raises:
+            ROSConfigError: A twist the rule refuses.
+        """
+        differential = self.description.base_kinematics == "differential"
+        for action in actions:
+            if action.control_mode is ControlMode.BODY_TWIST:
+                validate_planar_body_twist(action, type(self).__name__, differential=differential)
 
     def discard_staged_slots(self) -> int:
         """Drop a half-staged action group, keeping the committed watermark.
@@ -1167,158 +1206,124 @@ class SimAttachedHAL:
         Returns:
             How many staged slots were dropped.
         """
-        dropped = len(self._pending_actions)
-        self._pending_actions.clear()
-        self._pending_action_key = None
-        return dropped
+        return self._stager.discard()
 
-    def _stage_action_group(
-        self,
-        action: Action,
-        group_step: Callable[[list[Action]], Any] | None,
-    ) -> None:
-        """Commit one simulator step after every slot in an inference tick is safe."""
-        group_size = int(action.tick_group_size)
-        if group_size <= 1 and group_step is not None:
-            group_size = int(getattr(self._env, "action_group_size", 0) or 0)
-        if group_size <= 0:
-            raise ROSConfigError(
-                "SimAttachedHAL: atomic action group requires a positive group size."
-            )
-        tick = int(action.tick_index)
-        if tick <= 0:
-            raise ROSConfigError(
-                "SimAttachedHAL: atomic action-group backend requires Action.tick_index > 0."
-            )
-        # Same replay guard as ``SlotGroupStager.stage`` (``TickWatermark``): a
-        # group of an already-committed tick of the same runner session, or any
-        # slot of a retired session, must not step the simulator again. A check
-        # only: the watermark moves (and a new session is adopted) when the
-        # group commits below, so one stray slot cannot move it.
-        session = int(action.runner_session_id)
-        self._watermark.check(tick, session=session)
-        key = (session, tick)
-        if self._pending_action_key is not None and key != self._pending_action_key:
-            # Atomicity is preserved: a group missing a safety-rejected slot
-            # must never commit its other slots. Under the producer's applied-
-            # tick barrier, any transition to a newer tick is a contract error.
-            dropped_modes = [a.control_mode.value for a in self._pending_actions]
-            print(
-                f"[sim_attached.send_action] ERROR dropping incomplete safe action group "
-                f"(session, tick)={self._pending_action_key} "
-                f"slots={len(self._pending_actions)}/{group_size} "
-                f"modes={dropped_modes}; starting tick={tick}",
-                flush=True,
-            )
-            # Discard the abandoned tick but ADOPT the slot that exposed it, as
-            # ``SlotGroupStager.stage`` does: dropping it too left the new tick one
-            # slot short forever, so every following tick lost its first slot the
-            # same way and one lost slot froze the arm for the rest of the goal
-            # (Isaac deploy sim: 3558 of 3584 ticks dropped).
-            self._pending_actions = [action]
-            self._pending_action_key = key
-            self._pending_since_ns = time.monotonic_ns()
-            raise ROSRuntimeError(
-                f"SimAttachedHAL: incomplete action group tick staged "
-                f"{len(dropped_modes)}/{group_size} slots, modes={dropped_modes}; "
-                "the safety supervisor rejected/dropped a slot or the rSkill contract "
-                f"declared the wrong group size. Tick {tick} is staged from this slot."
-            )
-        if self._pending_action_key is None:
-            self._pending_action_key = key
-        elif action.tick_group_size != self._pending_actions[0].tick_group_size:
-            expected_group_size = self._pending_actions[0].tick_group_size
-            self._pending_actions.clear()
-            self._pending_action_key = None
-            raise ROSRuntimeError(
-                f"SimAttachedHAL: action group tick={tick} changed size from "
-                f"{expected_group_size} to {action.tick_group_size}."
-            )
-        self._pending_actions.append(action)
-        self._pending_since_ns = time.monotonic_ns()
-        if len(self._pending_actions) < group_size:
-            return
-        if len(self._pending_actions) > group_size:
-            self._pending_actions.clear()
-            self._pending_action_key = None
-            raise ROSRuntimeError(
-                f"SimAttachedHAL: action group tick={tick} exceeded {group_size} slots."
-            )
-        actions = self._take_pending_group()
-        if group_step is None:
-            self._step_packed_action_group(actions)
-            self._commit_group(actions, tick, session)
-            return
+    def _stage(self, action: Action, group_size: int | None = None) -> list[Action] | None:
+        """Stage one slot in ``SlotGroupStager``; the whole tick once complete, else ``None``.
+
+        The stager's rules apply (replays refused, a lost slot reported once and the
+        next tick opened from the slot that exposed it, a size change discarding the
+        tick, a superseded runner's partial tick dropped and logged). A slot the stager
+        took — staged, adopted, or completing its tick — marks the HAL active; one left
+        staged also restarts the stale-group timer ``idle_step`` reads. A refused slot
+        does neither, so it cannot keep a dead half-staged tick alive.
+
+        Raises:
+            ROSConfigError: The action carries no ``tick_index`` (``SlotGroupStager.stage``).
+            ROSRuntimeError: A replay, an incomplete, overrun or resized tick.
+        """
         try:
-            step_result = group_step(actions)
+            group = self._stager.stage(action, group_size=group_size)
+        finally:
+            staged = self._stager.staged
+            if staged and staged[-1] is action:
+                self._pending_since_ns = time.monotonic_ns()
+                self._mark_active()
+        if group is not None:
+            self._mark_active()
+        return group
+
+    def _stage_action_group(self, action: Action) -> None:
+        """Commit one simulator step after every slot in an inference tick is safe."""
+        actions = self._stage(
+            action, self._fixed_group_size if action.tick_group_size <= 1 else None
+        )
+        if actions is None:
+            return
+        # Refused before either the env packer or ``step_action_group`` sees it.
+        self._check_twists(actions)
+        if self._group_step is None:
+            self._step_packed_action_group(actions)
+            self._commit_group(actions)
+            return
+        self._commit_group(actions, self._step_env_group(actions, self._group_step))
+
+    def _step_boundary(self, step: Callable[[], Any], source: str) -> Any:  # noqa: ANN401  # reason: the backend's own transition (StepResult, TwinStepResult, bool)
+        """One simulator step inside the shell's step boundary, for every route.
+
+        Frames on demand (``_request_frames``) before it; after it the step
+        bookkeeping (``_finish_step``) unless ``step`` returned ``False`` (an idle hook
+        that did not advance). A typed ``ROSError`` (a refused command, a twin's
+        ``ROSSafetyViolation``) propagates as raised; anything else is a backend
+        failure, ``ROSRuntimeError``.
+
+        Returns:
+            What ``step`` returned.
+        """
+        rendered = self._request_frames()
+        try:
+            result = step()
+        except ROSError:
+            raise
         except Exception as exc:
             raise ROSRuntimeError(
-                f"SimAttachedHAL.send_action_group: env step failed: {exc}"
+                f"{type(self).__name__}.{source}: env.step failed: {exc}"
             ) from exc
-        # Latch the commanded base twist from the group's BODY_TWIST slot so
-        # ``base_twist`` (and the /odom publisher reading it) reflects what the
-        # policy commanded — the group path bypasses send_action's per-mode
-        # branches that normally maintain ``_last_body_twist``. Mirrors the
-        # ``(vx, vy, 0, 0, 0, wz)`` latch of ``_apply_body_twist_*`` and the
-        # zero-clear of the non-twist path.
-        twist_row = next(
-            (
-                a.body_twist[0]
-                for a in actions
-                if a.control_mode is ControlMode.BODY_TWIST and a.body_twist
-            ),
-            None,
-        )
-        if twist_row is not None and len(twist_row) >= BODY_TWIST_DIM:
-            self._last_body_twist = (
-                float(twist_row[0]),
-                float(twist_row[1]),
-                0.0,
-                0.0,
-                0.0,
-                float(twist_row[5]),
-            )
-        else:
-            self._last_body_twist = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        self._cache_step_result(step_result)
-        self._commit_group(actions, tick, session)
+        if result is not False:
+            self._finish_step(result, rendered)
+        return result
 
-    def _commit_group(self, actions: list[Action], tick: int, session: int) -> None:
+    def _step_env_group(
+        self, actions: list[Action], group_step: Callable[[list[Action]], Any]
+    ) -> Action | None:
+        """One ``step_action_group`` call inside the step boundary; latches ``base_twist``.
+
+        Returns:
+            The command the backend reports it applied (``info["applied_action"]``),
+            or ``None`` when it reports none.
+        """
+        step_result = self._step_boundary(lambda: group_step(actions), "send_action_group")
+        # The group path bypasses the per-mode branches that maintain the twist.
+        self._latch_twist(_group_twist_row(actions))
+        info = getattr(step_result, "info", None)
+        applied = info.get("applied_action") if isinstance(info, dict) else None
+        return applied if isinstance(applied, Action) else None
+
+    def _latch_twist(self, row: list[float] | tuple[float, ...] | None) -> None:
+        """``base_twist`` (the /odom twist) := ``(vx, vy, 0, 0, 0, wz)`` of ``row``, else zero."""
+        self._last_body_twist = (
+            (float(row[0]), float(row[1]), 0.0, 0.0, 0.0, float(row[5]))
+            if row is not None and len(row) >= BODY_TWIST_DIM
+            else _ZERO_TWIST
+        )
+
+    def _commit_group(self, actions: list[Action], applied: Action | None = None) -> None:
         """Move the watermark and record the group's command as one full-dof action.
 
-        The command is ``compose_slot_group_action`` over the manifest joints, as the real
-        HAL composes it. A group that is not one whole joint-position command (a
-        BODY_TWIST or Cartesian slot, joints it leaves uncommanded) records what it set
+        The command is what the backend reports it applied (``applied``), else
+        ``compose_slot_group_action`` over the manifest joints, as the real HAL composes
+        it. A group that is not one whole joint-position command (a BODY_TWIST or
+        Cartesian slot, joints it leaves uncommanded) records what it set
         for the gripper joints instead (``gripper_targets_action``), so the grasp trigger
         still reads the jaw command on a mobile manipulator; ``None`` — command unknown,
         every jaw's command in the trigger is cleared — unless every gripper was commanded
         readably (never a partial record that leaves one jaw's stale command standing).
         """
-        self._watermark.commit(tick, session=session)
-        try:
-            self._last_applied_action = compose_slot_group_action(
-                actions, [joint.name for joint in self.description.joints]
-            )
-        except ROSConfigError:
-            self._last_applied_action = gripper_targets_action(actions, self.description)
-
-    def _take_pending_group(self) -> list[Action]:
-        """Hand over the complete staged group, refusing a lateral twist on a diff base.
-
-        The check runs before either the env packer or ``step_action_group`` sees it.
-        """
-        actions = list(self._pending_actions)
-        self._pending_actions.clear()
-        self._pending_action_key = None
-        _refuse_lateral_twist(self.description, *actions)
-        return actions
+        if applied is None:
+            try:
+                applied = compose_slot_group_action(
+                    actions, [joint.name for joint in self.description.joints]
+                )
+            except ROSConfigError:
+                applied = gripper_targets_action(actions, self.description)
+        self._stager.commit(actions, applied=applied)
 
     def _step_packed_action_group(self, actions: list[Action]) -> None:
         """Pack every safe slot, then execute exactly one simulator step."""
         has_twist = any(action.control_mode is ControlMode.BODY_TWIST for action in actions)
         if has_twist and not self._env_packs:
             raise ROSConfigError(
-                "SimAttachedHAL: BODY_TWIST cannot share a packed env-step group; "
+                f"{type(self).__name__}: BODY_TWIST cannot share a packed env-step group; "
                 "use the backend's step_action_group implementation."
             )
         env_action: NDArray[np.float32] | None = None
@@ -1332,19 +1337,7 @@ class SimAttachedHAL:
                 )
             if env_action is not None:
                 self._last_env_action = env_action.copy()
-            twist = next(
-                (
-                    a.body_twist[0]
-                    for a in actions
-                    if a.control_mode is ControlMode.BODY_TWIST and a.body_twist
-                ),
-                None,
-            )
-            self._last_body_twist = (
-                (float(twist[0]), float(twist[1]), 0.0, 0.0, 0.0, float(twist[5]))
-                if twist is not None
-                else (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-            )
+            self._latch_twist(_group_twist_row(actions))
         elif self._has_composite_split():
             for action in actions:
                 env_action = self._pack_with_composite_split(action)
@@ -1378,7 +1371,9 @@ class SimAttachedHAL:
             if env_action is not None:
                 self._last_env_action = env_action.copy()
         if env_action is None:
-            raise ROSConfigError("SimAttachedHAL: packed action group produced no env action.")
+            raise ROSConfigError(
+                f"{type(self).__name__}: packed action group produced no env action."
+            )
         # A twist-free group keeps a live /cmd_vel setpoint driving.
         env_action = self._drive_held_twist(env_action, twist_commanded=has_twist)
         self._step_and_cache(env_action, source="send_action_group")
@@ -1406,13 +1401,20 @@ class SimAttachedHAL:
             before reaching here return ``False`` themselves).
 
         Raises:
-            ROSRuntimeError: when ``env.step`` raises.
+            ROSError: ``env.step`` raised a typed error (it propagates as raised).
+            ROSRuntimeError: ``env.step`` raised anything else.
         """
-        rendered = self._request_frames()
-        try:
-            step_result = self._env.step(env_action)
-        except Exception as exc:
-            raise ROSRuntimeError(f"SimAttachedHAL.{source}: env.step failed: {exc}") from exc
+        self._step_boundary(lambda: self._env.step(env_action), source)
+        return True
+
+    def _finish_step(self, step_result: object, rendered: bool) -> None:
+        """The bookkeeping after every simulator step, once per step.
+
+        Caches the transition, counts the step, polls the task-success witness and
+        marks the post-step observers due (``send_action`` / ``idle_step`` run them
+        after the commit). ``rendered`` is what ``_request_frames`` said
+        before the step.
+        """
         if rendered:
             self._last_frame_sim_ns = self._rollout_sim_time_ns()
         # ``StepResult.observation`` carries the rendered camera frames
@@ -1424,9 +1426,29 @@ class SimAttachedHAL:
         self._cache_step_result(step_result)
         self._step_count += 1
         self._observe_task_success()
+        self._observers_due = True
+
+    def _run_due_observers(self) -> None:
+        """Run the post-step observers once after a step, from the public entry point."""
+        if not self._observers_due:
+            return
+        self._observers_due = False
         for observer in self._post_step_observers:
-            observer()
-        return True
+            try:
+                observer()
+            except ROSSafetyViolation:
+                raise  # never caught here (CLAUDE.md §5)
+            except Exception as exc:  # reason: the tick is already committed and applied
+                # Raising would report an applied tick as unapplied: the node would
+                # skip its /openral/action_applied ack, and a resend is refused as stale.
+                log.error(
+                    "hal.post_step_observer_failed",
+                    robot=self.description.name,
+                    observer=getattr(observer, "__qualname__", repr(observer)),
+                    tick=self.last_committed_tick,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
 
     def set_frame_period_s(self, period_s: float | None) -> None:
         """Render camera frames only every ``period_s`` of sim time (``None``: every step).
@@ -1620,57 +1642,6 @@ class SimAttachedHAL:
 
     # ── Graded placement of the dispatched goal (observability only) ─────
 
-    def set_active_task(self, prompt: str) -> None:
-        """Grade the dispatched goal's ``prompt``; ``""`` ends the goal.
-
-        ``deploy sim``'s HAL node calls this from ``/openral/reward/active_task``
-        (the rSkill runner publishes the goal's ``ExecuteRskill`` prompt on accept
-        and ``""`` when it ends). Forwards to the backend's ``set_task`` (the Isaac
-        scene's ``placement_success``), which activates that prompt's rubric; a
-        prompt the scene does not grade logs ``sim.placement_grade_unavailable``
-        once and grades nothing. Each grade change then logs ``sim.placement_grade``
-        and the goal's end ``sim.placement_grade_final``. The rubric keeps grading
-        after the goal ends (an object released at the end still has to settle),
-        until the next goal's prompt replaces it. Logging only: never termination,
-        reset or the action path. No-op for a backend without ``set_task``.
-
-        Args:
-            prompt: The executing instruction, verbatim; ``""`` when none is.
-        """
-        if prompt == self._active_task:
-            return
-        set_task = getattr(self._env, "set_task", None)
-        if self._active_task:
-            self._emit_placement_grade_final()
-        self._active_task = prompt
-        if not prompt or not callable(set_task) or self._set_task_failed:
-            return
-        self._placement_prompt = prompt
-        self._placement_grade = self._placement_best = "fail"
-        try:
-            reply = set_task(prompt)
-        except ROSError as exc:  # reason: an observability call must never break actuation
-            self._set_task_failed = True
-            self._placement_scores = None
-            self._emit_task_success(
-                _EVENT_PLACEMENT_GRADE_UNAVAILABLE,
-                level="warning",
-                prompt=prompt,
-                error=str(exc),
-                error_type=type(exc).__name__,
-            )
-            return
-        scores = reply.get("grade_scores") or {}
-        self._placement_scores = (
-            {str(k): float(v) for k, v in scores.items()} if reply.get("graded") else None
-        )
-        if self._placement_scores is None and reply.get("prompts"):
-            self._emit_task_success(
-                _EVENT_PLACEMENT_GRADE_UNAVAILABLE,
-                prompt=prompt,
-                graded_prompts=list(reply["prompts"]),
-            )
-
     def _observe_placement_grade(self, grade: object) -> None:
         """Log ``sim.placement_grade`` when the graded prompt's grade changes."""
         scores = self._placement_scores
@@ -1750,6 +1721,16 @@ class SimAttachedHAL:
         return _spec_id(getattr(self._env, "task", None))
 
     def idle_step(self, wall_dt_s: float | None = None) -> bool:
+        """Advance the wrapped sim one tick with a zero/HOLD action when idle (``_idle_step``).
+
+        The post-step observers run after it, as after ``send_action``.
+        """
+        try:
+            return self._idle_step(wall_dt_s)
+        finally:
+            self._run_due_observers()
+
+    def _idle_step(self, wall_dt_s: float | None = None) -> bool:
         """Advance the wrapped sim one tick with a zero/HOLD action when idle.
 
         SIM-ONLY. Refreshes ``_last_obs`` (camera frames + state) so
@@ -1757,7 +1738,7 @@ class SimAttachedHAL:
         env only steps on ``/openral/safe_action`` receipt, so an idle scene
         freezes physics and cameras go stale.
 
-        Safety: defined ONLY on ``SimAttachedHAL`` — real HALs don't
+        Safety: defined ONLY on the sim shell (``SimAttachedHAL``) — real HALs don't
         define it, and ``SimSensorBridge``
         gates its idle timer on ``callable(getattr(hal, "idle_step", None))``,
         so the timer is never created against a real HAL. That method-only
@@ -1783,18 +1764,20 @@ class SimAttachedHAL:
         override fails loudly at ``connect``, so the idle tick never builds a
         wrong-width zero vector.
 
+        A backend with its own ``idle_step(wall_dt_s)`` hook (the bare MuJoCo
+        twin: a wall-time slice of physics, ``ctrl`` untouched) is advanced by it
+        instead of an ``idle_action`` step, through the same step bookkeeping.
+
         Args:
-            wall_dt_s: Wall-clock seconds this tick represents. Accepted for
-                signature parity with ``MujocoArmHAL.idle_step`` and
-                unused — a wrapped ``SimRollout`` owns its own per-``step``
-                sim-time stride.
+            wall_dt_s: Wall-clock seconds this tick represents. Handed to the
+                backend's ``idle_step`` hook; unused otherwise — a wrapped
+                ``SimRollout`` owns its own per-``step`` sim-time stride.
 
         Returns:
             ``True`` if the env was stepped, ``False`` if suppressed (not
             connected, estop latched, or action dim unresolved).
             Backend-agnostic — no MuJoCo-handle gate.
         """
-        del wall_dt_s
         if not self._connected:
             return False
         if self._estop_latched:
@@ -1803,7 +1786,8 @@ class SimAttachedHAL:
             return False
         if self._env_action_dim is None:
             return False
-        if self._pending_actions:
+        staged = self._stager.staged
+        if staged:
             # A tick's slots are mid-flight — never interleave a HOLD step
             # inside an atomic group. But a group whose slots stopped arriving
             # (skill died mid-tick) must not freeze the scene forever: past
@@ -1812,13 +1796,18 @@ class SimAttachedHAL:
                 return False
             print(
                 f"[sim_attached.idle_step] ERROR discarding stale pending action group "
-                f"(session, tick)={self._pending_action_key} "
-                f"slots={len(self._pending_actions)} (no new slot for "
+                f"(session, tick)={(staged[0].runner_session_id, staged[0].tick_index)} "
+                f"slots={len(staged)} (no new slot for "
                 f"{_PENDING_GROUP_STALE_NS / 1e9:.0f}s); resuming idle stepping",
                 flush=True,
             )
-            self._pending_actions.clear()
-            self._pending_action_key = None
+            self._stager.discard()
+        env_idle_step = getattr(self._env, "idle_step", None)
+        if callable(env_idle_step):
+            stepped = self._step_boundary(lambda: bool(env_idle_step(wall_dt_s)), "idle_step")
+            if stepped:
+                self._latch_twist(None)  # a HOLD: the base is still
+            return bool(stepped)
         # No MuJoCo-handle gate: valid for ANY wrapped SimRollout, including
         # non-MuJoCo backends (Isaac Sim sidecar, ManiSkill3). Steps via the
         # same env.step idiom as send_action's tail (not robocasa.refresh_obs,
@@ -1832,7 +1821,7 @@ class SimAttachedHAL:
         )
         if idle_action.shape != (self._env_action_dim,):
             raise ROSRuntimeError(
-                f"SimAttachedHAL.idle_step: backend idle_action width "
+                f"{type(self).__name__}.idle_step: backend idle_action width "
                 f"{idle_action.shape[0]} != env_action_dim {self._env_action_dim}."
             )
         held = self._live_held_twist()
@@ -2036,79 +2025,43 @@ class SimAttachedHAL:
         return out
 
     def _apply_body_twist_to_qpos(self, row: list[float]) -> None:
-        """Euler-integrate a 6-vec body twist directly into MuJoCo base qpos.
+        """Euler-integrate a validated 6-vec body twist directly into MuJoCo base qpos.
 
-        Mirrors ``PandaMobileHAL._apply_body_twist``. Rotates the
-        body-frame velocity ``(vx, vy)`` into world frame by the
-        current ``base_yaw``, then adds ``velocity * dt`` to each base
-        joint's qpos slot. Yaw wraps to ``[-π, π]``.
+        Mirrors ``PandaMobileHAL._apply_body_twist`` through the one planar integrator
+        (``_floating_base.integrate_planar_twist``): the body-frame ``(vx, vy)`` is
+        rotated into world by the current ``base_yaw`` and ``velocity * dt`` added to
+        each base joint's qpos slot; yaw wraps to ``[-π, π)``. ``send_action`` validated
+        the row (``_check_twists``).
 
         Raises:
-            ROSConfigError: when ``row`` is not a 6-vec or its
-                non-planar components (vz / wx / wy) are non-zero.
-            ROSRuntimeError: when no MuJoCo handles are bound (the
-                env isn't MJCF-backed — non-applicable backends should
-                never see a BODY_TWIST action).
+            ROSConfigError: The manifest declares no planar base (``base_joints``
+                ``[x, y, yaw]``) or a base joint is missing from the MJCF.
         """
-        import math  # noqa: PLC0415  # reason: stdlib defer
-
+        handles = self._mujoco_handles()
+        assert handles is not None  # the caller's route
+        model, data = handles
         import mujoco  # noqa: PLC0415  # reason: optional dep, guarded by handles check
 
-        if len(row) != BODY_TWIST_DIM:
-            raise ROSConfigError(
-                f"SimAttachedHAL: BODY_TWIST action expects {BODY_TWIST_DIM} "
-                f"floats per row (vx, vy, vz, wx, wy, wz); got {len(row)}."
-            )
-        if any(abs(row[i]) > _PLANAR_TWIST_EPS for i in (2, 3, 4)):
-            raise ROSConfigError(
-                "SimAttachedHAL: BODY_TWIST row carries non-zero linear-z / "
-                "angular-x / angular-y components; the panda_mobile base is "
-                "holonomic planar — only vx, vy, wz are actuated."
-            )
-        handles = self._mujoco_handles()
-        if handles is None:
-            raise ROSRuntimeError(
-                "SimAttachedHAL: BODY_TWIST received but no MuJoCo handles "
-                "on the bound env — this backend cannot integrate base velocity."
-            )
-        model, data = handles
-        # Resolve the three planar base joint names via the same lookup
-        # chain ``base_pose`` uses (description.base_joints +
-        # sim_joint_name override, fallback to first three joints).
-        bj = self.description.base_joints
-        if bj is not None and len(bj) >= 3:  # noqa: PLR2004  # reason: x/y/yaw triple
-            joints_by_name = {j.name: j for j in self.description.joints}
-            base_joint_names = tuple(
-                (joints_by_name[name].sim_joint_name or name) for name in bj[:3]
-            )
-        else:
-            base_joint_names = tuple(
-                (j.sim_joint_name or j.name) for j in self.description.joints[:3]
-            )
-        addrs: list[int] = []
-        for sim_name in base_joint_names:
-            jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, sim_name)
-            if jid < 0:
-                raise ROSRuntimeError(
-                    f"SimAttachedHAL: base joint {sim_name!r} not found in MJCF; "
-                    "cannot apply BODY_TWIST. Check robot.yaml base_joints + sim_joint_name."
-                )
-            addrs.append(int(model.jnt_qposadr[jid]))
-
+        addrs = self._base_qpos_addrs(model, mujoco, strict=True)
         vx_body, vy_body, _vz, _wx, _wy, wz = row
         # Latch the commanded twist for the /odom publisher (base_link frame).
-        self._last_body_twist = (vx_body, vy_body, 0.0, 0.0, 0.0, wz)
-        yaw = float(data.qpos[addrs[2]])
-        cy, sy = math.cos(yaw), math.sin(yaw)
-        vx_world = cy * vx_body - sy * vy_body
-        vy_world = sy * vx_body + cy * vy_body
+        self._latch_twist(row)
         dt = self._body_twist_dt_s
-        data.qpos[addrs[0]] = float(data.qpos[addrs[0]]) + vx_world * dt
-        data.qpos[addrs[1]] = float(data.qpos[addrs[1]]) + vy_world * dt
-        new_yaw = yaw + wz * dt
-        # Wrap to [-π, π] so long sessions don't accumulate drift.
-        new_yaw = (new_yaw + math.pi) % (2.0 * math.pi) - math.pi
-        data.qpos[addrs[2]] = new_yaw
+        x, y, yaw, _ = integrate_planar_twist(
+            (
+                float(data.qpos[addrs[0]]),
+                float(data.qpos[addrs[1]]),
+                float(data.qpos[addrs[2]]),
+                0.0,
+            ),
+            vx_body,
+            vy_body,
+            wz,
+            dt,
+        )
+        data.qpos[addrs[0]] = x
+        data.qpos[addrs[1]] = y
+        data.qpos[addrs[2]] = yaw
         # Propagate the qpos change into derived state (body xforms +
         # sensor positions) so the live MuJoCo viewer + ``/scan``
         # ray-cast see the new base pose on the same tick. No physics
@@ -2141,8 +2094,8 @@ class SimAttachedHAL:
         # run at 2x the rate of the motion it was timing.
         data.time = float(data.time) + dt
 
-    def _apply_body_twist_via_env_step(self, row: list[float], action: Action) -> None:
-        """Integrate a BODY_TWIST through ``env.step`` (non-MuJoCo planar base).
+    def _apply_body_twist_via_env_step(self, row: list[float]) -> None:
+        """Hold a validated BODY_TWIST as the base setpoint ``env.step`` integrates.
 
         For a backend without a qpos handle (the Isaac kinematic base)
         the planar base lives inside the env: the scene integrates ``(vx, vy, wz)``
@@ -2150,17 +2103,11 @@ class SimAttachedHAL:
         ``pack_action`` packs the twist itself (holding every joint target);
         otherwise we pack the body-frame twist into the **final three** slots and
         leave the rest at zero. The scene integrates by its own command-interval
-        dt, so we pass the velocity raw.
+        dt, so we pass the velocity raw. ``send_action`` validated the row.
         """
-        if any(abs(row[i]) > _PLANAR_TWIST_EPS for i in (2, 3, 4)):
-            raise ROSConfigError(
-                "SimAttachedHAL: BODY_TWIST row carries non-zero linear-z / "
-                "angular-x / angular-y components; a holonomic planar base only "
-                "actuates vx, vy, wz."
-            )
         if self._env_action_dim is None or self._env_action_dim < 3:  # noqa: PLR2004  # reason: vx/vy/wz triple
             raise ROSRuntimeError(
-                "SimAttachedHAL: BODY_TWIST on a non-MuJoCo backend needs an env "
+                f"{type(self).__name__}: BODY_TWIST on a non-MuJoCo backend needs an env "
                 f"action vector of at least 3 slots; got {self._env_action_dim}. "
                 "Does this robot declare a planar base (base_joints)?"
             )
@@ -2172,10 +2119,9 @@ class SimAttachedHAL:
         # base covered 2/3 of the commanded distance per wall second, /odom's twist
         # flickered to zero on the idle steps between, and Nav2 (on sim time,
         # whose clock only its own commands advanced) drove past its goals.
-        del action
         self._held_twist = (float(vx_body), float(vy_body), float(wz))
         self._held_twist_until_ns = self._twist_hold_clock_ns() + _BASE_TWIST_HOLD_NS
-        self._last_body_twist = (vx_body, vy_body, 0.0, 0.0, 0.0, wz)
+        self._latch_twist(row)
 
     def _drive_held_twist(
         self, env_action: NDArray[np.float32], *, twist_commanded: bool = False
@@ -2240,15 +2186,6 @@ class SimAttachedHAL:
         sim_ns = self.sim_time_ns()
         return time.monotonic_ns() if sim_ns is None else sim_ns
 
-    def _is_base_twist_setpoint(self, action: Action) -> bool:
-        """An ungrouped BODY_TWIST for a base the env integrates (Isaac kinematic base)."""
-        return (
-            action.control_mode is ControlMode.BODY_TWIST
-            and int(action.tick_group_size) <= 1
-            and not callable(getattr(self._env, "step_action_group", None))
-            and self._mujoco_handles() is None
-        )
-
     def _merge_refreshed_obs(self, refreshed: Any) -> None:  # noqa: ANN401  # reason: Observation is dict[str, Any]
         """Merge a post-BODY_TWIST ``refresh_obs`` result into ``_last_obs``.
 
@@ -2286,12 +2223,16 @@ class SimAttachedHAL:
             self._last_obs["raw_proprio"] = dict(refreshed_proprio)
 
     def estop(self) -> None:
-        """Latch e-stop. Subsequent send_action calls are dropped."""
+        """Latch e-stop: commands are dropped (logged once) and idle does not step.
+
+        The latch survives a reconnect; only ``reset_estop`` clears it. The base stops
+        and a half-staged slot group is dropped (the watermark is kept).
+        """
         self._estop_latched = True
+        self._latched_drop_logged = False
         self._held_twist = None
-        self._last_body_twist = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)  # /odom: the base is stopped
-        self._pending_action_key = None
-        self._pending_actions.clear()
+        self._latch_twist(None)  # /odom: the base is stopped
+        self._stager.discard()
 
     # ── Helpers exposed to the lifecycle node ──────────────────────────
 
@@ -2325,17 +2266,17 @@ class SimAttachedHAL:
         when it set none); for an ungrouped action, the action itself. The lifecycle node
         folds it into the grasp trigger.
         """
-        return self._last_applied_action
+        return self._stager.last_applied_action
 
     @property
     def last_committed_tick(self) -> int:
-        """Most recent atomic action-group tick committed to the simulator."""
-        return self._watermark.tick
+        """Most recent ticked action or slot group committed to the simulator (0 = none)."""
+        return self._stager.last_committed_tick
 
     @property
     def last_committed_session(self) -> int:
         """``runner_session_id`` of ``last_committed_tick`` (0 = none / session-less)."""
-        return self._watermark.session
+        return self._stager.last_committed_session
 
     def _rollout_sim_time_ns(self) -> int | None:
         """Read the wrapped rollout's per-episode sim time, or ``None``.
@@ -2401,13 +2342,17 @@ class SimAttachedHAL:
         node. A clock-less wrapped rollout falls back to host wall time; callers
         must then keep the graph on the host-wall clock authority. The
         ``timestep_s`` is the env's declared sim seconds per step when it
-        reports one (checked in ``connect``), else the body-twist interval.
+        reports one (checked in ``connect``), else its physics timestep
+        (``physics_dt_s``, a wall-paced twin), else the body-twist interval. The clock
+        id is the env's ``clock_id`` (``"mujoco"`` for the twin), else its class name.
         """
         if self.sim_time_ns() is None:
             return ClockAuthority.host_wall()
         return ClockAuthority.simulation(
-            type(self._env).__name__,
-            timestep_s=self._sim_dt_per_tick_s or self._body_twist_dt_s,
+            getattr(self._env, "clock_id", None) or type(self._env).__name__,
+            timestep_s=self._sim_dt_per_tick_s
+            or getattr(self._env, "physics_dt_s", None)
+            or self._body_twist_dt_s,
             publishes_ros_clock=True,
         )
 
@@ -2428,7 +2373,7 @@ class SimAttachedHAL:
         return getter()  # type: ignore[no-any-return]  # reason: mujoco_handles contract is duck-typed; runtime-verified by SimAttachedHAL callers
 
     @property
-    def env(self) -> SimRollout:
+    def env(self) -> SimEnv:
         """Direct access to the wrapped sim env (for tests / advanced wiring)."""
         return self._env
 
@@ -2469,7 +2414,14 @@ class SimAttachedHAL:
         Returns an empty dict when no observation has been cached yet
         (e.g. before ``connect``) or when the observation has no
         ``"images"`` slot (non-image backends). Never raises.
+
+        A backend that renders on demand (``read_images()`` hook, the bare MuJoCo
+        twin) is asked instead: its frames show the current state, so
+        ``read_image_times`` stays empty for it.
         """
+        render = getattr(self._env, "read_images", None)
+        if callable(render):
+            return dict(render())
         if self._last_obs is None:
             return {}
         images = self._last_obs.get("images")
@@ -2509,6 +2461,9 @@ class SimAttachedHAL:
         ``read_depth_cloud_colours`` has the matching per-point colours. Empty when
         the backend renders no depth (MuJoCo backends ray-cast instead). Never raises.
         """
+        # Deferred: only a depth-rendering backend pays the import.
+        from openral_hal.depth_cloud import cloud_from_depth_frame  # noqa: PLC0415
+
         out: dict[str, NDArray[np.float32]] = {}
         for name, frame in self._last_depth_frames.items():
             cached = self._depth_cloud_cache.get(name)
@@ -2569,21 +2524,27 @@ class SimAttachedHAL:
     def base_pose(self) -> tuple[float, float, float]:
         """Current base ``(x, y, yaw)`` read from MJCF qpos.
 
-        Mirrors ``PandaMobileHAL.base_pose`` so the panda_mobile
-        lifecycle node's ``/odom`` publisher works regardless of which
-        HAL is wired in. Reads the three joint positions named in
-        ``description.base_joints`` (typically
-        ``[base_x, base_y, base_yaw]``) — falls back to the first three
-        ``description.joints`` if ``base_joints`` is unset.
+        In order: a backend that reads its own base pose (``read_base_pose()``: the
+        twins' pinned or free base, the OpenAMRobot's planar joints) is asked; a robot
+        whose manifest declares no planar base (``describes_mobile_base``) reads
+        ``(0.0, 0.0, 0.0)``; a non-MuJoCo backend that drives a planar base (the Isaac
+        kinematic base) reports ``obs["base_pose"] = (x, y, yaw)``, else
+        ``(0.0, 0.0, 0.0)``; a MuJoCo scene reads the qpos of the three joints named in
+        ``description.base_joints`` (``[base_x, base_y, base_yaw]``, by
+        ``sim_joint_name``; one absent from the MJCF reads ``0.0``), as
+        ``PandaMobileHAL.base_pose`` does, so the ``/odom`` publisher works whichever
+        HAL is wired in.
 
-        For a non-MuJoCo backend that drives a planar base (e.g. the Isaac
-        kinematic base) the pose comes from ``obs["base_pose"]``
-        ``= (x, y, yaw)`` the SimRollout surfaces; this is what feeds the
-        ``/odom`` publisher there. Falls back to ``(0.0, 0.0, 0.0)`` when the
-        backend reports neither (non-mobile backends like PushT) — the same
-        neutral pose the lifecycle node's ``getattr(..., (0.0, 0.0, 0.0))``
-        fallback would supply.
+        Raises:
+            ROSConfigError: A MuJoCo scene whose manifest declares one or two
+                ``base_joints`` (no ``[x, y, yaw]`` triple).
         """
+        read_base_pose = getattr(self._env, "read_base_pose", None)
+        if callable(read_base_pose):
+            x, y, yaw = read_base_pose()
+            return (float(x), float(y), float(yaw))
+        if not describes_mobile_base(self.description):
+            return (0.0, 0.0, 0.0)
         handles = self._mujoco_handles()
         if handles is None:
             # Non-MuJoCo planar base: read the (x, y, yaw) the rollout surfaces.
@@ -2597,26 +2558,56 @@ class SimAttachedHAL:
         model, data = handles
         import mujoco  # noqa: PLC0415  # reason: optional dep, guarded by handles check
 
-        base_joint_names: tuple[str, ...]
-        bj = self.description.base_joints
-        if bj is not None and len(bj) >= 3:  # noqa: PLR2004  # reason: x/y/yaw triple
-            joints_by_name = {j.name: j for j in self.description.joints}
-            base_joint_names = tuple(
-                (joints_by_name[name].sim_joint_name or name) for name in bj[:3]
-            )
-        else:
-            base_joint_names = tuple(
-                (j.sim_joint_name or j.name) for j in self.description.joints[:3]
-            )
         qpos = np.asarray(data.qpos, dtype=np.float64)
-        out: list[float] = []
-        for sim_name in base_joint_names:
+        return cast(
+            "tuple[float, float, float]",
+            tuple(
+                0.0 if addr is None else float(qpos[addr])
+                for addr in self._base_qpos_addrs(model, mujoco, strict=False)
+            ),
+        )
+
+    def _base_qpos_addrs(
+        self,
+        model: Any,  # noqa: ANN401  # reason: mujoco.MjModel
+        mujoco: Any,  # noqa: ANN401  # reason: the lazily imported mujoco module
+        *,
+        strict: bool,
+    ) -> list[int | None]:
+        """The qpos address of each planar base joint ``base_joints[:3]`` (``sim_joint_name``).
+
+        Args:
+            model: The live ``MjModel``.
+            mujoco: The ``mujoco`` module.
+            strict: Raise for a joint missing from the MJCF (a twist to apply), instead
+                of ``None`` (a pose to read).
+
+        Raises:
+            ROSConfigError: The manifest declares fewer than three ``base_joints`` (no
+                planar base to read or move), or (``strict``) one is not in the MJCF.
+        """
+        base = list(self.description.base_joints or [])
+        if len(base) < 3:  # noqa: PLR2004  # reason: x/y/yaw triple
+            raise ROSConfigError(
+                f"{type(self).__name__}: robot '{self.description.name}' declares no planar "
+                f"base (base_joints [x, y, yaw], got {base}); a BODY_TWIST cannot move it."
+            )
+        joints_by_name = {j.name: j for j in self.description.joints}
+        addrs: list[int | None] = []
+        for name in base[:3]:
+            sim_name = joints_by_name[name].sim_joint_name or name
             jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, sim_name)
             if jid < 0:
-                out.append(0.0)
+                if strict:
+                    raise ROSConfigError(
+                        f"{type(self).__name__}: base joint {sim_name!r} not found in MJCF; "
+                        "cannot apply BODY_TWIST. Check robot.yaml base_joints + "
+                        "sim_joint_name."
+                    )
+                addrs.append(None)
                 continue
-            out.append(float(qpos[int(model.jnt_qposadr[jid])]))
-        return (out[0], out[1], out[2])
+            addrs.append(int(model.jnt_qposadr[jid]))
+        return addrs
 
     @property
     def base_twist(self) -> tuple[float, float, float, float, float, float]:
@@ -2626,7 +2617,13 @@ class SimAttachedHAL:
         integration of this command, so it is the base's velocity — the
         panda_mobile lifecycle node publishes it as the ``/odom`` twist.
         Zeroed once a non-BODY_TWIST action is sent or an idle HOLD step runs.
+        A backend that holds its own velocity setpoint (``read_base_twist()``: the
+        G1 GR00T WBC command, which arm actions leave standing) reports it instead.
         """
+        read_base_twist = getattr(self._env, "read_base_twist", None)
+        if callable(read_base_twist):
+            vx, vy, vz, wx, wy, wz = read_base_twist()
+            return (float(vx), float(vy), float(vz), float(wx), float(wy), float(wz))
         return self._last_body_twist
 
     def base_pose_6dof(
@@ -2685,6 +2682,7 @@ class SimAttachedHAL:
     def reset_estop(self) -> None:
         """Clear the estop latch. Caller asserts the cause has been resolved."""
         self._estop_latched = False
+        self._latched_drop_logged = False
 
     def read_policy_state(self) -> list[float] | None:
         """Return the simulator-native policy state, when the backend exposes one.
@@ -2701,3 +2699,149 @@ class SimAttachedHAL:
         if raw is None:
             return None
         return [float(value) for value in np.asarray(raw, dtype=np.float32).reshape(-1)]
+
+    def reset_episode(self) -> int:
+        """Start a fresh episode on the live env without rebuilding it (sim only).
+
+        Re-runs exactly what ``connect`` does to the scene (``env.reset`` plus the
+        HAL's per-episode bookkeeping) with the next seed of a deterministic
+        sequence: the base reset seed plus the episode index (1, 2, ...). A scene
+        with per-reset randomisation (Isaac ``pose_noise``) therefore draws a new
+        layout each episode, reproducible from the returned seed. Keeps the env,
+        its sidecar and every ROS node up: a multi-episode harness pays the boot
+        and policy load once. Call between goals, never during one.
+
+        Returns:
+            The seed the env was reset with.
+
+        Raises:
+            ROSRuntimeError: Not connected, or ``env.reset`` raised.
+
+        """
+        self._require_connected("reset_episode")
+        self._episode_index += 1
+        seed = (self._reset_seed or 0) + self._episode_index
+        self._reset_env(seed, "reset_episode")
+        self._stager.reset()  # a new episode restarts the tick numbering
+        return seed
+
+    def update_attached_objects(self, objects: list[AttachedCollisionObject]) -> None:
+        """Atomically replace attached objects and resolve their MuJoCo bodies.
+
+        Sim evidence uses ``evidence_ref="mujoco_body:<body-name>"``. Every
+        descendant body is masked too, so multipart payloads cannot leak into
+        depth/OctoMap through child geoms. A backend without MuJoCo handles (Isaac)
+        records the set and masks nothing, as on real hardware: only a tracker-bound
+        payload is cleared from the map (by identity), a geometry-only one stays.
+        On a MuJoCo backend an object whose evidence names no MuJoCo body (the
+        vision leg's) is recorded the same way: kept, masking nothing.
+
+        Args:
+            objects: Complete current attachment set.
+
+        Raises:
+            ROSConfigError: On duplicate ids or an unknown ``mujoco_body:`` name.
+                The previous snapshot is preserved on failure.
+        """
+        by_id = {obj.object_id: obj for obj in objects}
+        if len(by_id) != len(objects):
+            raise ROSConfigError("Attached collision object ids must be unique.")
+        handles = self._mujoco_handles()
+        if handles is None:
+            # No MuJoCo model to mask payload bodies in (Isaac and other sidecar
+            # backends): the attachment is recorded and nothing is masked, so the
+            # payload stays in the simulated depth exactly as it stays in a real
+            # camera's — the real-hardware path. The octomap bridge clears its cells
+            # only for a tracker-bound attachment (``OctomapVoxelBridge::clear_by_identity``,
+            # ``object_tracking: tracking | on``); a geometry-only one stays occupied and the kernel
+            # may stop on it: never looser than masking.
+            self._attached_objects = by_id
+            self._attached_body_ids = frozenset()
+            return
+
+        import mujoco  # noqa: PLC0415  # reason: optional sim dependency guarded by handles
+
+        model, _data = handles
+        roots: set[int] = set()
+        for obj in objects:
+            prefix = "mujoco_body:"
+            if obj.evidence_ref is None or not obj.evidence_ref.startswith(prefix):
+                # Evidence that names no MuJoCo body (the vision attachment leg's
+                # ``segmenter_mask:…``) is recorded and masks nothing, as on Isaac
+                # and real hardware above. Refusing it left the kernel-accepted
+                # revision pending, which held every following action ack.
+                continue
+            body_name = obj.evidence_ref.removeprefix(prefix)
+            body_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name))
+            if body_id < 0:
+                raise ROSConfigError(
+                    f"Attached object {obj.object_id!r} references unknown "
+                    f"MuJoCo body {body_name!r}."
+                )
+            roots.add(body_id)
+
+        body_ids = set(roots)
+        for body_id in range(1, int(model.nbody)):
+            if int(model.body_parentid[body_id]) in body_ids:
+                body_ids.add(body_id)
+        self._attached_objects = by_id
+        self._attached_body_ids = frozenset(body_ids)
+
+    def read_attached_objects(self) -> list[AttachedCollisionObject]:
+        """Return the current attachment snapshot in stable object-id order."""
+        return [self._attached_objects[key] for key in sorted(self._attached_objects)]
+
+    def read_attached_body_ids(self) -> frozenset[int]:
+        """Return exact MuJoCo payload body ids excluded from world perception."""
+        return self._attached_body_ids
+
+    def set_active_task(self, prompt: str) -> None:
+        """Grade the dispatched goal's ``prompt``; ``""`` ends the goal.
+
+        ``deploy sim``'s HAL node calls this from ``/openral/reward/active_task``
+        (the rSkill runner publishes the goal's ``ExecuteRskill`` prompt on accept
+        and ``""`` when it ends). Forwards to the backend's ``set_task`` (the Isaac
+        scene's ``placement_success``), which activates that prompt's rubric; a
+        prompt the scene does not grade logs ``sim.placement_grade_unavailable``
+        once and grades nothing. Each grade change then logs ``sim.placement_grade``
+        and the goal's end ``sim.placement_grade_final``. The rubric keeps grading
+        after the goal ends (an object released at the end still has to settle),
+        until the next goal's prompt replaces it. Logging only: never termination,
+        reset or the action path. No-op for a backend without ``set_task``.
+
+        Args:
+            prompt: The executing instruction, verbatim; ``""`` when none is.
+        """
+        if prompt == self._active_task:
+            return
+        set_task = getattr(self._env, "set_task", None)
+        if self._active_task:
+            self._emit_placement_grade_final()
+        self._active_task = prompt
+        if not prompt or not callable(set_task) or self._set_task_failed:
+            return
+        self._placement_prompt = prompt
+        self._placement_grade = self._placement_best = "fail"
+        try:
+            reply = set_task(prompt)
+        except ROSError as exc:  # reason: an observability call must never break actuation
+            self._set_task_failed = True
+            self._placement_scores = None
+            self._emit_task_success(
+                _EVENT_PLACEMENT_GRADE_UNAVAILABLE,
+                level="warning",
+                prompt=prompt,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            return
+        scores = reply.get("grade_scores") or {}
+        self._placement_scores = (
+            {str(k): float(v) for k, v in scores.items()} if reply.get("graded") else None
+        )
+        if self._placement_scores is None and reply.get("prompts"):
+            self._emit_task_success(
+                _EVENT_PLACEMENT_GRADE_UNAVAILABLE,
+                prompt=prompt,
+                graded_prompts=list(reply["prompts"]),
+            )

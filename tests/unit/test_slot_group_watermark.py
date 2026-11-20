@@ -182,3 +182,31 @@ def test_discard_reports_what_it_dropped_and_keeps_the_watermark() -> None:
     assert stager.discard() == 1
     assert stager.discard() == 0
     assert (stager.last_committed_tick, stager.last_committed_session) == (5, _A)
+
+
+def test_a_slot_that_changes_its_ticks_group_size_discards_the_tick() -> None:
+    """A later slot declaring a smaller size must not release a short group (#683).
+
+    Before, ``stage`` compared the staged count with the LATEST slot's size: a tick
+    opened at size 3 was released at 2 slots when its second slot declared 2, so a
+    real HAL dispatched a partial tick. Now the tick is discarded and refused; the
+    next tick stages normally.
+    """
+    stager = SlotGroupStager()
+    first, second = _slots(1, _A)
+    assert stager.stage(first.model_copy(update={"tick_group_size": 3})) is None
+    with pytest.raises(ROSRuntimeError, match="changed its declared size from 3 to 2"):
+        stager.stage(second)
+    assert stager.pending == 0
+    assert stager.last_committed_tick == 0
+    _apply(stager, 2, _A)
+    assert stager.last_committed_tick == 2
+
+
+def test_a_backend_declared_group_size_is_the_ticks_size() -> None:
+    """``group_size=`` (a fixed-size backend) is what a later slot is compared against."""
+    stager = SlotGroupStager()
+    first, second = (s.model_copy(update={"tick_group_size": 1}) for s in _slots(1, _A))
+    assert stager.stage(first, group_size=2) is None
+    group = stager.stage(second, group_size=2)
+    assert group is not None and len(group) == 2
