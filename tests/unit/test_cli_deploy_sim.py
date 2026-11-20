@@ -67,8 +67,8 @@ def test_bh_deploy_sim_help_renders() -> None:
     for flag in ("--config", "--robot", "--dashboard-port", "--hal", "--dry-run"):
         assert flag in result.output, f"{flag} missing from help"
     # --rskill was removed: the reasoner picks the active rSkill
-    # dynamically from rskills/ at on_configure.
-    assert "--rskill" not in result.output
+    # dynamically from rskills/ at on_configure. (--rskill-install is the auto-install switch.)
+    assert not re.search(r"--rskill(?![-\w])", result.output)
     assert "--enable-sim-clock" not in result.output
 
 
