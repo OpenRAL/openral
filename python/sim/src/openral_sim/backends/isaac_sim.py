@@ -2372,6 +2372,8 @@ def _build_robot_spec(
         "ros_package_paths": _ros_package_paths(urdf_path),
         "base_frame": desc.base_frame,
         "root_to_base": _root_to_base(desc).tolist(),
+        # The base's Nav2 footprint (base_frame xy): the sidecar's robot-vs-robot overlap check.
+        "footprint_polygon": [list(v) for v in desc.footprint_polygon or []] or None,
         # The arm is always pinned to its (possibly moving) root: a fixed arm is
         # pinned to the world; a mobile base teleports that pinned root each step
         # (kinematic base). Either way fix_base=True keeps the arm from falling.

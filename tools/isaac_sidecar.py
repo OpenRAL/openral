@@ -9,6 +9,7 @@ environment USD and objects), and serves msgpack/ndarray framing on a ZMQ ROUTER
 (clients are REQ sockets; ``step`` replies wait on the lockstep, ``_Lockstep``):
 
     ping->{"ok","action_dim","task","layout","environment","spawn","robot","objects","robot_spec_hash","launch_id"}
+        (+ "robots" when serving several)
     reset->{"observation"}
     step{action, frames?, robot?, idle?}->{"observation","reward","terminated","truncated","info","renders"}
         frames: "render" (default) | "fresh" | "none" (no frame keys in the observation)
@@ -16,7 +17,12 @@ environment USD and objects), and serves msgpack/ndarray framing on a ZMQ ROUTER
     contacts->PhysX robot-vs-world contacts, last physics step (scene.contact_ground_truth)
     link_poses{links}->{"sim_time_ns","dofs","links"}: every DOF's position + drive target,
         the named links' base-frame poses as PhysX holds them (scene.link_poses)
+    footprint_overlaps->{"overlaps": [[a, b]], "events": [{"robots", "sim_time_ns"}]}
     observation = {"images": {"camera1": <H,W,3 uint8>}, "state": 1-D float32, "task": str}
+
+Several robots in one stage (``--robots``, openral-pro#99): every request about one robot
+names it in its ``robot`` field (``""`` when absent: the one robot of a ``--robot-spec``
+sidecar), and the lockstep's released steps advance the world once (``scene.step_many``).
 
 IMPORTANT: construct ``SimulationApp`` before any ``omni.*``/``isaaclab`` import
 — heavy imports live inside ``main``, not module scope.
@@ -31,6 +37,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import io
+import json
 import os
 import re
 import sys
@@ -99,7 +106,7 @@ def _decode_ndarray(obj: dict[str, Any]) -> Any:
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="OpenRAL Isaac Sim scene sidecar")
     p.add_argument("--task", required=True, help="task id, e.g. isaac_sim/_hal_deploy_noop")
-    p.add_argument("--robot", default="franka_panda")
+    p.add_argument("--robot", default=None, help="robot id (default franka_panda)")
     p.add_argument("--instruction", default="")
     p.add_argument("--obs-height", type=int, default=256)
     p.add_argument("--obs-width", type=int, default=256)
@@ -134,10 +141,19 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         ),
     )
     p.add_argument(
+        "--robots",
+        default=None,
+        help=(
+            "several robots in one stage, a JSON list "
+            '[{"name", "robot_spec": <path>, "spawn_pose": [x, y, z, yaw]}, ...]; '
+            "replaces --robot / --robot-spec / --spawn-pose"
+        ),
+    )
+    p.add_argument(
         "--spawn-pose",
         type=float,
         nargs=4,
-        default=[0.0, 0.0, 0.0, 0.0],
+        default=None,
         metavar=("X", "Y", "Z", "YAW"),
         help="robot world placement, metres + radians (manifest layout only)",
     )
@@ -170,7 +186,63 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         ),
     )
     args = p.parse_args(argv)
+    if args.robots is not None:
+        given = [f for f in ("robot", "robot_spec", "spawn_pose") if getattr(args, f) is not None]
+        if given:
+            p.error(f"--robots replaces {', '.join('--' + f.replace('_', '-') for f in given)}")
+    if args.robot is None:
+        args.robot = "franka_panda"
+    if args.spawn_pose is None:
+        args.spawn_pose = [0.0, 0.0, 0.0, 0.0]
     return args
+
+
+#: A ``--robots`` name: it names the robot's prim, graph and fleet entry.
+_ROBOT_NAME = re.compile(r"[a-z0-9]+")
+
+
+def _parse_robots(text: str) -> list[dict[str, Any]]:
+    """``--robots``: ``[{name, robot_spec, spawn_pose?}]`` read into name, spec, spawn, spec hash.
+
+    Read before Kit boots, so a bad list fails in a second. Raises ``SystemExit`` on a
+    malformed list, a bad or duplicate name, or a spawn that is not ``[x, y, z, yaw]``.
+
+    Example:
+        >>> _parse_robots('[{"name": "South", "robot_spec": "s.json"}]')
+        Traceback (most recent call last):
+        ...
+        SystemExit: --robots: robot name 'South' must be lowercase letters and digits
+    """
+    entries = json.loads(text)
+    if not isinstance(entries, list) or not entries:
+        raise SystemExit("--robots expects a non-empty JSON list of {name, robot_spec, spawn_pose}")
+    out: list[dict[str, Any]] = []
+    for entry in entries:
+        name = str(entry.get("name", ""))
+        if not _ROBOT_NAME.fullmatch(name):
+            raise SystemExit(f"--robots: robot name {name!r} must be lowercase letters and digits")
+        spawn = [float(v) for v in entry.get("spawn_pose", [0.0, 0.0, 0.0, 0.0])]
+        if len(spawn) != 4:
+            raise SystemExit(f"--robots: robot {name!r} spawn_pose must be [x, y, z, yaw]")
+        with open(entry["robot_spec"], encoding="utf-8") as fh:
+            spec_json = fh.read()
+        out.append(
+            {
+                "name": name,
+                "robot_spec": json.loads(spec_json),
+                "spawn_pose": spawn,
+                "robot_spec_hash": hashlib.sha256(spec_json.encode("utf-8")).hexdigest(),
+            }
+        )
+    names = [r["name"] for r in out]
+    if len(set(names)) != len(names):
+        raise SystemExit(f"--robots: duplicate robot names in {names}")
+    return out
+
+
+def _robots_identity(robots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """What ``ping`` reports of each robot: name, spec hash and spawn (``SidecarClient`` identity)."""
+    return [{k: r[k] for k in ("name", "robot_spec_hash", "spawn_pose")} for r in robots]
 
 
 def _check_required_versions(requirements: list[str]) -> None:
@@ -244,6 +316,7 @@ def main(argv: list[str]) -> int:
         sys.path.insert(0, args.site_dir)
     # Before the ~50 s Kit boot: a stale venv must not cost a full boot timeout.
     _check_required_versions(args.require_min)
+    robots = _parse_robots(args.robots) if args.robots is not None else None
 
     # A shared, root-owned binary install (/opt/isaac-sim) can't take Kit's
     # caches + documents: point Kit at a per-user data root instead (Kit reads
@@ -277,42 +350,57 @@ def main(argv: list[str]) -> int:
 
     try:
         # 2) Heavy imports, only valid post-launch.
-        import json
-
         from isaac_manifest_scene import IsaacManifestScene
 
-        if not args.robot_spec:
-            raise SystemExit("--layout manifest requires --robot-spec <path>")
-        with open(args.robot_spec, encoding="utf-8") as fh:
-            robot_spec_json = fh.read()
-        robot_spec = json.loads(robot_spec_json)
-        scene = IsaacManifestScene(
-            robot_spec=robot_spec,
-            environment_usd=args.environment_usd,
-            spawn_pose=tuple(args.spawn_pose),
-            objects=json.loads(args.objects_json) if args.objects_json else None,
-            obs_height=args.obs_height,
-            obs_width=args.obs_width,
-            instruction=args.instruction,
-            success_key=args.success_key,
-            max_steps=args.max_steps,
-        )
-        scene.build()
+        if robots is None:
+            if not args.robot_spec:
+                raise SystemExit("--layout manifest requires --robot-spec <path>")
+            with open(args.robot_spec, encoding="utf-8") as fh:
+                robot_spec_json = fh.read()
+            one = {
+                "name": "",
+                "robot_spec": json.loads(robot_spec_json),
+                "spawn_pose": list(args.spawn_pose),
+                "robot_spec_hash": hashlib.sha256(robot_spec_json.encode("utf-8")).hexdigest(),
+            }
+        scenes = [
+            IsaacManifestScene(
+                robot_spec=r["robot_spec"],
+                name=r["name"],
+                environment_usd=args.environment_usd,
+                spawn_pose=tuple(r["spawn_pose"]),
+                objects=json.loads(args.objects_json) if args.objects_json else None,
+                obs_height=args.obs_height,
+                obs_width=args.obs_width,
+                instruction=args.instruction,
+                success_key=args.success_key,
+                max_steps=args.max_steps,
+            )
+            for r in (robots or [one])
+        ]
+        IsaacManifestScene.build_all(scenes)
 
         # 3) Serve the ZMQ ROUTER loop (``_serve``).
+        identity = None if robots is None else _robots_identity(robots)
         return _serve(
-            scene,
+            scenes[0],
             host=args.host,
             port=args.port,
             sim_app=sim_app,
             task=args.task,
             layout=args.layout,
             environment=args.environment_usd or "",
-            spawn=list(args.spawn_pose),
-            robot=args.robot,
+            # Several robots: their spawns and specs are in `robots`, hashed together.
+            spawn=list(args.spawn_pose) if robots is None else [],
+            robot=args.robot if robots is None else "",
             objects=args.objects_json or "",
-            robot_spec_hash=hashlib.sha256(robot_spec_json.encode("utf-8")).hexdigest(),
+            robot_spec_hash=(
+                one["robot_spec_hash"]
+                if robots is None
+                else hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+            ),
             launch_id=args.launch_id,
+            robots=identity,
         )
     except BaseException:
         # Print before close(): Kit's fast shutdown ends the process inside
@@ -419,7 +507,15 @@ def _serve(
     objects: str,
     robot_spec_hash: str,
     launch_id: str = "",
+    robots: list[dict[str, Any]] | None = None,
 ) -> int:
+    """Serve ``scene`` (the world's first robot; ``scene.robot(name)`` reaches each) until ``close``.
+
+    ``robots``: the robot list's identity (``_robots_identity``) when serving several, which
+    ``ping`` reports. A ``reset`` resets the whole world, unless another robot stepped in the
+    last ``_BARRIER_TIMEOUT_S``: then that robot is running, and the asking robot gets its
+    observation of the running world instead (its graph joined late, or restarted).
+    """
     import msgpack
     import zmq
 
@@ -432,6 +528,9 @@ def _serve(
 
     lock = _Lockstep(_BARRIER_TIMEOUT_S)
     timing = _StepTiming() if os.environ.get("OPENRAL_SIDECAR_TIMING") == "1" else None
+    last_step: dict[str, float] = {}  # robot -> when its last step was answered (the reset rule)
+    overlaps: list[list[str]] = []  # robot pairs whose base footprints overlap now
+    overlap_events: list[dict[str, Any]] = []  # each overlap's start since the last world reset
 
     def send(route: bytes, reply: dict[str, Any]) -> float:
         payload = msgpack.packb(reply, default=_encode_ndarray, use_bin_type=True)
@@ -439,19 +538,45 @@ def _serve(
         return len(payload) / 1e6
 
     def answer_steps() -> None:
-        for _robot, route, data in lock.release():
-            t_req = time.perf_counter()
+        released = lock.release()
+        if not released:
+            return
+        t_req = time.perf_counter()
+        try:
+            # One world advance for every released robot (openral-pro#99).
+            replies = scene.step_many(
+                {
+                    name: (
+                        np.asarray(data["action"], dtype=np.float32),
+                        str(data.get("frames", "render")),
+                    )
+                    for name, _route, data in released
+                }
+            )
+        except Exception as exc:
+            replies = {name: {"error": f"{type(exc).__name__}: {exc}"} for name, *_ in released}
+        now = time.monotonic()
+        for name, *_ in released:
+            last_step[name] = now
+        if robots is not None:
             try:
-                reply = scene.step(
-                    np.asarray(data["action"], dtype=np.float32),
-                    frames=str(data.get("frames", "render")),
-                )
-            except Exception as exc:
-                reply = {"error": f"{type(exc).__name__}: {exc}"}
-            t_pack = time.perf_counter()
-            mb = send(route, reply)
+                check_overlaps()
+            except Exception as exc:  # a diagnostic: never fail the steps over it
+                print(f"[isaac_sidecar] footprint overlap check failed: {exc!r}", flush=True)
+        t_pack = time.perf_counter()
+        for name, route, data in released:
+            mb = send(route, replies[name])
             if timing is not None:
-                _time_step(timing, scene, data, reply, t_req, t_pack, mb)
+                _time_step(timing, scene.robot(name), data, replies[name], t_req, t_pack, mb)
+
+    def check_overlaps() -> None:
+        """Log each new base-footprint overlap between robots (ground truth, never a robot's)."""
+        now = scene.footprint_overlaps()
+        for pair in now:
+            if pair not in overlaps:
+                overlap_events.append({"robots": pair, "sim_time_ns": scene.sim_time_ns()})
+                print(f"[isaac_sidecar] robots {pair} base footprints overlap", flush=True)
+        overlaps[:] = now
 
     running = True
     while running:
@@ -469,20 +594,26 @@ def _serve(
         req = msgpack.unpackb(raw, object_hook=_decode_ndarray, raw=False)
         endpoint = req.get("endpoint")
         data = req.get("data", {}) or {}
+        name = str(data.get("robot", ""))
         if endpoint == "step":
             try:
-                lock.submit(str(data.get("robot", "")), route, data, now=time.monotonic())
-            except ValueError as exc:
-                send(route, {"error": str(exc)})
+                scene.robot(name)
+                lock.submit(name, route, data, now=time.monotonic())
+            except (KeyError, ValueError) as exc:
+                send(route, {"error": str(exc.args[0])})
             answer_steps()
             continue
         try:
             if endpoint == "ping":
                 # Identity lets the client reject a stale sidecar serving a
                 # different scene on this port (SidecarClient.expected_identity).
+                try:
+                    action_dim = scene.robot(name).action_dim
+                except KeyError:  # a client of another robot set: the identity tells it so
+                    action_dim = None
                 reply: dict[str, Any] = {
-                    "ok": True,
-                    "action_dim": scene.action_dim,
+                    "ok": action_dim is not None,
+                    "action_dim": action_dim,
                     # Configured nominal seconds per step; reset later replaces
                     # this with the observed callback cadence before HAL checks it.
                     "sim_dt_per_tick_s": scene.sim_dt_per_tick_s,
@@ -495,35 +626,55 @@ def _serve(
                     "robot_spec_hash": robot_spec_hash,
                     "launch_id": launch_id,
                 }
+                if robots is not None:
+                    reply["robots"] = robots
             elif endpoint == "reset":
+                asking = scene.robot(name)
+                t = time.monotonic()
+                busy = sorted(
+                    r for r, at in last_step.items() if r != name and t - at < _BARRIER_TIMEOUT_S
+                )
+                if busy:
+                    print(
+                        f"[isaac_sidecar] reset from robot {name!r} while {busy} run: "
+                        "the world is not reset, it gets the running world's observation",
+                        flush=True,
+                    )
+                    observation = asking.refresh_frames()
+                else:
+                    observation = asking.reset(seed=data.get("seed"))
+                    overlaps.clear()
+                    overlap_events.clear()
                 # Carry sim time on reset too (≈0 after the
                 # world reset) so the HAL's cross-reset offset stays monotonic.
                 reply = {
-                    "observation": scene.reset(seed=data.get("seed")),
-                    "sim_time_ns": scene.sim_time_ns(),
+                    "observation": observation,
+                    "sim_time_ns": asking.sim_time_ns(),
                     # Same clock as World.current_time stamps; ping remains the
                     # configured nominal period used to build physics substeps.
-                    "sim_dt_per_tick_s": scene._observed_sim_dt_per_tick_s,
+                    "sim_dt_per_tick_s": asking._observed_sim_dt_per_tick_s,
                 }
             elif endpoint == "refresh_frames":
-                reply = {"observation": scene.refresh_frames()}
+                reply = {"observation": scene.robot(name).refresh_frames()}
             elif endpoint == "render":
-                reply = {"frame": scene.render()}
+                reply = {"frame": scene.robot(name).render()}
             elif endpoint == "contacts":
-                reply = scene.contact_ground_truth()
+                reply = scene.robot(name).contact_ground_truth()
             elif endpoint == "static_colliders":
-                reply = scene.static_collider_boxes()
+                reply = scene.robot(name).static_collider_boxes()
             elif endpoint == "scene_mesh":
                 # The client may ask for less, never more: the GLB rides the same
                 # connection as the steps.
                 limit = min(int(data["limit_bytes"]), _SCENE_MESH_MAX_BYTES)
-                reply = scene.scene_mesh(limit)
+                reply = scene.robot(name).scene_mesh(limit)
             elif endpoint == "scene_ground_truth":
-                reply = scene.scene_ground_truth()
+                reply = scene.robot(name).scene_ground_truth()
             elif endpoint == "link_poses":
-                reply = scene.link_poses([str(n) for n in data.get("links", [])])
+                reply = scene.robot(name).link_poses([str(n) for n in data.get("links", [])])
             elif endpoint == "set_task":
-                reply = scene.set_task(str(data.get("instruction", "")))
+                reply = scene.robot(name).set_task(str(data.get("instruction", "")))
+            elif endpoint == "footprint_overlaps":
+                reply = {"overlaps": overlaps, "events": overlap_events}
             elif endpoint == "set_object_position":
                 reply = scene.set_object_position(str(data["name"]), list(data["xyz"]))
             elif endpoint == "close":
