@@ -13996,8 +13996,8 @@ class SharedWorldScene(BaseModel):
 
     Example:
         >>> world = SharedWorldScene.from_yaml("scenes/worlds/so101_handover_table.yaml")
-        >>> [r.name for r in world.robots]
-        ['a', 'b']
+        >>> len(world.robots), world.robots[1].base_yaw_deg
+        (2, 180.0)
     """
 
     model_config = ConfigDict(extra="forbid")
