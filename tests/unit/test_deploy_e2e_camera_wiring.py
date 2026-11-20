@@ -157,6 +157,36 @@ def test_real_deploy_names_the_top_cameras_optical_child(launch_module: object, 
     assert mounts(sensors, "sim") == {}
 
 
+@pytest.mark.parametrize(
+    "robot", sorted(p.parent.name for p in (REPO_ROOT / "robots").glob("*/robot.yaml"))
+)
+def test_real_launch_publishes_every_optical_child_a_consumer_names(
+    launch_module: object, robot: str
+) -> None:
+    """#641: on every manifest the real launch hangs exactly the optical children of
+    ``test_optical_mount.MOUNTS`` (written out by hand) under their mounts, and those
+    are the frames the object lift (``image_frame_id``) and the DA3 resolver name."""
+    from openral_core.depth_extrinsic import image_frame_id, resolve_estimated_depth_camera
+
+    from tests.unit.test_optical_mount import MOUNTS, lift_sensors
+
+    sensors = lift_sensors(robot)
+    want = MOUNTS.get(robot, {})
+    optical_mounts = launch_module._optical_mounts  # type: ignore[attr-defined]  # reason: module loaded by path
+    mounts = optical_mounts(sensors, "real")
+    # A mount frame that is already optical needs no child.
+    assert mounts == {frame: opt for _, frame, opt in want.values() if opt != frame}
+    assert optical_mounts(sensors, "sim") == {}
+    for spec in sensors:
+        if spec.modality != "rgb":
+            continue
+        frame = image_frame_id(spec, sensors)
+        assert frame == spec.frame_id or frame in {opt for _, _, opt in want.values()}
+        da3 = resolve_estimated_depth_camera(sensors, spec.name, hal_mode="real")
+        if da3.optical_parent is not None:
+            assert mounts[da3.optical_parent] == da3.cloud_frame == frame
+
+
 def _compose(launch_module: object, monkeypatch: pytest.MonkeyPatch, **overrides: str) -> list[str]:
     """Node names of the real ``compose_runtime_graph``, every other arg at its default."""
     from launch import LaunchContext
