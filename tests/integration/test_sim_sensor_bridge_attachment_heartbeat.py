@@ -1,14 +1,17 @@
-"""Every sim HAL heartbeats a fresh, empty attachment set — not only the ones with attach mechanics.
+"""Every sim HAL heartbeats a fresh, empty attachment set until something is attached.
 
 The deploy launch enables the kernel's attached-payload check for every
 sim robot with collision capsules, and that check is fail-closed on a payload
 it cannot verify — including one it has never heard about: a world state
 whose ``attachment_stamp_ns`` is still 0 is unverifiable, so every joint
-chunk is dropped as ``attached_overflow``. A ``MujocoArmHAL`` twin has no
-attachment API at all, so "nothing attached, fresh" is the exact truth for
-it, and saying so is what lets the kernel certify its motion. Seen on the
-OpenArm twin (lab Orin, 2026-09-22): zero publishers on
-``/openral/attachment_state`` and not one joint chunk reached the arm.
+chunk is dropped as ``attached_overflow``. Before anything is attached,
+"nothing attached, fresh" is the exact truth, and saying so is what lets the
+kernel certify its motion. Seen on the OpenArm twin (lab Orin, 2026-09-22):
+zero publishers on ``/openral/attachment_state`` and not one joint chunk
+reached the arm. Since #683 every twin has the attachment API too, so the
+attachment staging subscription is open beside the heartbeat; the MuJoCo
+evidence tracker (and with it the declaration subscriptions) still arms on
+none of these robots' twins.
 
 Real ``SimSensorBridge`` on a real rclpy node against real MuJoCo twins of
 three different robots, so the guarantee is the bridge's, not one HAL's.
@@ -64,7 +67,7 @@ def _sim_attached_tabletop() -> Any:
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 @pytest.mark.parametrize(
-    "make_hal", [_openarm, _sim_attached_tabletop], ids=["no_attachment_api", "attachment_api"]
+    "make_hal", [_openarm, _sim_attached_tabletop], ids=["twin", "scene_attached"]
 )
 def test_the_heartbeat_yields_to_another_attachment_authority(make_hal: Callable[[], Any]) -> None:
     """``attachment_heartbeat=False``: no publisher, no timer, nothing on the latched topic.
@@ -107,7 +110,7 @@ def test_the_heartbeat_yields_to_another_attachment_authority(make_hal: Callable
 @pytest.mark.parametrize(
     "make_hal", [_openarm, _so100, _franka], ids=["openarm_v2", "so100", "franka_panda"]
 )
-def test_a_hal_without_the_attachment_api_still_heartbeats_an_empty_fresh_set(
+def test_a_twin_heartbeats_an_empty_fresh_set(
     make_hal: Callable[[], Any],
 ) -> None:
     rclpy = pytest.importorskip("rclpy")
@@ -119,7 +122,7 @@ def test_a_hal_without_the_attachment_api_still_heartbeats_an_empty_fresh_set(
     from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 
     hal = make_hal()
-    assert not hasattr(hal, "update_attached_objects"), "fixture must lack the attachment API"
+    assert callable(getattr(hal, "update_attached_objects", None)), "a twin has the API (#683)"
 
     rclpy.init()
     try:
@@ -142,13 +145,12 @@ def test_a_hal_without_the_attachment_api_still_heartbeats_an_empty_fresh_set(
             bridge = SimSensorBridge(node, hal, hal.description, viewer_enabled=False)
             try:
                 bridge.setup()
-                # Publisher and heartbeat exist; the staging path (which needs
-                # the API to have anything to stage) does not.
+                # Publisher, heartbeat and attachment staging exist. The evidence
+                # tracker refuses these twins' gripper layouts, so nothing can
+                # measure a declared target: no declaration is subscribed.
                 assert bridge._attachment_pub is not None
                 assert bridge._attachment_timer is not None
-                assert bridge._attachment_sub is None
-                # Nothing here can measure a declared target, so no declaration is
-                # subscribed or relayed (the envelope carries none).
+                assert bridge._attachment_sub is not None
                 assert bridge._place_declaration_sub is None
                 assert bridge._grasp_declaration_sub is None
 
