@@ -2059,27 +2059,6 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         argv_template.append(f"object_detector_manifest:={resolved_object_detector_manifest}")
     if object_detector_query:
         argv_template.append(f"object_detector_query:={object_detector_query}")
-    # A robot of a shared MuJoCo world (`openral deploy world` binds its HAL with these
-    # two keys): the launch also feeds its kernel the peers (openral_hal.peer_voxels).
-    if hal_params.get("shared_world"):
-        if hal_mode != "sim":
-            raise ROSConfigError(
-                "--hal shared_world is a simulation binding (`openral deploy world`); a real "
-                "deploy cannot join a shared MuJoCo world."
-            )
-        if not hal_params.get("shared_world_robot"):
-            raise ROSConfigError(
-                "--hal shared_world needs --hal shared_world_robot (the robot's name in it); "
-                "`openral deploy world` passes both."
-            )
-        if enable_octomap:
-            # Refused by the launch too; said here first, with the remedy.
-            raise ROSConfigError(
-                "a shared-world robot runs with its octomap leg off (the other robots are "
-                "its kernel's world grid): pass `-- --no-enable-octomap` to `deploy world`."
-            )
-        argv_template.append(f"shared_world:={hal_params['shared_world']}")
-        argv_template.append(f"shared_world_robot:={hal_params['shared_world_robot']}")
     # resolve the reward-monitor manifest from the VLA pairing when
     # the operator did not pin one. ``deploy sim`` does not preselect a VLA, so the
     # default is derived from the capability-matched VLA palette's
@@ -2869,8 +2848,6 @@ _ORPHAN_GRAPH_NEEDLES: tuple[str | tuple[str, ...], ...] = (
     "openral_reasoner_ros/reasoner_node.py",
     "openral_prompt_router/prompt_router_node.py",
     "openral_safety_kernel/safety_kernel_node",
-    # A shared world's peer grid: a leftover would feed the next run's kernel on this domain.
-    "openral_hal.peer_voxels",
     # A surviving recorder would stamp the next run's records with this run's identity.
     "openral_compliance/recorder_node.py",
     "openral dashboard",

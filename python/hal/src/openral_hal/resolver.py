@@ -10,8 +10,7 @@ Routing: ``mode="sim"`` + ``sim_env_yaml`` builds
 ``SimRollout`` (bypasses ``hal.sim``); plain
 ``mode="sim"`` uses ``hal.sim``, or derives
 ``MujocoArmHAL.from_description`` when ``hal.sim`` is ``None`` and a
-``sim:`` block exists (``SharedWorldArmHAL`` instead when ``transport`` names a
-``shared_world``); ``mode="real"`` uses ``hal.real`` with ``transport``
+``sim:`` block exists; ``mode="real"`` uses ``hal.real`` with ``transport``
 kwargs (``port``, ``robot_ip``, ``fci_ip``). Missing HAL →
 ``ROSCapabilityMismatch``; ``sim_env_yaml`` with ``mode="real"`` →
 ``ROSConfigError``.
@@ -106,23 +105,6 @@ def build_hal(
             "build_hal: sim_env_yaml is only valid with mode='sim' "
             f"(got mode={mode!r}); a real-hardware HAL never attaches a sim scene."
         )
-    if "shared_world" in resolved:
-        # A robot of a shared MuJoCo world (issue #666): the manifest-derived twin,
-        # with the world's physics. `openral deploy world` passes the two keys.
-        if (
-            mode != "sim"
-            or sim_env_yaml is not None
-            or description.hal.sim is not None
-            or not isinstance(resolved.get("shared_world_robot"), str)
-        ):
-            raise ROSConfigError(
-                f"build_hal: shared_world needs robot {description.name!r} as a bare "
-                "manifest-derived MuJoCo twin (mode='sim', no scene to attach, hal.sim null) "
-                "and its name in the world as the string `shared_world_robot`."
-            )
-        from openral_hal.shared_world import SharedWorldArmHAL
-
-        return _construct(SharedWorldArmHAL, description, resolved)
     if mode == "sim":
         if sim_env_yaml is not None:
             # Deploy sim attaches the scene's SimRollout behind a
