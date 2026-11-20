@@ -1315,6 +1315,13 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     deploy_scene = DeployScene.from_yaml(str(config)) if config is not None else None
     if runtime_overrides:
         deploy_scene = _with_runtime_overrides(deploy_scene, runtime_overrides)
+    if deploy_scene is not None and deploy_scene.robots:
+        # ponytail: refused until deploy sim starts a graph per robot (openral-pro#99, step 5).
+        names = [r.name for r in deploy_scene.robots]
+        raise ROSConfigError(
+            f"{config}: lists several robots {names}; `deploy sim` / `deploy run` do not "
+            "run a several-robot scene yet (openral-pro#99)."
+        )
     scene_robot_id = deploy_scene.robot_id if deploy_scene is not None else None
     robot_id = (
         _load_scene_robot_id(config, robot_override, sim=hal_mode == "sim")

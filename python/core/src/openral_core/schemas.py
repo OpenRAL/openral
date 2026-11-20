@@ -13626,6 +13626,46 @@ class DeployRuntime(BaseModel):
         return self
 
 
+#: The frame several robots of one scene share (``DeployScene.robots``): the stage's own.
+SHARED_SCENE_FRAME = "world"
+
+
+class SceneRobot(BaseModel):
+    """One robot of a scene that runs several (``DeployScene.robots``, openral-pro#99).
+
+    Attributes:
+        name: Names the robot in the scene, its graph and its fleet entry: lowercase letters
+            and digits, a letter first.
+        robot_id: Its manifest (``robots/<robot_id>/robot.yaml``); several entries may share one.
+        base_pose: Where it starts, in the scene's shared ``world`` frame. Its map starts here.
+        robot_unit: As ``DeployScene.robot_unit``, for this robot.
+
+    Example:
+        >>> SceneRobot(
+        ...     name="south",
+        ...     robot_id="openamrobot_v2",
+        ...     base_pose=Pose6D(xyz=(0.4, -1.1, 0.0), quat_xyzw=(0, 0, 0, 1), frame_id="world"),
+        ... ).name
+        'south'
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9]{0,23}$")]
+    robot_id: str = Field(min_length=1)
+    base_pose: Pose6D
+    robot_unit: str | None = None
+
+    @model_validator(mode="after")
+    def _starts_in_the_shared_frame(self) -> Self:
+        if self.base_pose.frame_id != SHARED_SCENE_FRAME:
+            raise ValueError(
+                f"robot {self.name!r}: base_pose.frame_id must be {SHARED_SCENE_FRAME!r} "
+                f"(got {self.base_pose.frame_id!r})."
+            )
+        return self
+
+
 class DeployScene(BaseModel):
     """Unified deploy/workcell scene for ``openral deploy sim`` and ``deploy run``.
 
@@ -13655,6 +13695,12 @@ class DeployScene(BaseModel):
     derived from simulator poses."""
     robot_id: str | None = None
     base_pose: Pose6D | None = None
+    robots: list[SceneRobot] = Field(default_factory=list)
+    """Several robots in this one scene (openral-pro#99), instead of ``robot_id`` /
+    ``base_pose`` / ``robot_unit``. Empty (every scene before #99): one robot, as those fields say.
+    With robots, every ``nav_goals`` pose and ``place_zones`` region is in the shared ``world``
+    frame; ``scene_for_robot`` gives each robot its own one-robot scene, with them re-expressed in
+    its map."""
     seed: int = 0
     """Simulator reset seed for ``deploy sim``. Ignored by ``deploy run``.
     Defaults to 0, preserving the pre-field deploy-sim episode."""
@@ -13819,10 +13865,34 @@ class DeployScene(BaseModel):
         dupes = repeated_nav_goal_names(self.nav_goals)
         if dupes:
             raise ValueError(f"nav_goals names/aliases must be unique; repeated: {dupes}.")
+        if self.robots:
+            self._check_robots()
         # A blank prompt would name every goal sent without one (a wrapped move).
         if any(not prompt.strip() for prompt in self.success_conditions):
             raise ValueError("success_conditions keys are task prompts; a blank one is refused.")
         return self
+
+    def _check_robots(self) -> None:
+        """A several-robot scene: two or more, unique names, no one-robot fields, shared frames."""
+        if len(self.robots) < 2:  # noqa: PLR2004  # reason: "several" is two or more
+            raise ValueError("robots: list two or more robots, or use robot_id for one.")
+        dupes = _repeated(r.name for r in self.robots)
+        if dupes:
+            raise ValueError(f"robots: names must be unique; repeated: {dupes}.")
+        single = [
+            f for f in ("robot_id", "base_pose", "robot_unit") if getattr(self, f) is not None
+        ]
+        if single:
+            raise ValueError(f"robots: names its robots; drop {single} (one-robot fields).")
+        # One map per robot: a pose in "map" would mean a different place for each of them.
+        off = [g.name for g in self.nav_goals if g.pose.frame_id != SHARED_SCENE_FRAME] + [
+            z.name for z in self.place_zones if z.region.frame_id != SHARED_SCENE_FRAME
+        ]
+        if off:
+            raise ValueError(
+                f"robots: nav_goals and place_zones are in the shared {SHARED_SCENE_FRAME!r} "
+                f"frame in a scene with several robots; not: {off}."
+            )
 
     @model_validator(mode="before")
     @classmethod
@@ -13938,6 +14008,12 @@ class SimScene(DeployScene):
     record_video: bool = False
     save_dir: str | None = None
     metadata: dict[str, object] | BenchmarkMetadata = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _one_robot(self) -> SimScene:
+        if self.robots:
+            raise ValueError("robots: `openral sim run` runs one robot; use robot_id.")
+        return self
 
     @model_validator(mode="after")
     def _task_scene_id_matches(self) -> SimScene:
