@@ -111,6 +111,7 @@ def test_a_hal_without_the_attachment_api_still_heartbeats_an_empty_fresh_set(
     make_hal: Callable[[], Any],
 ) -> None:
     rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg", reason="openral_msgs is not built in this env")
 
     from openral_hal.sim_sensor_bridge import SimSensorBridge
     from openral_msgs.msg import AttachmentState
