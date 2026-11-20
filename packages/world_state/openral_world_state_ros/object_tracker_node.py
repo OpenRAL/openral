@@ -355,6 +355,38 @@ def locate_query(label: str, *, contrast: bool) -> str:
     return contrast_query(label, _CONTRAST_LABELS) if contrast else label
 
 
+def attachment_publish_step(
+    changes: int | None,
+    last_changes: int | None,
+    view: tuple[int, int, int],
+    last_view: tuple[int, int, int] | None,
+    *,
+    heartbeat: bool,
+) -> tuple[bool, bool]:
+    """``(bump the attachment revision, publish)`` for one ``/openral/attachment_state`` tick.
+
+    The revision versions the attachment SET only (``changes``: the session's
+    ``attachment_changes``; ``None`` after a station edge, which republishes anew). ``view`` is
+    the rest of the message, republished under the same revision when it changes: the live
+    grasp / place declarations and the grid stamp a declared place zone was last re-expressed
+    at (a new grid moves the zone's box in the grid frame). The kernel reads a revision edge
+    with no payload as a detach, retiring an armed grasp region (``"detached"``), and one with
+    a payload as a new set, restarting its contact snapshot: a bump per grid (the zone) or per
+    declaration retired every ``tracking`` pick's grasp allowance before contact (AMR aisle,
+    2026-11-20).
+
+    Example:
+        >>> attachment_publish_step(1, 1, (2, 3, 20), (2, 3, 10), heartbeat=False)
+        (False, True)
+        >>> attachment_publish_step(2, 1, (2, 3, 10), (2, 3, 10), heartbeat=False)
+        (True, True)
+        >>> attachment_publish_step(1, 1, (2, 3, 10), (2, 3, 10), heartbeat=False)
+        (False, False)
+    """
+    bump = changes != last_changes
+    return bump, bump or heartbeat or view != last_view
+
+
 def _names(label: str) -> set[str]:
     """The class names a comma-joined prompt asks for (label and synonyms), lower-cased.
 
@@ -798,7 +830,8 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             self._active = False
             self._rev_base = 0
             self._last_tracked_rev = -1
-            self._attach_key: tuple[int, int, int, int] | None = None
+            self._attach_key: int | None = None  # the attachment set the revision versions
+            self._attach_view: tuple[int, int, int] | None = None
             self._attach_rev = 0
             self._joint_rx_ns = 0
             self._source_clock = SourceClock()
@@ -1697,23 +1730,26 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 return
             place_decl = s.place_declaration
             # A zone's grid-frame box is re-expressed through tf2 at each grid's stamp (a fixed-
-            # frame zone moves in the grid frame as the base settles): refreshed every grid.
+            # frame zone moves in the grid frame as the base settles): republished every grid,
+            # never as a new revision (`attachment_publish_step`).
             zone_stamp = (
                 s.grid_stamp_ns
                 if place_decl is not None
                 and place_decl.target_id.startswith(PlaceZone.TARGET_PREFIX)
                 else 0
             )
-            key = (
+            view = (id(s.grasp_declaration), id(place_decl), zone_stamp)
+            bump, publish = attachment_publish_step(
                 s.attachment_changes,
-                id(s.grasp_declaration),
-                id(place_decl),
-                zone_stamp,
+                self._attach_key,
+                view,
+                self._attach_view,
+                heartbeat=heartbeat,
             )
-            if key != self._attach_key:
-                self._attach_key = key
+            self._attach_key, self._attach_view = s.attachment_changes, view
+            if bump:
                 self._attach_rev += 1
-            elif not heartbeat:
+            if not publish:
                 return
             now = self.get_clock().now()
             msg = AttachmentStateMsg()
