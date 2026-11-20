@@ -88,6 +88,8 @@ _Several robots in one MuJoCo world, each driven by its own deploy graph on its 
   - `disconnect(self) -> None` (L691) — Retarget the arm to the pose it has now, leave the world, release the mirror.
   - `estop(self) -> None` (L696) — Retarget the arm to the pose it has now (it holds there; the other robots keep running), leave the world, then `MujocoArmHAL.estop` (always raises).
   - `reset_to_pose(self, pose: list[float]) -> None` (L729) — Snap this arm's joints in the shared world.
+  - `send_action(self, action: Action) -> None` (L719) — `MujocoArmHAL.send_action` held under `_world_lock`, so an idle sync never lands between an action's targets and its request.
+  - `idle_step(self, wall_dt_s: float | None = None) -> bool` (L724) — `MujocoArmHAL.idle_step` under the same lock.
 
 ### `python/hal/src/openral_hal/peer_voxels.py`
 
