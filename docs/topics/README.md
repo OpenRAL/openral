@@ -17,7 +17,7 @@ and every non-literal `failure_bus.topic_for(<source>)` is `{source}`, a `Failur
 Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 `just lint` and pre-commit fail when this page is stale.
 
-## Topics (60)
+## Topics (61)
 
 | Name | Type | Publishers | Subscribers |
 |---|---|---|---|
@@ -51,6 +51,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/nvblox/depth_filtered/image` | `sensor_msgs/Image` | packages/openral_slam_bringup/openral_slam_bringup/depth_height_filter_node.py (main.DepthHeightFilterNode.__init__) [param `output_depth_topic`] | — |
 | `/openral/object_tracker/hands_clear` | `std_msgs/Bool` | packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode._create_outputs) | packages/openral_reasoner_ros/openral_reasoner_ros/completion_check_node.py (CompletionCheckNode.__init__) |
 | `/openral/operator_action` | `openral_msgs/OperatorAction` | python/cli/src/openral_cli/estop.py (_announce_reset) | packages/openral_compliance/openral_compliance/recorder_node.py (ComplianceRecorderNode.on_configure) |
+| `/openral/peer_voxels` | `openral_msgs/OccupancyVoxels` | python/hal/src/openral_hal/peer_voxels.py (main) | — |
 | `/openral/perception/detector_query` | `std_msgs/String` | — | packages/openral_perception_ros/openral_perception_ros/ros_image_detector_node.py (main.RosImageObjectDetectorNode.on_activate) [param `query_topic`] |
 | `/openral/perception/masks` | `openral_msgs/SegmentMasks` | packages/openral_perception_ros/openral_perception_ros/segmenter_node.py (_node_class.SegmenterNode._open_debug_masks_publisher) [param `debug_masks_topic`] | python/observability/src/openral_observability/dashboard/perception_overlay_subscriber.py (PerceptionOverlaySubscriber._start) |
 | `/openral/perception/objects` | `openral_msgs/PromptStamped` | packages/openral_perception_ros/openral_perception_ros/ros_image_detector_node.py (main.RosImageObjectDetectorNode.on_configure) [param `output_topic`] | packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) [param `object_detections_topic`]<br>python/observability/src/openral_observability/dashboard/perception_overlay_subscriber.py (PerceptionOverlaySubscriber._start) |

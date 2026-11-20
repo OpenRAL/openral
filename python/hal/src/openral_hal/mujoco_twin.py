@@ -268,33 +268,7 @@ class MujocoTwinRollout:
                 "just sync --all-packages --group sim"
             ) from exc
 
-        # Generic camera rig: splice the manifest's declared RGB cameras into the
-        # MJCF when they are absent (a bare-arm twin ships none). Idempotent: an
-        # MJCF that already has them loads from the original path unchanged.
-        mjcf_path = self.mjcf_path
-        try:
-            from openral_hal._camera_rig import rig_cameras_into_mjcf
-
-            with open(self.mjcf_path) as fh:
-                rigged_xml, changed = rig_cameras_into_mjcf(
-                    fh.read(), list(self.description.sensors)
-                )
-            if changed:
-                # Write next to the source MJCF so its relative meshdir resolves.
-                rig_path = os.path.join(
-                    os.path.dirname(self.mjcf_path),
-                    f"{self.description.name}_camrig.xml",
-                )
-                with open(rig_path, "w") as fh:
-                    fh.write(rigged_xml)
-                mjcf_path = rig_path
-        except OSError as exc:
-            raise ROSConfigError(f"Could not read MJCF '{self.mjcf_path}': {exc}") from exc
-
-        try:
-            model = mj.MjModel.from_xml_path(mjcf_path)
-        except (OSError, ValueError) as exc:
-            raise ROSConfigError(f"Could not load MJCF '{mjcf_path}': {exc}") from exc
+        model = self._load_model(mj)
 
         if not self.gravity_enabled:
             model.opt.gravity[:] = 0.0
@@ -327,6 +301,42 @@ class MujocoTwinRollout:
             mjcf=self.mjcf_path,
             n_joints=len(self.joint_names),
         )
+
+    def _load_model(self, mj: Any) -> mujoco.MjModel:  # noqa: ANN401  # reason: the mujoco module
+        """The ``MjModel`` ``load`` runs on: the MJCF with the manifest's cameras rigged in.
+
+        A seam: ``shared_world._SharedWorldTwin`` compiles its view of a shared world.
+
+        Raises:
+            ROSConfigError: The MJCF cannot be read or loaded.
+        """
+        # Generic camera rig: splice the manifest's declared RGB cameras into the
+        # MJCF when they are absent (a bare-arm twin ships none). Idempotent: an
+        # MJCF that already has them loads from the original path unchanged.
+        mjcf_path = self.mjcf_path
+        try:
+            from openral_hal._camera_rig import rig_cameras_into_mjcf
+
+            with open(self.mjcf_path) as fh:
+                rigged_xml, changed = rig_cameras_into_mjcf(
+                    fh.read(), list(self.description.sensors)
+                )
+            if changed:
+                # Write next to the source MJCF so its relative meshdir resolves.
+                rig_path = os.path.join(
+                    os.path.dirname(self.mjcf_path),
+                    f"{self.description.name}_camrig.xml",
+                )
+                with open(rig_path, "w") as fh:
+                    fh.write(rigged_xml)
+                mjcf_path = rig_path
+        except OSError as exc:
+            raise ROSConfigError(f"Could not read MJCF '{self.mjcf_path}': {exc}") from exc
+
+        try:
+            return mj.MjModel.from_xml_path(mjcf_path)
+        except (OSError, ValueError) as exc:
+            raise ROSConfigError(f"Could not load MJCF '{mjcf_path}': {exc}") from exc
 
     def reset(self, seed: int | None = None) -> dict[str, Any]:
         """(Re)load the twin into its initial state: ``close``, then ``load``.

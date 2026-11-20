@@ -33,14 +33,17 @@ from openral_core import (
     ControllerEvidence,
     FailureEvidence,
     GraspOutcomeEvidence,
+    ObjectBeliefState,
     ObjectDetection2D,
     ObjectsMetadata,
     PerceptionEventMetadata,
     RobotDescription,
     SceneGraph,
     SpatialNodeKind,
+    TaskOutcome,
     TimeoutEvidence,
     WorldState,
+    belief_state,
 )
 from openral_core.geometry import quat_xyzw_to_yaw
 from openral_observability import failure_bus
@@ -66,6 +69,7 @@ __all__ = [
     "reflect_on_retry_cap",
     "render_playbooks_block",
     "render_robot_self_model",
+    "task_outcome_text",
 ]
 
 # Each rolling buffer is sized so an entire window fits in ~1 KB of
@@ -485,6 +489,38 @@ def reflect_on_failure(
         "the skill failed — don't repeat the same call; try a different skill "
         "or replan the subgoal."
     )
+
+
+def task_outcome_text(task_outcome_json: str) -> str:
+    """One ``## EXECUTION`` phrase for ``ExecuteRskill.Result.task_outcome_json`` (issue #635).
+
+    ``""`` when the runner reported none (an older producer) or nothing judged the run
+    and the result has no verdict to add. A payload that does not decode reads as
+    ``unknown``, never as a success.
+
+    Example:
+        >>> from openral_core import TaskOutcome, TaskVerdict
+        >>> failed = TaskOutcome(
+        ...     verdict=TaskVerdict.FAILED,
+        ...     source="success_condition",
+        ...     reason="'cube' trk:1 is outside the region",
+        ... )
+        >>> task_outcome_text(failed.model_dump_json())
+        "task_outcome=failed (success_condition): 'cube' trk:1 is outside the region"
+        >>> task_outcome_text("{")
+        'task_outcome=unknown (unreadable task_outcome_json)'
+        >>> task_outcome_text("")
+        ''
+    """
+    if not task_outcome_json:
+        return ""
+    try:
+        outcome = TaskOutcome.model_validate_json(task_outcome_json)
+    except ValidationError:
+        return "task_outcome=unknown (unreadable task_outcome_json)"
+    if outcome.source == "none":
+        return ""
+    return f"task_outcome={outcome.verdict.value} ({outcome.source}): {outcome.reason}"
 
 
 def reflect_on_reward_plateau(progress_now: float) -> str:
@@ -1459,7 +1495,13 @@ class ContextRenderer:
                         o.label,
                         o.pose.xyz,
                         o.bbox_3d,
-                        "" if o.track_id is None else f" track={o.track_id}",
+                        ("" if o.track_id is None else f" track={o.track_id}")
+                        # Remembered but not confirmed (restored, or its evidence decayed).
+                        + (
+                            " [uncertain]"
+                            if belief_state(o.existence) is ObjectBeliefState.UNCERTAIN
+                            else ""
+                        ),
                     )
                     for o in world_state.detected_objects
                 ],
@@ -1487,7 +1529,8 @@ class ContextRenderer:
         """Render spatial-memory OBJECT nodes as ``memory_objects[<frame>]``, or ``""``.
 
         ``<label> id=<node_id>@(x,y,z) size=(dx,dy,dz)`` per node — the id is
-        what ``grasp_target.object_id`` takes to pick one instance of a label.
+        what ``grasp_target.object_id`` takes to pick one instance of a label. A
+        node not believed present is marked ``[uncertain]`` or ``[absent]``.
         """
         graph = self._spatial_memory
         if graph is None:
@@ -1496,7 +1539,13 @@ class ContextRenderer:
             _render_instances(
                 "memory_objects",
                 [
-                    (n.pose.frame_id, f"{n.label or '?'} id={n.node_id}", n.pose.xyz, n.bbox_3d, "")
+                    (
+                        n.pose.frame_id,
+                        f"{n.label or '?'} id={n.node_id}",
+                        n.pose.xyz,
+                        n.bbox_3d,
+                        "" if n.state is ObjectBeliefState.PRESENT else f" [{n.state.value}]",
+                    )
                     for n in graph.nodes
                     if n.kind is SpatialNodeKind.OBJECT
                 ],

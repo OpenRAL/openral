@@ -111,13 +111,18 @@ from openral_core.schemas import (
     SensorReaderBackend,
     SensorReaderConfig,
     SensorSpec,
+    SharedWorldRobot,
+    SharedWorldScene,
     SimEnvironment,
     SpatialEdge,
     SpatialNode,
     SpatialNodeKind,
     SpatialRelationKind,
     SphereShape,
+    SuccessCondition,
+    TaskOutcome,
     TaskSpec,
+    TaskVerdict,
     TickResult,
     VisionAttachmentRuntime,
     VLASpec,
@@ -354,6 +359,7 @@ _detected_object_st = st.builds(
     label=_name,
     confidence=_prob,
     pose=_pose6d_st,
+    existence=st.none() | _prob,
 )
 
 # Grasp region: every half-extent <= 0.15 m keeps the box under both
@@ -840,6 +846,52 @@ def test_fuzz_place_zone(instance: PlaceZone) -> None:
 
 
 @_FUZZ_SETTINGS
+@given(
+    st.builds(
+        SuccessCondition,
+        object_label=st.text(min_size=1, max_size=64),
+        # A region's orientation is a rotation (a zero quaternion is refused), posed in
+        # the region's own frame.
+        region=_grasp_region_st.filter(lambda r: sum(q * q for q in r.pose.quat_xyzw) > 1e-6).map(
+            lambda r: r.model_copy(
+                update={"pose": r.pose.model_copy(update={"frame_id": r.frame_id})}
+            )
+        ),
+        min_count=st.integers(min_value=1, max_value=32),
+        settle_s=st.floats(min_value=1e-3, max_value=60.0, allow_nan=False),
+        max_evidence_gap_s=st.floats(min_value=1e-3, max_value=60.0, allow_nan=False),
+        end_on_success=st.booleans(),
+    )
+)
+def test_fuzz_success_condition(instance: SuccessCondition) -> None:
+    """SuccessCondition (issue #635) round-trips and validates; no evidence is never a success."""
+    from openral_core.success import SuccessJudge
+
+    _round_trip_and_validate(SuccessCondition, instance)
+    judge = SuccessJudge(instance)
+    judge.observe(None)
+    assert judge.outcome().verdict is TaskVerdict.UNKNOWN
+
+
+@_FUZZ_SETTINGS
+@given(
+    st.builds(
+        TaskOutcome,
+        verdict=st.sampled_from(TaskVerdict),
+        source=st.sampled_from(["success_condition", "skill", "checker", "none"]),
+        reason=st.text(max_size=TaskOutcome.MAX_REASON_CHARS),
+        object_ids=st.lists(st.text(max_size=16), max_size=4).map(tuple),
+        resting=st.integers(min_value=0, max_value=32),
+        required=st.integers(min_value=0, max_value=32),
+        held_s=st.floats(min_value=0.0, max_value=600.0, allow_nan=False),
+    )
+)
+def test_fuzz_task_outcome(instance: TaskOutcome) -> None:
+    """TaskOutcome (issue #635) round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(TaskOutcome, instance)
+
+
+@_FUZZ_SETTINGS
 @given(_nav_goal_st)
 def test_fuzz_nav_goal(instance: NavGoal) -> None:
     """NavGoal round-trips through JSON and validates against its schema."""
@@ -909,7 +961,7 @@ _force_observer_st = st.builds(
 @given(
     st.dictionaries(
         _name,
-        st.floats(allow_nan=False, allow_infinity=False, min_value=1e-3, max_value=1e3),
+        st.floats(allow_nan=False, allow_infinity=False, min_value=1e-3, max_value=7.0),
         max_size=3,
     )
 )
@@ -1831,3 +1883,37 @@ _ovb_detector_config_st = st.builds(
 def test_fuzz_ovb_detector_config(instance: OvbDetectorConfig) -> None:
     """OvbDetectorConfig (DetectorContract.ovb) round-trips + validates its schema."""
     _round_trip_and_validate(OvbDetectorConfig, instance)
+
+
+# Robots that cannot collide: distinct names, ports, and ROS domains 2 apart (issue #666).
+_shared_world_st = st.builds(
+    lambda count, xyz, yaw, timeout: SharedWorldScene(
+        id="so101_handover_table",
+        arena_mjcf="assets/handover_table.xml",
+        barrier_timeout_s=timeout,
+        robots=[
+            SharedWorldRobot(
+                name=f"arm{i}",
+                scene="../deploy/so101_shared_table.yaml",
+                base_xyz=xyz,
+                base_yaw_deg=yaw,
+                ros_domain_id=102 + 2 * i,
+                dashboard_port=4400 + i,
+                foxglove_port=8800 + i,
+            )
+            for i in range(count)
+        ],
+    ),
+    st.integers(min_value=2, max_value=6),
+    st.tuples(_safe_float, _safe_float, _safe_float),
+    _safe_float,
+    st.floats(allow_nan=False, allow_infinity=False, min_value=1e-3, max_value=7.0),
+)
+
+
+@_FUZZ_SETTINGS
+@given(_shared_world_st)
+def test_fuzz_shared_world_scene(instance: SharedWorldScene) -> None:
+    """SharedWorldScene (and its SharedWorldRobot rows) round-trips + validates its schema."""
+    _round_trip_and_validate(SharedWorldScene, instance)
+    _round_trip_and_validate(SharedWorldRobot, instance.robots[0])

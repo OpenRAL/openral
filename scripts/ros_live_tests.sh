@@ -154,6 +154,8 @@ TARGETS=(
     # Issue #557: `openral prompt` / `estop reset --robot ID` reach a real deploy's
     # per-robot ROS domain from a terminal that exported nothing.
     tests/integration/test_operator_cli_robot_domain_live.py
+    # Issue #664: under the deploy Fast DDS profile, sims on adjacent ROS domains do not merge.
+    tests/integration/test_adjacent_domain_isolation_live.py
     # ADR-0130: each SROS2 enclave gets exactly its surfaces under Enforce; keyless participants are shut out.
     tests/integration/test_sros2_enclaves_live.py
     # Opt-in /cmd_vel relay for body_twist robots without base_joints: real

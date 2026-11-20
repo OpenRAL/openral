@@ -883,7 +883,11 @@ def _memory_bundle_launch_args(memory_dir: str) -> list[str]:
     Each artifact is forwarded to its own consumer's launch arg. The dir must exist
     (the robot writes ``MEMORY.md`` into it); ``scene_graph.json`` / ``map.yaml`` are
     forwarded only when present, so a fresh bundle (empty dir) just starts the reasoner
-    with empty memory and no preloaded scene/map.
+    with empty memory and no preloaded scene/map. ``object_memory.json`` opts the
+    world-state object memory into persistence (issue #636) the same way — when present
+    (``{}`` to start empty) it is restored with every object uncertain and rewritten
+    whenever the set of objects changes. Its poses are in the map frame, so opt in only
+    where that frame is the same place every deploy (a fixed base, a saved map).
     """
     from openral_core.exceptions import ROSConfigError
 
@@ -896,6 +900,9 @@ def _memory_bundle_launch_args(memory_dir: str) -> list[str]:
         )
     # memory_md_path may not exist yet — the reasoner creates it on the first memory_write.
     args = [f"memory_md_path:={d / 'MEMORY.md'}"]
+    object_memory = d / "object_memory.json"
+    if object_memory.is_file():
+        args.append(f"object_memory_path:={object_memory}")
     scene_graph = d / "scene_graph.json"
     if scene_graph.is_file():
         args.append(f"spatial_memory_path:={scene_graph}")
@@ -1258,6 +1265,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     foxglove_port: int = 8765,
     initial_task_prompt: str | None = None,
     runtime_overrides: dict[str, object] | None = None,
+    rskill_auto_install: bool = False,
 ) -> LaunchInvocation:
     """Resolve every input into the ``ros2 launch`` argv to execute.
 
@@ -1270,6 +1278,11 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     sentinel the caller substitutes after writing the ephemeral HAL params
     YAML. No envelope file is ever written — the launch reads ``robot_yaml``
     and feeds the kernel via ROS params.
+
+    ``rskill_auto_install`` installs the robot's openral.com rSkill list right after
+    the account settings apply (``openral_cli.rskill_install.auto_install_rskills``);
+    ``deploy run`` / ``deploy sim`` pass it unless ``--no-rskill-install`` or
+    ``--dry-run``.
     """
     from openral_core import (  # reason: defer schema import
         ROBOT_UNIT_ENV,
@@ -1485,9 +1498,15 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # (issue #467); refuse here first, before any pre-launch work.
     # A robot linked to openral.com picks up its account settings (e.g. the reasoner's API
     # key) before anything reads the environment; variables already set win.
-    from openral_cli.robot import apply_reasoner_settings
+    from openral_cli.robot import apply_account_settings
 
-    apply_reasoner_settings(echo=_console.print)
+    apply_account_settings(echo=_console.print)
+    if rskill_auto_install:
+        # The robot's openral.com rSkill list, installed before the reasoner's palette is
+        # built; a skipped or failed one never stops the deploy.
+        from openral_cli.rskill_install import auto_install_rskills
+
+        auto_install_rskills(echo=_console.print)
     resolve_unit_identity(robot_yaml, scene_unit, required=hal_mode == "real")
     # The same selection `resolve_sensor_overlays` made; `None` only for a robot without
     # `units/` on a real deploy (it refuses otherwise). The extrinsic preflight reads that
@@ -1744,11 +1763,15 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     default_omdet_manifest = repo_root / "rskills" / "omdet-turbo-indoor" / "rskill.yaml"
     if object_detector_manifest:
         resolved_object_detector_manifest = str(Path(object_detector_manifest).resolve())
-        resolved_object_detector_onnx = (
-            object_detector_onnx.resolve()
-            if object_detector_onnx is not None
-            else default_rtdetr_onnx
-        )
+        # An ONNX skill ships its model.onnx beside its manifest: use it, so a
+        # manifest-only detector runs its own weights, not RT-DETR R18's.
+        manifest_onnx = Path(resolved_object_detector_manifest).parent / "model.onnx"
+        if object_detector_onnx is not None:
+            resolved_object_detector_onnx = object_detector_onnx.resolve()
+        elif manifest_onnx.is_file():
+            resolved_object_detector_onnx = manifest_onnx
+        else:
+            resolved_object_detector_onnx = default_rtdetr_onnx
     elif object_detector_onnx is not None:
         # Explicit ONNX → the legacy fixed-label RT-DETR path (no manifest).
         resolved_object_detector_manifest = ""
@@ -2040,6 +2063,27 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         argv_template.append(f"object_detector_manifest:={resolved_object_detector_manifest}")
     if object_detector_query:
         argv_template.append(f"object_detector_query:={object_detector_query}")
+    # A robot of a shared MuJoCo world (`openral deploy world` binds its HAL with these
+    # two keys): the launch also feeds its kernel the peers (openral_hal.peer_voxels).
+    if hal_params.get("shared_world"):
+        if hal_mode != "sim":
+            raise ROSConfigError(
+                "--hal shared_world is a simulation binding (`openral deploy world`); a real "
+                "deploy cannot join a shared MuJoCo world."
+            )
+        if not hal_params.get("shared_world_robot"):
+            raise ROSConfigError(
+                "--hal shared_world needs --hal shared_world_robot (the robot's name in it); "
+                "`openral deploy world` passes both."
+            )
+        if enable_octomap:
+            # Refused by the launch too; said here first, with the remedy.
+            raise ROSConfigError(
+                "a shared-world robot runs with its octomap leg off (the other robots are "
+                "its kernel's world grid): pass `-- --no-enable-octomap` to `deploy world`."
+            )
+        argv_template.append(f"shared_world:={hal_params['shared_world']}")
+        argv_template.append(f"shared_world_robot:={hal_params['shared_world_robot']}")
     # resolve the reward-monitor manifest from the VLA pairing when
     # the operator did not pin one. ``deploy sim`` does not preselect a VLA, so the
     # default is derived from the capability-matched VLA palette's
@@ -2280,6 +2324,22 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         argv_template.append(
             f"grasp_declaration_json:={deploy_scene.grasp_declaration.model_dump_json()}"
         )
+    # Issue #635: what success means for the scene's tasks, by prompt; the runner judges a
+    # goal that carries no condition of its own by the one its prompt names and reports
+    # the TaskOutcome. Judged on the object tracker's tracks: without it, say so.
+    if deploy_scene is not None and deploy_scene.success_conditions:
+        from openral_core import SuccessCondition
+        from pydantic import TypeAdapter
+
+        conditions = TypeAdapter(dict[str, SuccessCondition]).dump_json(
+            deploy_scene.success_conditions
+        )
+        argv_template.append(f"success_conditions_json:={conditions.decode()}")
+        if deploy_scene.runtime is None or deploy_scene.runtime.object_tracking == "off":
+            _console.print(
+                "[yellow]success_conditions: object tracking is off, so nothing tracks "
+                "the objects they name; every run's task outcome will be unknown.[/yellow]"
+            )
     # Issue #418: the object classes the prompt's graded task names, for the tracker. A
     # direct-dispatch deploy (no reasoner, so no initial task) runs the cell's preload
     # prompt; that is the prompt whose task is graded, so it names the queries.
@@ -2813,6 +2873,8 @@ _ORPHAN_GRAPH_NEEDLES: tuple[str | tuple[str, ...], ...] = (
     "openral_reasoner_ros/reasoner_node.py",
     "openral_prompt_router/prompt_router_node.py",
     "openral_safety_kernel/safety_kernel_node",
+    # A shared world's peer grid: a leftover would feed the next run's kernel on this domain.
+    "openral_hal.peer_voxels",
     # A surviving recorder would stamp the next run's records with this run's identity.
     "openral_compliance/recorder_node.py",
     "openral dashboard",
@@ -4324,6 +4386,15 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
             "without writing the HAL params temp file or shelling out."
         ),
     ),
+    rskill_install: bool = typer.Option(
+        True,
+        "--rskill-install/--no-rskill-install",
+        help=(
+            "Install the rSkills on this robot's openral.com list (OPENRAL_RSKILLS) that "
+            "aren't installed yet, permissive licences only (default on; "
+            "OPENRAL_RSKILL_AUTO_INSTALL=0 also turns it off)."
+        ),
+    ),
 ) -> None:
     r"""Boot the full ROS graph against a robot's digital-twin HAL.
 
@@ -4366,6 +4437,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
             enable_foxglove=foxglove,
             foxglove_port=foxglove_port,
             initial_task_prompt=initial_task,
+            rskill_auto_install=rskill_install and not dry_run,
         )
     except ROSConfigError as exc:
         _console.print(f"[red]config error:[/red] {exc}")

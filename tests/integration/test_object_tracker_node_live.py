@@ -97,6 +97,55 @@ def test_tracker_node_grounds_relays_binds_and_never_regresses() -> None:
                 first.destroy_node()
 
 
+def test_the_trackers_own_sets_decide_a_success_condition() -> None:
+    """Issue #635: ``SuccessJudge`` on what the real tracker node publishes.
+
+    The grounded orange, as the tracker tracks it over 1.5 s of depth frames: a condition
+    whose region holds it succeeds once it has rested ``settle_s`` of the sets' own stamps;
+    the same region half a metre away fails (the orange is seen, elsewhere).
+    """
+    pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs")
+    from openral_core import SuccessCondition, TaskVerdict, TrackedObjectSet
+    from openral_core.success import SuccessJudge
+
+    with tracker_rig() as rig:
+        node: Any = None
+        try:
+            node = rig.tracker("tracking")
+            rig.declare()
+            assert rig.ground()
+            first = len(rig.tracked) - 1
+
+            def tracked_for_1_5_s() -> bool:
+                rig.frame()
+                time.sleep(0.2)
+                span_ns = int(rig.tracked[-1].stamp_ns) - int(rig.tracked[first].stamp_ns)
+                return span_ns >= 1_500_000_000
+
+            assert wait(tracked_for_1_5_s)
+            sets = [TrackedObjectSet.from_idl(m) for m in rig.tracked[first:]]
+            box = sets[0].objects[0].box
+            here = box.model_copy(
+                update={"half_extents": (0.08, 0.08, 0.08), "evidence_ref": "", "stamp_ns": 0}
+            )
+            x, y, z = here.pose.xyz
+            away = here.pose.model_copy(update={"xyz": (x + 0.5, y, z)})
+            verdicts = {}
+            for name, region in (("here", here), ("there", here.model_copy(update={"pose": away}))):
+                judge = SuccessJudge(SuccessCondition(object_label="orange", region=region))
+                for one in sets:
+                    judge.observe(one)
+                verdicts[name] = judge.outcome()
+            assert verdicts["here"].verdict is TaskVerdict.SUCCEEDED, verdicts["here"]
+            assert verdicts["here"].object_ids == ("trk:1",) and verdicts["here"].held_s >= 1.0
+            assert verdicts["there"].verdict is TaskVerdict.FAILED, verdicts["there"]
+            assert "trk:1 is outside it" in verdicts["there"].reason
+        finally:
+            if node is not None:
+                node.destroy_node()
+
+
 def test_a_tracker_without_hal_mode_refuses_to_configure() -> None:
     """Unset ``hal_mode`` means a real cell: the node must not track (fail closed)."""
     pytest.importorskip("rclpy")

@@ -312,6 +312,7 @@ def test_openai_named_endpoint_speaks_the_responses_api(
 ) -> None:
     monkeypatch.delenv("OPENRAL_REASONER_MAX_TOKENS", raising=False)
     monkeypatch.delenv("OPENRAL_REASONER_TIMEOUT_S", raising=False)
+    monkeypatch.delenv("OPENRAL_REASONER_FIRST_CALL_TIMEOUT_S", raising=False)
     monkeypatch.setenv("OPENRAL_REASONER_MODEL", "gpt-5.5")
     monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "openai")
     monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "sk-test")

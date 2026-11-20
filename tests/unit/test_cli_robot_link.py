@@ -301,68 +301,6 @@ def test_the_settings_request_never_follows_a_redirect() -> None:
     assert robot._NoRedirect().redirect_request(req, None, 302, "Found", {}, "https://evil") is None
 
 
-def test_the_robots_own_key_never_meets_an_account_endpoint(
-    enrolment: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Console settings chose the reasoner: no account reasoner setting is applied at all.
-
-    Otherwise a site (or a compromised one) naming its own endpoint would receive the key
-    the operator saved on the robot.
-    """
-    from openral_cli import robot
-    from openral_observability.dashboard.robot_settings import save_setting
-
-    _fake_cloudflared(tmp_path, monkeypatch)
-    assert CliRunner().invoke(app, ["robot", "link", "--no-service", _CODE]).exit_code == 0
-
-    site = settings_site(
-        {
-            "OPENRAL_REASONER_ENDPOINT": "https://evil.example/v1",
-            "OPENRAL_DASHBOARD_REMOTE_CONTROL": "1",
-        }
-    )
-    monkeypatch.setattr(robot, "_open", site)
-    save_setting("ANTHROPIC_API_KEY", "sk-ant-robot-only-1111")
-    save_setting("OPENRAL_REASONER_MODEL", "claude-sonnet-5-5")
-    assert robot.apply_reasoner_settings(echo=lambda _: None) == [
-        "OPENRAL_REASONER_API_KEY",
-        "OPENRAL_REASONER_MODEL",
-        "OPENRAL_DASHBOARD_REMOTE_CONTROL",  # the switches carry no key: still applied
-    ]
-    assert "OPENRAL_REASONER_ENDPOINT" not in os.environ
-    # Its variables already exported (an inherited environment): the console sets nothing,
-    # and the account's endpoint is still not applied.
-    assert robot.apply_reasoner_settings(echo=lambda _: None) == []
-    assert "OPENRAL_REASONER_ENDPOINT" not in os.environ
-    # Without a console model the account's settings apply as before.
-    for var in ("OPENRAL_REASONER_API_KEY", "OPENRAL_REASONER_MODEL"):
-        monkeypatch.delenv(var)
-    save_setting("OPENRAL_REASONER_MODEL", "")
-    assert robot.apply_reasoner_settings(echo=lambda _: None) == ["OPENRAL_REASONER_ENDPOINT"]
-
-
-def test_the_rskill_list_applies_whoever_chooses_the_reasoner(
-    enrolment: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """``OPENRAL_RSKILLS`` (the robot's curated rSkill list) carries no key or URL: it applies
-    with the account's reasoner settings and when the robot's console chooses the reasoner."""
-    from openral_cli import robot
-    from openral_observability.dashboard.robot_settings import save_setting
-
-    _fake_cloudflared(tmp_path, monkeypatch)
-    assert CliRunner().invoke(app, ["robot", "link", "--no-service", _CODE]).exit_code == 0
-    monkeypatch.setattr(
-        robot, "_open", settings_site({"OPENRAL_RSKILLS": "OpenRAL/rskill-a,OpenRAL/rskill-b"})
-    )
-    assert robot.apply_reasoner_settings(echo=lambda _: None) == ["OPENRAL_RSKILLS"]
-    assert os.environ["OPENRAL_RSKILLS"] == "OpenRAL/rskill-a,OpenRAL/rskill-b"
-    monkeypatch.delenv("OPENRAL_RSKILLS")
-    save_setting("ANTHROPIC_API_KEY", "sk-ant-robot-only-1111")
-    save_setting("OPENRAL_REASONER_MODEL", "claude-sonnet-5-5")
-    assert "OPENRAL_RSKILLS" in robot.apply_reasoner_settings(echo=lambda _: None)
-    assert os.environ["OPENRAL_RSKILLS"] == "OpenRAL/rskill-a,OpenRAL/rskill-b"
-
-
 def test_an_unreadable_robot_credential_does_not_stop_the_start(
     enrolment: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

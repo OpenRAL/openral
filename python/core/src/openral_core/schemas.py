@@ -4284,6 +4284,9 @@ class DetectedObject(BaseModel):
         pose: 6D pose in the world or camera frame.
         bbox_3d: 3D bounding box (x_min, y_min, z_min, x_max, y_max, z_max).
         track_id: Persistent track ID across frames.
+        existence: The object memory's belief, as a probability in [0, 1], that the
+            object is still where it was remembered (issue #636). ``None`` when the
+            producer keeps no belief (a raw detection, an older publisher).
     """
 
     label: str
@@ -4291,6 +4294,7 @@ class DetectedObject(BaseModel):
     pose: Pose6D
     bbox_3d: tuple[float, float, float, float, float, float] | None = None
     track_id: int | None = None
+    existence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class AttachmentEvidenceKind(str, Enum):
@@ -6359,6 +6363,180 @@ class TrackedObjectSet(BaseModel):
             msg.objects.append(item)  # type: ignore[attr-defined]
 
 
+class TaskVerdict(StrEnum):
+    """Whether a policy run did what it was asked (issue #635).
+
+    ``UNKNOWN`` is a verdict of its own, never a success: it is what a run reports when
+    nothing declared a success condition, or perception could not decide it.
+    """
+
+    UNKNOWN = "unknown"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class TaskOutcome(BaseModel):
+    """The typed outcome of one ``ExecuteRskill`` run (issue #635).
+
+    Rides ``ExecuteRskill.Result.task_outcome_json`` beside the ``task_outcome`` uint8,
+    the ``rskill.execute`` span and the reasoner's ``## EXECUTION`` line. It is the task's
+    verdict; ``Result.success`` stays the execution's (the goal ended without a fault).
+
+    Attributes:
+        verdict: Succeeded, failed, or unknown.
+        source: What decided it: ``success_condition`` (a declared ``SuccessCondition``
+            over the tracked objects), ``skill`` (the skill's own completion signal, e.g.
+            a wrapped action's terminal status), ``checker`` (an external completion
+            check ended the goal through ``/openral/rskill/complete``), or ``none``.
+        reason: One line saying why, for a person and for the reasoner.
+        object_ids: The tracked objects the verdict was read from: those resting in the
+            region, else the one seen held or elsewhere. Empty when none.
+        resting: How many objects of the label rest in the region.
+        required: How many the condition needs (0 when no condition judged).
+        held_s: Seconds of tracker evidence over which the condition has held (0 when
+            it does not hold).
+
+    Example:
+        >>> TaskOutcome(verdict=TaskVerdict.UNKNOWN, reason="no success condition").source
+        'none'
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Bound on ``reason`` (it is rendered into the reasoner's prompt).
+    MAX_REASON_CHARS: ClassVar[int] = 240
+
+    verdict: TaskVerdict
+    source: Literal["success_condition", "skill", "checker", "none"] = "none"
+    reason: str = Field(max_length=MAX_REASON_CHARS)
+    object_ids: tuple[str, ...] = ()
+    resting: int = Field(default=0, ge=0)
+    required: int = Field(default=0, ge=0)
+    held_s: float = Field(default=0.0, ge=0.0)
+
+
+class SuccessCondition(BaseModel):
+    """What success means for a policy run, as a predicate over world state (issue #635).
+
+    One predicate today: *at least ``min_count`` objects labelled ``object_label`` rest,
+    released, with their box centres inside ``region``, and have for ``settle_s``*.
+    ``openral_core.success.SuccessJudge`` judges it over the object tracker's
+    ``TrackedObjectSet`` s; the rSkill runner reports the ``TaskOutcome`` of every run and,
+    with ``end_on_success``, ends a run that satisfies it.
+
+    Declared per goal (``ExecuteRskill.Goal.success_condition``), which wins, or per scene
+    and prompt (``DeployScene.success_conditions``). Advisory: it can only end a goal or
+    label its result; it commands nothing and is never a safety-kernel input.
+
+    Attributes:
+        object_label: Label of the tracked objects (``TrackedObject.label``, compared
+            case-folded). Any track of the label counts, so an object of that class
+            already resting in ``region`` does too.
+        region: Box an object's centre must rest inside, in the tracker's grid frame
+            (the robot base frame); ``geometry`` empty. Another frame is never
+            re-expressed: the verdict is ``unknown``.
+        min_count: How many objects must rest in the region.
+        settle_s: Seconds of tracker evidence the predicate must hold over (> 0: one
+            tracked set alone never decides a success).
+        max_evidence_gap_s: Longest gap between two sets the tracker publishes that the
+            hold may span; a longer one restarts ``settle_s``.
+        end_on_success: End the run once the condition has settled. Off by default: the
+            verdict then only labels the result, and the run still ends on its budget,
+            its skill or a completion check. A wrong ``succeeded`` (the tracker holding
+            a track for something that is not there) then costs a label, not the task.
+
+    Example:
+        >>> region = PlaceRegion(
+        ...     frame_id="base",
+        ...     pose=Pose6D(xyz=(0.3, 0.1, 0.02), quat_xyzw=(0, 0, 0, 1), frame_id="base"),
+        ...     half_extents=(0.03, 0.03, 0.03),
+        ... )
+        >>> SuccessCondition(object_label="cube", region=region).min_count
+        1
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    object_label: str = Field(min_length=1, max_length=64)
+    region: PlaceRegion
+    min_count: int = Field(default=1, ge=1, le=32)
+    settle_s: float = Field(default=1.0, gt=0.0, le=60.0)
+    max_evidence_gap_s: float = Field(default=2.0, gt=0.0, le=60.0)
+    end_on_success: bool = False
+
+    @model_validator(mode="after")
+    def _validate_condition(self) -> Self:
+        if self.region.geometry:
+            raise ValueError("SuccessCondition.region.geometry must be empty.")
+        if self.region.pose.frame_id != self.region.frame_id:
+            raise ValueError(
+                f"SuccessCondition.region.pose is in {self.region.pose.frame_id!r}, not the "
+                f"region's {self.region.frame_id!r}."
+            )
+        if not all(math.isfinite(v) for v in self.region.pose.xyz):
+            raise ValueError("SuccessCondition.region.pose.xyz must be finite.")
+        norm = math.hypot(*self.region.pose.quat_xyzw)
+        if not math.isfinite(norm) or math.isclose(norm, 0.0, abs_tol=1e-6):
+            raise ValueError("SuccessCondition.region.pose.quat_xyzw is not a rotation.")
+        return self
+
+    @classmethod
+    def from_idl(cls, msg: object) -> Self:
+        """Decode the duck-typed ``openral_msgs/SuccessCondition`` without importing ROS.
+
+        A zero ``min_count`` / ``settle_s`` / ``max_evidence_gap_s`` (an unset wire
+        field) reads as the schema default, never as "no settle".
+        """
+        defaults = cls.model_fields
+        return cls(
+            object_label=str(msg.object_label),  # type: ignore[attr-defined]
+            region=PlaceRegion.from_idl(msg.region),  # type: ignore[attr-defined]
+            min_count=int(msg.min_count) or defaults["min_count"].default,  # type: ignore[attr-defined]
+            settle_s=float(msg.settle_s) or defaults["settle_s"].default,  # type: ignore[attr-defined]
+            max_evidence_gap_s=float(msg.max_evidence_gap_s)  # type: ignore[attr-defined]
+            or defaults["max_evidence_gap_s"].default,
+            end_on_success=bool(msg.end_on_success),  # type: ignore[attr-defined]
+        )
+
+    def fill_idl(self, msg: object) -> None:
+        """Populate a duck-typed ``openral_msgs/SuccessCondition`` without importing ROS."""
+        msg.object_label = self.object_label  # type: ignore[attr-defined]
+        self.region.fill_idl(msg.region)  # type: ignore[attr-defined]
+        msg.min_count = int(self.min_count)  # type: ignore[attr-defined]
+        msg.settle_s = float(self.settle_s)  # type: ignore[attr-defined]
+        msg.max_evidence_gap_s = float(self.max_evidence_gap_s)  # type: ignore[attr-defined]
+        msg.end_on_success = bool(self.end_on_success)  # type: ignore[attr-defined]
+
+
+def success_condition_for_prompt(
+    prompt: str, conditions: Mapping[str, SuccessCondition]
+) -> SuccessCondition | None:
+    """The condition ``conditions`` declares for ``prompt``, or ``None`` (issue #635).
+
+    A scene keys its conditions by the task prompt; the match ignores case and
+    surrounding / repeated whitespace, nothing else. A goal with another prompt (a
+    wrapped Nav2 move, a different task) is judged by none of them.
+
+    Example:
+        >>> region = PlaceRegion(
+        ...     frame_id="base",
+        ...     pose=Pose6D(xyz=(0.3, 0.1, 0.02), quat_xyzw=(0, 0, 0, 1), frame_id="base"),
+        ...     half_extents=(0.03, 0.03, 0.03),
+        ... )
+        >>> declared = {"Place the cube": SuccessCondition(object_label="cube", region=region)}
+        >>> success_condition_for_prompt("  place the  CUBE ", declared).object_label
+        'cube'
+        >>> success_condition_for_prompt("go to the dock", declared) is None
+        True
+    """
+
+    def key(text: str) -> str:
+        return " ".join(text.split()).casefold()
+
+    wanted = key(prompt)
+    return next((c for p, c in conditions.items() if key(p) == wanted), None)
+
+
 class OccupancyGridRef(BaseModel):
     """Reference to a 2D occupancy grid for mobile-base world-collision.
 
@@ -6613,6 +6791,37 @@ class SpatialRelationKind(str, Enum):
     NEAR = "near"
 
 
+class ObjectBeliefState(str, Enum):
+    """Whether a remembered object is believed to still be where it was seen (issue #636).
+
+    ``PRESENT``: the world-state object memory believes it is there. ``UNCERTAIN``:
+    remembered but not confirmed (restored from disk, or its evidence has decayed).
+    ``ABSENT``: the object memory evicted it — its place was seen clear, or it went
+    undetected for long enough. An absent node keeps its last pose and history, for
+    "where was X".
+    """
+
+    PRESENT = "present"
+    UNCERTAIN = "uncertain"
+    ABSENT = "absent"
+
+
+def belief_state(existence: float | None) -> ObjectBeliefState:
+    """The state a ``DetectedObject.existence`` reads as: present above 0.5, else uncertain.
+
+    0.5 is log-odds 0, neither confirmed nor refuted. ``None`` (a producer that keeps
+    no belief) reads as present, as before #636. ``ABSENT`` is never returned: an
+    absent object is one the memory dropped from its remembered set.
+
+    Example:
+        >>> belief_state(0.5).value, belief_state(0.9).value, belief_state(None).value
+        ('uncertain', 'present', 'present')
+    """
+    if existence is None or existence > 0.5:  # noqa: PLR2004  # reason: p of log-odds 0
+        return ObjectBeliefState.PRESENT
+    return ObjectBeliefState.UNCERTAIN
+
+
 class SpatialNode(BaseModel):
     """A persistent, typed node in the scene-graph spatial memory.
 
@@ -6645,6 +6854,8 @@ class SpatialNode(BaseModel):
         aliases: Other names the node answers to exactly (a declared station's aliases).
         description: What the node is, for the reasoner (a declared station's description).
         declared: Declared task knowledge (``DeployScene.nav_goals``), not perceived.
+        state: Existence belief for an object node (``ObjectBeliefState``); defaults
+            to ``present``, which is what an older scene-graph file migrates to.
 
     Example:
         >>> node = SpatialNode(
@@ -6678,6 +6889,7 @@ class SpatialNode(BaseModel):
     aliases: tuple[str, ...] = ()
     description: str = ""
     declared: bool = False
+    state: ObjectBeliefState = ObjectBeliefState.PRESENT
 
     @model_validator(mode="after")
     def _check_node_invariants(self) -> SpatialNode:
@@ -6725,24 +6937,26 @@ class SceneGraph(BaseModel):
         schema_version: On-disk schema version (CLAUDE.md §1.6). ``"0.2"`` added
             ``SpatialNode.aliases`` / ``description`` / ``declared`` (ADR-0133); a
             ``"0.2"`` graph does not load under a ``"0.1"`` reader (``extra="forbid"``).
-            A ``"0.1"`` file is migrated on load (``_migrate_scene_graph``): the added
-            fields take their defaults, so the migration only restamps the version.
+            ``"0.3"`` added ``SpatialNode.state`` (issue #636), which a ``"0.2"``
+            reader refuses the same way. A ``"0.1"`` or ``"0.2"`` file is migrated on
+            load (``_migrate_scene_graph``): the added fields take their defaults, so
+            the migration only restamps the version.
         nodes: All scene-graph nodes.
         edges: All directed relations between nodes.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["0.2"] = "0.2"
+    schema_version: Literal["0.3"] = "0.3"
     nodes: list[SpatialNode] = Field(default_factory=list)
     edges: list[SpatialEdge] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
     def _migrate_scene_graph(cls, data: object) -> object:
-        """Migrate a ``"0.1"`` graph to ``"0.2"`` (the added node fields default)."""
-        if isinstance(data, Mapping) and data.get("schema_version") == "0.1":
-            return {**data, "schema_version": "0.2"}
+        """Migrate a ``"0.1"`` / ``"0.2"`` graph to ``"0.3"`` (the added node fields default)."""
+        if isinstance(data, Mapping) and data.get("schema_version") in ("0.1", "0.2"):
+            return {**data, "schema_version": "0.3"}
         return data
 
     @model_validator(mode="after")
@@ -6821,6 +7035,8 @@ class RecallObjectMatch(BaseModel):
         approach: Optional computed camera-facing approach viewpoint.
         inside_container_id: Set when the object is inside an occluding container
             that must be opened first; ``None`` otherwise.
+        state: The node's existence belief; an ``absent`` match is where the object
+            was, not where it is.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -6832,6 +7048,7 @@ class RecallObjectMatch(BaseModel):
     last_seen_ns: int = Field(ge=0)
     approach: ApproachViewpoint | None = None
     inside_container_id: str | None = None
+    state: ObjectBeliefState = ObjectBeliefState.PRESENT
 
 
 class RecallObjectResult(BaseModel):
@@ -13542,6 +13759,14 @@ class DeployScene(BaseModel):
     reasoner-grounded — the LLM names an ``ExecuteRskillTool.grasp_target``, the
     reasoner grounds its ``search_box`` from perception, and the goal carries the
     declaration (design §2.2)."""
+    success_conditions: dict[str, SuccessCondition] = Field(default_factory=dict)
+    """What success means for this scene's tasks, by prompt (issue #635).
+
+    ``openral deploy sim`` / ``deploy run`` forward them (``success_conditions_json``) to
+    the rSkill runner, which judges a goal that carries no condition of its own by the one
+    its prompt names (``success_condition_for_prompt``) and reports the ``TaskOutcome``.
+    Empty — every scene before #635 — declares nothing: a policy run's task outcome is
+    ``unknown``. Advisory, never a safety-kernel input."""
     place_zones: list[PlaceZone] = Field(default_factory=list)
     """Named place zones on the cell's fixed furniture (shelf slots), see ``PlaceZone``.
 
@@ -13594,6 +13819,9 @@ class DeployScene(BaseModel):
         dupes = repeated_nav_goal_names(self.nav_goals)
         if dupes:
             raise ValueError(f"nav_goals names/aliases must be unique; repeated: {dupes}.")
+        # A blank prompt would name every goal sent without one (a wrapped move).
+        if any(not prompt.strip() for prompt in self.success_conditions):
+            raise ValueError("success_conditions keys are task prompts; a blank one is refused.")
         return self
 
     @model_validator(mode="before")
@@ -13747,6 +13975,105 @@ class BenchmarkScene(SimScene):
                 "Set it to the paper's canonical step budget."
             )
         return self
+
+
+# ─── Shared world: several robots in one MuJoCo world (issue #666) ───────────
+
+_FiniteFloat = Annotated[float, Field(allow_inf_nan=False)]
+
+
+class SharedWorldRobot(BaseModel):
+    """One robot of a ``SharedWorldScene``: a whole deploy graph in its own ROS domain.
+
+    Attributes:
+        name: The robot's name in the world (lowercase letters and digits); it
+            prefixes the robot's MJCF elements in every other robot's view.
+        scene: The robot's ``DeployScene`` YAML, relative to the world file. It
+            must build a bare MuJoCo twin (no ``composition``, unregistered
+            ``scene.id``); several robots may share one file.
+        base_xyz: Where the robot's MJCF origin sits in the world, metres.
+        base_yaw_deg: Its rotation about world +Z, degrees. Planar only, so
+            gravity is the same in every robot's base frame.
+        ros_domain_id: The ``ROS_DOMAIN_ID`` its graph runs on.
+        dashboard_port: Its dashboard port.
+        foxglove_port: Its Foxglove bridge port.
+
+    Example:
+        >>> SharedWorldRobot(
+        ...     name="a",
+        ...     scene="../deploy/so101_shared_table.yaml",
+        ...     ros_domain_id=36,
+        ...     dashboard_port=4336,
+        ...     foxglove_port=8836,
+        ... ).base_yaw_deg
+        0.0
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(pattern=r"^[a-z][a-z0-9]*$")
+    scene: str
+    base_xyz: tuple[_FiniteFloat, _FiniteFloat, _FiniteFloat] = (0.0, 0.0, 0.0)
+    base_yaw_deg: _FiniteFloat = 0.0
+    ros_domain_id: int = Field(ge=1, le=232)
+    dashboard_port: int = Field(ge=1024, le=65535)
+    foxglove_port: int = Field(ge=1024, le=65535)
+
+
+class SharedWorldScene(BaseModel):
+    """Several robots in ONE MuJoCo world, for ``openral deploy world`` (issue #666).
+
+    One physics process owns the world; each robot keeps its own unmodified
+    deploy graph on its own ROS domain, attached to that world. Sim only.
+
+    Attributes:
+        id: World id (used in logs and the run directory name).
+        arena_mjcf: The shared arena (table, objects, lights) as an MJCF file,
+            relative to the world file. Its frame is the world frame.
+        robots: The robots, at least two.
+        barrier_timeout_s: Wall seconds a commanding robot waits for another
+            commanding robot's step before the world advances without it (the
+            late robot's last targets are held and the timeout is logged). At
+            most 7 s: the waiting robot's HAL is blocked meanwhile, and its
+            graph's own action deadlines are 8 s.
+
+    Example:
+        >>> world = SharedWorldScene.from_yaml("scenes/worlds/so101_handover_table.yaml")
+        >>> len(world.robots), world.robots[1].base_yaw_deg
+        (2, 180.0)
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
+    arena_mjcf: str
+    robots: list[SharedWorldRobot] = Field(min_length=2)
+    barrier_timeout_s: float = Field(default=5.0, gt=0.0, le=7.0)
+
+    @model_validator(mode="after")
+    def _robots_do_not_collide(self) -> Self:
+        names = [r.name for r in self.robots]
+        if len(set(names)) != len(names):
+            raise ValueError(f"robot names must be unique, got {names}")
+        if {"robot0", "gripper0", "mobilebase0"} & set(names):
+            # `<name>_` prefixes the robot's bodies in its peers' models, and these are the
+            # robosuite body prefixes the sim bridge's render heuristics key on.
+            raise ValueError(f"robot names must not be robosuite body prefixes, got {names}")
+        ports = [p for r in self.robots for p in (r.dashboard_port, r.foxglove_port)]
+        if len(set(ports)) != len(ports):
+            raise ValueError(f"dashboard / foxglove ports must all differ, got {ports}")
+        domains = sorted(r.ros_domain_id for r in self.robots)
+        if any(b - a <= 1 for a, b in itertools.pairwise(domains)):
+            # The deploy profile keeps a graph inside its own domain's ports (#664), but a
+            # graph with a wider discovery range (an older OpenRAL, an operator profile)
+            # reaches one domain over: two apart, as the occupied-graph refusal advises.
+            raise ValueError(f"ros_domain_id values must be at least 2 apart, got {domains}")
+        return self
+
+    @classmethod
+    def from_yaml(cls, path: str) -> Self:
+        """Load and validate a shared-world YAML from disk."""
+        return _load_yaml_model(cls, path)
 
 
 # ─── Standalone protocol descriptor (eval suites are bare lists now) ─────────

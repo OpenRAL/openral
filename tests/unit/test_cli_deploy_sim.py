@@ -67,8 +67,8 @@ def test_bh_deploy_sim_help_renders() -> None:
     for flag in ("--config", "--robot", "--dashboard-port", "--hal", "--dry-run"):
         assert flag in result.output, f"{flag} missing from help"
     # --rskill was removed: the reasoner picks the active rSkill
-    # dynamically from rskills/ at on_configure.
-    assert "--rskill" not in result.output
+    # dynamically from rskills/ at on_configure. (--rskill-install is the auto-install switch.)
+    assert not re.search(r"--rskill(?![-\w])", result.output)
     assert "--enable-sim-clock" not in result.output
 
 
@@ -318,6 +318,27 @@ def test_deploy_sim_object_detector_manifest_selects_vlm() -> None:
     assert f"object_detector_manifest:={manifest.resolve()}" in joined
     assert "object_detector_query:=red mug" in joined
     assert "enable_object_detector:=true" in joined
+
+
+def test_deploy_sim_object_detector_manifest_uses_its_own_onnx(tmp_path: Path) -> None:
+    """A manifest-only ONNX detector runs the model.onnx beside its manifest, not R18's."""
+    skill = tmp_path / "rtdetr-v2-r50vd"
+    skill.mkdir()
+    manifest = skill / "rskill.yaml"
+    manifest.write_text((_REPO_ROOT / "rskills" / "rtdetr-v2-r50vd" / "rskill.yaml").read_text())
+    (skill / "model.onnx").write_bytes(b"onnx")
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        object_detector_manifest=str(manifest),
+    )
+    assert invocation.object_detector_onnx == (skill / "model.onnx").resolve()
+    assert f"object_detector_onnx:={(skill / 'model.onnx').resolve()}" in " ".join(
+        invocation.argv_template
+    )
 
 
 def test_deploy_sim_reward_monitor_forwarded() -> None:
@@ -2381,8 +2402,11 @@ def test_deploy_sim_memory_dir_forwards_all_present_bundle_artifacts(tmp_path: P
     bundle.mkdir()
     (bundle / "scene_graph.json").write_text("{}", encoding="utf-8")
     (bundle / "map.yaml").write_text("image: map.pgm\n", encoding="utf-8")
+    (bundle / "object_memory.json").write_text("{}", encoding="utf-8")
     argv = _resolve_with_memory_dir(str(bundle)).argv_template  # type: ignore[attr-defined]
     assert f"memory_md_path:={bundle / 'MEMORY.md'}" in argv
+    # object_memory.json opts the world-state object memory into persistence (issue #636).
+    assert f"object_memory_path:={bundle / 'object_memory.json'}" in argv
     assert f"spatial_memory_path:={bundle / 'scene_graph.json'}" in argv
     assert f"map_path:={bundle / 'map.yaml'}" in argv
 
@@ -2395,6 +2419,7 @@ def test_deploy_sim_memory_dir_omits_absent_artifacts(tmp_path: Path) -> None:
     assert any(a.startswith("memory_md_path:=") for a in argv)
     assert not any(a.startswith("spatial_memory_path:=") for a in argv)
     assert not any(a.startswith("map_path:=") for a in argv)
+    assert not any(a.startswith("object_memory_path:=") for a in argv)
 
 
 def test_deploy_sim_no_memory_dir_forwards_no_bundle_args() -> None:
@@ -3523,8 +3548,9 @@ def test_preflight_preload_rskill_refuses_with_the_install_command(
 
 
 _BOGUS_REVISION = "0" * 40
-_HUB_ONLY_RSKILL = "OpenRAL/rskill-rtdetr_v2_r50vd-any-coco-fp16"
-_HUB_ONLY_REVISION = "e46b9e1f13aecbc588b1997a7c44894bf49c7261"
+# An OpenRAL Pro skill published public: no in-tree manifest, so it must come from the Hub.
+_HUB_ONLY_RSKILL = "OpenRAL/rskill-openwam_alpha-franka_panda-libero-bf16"
+_HUB_ONLY_REVISION = "ded8cc24b5d77a929126966d44b2e90ed97ed83c"
 
 
 def test_preflight_preload_rskill_resolves_an_in_tree_name_before_the_hub(
@@ -3546,15 +3572,24 @@ def test_preflight_preload_rskill_resolves_an_in_tree_name_before_the_hub(
 
 def test_preflight_preload_rskill_reads_a_hub_id_at_its_pinned_revision(
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A Hub-only id is read at the scene's pinned revision: the real revision
     resolves, and one that does not exist warns — the default branch would have
     resolved, so the warning proves the pin reached the fetch."""
+    import openral_sim.policy_deps as _policy_deps
+
     huggingface_hub = pytest.importorskip("huggingface_hub")
     try:
-        huggingface_hub.HfApi().model_info(_HUB_ONLY_RSKILL, revision=_HUB_ONLY_REVISION)
+        info = huggingface_hub.HfApi(token=False).model_info(
+            _HUB_ONLY_RSKILL, revision=_HUB_ONLY_REVISION
+        )
     except Exception as exc:  # any Hub / network failure means skip
         pytest.skip(f"Hub unreachable: {exc}")
+    if info.private or info.gated:
+        pytest.skip(f"{_HUB_ONLY_RSKILL} is no longer public and ungated")
+    # This test is about the revision pin, not whether the policy imports here.
+    monkeypatch.setattr(_policy_deps, "can_import_policy_manifest", lambda _m: (True, None))
 
     _preflight_preload_rskill(_HUB_ONLY_RSKILL, _HUB_ONLY_REVISION)
     assert "does not resolve" not in capsys.readouterr().out

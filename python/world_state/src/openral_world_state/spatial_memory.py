@@ -54,6 +54,7 @@ from numpy.typing import NDArray
 from openral_core import (
     ApproachViewpoint,
     DetectedObject,
+    ObjectBeliefState,
     Pose6D,
     RecallObjectMatch,
     RecallObjectQuery,
@@ -65,6 +66,7 @@ from openral_core import (
     SpatialNode,
     SpatialNodeKind,
     SpatialRelationKind,
+    belief_state,
 )
 from openral_core.exceptions import ROSObjectNotInMemory
 from openral_core.geometry import yaw_to_quat_xyzw
@@ -175,6 +177,8 @@ class SpatialMemory:
         self._edges: dict[tuple[str, str, SpatialRelationKind], SpatialEdge] = {}
         self._embeddings: dict[str, NDArray[np.float32]] = {}
         self._auto_counter = 0
+        # Node ids the last ``follow_eviction`` ingest touched (see there).
+        self._followed: set[str] = set()
 
     def _embed_node(self, node: SpatialNode) -> None:
         """Compute + cache the label embedding for an object node (no-op without an embedder)."""
@@ -197,7 +201,11 @@ class SpatialMemory:
         self._edges[(src, dst, kind)] = SpatialEdge(src=src, dst=dst, kind=kind)
 
     def ingest_detected_objects(
-        self, objects: Sequence[DetectedObject], *, now_ns: int
+        self,
+        objects: Sequence[DetectedObject],
+        *,
+        now_ns: int,
+        follow_eviction: bool = False,
     ) -> list[str]:
         """Fold a snapshot's detected objects into the graph.
 
@@ -205,17 +213,23 @@ class SpatialMemory:
         node by ``track_id`` when present, else by identical label within
         ``assoc_distance_m``. A match updates the pose, bumps ``last_seen_ns``
         and ``observation_count`` and keeps the higher confidence; otherwise a
-        new node is created. Object poses are expected in the map frame.
+        new node is created. Object poses are expected in the map frame. A
+        touched node takes the detection's belief state (``DetectedObject.existence``).
 
         Args:
             objects: Detections from a ``WorldState``.
             now_ns: Observation timestamp in nanoseconds.
+            follow_eviction: ``objects`` is the world-state object memory's whole
+                remembered set (it keeps what is out of view), so a node the
+                previous such snapshot carried and this one does not was evicted
+                there: mark it ``absent``. It keeps its pose and history.
 
         Returns:
             The node ids touched (created or updated), in input order.
         """
         touched: list[str] = []
         for obj in objects:
+            state = belief_state(obj.existence)
             match_id = self._associate(obj)
             if match_id is None:
                 node_id = self._new_node_id(obj)
@@ -229,6 +243,7 @@ class SpatialMemory:
                     first_seen_ns=now_ns,
                     last_seen_ns=now_ns,
                     observation_count=1,
+                    state=state,
                 )
                 self._embed_node(self._nodes[node_id])
                 touched.append(node_id)
@@ -241,9 +256,16 @@ class SpatialMemory:
                         "confidence": max(prev.confidence, obj.confidence),
                         "last_seen_ns": max(prev.last_seen_ns, now_ns),
                         "observation_count": prev.observation_count + 1,
+                        "state": state,
                     }
                 )
                 touched.append(match_id)
+        if follow_eviction:
+            for node_id in self._followed.difference(touched):
+                self._nodes[node_id] = self._nodes[node_id].model_copy(
+                    update={"state": ObjectBeliefState.ABSENT}
+                )
+            self._followed = set(touched)
         return touched
 
     def _associate(self, obj: DetectedObject) -> str | None:
@@ -294,7 +316,8 @@ class SpatialMemory:
         against ``query.label`` / ``query.text``, applies the optional recency
         filter, ranks by match quality x confidence (proximity to
         ``query.near`` as a tiebreaker), and attaches a camera-facing approach
-        viewpoint and any occluding container. Returns an empty result when
+        viewpoint and any occluding container. Objects believed ``absent`` rank
+        after every other match (where it was, not where it is). Returns an empty result when
         nothing matches — the caller decides whether to raise
         ``ROSObjectNotInMemory`` or search.
         """
@@ -322,8 +345,15 @@ class SpatialMemory:
             proximity = _xyz_distance(node.pose, query.near) if query.near is not None else 0.0
             scored.append((score, proximity, node))
 
-        # Rank: score desc, then nearer first, then most-recently seen.
-        scored.sort(key=lambda t: (-t[0], t[1], -t[2].last_seen_ns))
+        # Rank: not-absent first, score desc, then nearer first, then most-recently seen.
+        scored.sort(
+            key=lambda t: (
+                t[2].state is ObjectBeliefState.ABSENT,
+                -t[0],
+                t[1],
+                -t[2].last_seen_ns,
+            )
+        )
         matches = [
             RecallObjectMatch(
                 node_id=node.node_id,
@@ -333,6 +363,7 @@ class SpatialMemory:
                 last_seen_ns=node.last_seen_ns,
                 approach=self._approach_for(node),
                 inside_container_id=self._occluding_container_of(node.node_id),
+                state=node.state,
             )
             for score, _prox, node in scored[: query.limit]
         ]
@@ -409,6 +440,8 @@ class SpatialMemory:
         for node in self._nodes.values():
             if kind is not None and node.kind is not kind:
                 continue
+            if node.state is ObjectBeliefState.ABSENT:
+                continue  # where an object was is not a place to send the robot
             # A declared station answers to its label and aliases, exactly: a substring
             # would send "shelf_12" to shelf_1 and "shelf" to whichever is listed first.
             names = (node.label, *node.aliases)
@@ -481,9 +514,31 @@ class SpatialMemory:
         Path(path).write_text(self.to_scene_graph().model_dump_json(indent=2))
 
     @classmethod
-    def load(cls, path: str | Path, *, embedder: TextEmbedder | None = None) -> SpatialMemory:
-        """Load a memory from a JSON scene graph written by ``save``."""
+    def load(
+        cls,
+        path: str | Path,
+        *,
+        embedder: TextEmbedder | None = None,
+        restored_uncertain: bool = False,
+    ) -> SpatialMemory:
+        """Load a memory from a JSON scene graph written by ``save``.
+
+        ``restored_uncertain`` is for a deploy restoring what an earlier run (or a
+        scene file) remembered: every object believed present starts ``uncertain``
+        until a fresh observation confirms it (issue #636).
+        """
         graph = SceneGraph.model_validate_json(Path(path).read_text())
+        if restored_uncertain:
+            graph = graph.model_copy(
+                update={
+                    "nodes": [
+                        n.model_copy(update={"state": ObjectBeliefState.UNCERTAIN})
+                        if n.kind is SpatialNodeKind.OBJECT and n.state is ObjectBeliefState.PRESENT
+                        else n
+                        for n in graph.nodes
+                    ]
+                }
+            )
         return cls.from_scene_graph(graph, embedder=embedder)
 
 

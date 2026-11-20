@@ -26,6 +26,16 @@ PlaceDeclaration place_declaration
 # publishes it on accept and retracts it on success, failure, cancel and E-stop.
 bool grasp_declaration_valid
 GraspDeclaration grasp_declaration
+
+# Optional success condition (issue #635), additive and defaulted off: what
+# success means for this run, judged by the runner over the tracked objects. It
+# wins over the one the deploy scene declares for this goal's prompt (the
+# runner's `success_conditions_json`). False — every caller before #635 — with
+# no scene condition for the prompt declares nothing, and the
+# Result's task_outcome is TASK_UNKNOWN unless the skill or a completion check
+# said otherwise. Advisory: it ends the goal early or labels its result only.
+bool success_condition_valid
+SuccessCondition success_condition
 ---
 # Result
 bool success
@@ -78,6 +88,20 @@ string evidence_json
 # `rskill_runner_node._run_until_done_or_deadline`.
 # Additive (CLAUDE.md §1.6): an older producer's Result decodes as "".
 string outcome_summary
+
+# task_outcome — whether the run did what it was asked (issue #635), apart from
+# `success` (the goal ended without a fault). TASK_UNKNOWN is its own verdict, never
+# a success: nothing declared a success condition, or perception could not decide it.
+# Additive (CLAUDE.md §1.6): an older producer's Result decodes as TASK_UNKNOWN.
+# Producer: `rskill_runner_node._stamp_task_outcome`.
+uint8 TASK_UNKNOWN   = 0
+uint8 TASK_SUCCEEDED = 1
+uint8 TASK_FAILED    = 2
+uint8 task_outcome
+# task_outcome_json — the `openral_core.TaskOutcome` behind it (verdict, source, reason
+# and the tracked object it was read from); decode with `TaskOutcome.model_validate_json`.
+# "" from an older producer.
+string task_outcome_json
 ---
 # Feedback
 float32 progress           # 0..1

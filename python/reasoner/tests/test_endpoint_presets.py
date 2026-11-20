@@ -36,6 +36,7 @@ def _clear_reasoner_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "OPENRAL_REASONER_DIALECT",
         "OPENRAL_REASONER_MAX_TOKENS",
         "OPENRAL_REASONER_TIMEOUT_S",
+        "OPENRAL_REASONER_FIRST_CALL_TIMEOUT_S",
         "OPENRAL_REASONER_TOOL_CHOICE",
         "OPENRAL_REASONER_LLM_PROVIDER",
     ):

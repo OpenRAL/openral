@@ -35,7 +35,7 @@ same lookup is available programmatically as
 
 **Gated (OpenRAL Pro) rSkills.** `tools/rskill_publisher.py --publish --gated`
 publishes a premium rSkill to a public repo with Hugging Face **manual** access
-approval (commercial or `proprietary` licences only); the Hub's gating is the
+approval (any licence); the Hub's gating is the
 only enforcement. When you lack access, `rskill search` lists the repo from
 its public model card and marks it `Pro (request access)`, and `rskill
 install` / `rSkill.from_pretrained` fail with
@@ -116,7 +116,7 @@ Object-detection rSkills emit `ObjectsMetadata` (2-D detections lifted to 3-D in
 | rSkill | Backbone | Notes |
 |---|---|---|
 | [`rtdetr-coco-r18`](https://github.com/OpenRAL/openral/tree/master/rskills/rtdetr-coco-r18/) | RT-DETR R18 (COCO) | lightweight ONNX export |
-| `rtdetr-v2-r50vd` | RT-DETR v2 R50vd | higher-accuracy variant; `runtime: tensorrt` — moved to the private `openral-pro` repo since it depends on the TensorRT engine runtime |
+| [`rtdetr-v2-r50vd`](https://github.com/OpenRAL/openral/tree/master/rskills/rtdetr-v2-r50vd/) | RT-DETR v2 R50vd (COCO) | higher-accuracy fp32 ONNX export; OpenRAL Pro's NVMM tier builds a TensorRT engine from it |
 | [`locateanything-3b-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/locateanything-3b-nf4/) | NVIDIA LocateAnything-3B NF4 | open-vocabulary grounding; runs via the `VLM_SIDECAR` detector tier (out-of-process sidecar); dynamic reasoner-driven query via the read-only `locate_in_view` tool |
 | [`omdet-turbo-indoor`](https://github.com/OpenRAL/openral/tree/master/rskills/omdet-turbo-indoor/) | OmDet-Turbo Swin-tiny (`omlab/omdet-turbo-swin-tiny-hf`) | **Apache-2.0** open-vocabulary detector run **in-process** over a fixed ~266-class curated indoor vocabulary; `engine: zeroshot_hf` → `DetectorTier.ZEROSHOT_HF`; `mode: continuous` background producer, far more than the 80 COCO classes |
 | [`omdet-turbo-locator`](https://github.com/OpenRAL/openral/tree/master/rskills/omdet-turbo-locator/) | OmDet-Turbo Swin-tiny (`omlab/omdet-turbo-swin-tiny-hf`) | **Apache-2.0** on-demand sibling — same weights/engine, `mode: on_demand`; the reasoner prompts it via `locate_in_view`. Lightweight, real-time, in-process alternative to the 3B LocateAnything VLM |

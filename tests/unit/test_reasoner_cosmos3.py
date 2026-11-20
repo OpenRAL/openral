@@ -42,6 +42,7 @@ _ENV_VARS = (
     "OPENRAL_REASONER_DIALECT",
     "OPENRAL_REASONER_MAX_TOKENS",
     "OPENRAL_REASONER_TIMEOUT_S",
+    "OPENRAL_REASONER_FIRST_CALL_TIMEOUT_S",
     # Retired provider-first spelling (removed in 0.3.0); still cleared so a
     # stale developer env cannot influence a test.
     "OPENRAL_REASONER_LLM_PROVIDER",

@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
+import httpx
 import jsonschema
 import structlog
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
@@ -55,8 +56,11 @@ from openral_core import (
     REMOTE_CONTROL_ENV,
     WRITE_CONTROLS_ENV,
     ManifestAction,
+    RobotEnrolment,
     RobotManifest,
+    enrolment_path,
     pseudonymous_actor_id,
+    robot_secret_path,
 )
 from openral_core.robot_ui import CORRELATION_ID_PATTERN
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import (
@@ -81,12 +85,7 @@ from openral_observability.dashboard.remote_auth import (
     allowed_origins,
     bearer,
     is_remote,
-)
-from openral_observability.dashboard.robot_settings import (
-    SETTINGS,
-    load_settings,
-    save_setting,
-    shown,
+    load_enrolment,
 )
 from openral_observability.dashboard.store import TelemetryStore
 from openral_observability.dashboard.ui_assets import ui_dir
@@ -969,16 +968,123 @@ def _served_manifest(manifest: RobotManifest, principal: Principal) -> dict[str,
     return served.model_dump(mode="json", by_alias=True)
 
 
-def _settings_body(principal: Principal) -> dict[str, object]:
-    """``GET /api/settings``: openral.com's settings shape, for this robot's own file."""
-    operator = principal.mode == "local" and ROLE_RANK[principal.role] >= ROLE_RANK["operator"]
-    return {
-        "scope": "robot",
-        "canWrite": operator,
-        "settings": SETTINGS,
-        # Key hints only for the operator at the robot, never for a LAN viewer.
-        "values": shown(load_settings(), hints=operator),
+_CONSOLE_TIMEOUT_S = 10.0
+
+
+def _robot_link() -> tuple[RobotEnrolment, str, str] | None:
+    """The enrolment, openral.com's origin and this robot's credential; ``None`` unlinked.
+
+    Read as ``openral_cli.robot.apply_account_settings`` reads them: the enrolment's
+    ``iss`` origin, and ``openral_core.robot_secret_path()`` (``openral robot link``).
+    """
+    try:
+        enrolment = load_enrolment(enrolment_path())
+        secret = robot_secret_path().read_text(encoding="utf-8").strip()
+    except (OSError, ValueError):
+        return None
+    if enrolment is None or not secret:
+        return None
+    return enrolment, "{0.scheme}://{0.netloc}".format(urlsplit(enrolment.iss)), secret
+
+
+def _robot_settings_refusal(method: str, principal: Principal) -> str | None:
+    """Why ``principal`` may not relay ``method`` to openral.com's robot settings, or ``None``.
+
+    The LAN's writes are refused by ``_gate`` already (read-only but E-STOP). Over the
+    tunnel only a read, with remote control on: a write there would change the robot's
+    settings with the robot's credential, past openral.com's own check of the person
+    (the person changes them on openral.com itself).
+    """
+    if principal.mode != "remote":
+        return None
+    if not _remote_control_enabled():
+        return f"remote control is off on this robot (set {REMOTE_CONTROL_ENV}=1 to allow it)"
+    if method != "GET":
+        return "change this robot's settings on openral.com"
+    return None
+
+
+def _console_client(app: FastAPI) -> httpx.AsyncClient:
+    """One client per app, so the relay reuses its connection to openral.com.
+
+    Never a redirect (httpx's default, stated): it would carry the credential to another
+    host. ponytail: lives as long as the process (no shutdown hook closes it).
+    """
+    client: httpx.AsyncClient | None = getattr(app.state, "console_client", None)
+    if client is None:
+        client = httpx.AsyncClient(timeout=_CONSOLE_TIMEOUT_S, follow_redirects=False)
+        app.state.console_client = client
+    return client
+
+
+async def _relay_robot_settings(request: Request, principal: Principal, body: bytes) -> Response:
+    """``body`` to ``<site>/api/robot/console``; openral.com's answer as it is.
+
+    Except: openral.com refusing the robot's credential (401) is 409, never a 401 the
+    console would take for its own expired token; and ``canWrite`` is false for anyone
+    who may not write here.
+    """
+    method = request.method
+    link = await asyncio.to_thread(_robot_link)
+    if link is None:
+        return JSONResponse({"error": "this robot isn't linked to openral.com"}, status_code=409)
+    enrolment, site, secret = link
+    verifier: TokenVerifier | None = request.app.state.verifier
+    admitted = verifier.enrolment if verifier is not None else None
+    if admitted is not None and (admitted.robot, admitted.iss) != (enrolment.robot, enrolment.iss):
+        # Linked again since this dashboard started: its gate still admits callers for the
+        # old link, so the new link's credential must not answer them.
+        return JSONResponse(
+            {"error": "this robot was linked again: restart its dashboard"}, status_code=409
+        )
+    headers = {
+        "Authorization": f"Bearer {secret}",
+        # Cloudflare refuses a client's default User-Agent (error 1010).
+        "User-Agent": "openral-robot",
     }
+    if body:
+        headers["Content-Type"] = "application/json"
+    try:
+        answer = await _console_client(request.app).request(
+            method, f"{site}/api/robot/console", content=body, headers=headers
+        )
+    except httpx.HTTPError as exc:
+        _logger.warning("dashboard.robot_settings_unreachable", site=site, error=str(exc))
+        return JSONResponse({"error": f"{site} can't be reached"}, status_code=502)
+    if method != "GET":
+        # Audited without the value.
+        name = json.loads(body).get("name") if body.startswith(b"{") else None
+        _logger.info(
+            "dashboard.robot_settings_relayed",
+            method=method,
+            name=name if isinstance(name, str) else None,
+            status=answer.status_code,
+            mode=principal.mode,
+            role=principal.role,
+        )
+    return _console_answer(site, answer, principal)
+
+
+def _console_answer(site: str, answer: httpx.Response, principal: Principal) -> Response:
+    """openral.com's ``answer`` for the console, as it is but for the exceptions above."""
+    if answer.is_redirect:
+        return JSONResponse({"error": f"{site} answered with a redirect"}, status_code=502)
+    if answer.status_code == http.HTTPStatus.UNAUTHORIZED:
+        return JSONResponse(
+            {"error": f"{site} refused this robot's credential; link it again"}, status_code=409
+        )
+    if not answer.content:
+        return Response(status_code=answer.status_code)
+    try:
+        payload = answer.json()
+    except ValueError:
+        return JSONResponse(
+            {"error": f"{site} answered {answer.status_code} without JSON"}, status_code=502
+        )
+    if isinstance(payload, dict) and "canWrite" in payload:
+        operator = principal.mode == "local" and ROLE_RANK[principal.role] >= ROLE_RANK["operator"]
+        payload["canWrite"] = bool(payload["canWrite"]) and operator
+    return JSONResponse(payload, status_code=answer.status_code)
 
 
 def _action_refusal(action: ManifestAction, principal: Principal) -> str | None:
@@ -1597,45 +1703,32 @@ def create_app(  # noqa: PLR0915  # reason: flat FastAPI route-registration tabl
             }
         )
 
-    @app.get("/api/settings")
-    async def get_settings(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
-        # The reasoner settings kept on this robot (robot_settings): never over the tunnel
-        # (openral.com has its own), secrets only as "set ...abcd".
+    # /api/settings: the path the console pinned in ROBOT_UI still calls; drop it once the
+    # pin moves to a console that calls /api/robot-settings.
+    @app.api_route("/api/robot-settings", methods=["GET", "PUT", "PATCH"])
+    @app.api_route("/api/settings", methods=["GET", "PUT", "PATCH"])
+    async def robot_settings(request: Request) -> Response:  # pyright: ignore[reportUnusedFunction]
+        # One source of truth: openral.com's Robot settings, relayed with this robot's own
+        # credential (the console's header gear shows what openral.com's page shows).
         principal: Principal = request.state.principal
-        if principal.mode == "remote":
-            return _error(403, "this robot's own settings are set at the robot")
-        return JSONResponse(_settings_body(principal))
-
-    @app.put("/api/settings")
-    async def put_setting(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
-        principal: Principal = request.state.principal
-        if principal.mode != "local" or ROLE_RANK[principal.role] < ROLE_RANK["operator"]:
+        refusal = _robot_settings_refusal(request.method, principal)
+        if refusal is not None:
             _logger.warning(
-                "dashboard_write_attempt",
-                operation="settings",
-                outcome="denied",
-                reason="settings are set by the local operator",
+                "dashboard.robot_settings_refused",
+                method=request.method,
+                reason=refusal,
                 mode=principal.mode,
                 role=principal.role,
             )
-            return _error(403, "only the operator at the robot can change its settings")
-        try:
-            body = await request.json()
-        except ValueError:
-            return _error(400, "expected JSON {name, value}")
-        name = body.get("name") if isinstance(body, dict) else None
-        value = body.get("value", "") if isinstance(body, dict) else None
-        if not isinstance(name, str) or not isinstance(value, str):
-            return _error(400, "expected JSON {name, value}")
-        try:
-            save_setting(name, value)
-        except ValueError as exc:
-            return _error(400, str(exc))
-        except OSError as exc:
-            return _error(500, f"could not save the setting: {exc.strerror or exc}")
-        # Audited without the value.
-        _logger.info("dashboard.setting_written", name=name, cleared=not value.strip())
-        return JSONResponse(_settings_body(principal))
+            return _error(403, refusal)
+        body = b""
+        if request.method != "GET":
+            body = await request.body()
+            try:
+                json.loads(body)
+            except ValueError:
+                return _error(400, "expected a JSON body")
+        return await _relay_robot_settings(request, principal, body)
 
     @app.get("/api/config")
     async def get_config(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]

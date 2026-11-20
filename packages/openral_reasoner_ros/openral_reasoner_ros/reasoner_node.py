@@ -134,6 +134,7 @@ from openral_reasoner.context import (
     reflect_on_reward_plateau,
     render_playbooks_block,
     render_robot_self_model,
+    task_outcome_text,
 )
 from openral_reasoner.core import (
     LLM_ERROR_BACKOFF_S,
@@ -826,7 +827,8 @@ def build_spatial_memory(
     memory: SpatialMemory | None = None
     if path:
         try:
-            memory = SpatialMemory.load(path)
+            # What an earlier run or a scene file remembered is not yet seen (#636).
+            memory = SpatialMemory.load(path, restored_uncertain=True)
         except (OSError, ValueError) as exc:
             warnings.append(f"spatial_memory_path={path!r} failed to load: {exc}")
             if not ingest and not goals:
@@ -2119,7 +2121,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         """Run ``_adjudicate_completion`` off-executor; deliver the verdict back (#21).
 
         ``describe_image`` shares the LLM timeout budget (10 s cloud / 60 s
-        local) and used to run inside a service done-callback, starving the
+        local, longer while a local model loads) and used to run inside a
+        service done-callback, starving the
         executor exactly like ``select_tool``. The whole sync helper is safe
         on the worker: it only reads immutable snapshot refs (frame bytes,
         client handle) and the network call. ``done(verdict)`` runs on the
@@ -2927,6 +2930,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                         node.label,
                         *(round(value, 2) for value in node.pose.xyz),
                         node.is_container,
+                        node.state.value,
                     )
                     for node in graph.nodes
                     if node.kind is SpatialNodeKind.OBJECT
@@ -2950,8 +2954,10 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         """Fold a snapshot's ``detected_objects`` into the owned SpatialMemory.
 
         No-op unless the reasoner owns a writable backend (``spatial_memory_ingest``
-        or a preloaded map) and the snapshot carries a detection list; an empty list
-        ingests nothing but still advances the latest-batch stamp. Accrual is
+        or a preloaded map) and the snapshot carries a detection list. The list is
+        the world-state object memory's whole remembered set, so a node it no
+        longer carries was evicted there and is marked absent (issue #636) — an
+        empty list included. Accrual is
         advisory: failures degrade at DEBUG so a hiccup never disturbs the tick.
         Uses the snapshot's ``stamp_ns`` for recency (deterministic in sim),
         falling back to wall-clock.
@@ -2964,12 +2970,10 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             return
         try:
             now_ns = int(getattr(world_state, "stamp_ns", 0)) or time.time_ns()
-            if not objects:
-                # An empty batch saw nothing: no object is "seen now" any more.
-                self._latest_batch_ns = now_ns
-                return
-            touched = writer.ingest_detected_objects(objects, now_ns=now_ns)
+            touched = writer.ingest_detected_objects(objects, now_ns=now_ns, follow_eviction=True)
             self._latest_batch_ns = now_ns
+            if not objects:
+                return  # an empty batch saw nothing: no object is "seen now" any more
             self.get_logger().debug(
                 f"spatial-memory ingest: {len(touched)} node(s) from {len(objects)} detection(s)",
             )
@@ -6722,6 +6726,10 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                         for part in (
                             # Bounded here too: any ExecuteRskill producer may fill it.
                             str(getattr(result, "outcome_summary", "") or "")[:480],
+                            # Issue #635: what decided the task succeeded (or that it
+                            # did not, when a completion check ended a run its declared
+                            # success condition refutes).
+                            task_outcome_text(str(getattr(result, "task_outcome_json", "") or "")),
                             f"trace={result.trace_id[:8] if result.trace_id else '-'}",
                         )
                         if part
@@ -6755,7 +6763,12 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 f"execute_rskill {cancel_reason}-cancelled rskill_id={call.rskill_id!r} "
                 "— verifying",
             )
-            self._note_reasoner_stop(call, cancel_reason, now_ns)
+            self._note_reasoner_stop(
+                call,
+                cancel_reason,
+                now_ns,
+                task_outcome_text(str(getattr(result, "task_outcome_json", "") or "")),
+            )
             self._maybe_verify_active_mission_task(
                 call,
                 traceparent=traceparent,
@@ -6774,13 +6787,16 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         )
         outcome_state = "aborted" if status == 6 else "canceled" if status == 5 else "failed"
         detail = result.failure_reason or f"GoalStatus={status}"
+        # Issue #635: a run judged by a success condition says how the task ended too
+        # (a deadline miss with the object placed reads differently from one without).
+        outcome_text = task_outcome_text(str(getattr(result, "task_outcome_json", "") or ""))
         # Reasoner playbooks §2.2/§2.3 — execution feedback + a Reflexion strategy hint so
         # the next tick advances the ladder instead of blindly retrying.
         self._renderer.append_execution(
             ExecutionEventRecord(
                 rskill_id=call.rskill_id,
                 outcome="failed",
-                summary=detail,
+                summary=f"{detail} {outcome_text}".rstrip(),
                 reflection=reflect_on_failure(
                     outcome_state,
                     detail,
@@ -6996,10 +7012,13 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             ok=bool(resp.success),
         )
 
-    def _note_reasoner_stop(self, call: ExecuteRskillTool, cancel_reason: str, now_ns: int) -> None:
+    def _note_reasoner_stop(
+        self, call: ExecuteRskillTool, cancel_reason: str, now_ns: int, outcome_text: str = ""
+    ) -> None:
         """Record that the reasoner itself ended an attempt (reward wake or patience).
 
-        The model must see that the attempt ended and why; the reward verdict (if
+        The model must see that the attempt ended and why, and how the runner judged
+        the task when it did (``outcome_text``, issue #635); the reward verdict (if
         any) follows as its own line.
         """
         why = (
@@ -7011,7 +7030,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             ExecutionEventRecord(
                 rskill_id=call.rskill_id,
                 outcome="stopped",
-                summary=f"stopped by the reasoner: {why}",
+                summary=f"stopped by the reasoner: {why} {outcome_text}".rstrip(),
                 reflection=None,
                 stamp_ns=now_ns,
             )

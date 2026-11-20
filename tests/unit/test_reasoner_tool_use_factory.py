@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import pytest
 from openral_core import REASONER_MODELS
-from openral_core.exceptions import ROSConfigError
+from openral_core.exceptions import ROSConfigError, ROSPlanningError
 from openral_reasoner.cosmos3 import Cosmos3ToolUseClient
+from openral_reasoner.palette import ToolPalette
 from openral_reasoner.tool_use import (
     ANTHROPIC_BASE_URL,
     DEEPSEEK_BASE_URL,
@@ -26,10 +27,18 @@ from openral_reasoner.tool_use import (
     XAI_BASE_URL,
     AnthropicToolUseClient,
     OpenAICompatibleToolUseClient,
+    OpenAIResponsesToolUseClient,
     build_tool_use_client_from_env,
 )
 
-from tests.unit.fakes.fake_llm_http import FakeLLMServer, openai_tool_call
+from tests.unit.fakes.fake_llm_http import (
+    FakeLLMServer,
+    openai_error,
+    openai_text,
+    openai_tool_call,
+    responses_function_call,
+    responses_text,
+)
 
 _ENV_VARS = (
     "OPENRAL_REASONER_MODEL",
@@ -38,6 +47,7 @@ _ENV_VARS = (
     "OPENRAL_REASONER_DIALECT",
     "OPENRAL_REASONER_MAX_TOKENS",
     "OPENRAL_REASONER_TIMEOUT_S",
+    "OPENRAL_REASONER_FIRST_CALL_TIMEOUT_S",
     # Retired provider-first spelling (removed in 0.3.0). Cleared so the
     # "it is ignored" tests below assert on a genuinely absent contract
     # rather than on whatever the dev host happens to export.
@@ -235,8 +245,32 @@ def test_uncurated_bare_url_requires_dialect(monkeypatch: pytest.MonkeyPatch) ->
     """Nothing can classify a bare URL, so that spelling still needs DIALECT."""
     monkeypatch.setenv("OPENRAL_REASONER_MODEL", "qwen3:8b")
     monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "http://gpu-box.internal:8001/v1")
-    with pytest.raises(ROSConfigError, match="OPENRAL_REASONER_DIALECT"):
+    with pytest.raises(ROSConfigError) as excinfo:
         build_tool_use_client_from_env()
+    # #665: the message names the URL and says it is the URL that needs a dialect.
+    msg = str(excinfo.value)
+    assert "OPENRAL_REASONER_ENDPOINT='http://gpu-box.internal:8001/v1' is not a named" in msg
+    assert "read as a URL" in msg
+    assert "also needs OPENRAL_REASONER_DIALECT set to anthropic or openai" in msg
+
+
+def test_uncurated_bare_url_rejects_an_unknown_dialect(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "qwen3:8b")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "http://gpu-box.internal:8001/v1")
+    monkeypatch.setenv("OPENRAL_REASONER_DIALECT", "ollama")
+    with pytest.raises(ROSConfigError, match=r"OPENRAL_REASONER_DIALECT .*got 'ollama'"):
+        build_tool_use_client_from_env()
+
+
+def test_named_endpoint_with_an_unknown_dialect_is_not_called_a_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "qwen3:8b")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "ollama")
+    monkeypatch.setenv("OPENRAL_REASONER_DIALECT", "ollama")
+    with pytest.raises(ROSConfigError) as excinfo:
+        build_tool_use_client_from_env()
+    assert str(excinfo.value) == "OPENRAL_REASONER_DIALECT='ollama' must be anthropic or openai."
 
 
 def test_uncurated_bare_url_with_dialect(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -438,6 +472,154 @@ def test_timeout_env_overrides_the_preset(monkeypatch: pytest.MonkeyPatch) -> No
     client = build_tool_use_client_from_env()
     assert isinstance(client, OpenAICompatibleToolUseClient)
     assert client._timeout_s == 5.0
+
+
+# ── First-call timeout: a cold local model gets time to load (#665) ───────────
+
+_WAIT = {"until": "timeout", "timeout_s": 5.0}
+
+
+def _sent_timeouts(server: FakeLLMServer) -> list[str]:
+    """The read timeout the SDK applied to each request (it sends it as a header)."""
+    return [h["x-stainless-read-timeout"] for h in server.headers]
+
+
+def test_slow_first_reply_succeeds_then_the_per_call_timeout_is_enforced() -> None:
+    """The first reply may take longer than ``timeout_s``; later ones may not."""
+    wait = openai_tool_call("wait", _WAIT)
+    # The SDK retries a timed-out request twice, so the slow tail is three replies.
+    with FakeLLMServer([wait] * 7, delays_s=[1.5, 0.0, 1.5, 1.5, 1.5]) as server:
+        client = OpenAICompatibleToolUseClient(
+            model_id="qwen3:8b",
+            base_url=server.openai_base_url,
+            timeout_s=0.5,
+            first_call_timeout_s=30.0,
+        )
+        # Cold: 1.5 s > timeout_s 0.5 s, inside the first-call 30 s.
+        assert client.select_tool(context_text="tick", palette=ToolPalette()).tool == "wait"
+        assert client.select_tool(context_text="tick", palette=ToolPalette()).tool == "wait"
+        # Warm: the same 1.5 s reply now times out.
+        with pytest.raises(ROSPlanningError, match="timed out"):
+            client.select_tool(context_text="tick", palette=ToolPalette())
+        assert _sent_timeouts(server) == ["30.0", "0.5", "0.5", "0.5", "0.5"]
+        # The timeout may be an unloaded model reloading: the next request waits for it.
+        assert client.select_tool(context_text="tick", palette=ToolPalette()).tool == "wait"
+        assert client.select_tool(context_text="tick", palette=ToolPalette()).tool == "wait"
+        assert _sent_timeouts(server)[5:] == ["30.0", "0.5"]
+
+
+def test_first_call_timeout_holds_until_the_endpoint_replies() -> None:
+    """A failed request (here a 500, retried by the SDK) leaves the client cold."""
+    wait = openai_tool_call("wait", _WAIT)
+    down = openai_error("model is loading", status=500)
+    with FakeLLMServer([down, down, down, wait, wait]) as server:
+        client = OpenAICompatibleToolUseClient(
+            model_id="qwen3:8b", base_url=server.openai_base_url, first_call_timeout_s=120.0
+        )
+        with pytest.raises(ROSPlanningError):
+            client.select_tool(context_text="tick", palette=ToolPalette())
+        assert client.select_tool(context_text="tick", palette=ToolPalette()).tool == "wait"
+        assert client.select_tool(context_text="tick", palette=ToolPalette()).tool == "wait"
+        assert _sent_timeouts(server) == ["120.0"] * 4 + ["10.0"]
+
+
+def test_a_prose_first_reply_ends_the_allowance_before_the_nudge() -> None:
+    with FakeLLMServer([openai_text("thinking"), openai_tool_call("wait", _WAIT)]) as server:
+        client = OpenAICompatibleToolUseClient(
+            model_id="qwen3:8b",
+            base_url=server.openai_base_url,
+            tool_choice="auto",
+            first_call_timeout_s=120.0,
+        )
+        assert client.select_tool(context_text="tick", palette=ToolPalette()).tool == "wait"
+        assert _sent_timeouts(server) == ["120.0", "10.0"]
+
+
+@pytest.mark.parametrize("first_call_timeout_s", [None, 0.0, 10.0])
+def test_first_call_timeout_is_off_by_default_and_at_or_below_the_per_call_timeout(
+    first_call_timeout_s: float | None,
+) -> None:
+    wait = openai_tool_call("wait", _WAIT)
+    with FakeLLMServer([wait]) as server:
+        url = server.openai_base_url
+        client = (
+            OpenAICompatibleToolUseClient(model_id="qwen3:8b", base_url=url)
+            if first_call_timeout_s is None
+            else OpenAICompatibleToolUseClient(
+                model_id="qwen3:8b", base_url=url, first_call_timeout_s=first_call_timeout_s
+            )
+        )
+        client.select_tool(context_text="tick", palette=ToolPalette())
+        assert _sent_timeouts(server) == ["10.0"]
+
+
+def test_describe_image_and_the_responses_api_take_the_allowance_too() -> None:
+    with FakeLLMServer([openai_text("a cube"), openai_text("a cube")]) as server:
+        client = OpenAICompatibleToolUseClient(
+            model_id="qwen3:8b", base_url=server.openai_base_url, first_call_timeout_s=120.0
+        )
+        client.describe_image(image_jpeg=b"jpeg", question="what is it?")
+        client.describe_image(image_jpeg=b"jpeg", question="what is it?")
+        assert _sent_timeouts(server) == ["120.0", "10.0"]
+    replies = [responses_function_call("wait", _WAIT), responses_text("a cube")]
+    with FakeLLMServer(replies) as server:
+        responses = OpenAIResponsesToolUseClient(
+            model_id="gpt-5.5", base_url=server.openai_base_url, first_call_timeout_s=120.0
+        )
+        assert responses.select_tool(context_text="tick", palette=ToolPalette()).tool == "wait"
+        responses.describe_image(image_jpeg=b"jpeg", question="what is it?")
+        assert _sent_timeouts(server) == ["120.0", "10.0"]
+
+
+@pytest.mark.parametrize(
+    ("model", "endpoint", "dialect", "expected"),
+    [
+        # A bare URL could be a local server: the reported case (#665).
+        ("qwen3:8b", "http://localhost:11434/v1", "openai", 120.0),
+        ("qwen3:8b", "ollama", None, 120.0),
+        ("qwen3:8b", "vllm", None, 120.0),
+        ("qwen3.5-4b", None, None, 120.0),  # curated, on the robot's own Ollama
+        ("cosmos3-edge", None, None, 120.0),  # managed local
+        ("gpt-5.5", "http://gateway.internal/v1", None, 120.0),
+        # Known cloud endpoints have no model to load.
+        ("gpt-5.5", None, None, 0.0),
+        ("gpt-5.5", "openai", None, 0.0),
+        ("some-model", "openrouter", None, 0.0),
+    ],
+)
+def test_first_call_timeout_default_follows_where_the_model_runs(
+    monkeypatch: pytest.MonkeyPatch,
+    model: str,
+    endpoint: str | None,
+    dialect: str | None,
+    expected: float,
+) -> None:
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", model)
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "a-key")
+    if endpoint is not None:
+        monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", endpoint)
+    if dialect is not None:
+        monkeypatch.setenv("OPENRAL_REASONER_DIALECT", dialect)
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert client._first_call_timeout_s == expected
+    # The env override wins everywhere, a cloud endpoint included.
+    monkeypatch.setenv("OPENRAL_REASONER_FIRST_CALL_TIMEOUT_S", "300")
+    overridden = build_tool_use_client_from_env()
+    assert isinstance(overridden, OpenAICompatibleToolUseClient)
+    assert overridden._first_call_timeout_s == 300.0
+
+
+@pytest.mark.parametrize("value", ["2m", "inf", "nan", "-1"])
+def test_first_call_timeout_env_must_be_a_finite_number(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("OPENRAL_REASONER_FIRST_CALL_TIMEOUT_S", value)
+    # Refused on every path, the anthropic dialect (which never applies it) included.
+    for model in ("qwen3.5-4b", "claude-opus-4-8"):
+        monkeypatch.setenv("OPENRAL_REASONER_MODEL", model)
+        with pytest.raises(ROSConfigError, match="OPENRAL_REASONER_FIRST_CALL_TIMEOUT_S"):
+            build_tool_use_client_from_env()
 
 
 # ── Completion-token cap ──────────────────────────────────────────────────────

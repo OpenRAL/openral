@@ -26,9 +26,13 @@ period and made diagnostics flap).
 from __future__ import annotations
 
 import logging
+import math
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     import numpy as np
     from numpy.typing import NDArray
     from openral_core.schemas import (
@@ -44,11 +48,19 @@ if TYPE_CHECKING:
     )
     from openral_msgs.msg import OccupancyVoxels
     from openral_observability import DiagnosticsHeartbeat
-    from openral_world_state import ObjectMemory, VoxelFrustumLifter, WorldStateAggregator
+    from openral_world_state import (
+        MissEvidence,
+        ObjectMemory,
+        VoxelFrustumLifter,
+        WorldStateAggregator,
+    )
     from rclpy.timer import Timer
     from sensor_msgs.msg import PointCloud2
 
 log = logging.getLogger(__name__)
+
+#: Half the extent a depth return stands for when a lifted box is given volume (m).
+_DEPTH_RETURN_HALF_EXTENT_M = 0.005
 
 #: How often one camera's "no TF" lift drop is warned again, per missing frame (ns).
 _LIFT_TF_WARN_PERIOD_NS = 10_000_000_000
@@ -188,7 +200,23 @@ if _ROS2_AVAILABLE:
             self.declare_parameter("object_lift_min_voxels", 3)
             self.declare_parameter("object_lift_iou_threshold", 0.3)
             self.declare_parameter("object_lift_memory_cadence_hz", 2.0)
-            self.declare_parameter("object_lift_max_misses", 1)
+            # Existence belief (issue #636), log-odds like the occupancy voxels: a
+            # matched detection adds hit; an undetected object adds miss_free when
+            # the depth source shows through its box, miss_occupied when the box is
+            # still occupied and its detector ran; it is evicted at belief_absent.
+            self.declare_parameter("object_lift_hit_log_odds", 0.85)
+            self.declare_parameter("object_lift_miss_free_log_odds", -0.85)
+            self.declare_parameter("object_lift_miss_occupied_log_odds", -0.1)
+            self.declare_parameter("object_lift_belief_max", 3.5)
+            self.declare_parameter("object_lift_belief_absent", -2.0)
+            # A miss is weighed only for a box wholly in view within this range.
+            self.declare_parameter("object_lift_max_range_m", 5.0)
+            # Tolerance on a box's faces in the miss test; also the height above its
+            # floor not counted as the object (its support).
+            self.declare_parameter("object_lift_miss_margin_m", 0.03)
+            # Opt-in persistence: SceneGraph JSON the object memory is restored from
+            # (every object uncertain) and saved to. Empty = off.
+            self.declare_parameter("object_memory_path", "")
             self.declare_parameter("object_lift_voxel_staleness_s", 1.0)
 
             self._aggregator = aggregator
@@ -236,6 +264,18 @@ if _ROS2_AVAILABLE:
             self._lift_tf_warned_ns: dict[tuple[str, str], int] = {}
             self._map_frame = "map"
             self._voxel_staleness_ns = 0
+            self._max_range_m = 0.0
+            self._miss_margin_m = 0.0
+            # Of the points `_occupied_centers_base` last returned: when their base frame
+            # was sampled (for TF), which sensor data they are (new evidence or the same
+            # again), and half the extent one point stands for.
+            self._centers_stamp: object | None = None
+            self._centers_data_key: tuple[int, int] | None = None
+            self._centers_pad_m = 0.0
+            self._miss_evidence_key: tuple[int, int] | None = None
+            self._min_voxels = 1
+            self._memory_path = ""
+            self._saved_track_ids: frozenset[int | None] | None = None
 
         @log_lifecycle_errors
         def on_configure(  # noqa: PLR0915  # reason: linear ROS subscription/publisher wiring
@@ -437,22 +477,30 @@ if _ROS2_AVAILABLE:
                     .double_value
                     * 1e9
                 )
+                self._min_voxels = (
+                    self.get_parameter("object_lift_min_voxels").get_parameter_value().integer_value
+                )
                 self._lifter = VoxelFrustumLifter(
                     k_nearest=self.get_parameter("object_lift_k_nearest")
                     .get_parameter_value()
                     .integer_value,
-                    min_voxels=self.get_parameter("object_lift_min_voxels")
-                    .get_parameter_value()
-                    .integer_value,
+                    min_voxels=self._min_voxels,
                 )
+
+                def _double(name: str) -> float:
+                    return float(self.get_parameter(name).get_parameter_value().double_value)
+
+                self._max_range_m = _double("object_lift_max_range_m")
+                self._miss_margin_m = _double("object_lift_miss_margin_m")
                 self._memory = ObjectMemory(
-                    iou_threshold=self.get_parameter("object_lift_iou_threshold")
-                    .get_parameter_value()
-                    .double_value,
-                    max_misses=self.get_parameter("object_lift_max_misses")
-                    .get_parameter_value()
-                    .integer_value,
+                    iou_threshold=_double("object_lift_iou_threshold"),
+                    hit_log_odds=_double("object_lift_hit_log_odds"),
+                    miss_free_log_odds=_double("object_lift_miss_free_log_odds"),
+                    miss_occupied_log_odds=_double("object_lift_miss_occupied_log_odds"),
+                    belief_max=_double("object_lift_belief_max"),
+                    belief_absent=_double("object_lift_belief_absent"),
                 )
+                self._restore_object_memory()
                 self._tf_buffer = tf2_ros.Buffer()
                 self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
 
@@ -784,6 +832,56 @@ if _ROS2_AVAILABLE:
             self._latest_depth_points = msg
             self._depth_points_stamp_ns = self.get_clock().now().nanoseconds
 
+        def _occupied_centers_base(
+            self, base_frame: str, now_ns: int
+        ) -> NDArray[np.float64] | None:
+            """Occupied points ``(N, 3)`` in the base frame, or ``None`` when there are none.
+
+            Prefers the octomap voxel grid (filtered, persistent); falls back to the
+            raw depth point cloud when no fresh grid exists (#11), so the lift — and
+            thus spatial-memory ingest + recall_object — works with octomap disabled.
+            ``_centers_stamp`` / ``_centers_data_key`` / ``_centers_pad_m`` describe
+            what was returned.
+            """
+            from openral_world_state import decode_occupied_centers
+
+            grid = self._latest_voxels
+            if grid is None or (
+                self._voxel_staleness_ns
+                and (now_ns - self._voxel_stamp_ns) > self._voxel_staleness_ns
+            ):
+                cloud = self._latest_depth_points
+                stamp = None if cloud is None else cloud.header.stamp
+                self._centers_stamp = stamp
+                self._centers_data_key = None if stamp is None else (stamp.sec, stamp.nanosec)
+                self._centers_pad_m = _DEPTH_RETURN_HALF_EXTENT_M
+                return self._depth_centers_base(base_frame, now_ns)
+            # The bridge expresses the grid in the base frame as it is when the grid is
+            # produced (header.stamp); source_stamp says which sensor data it holds.
+            self._centers_stamp = grid.header.stamp
+            data = (
+                grid.source_stamp
+                if (grid.source_stamp.sec or grid.source_stamp.nanosec)
+                else (grid.header.stamp)
+            )
+            self._centers_data_key = (data.sec, data.nanosec)
+            self._centers_pad_m = 0.5 * float(grid.resolution)
+            return decode_occupied_centers(
+                origin=(grid.origin.x, grid.origin.y, grid.origin.z),
+                # The grid's lattice is the OctoMap's, so its axes are not
+                # base_frame's — dropping this puts every lifted object in
+                # the wrong place whenever the base is not map-aligned.
+                orientation_xyzw=(
+                    grid.orientation.x,
+                    grid.orientation.y,
+                    grid.orientation.z,
+                    grid.orientation.w,
+                ),
+                resolution=grid.resolution,
+                size_xyz=(grid.size_x, grid.size_y, grid.size_z),
+                occupancy=bytes(grid.occupancy),
+            )
+
         def _depth_centers_base(self, base_frame: str, now_ns: int) -> NDArray[np.float64] | None:
             """Depth-cloud points as ``(N, 3)`` in the base frame, or ``None``.
 
@@ -819,8 +917,13 @@ if _ROS2_AVAILABLE:
             )
             return centers if centers.shape[0] else None
 
-        def _lookup_4x4(self, target: str, source: str) -> NDArray[np.float64] | None:
-            """Latest target<-source transform as a 4x4 numpy array, or None."""
+        def _lookup_4x4(
+            self, target: str, source: str, *, at: object | None = None
+        ) -> NDArray[np.float64] | None:
+            """target<-source transform as a 4x4 numpy array, or None.
+
+            The latest one, or the one at stamp ``at`` (a ``builtin_interfaces/Time``).
+            """
             import rclpy
             from openral_world_state import homogeneous_from_quat_xyz
 
@@ -828,7 +931,7 @@ if _ROS2_AVAILABLE:
                 tf = self._tf_buffer.lookup_transform(  # type: ignore[union-attr]
                     target,
                     source,
-                    rclpy.time.Time(),
+                    rclpy.time.Time() if at is None else rclpy.time.Time.from_msg(at),
                 )
             except Exception as exc:  # tf2 raises several lookup errors
                 self.get_logger().debug(f"tf {target}<-{source} unavailable: {exc}")
@@ -880,16 +983,10 @@ if _ROS2_AVAILABLE:
         def _on_objects(self, msg: object) -> None:  # PromptStamped
             """Decode detections, lift to 3D, buffer candidates (best-effort)."""
             from openral_core.schemas import ObjectsMetadata
-            from openral_world_state import decode_occupied_centers
 
             if not self._lift_enabled or self._aggregator is None:
                 return
             now_ns = self.get_clock().now().nanoseconds
-            grid = self._latest_voxels
-            voxels_fresh = grid is not None and not (
-                self._voxel_staleness_ns
-                and (now_ns - self._voxel_stamp_ns) > self._voxel_staleness_ns
-            )
             try:
                 md = ObjectsMetadata.model_validate_json(msg.metadata_json)  # type: ignore[attr-defined]
             except Exception as exc:
@@ -921,31 +1018,15 @@ if _ROS2_AVAILABLE:
                         f"map frame '{self._map_frame}')"
                     )
                 return
-            # Prefer the octomap voxel grid (filtered, persistent); fall back to
-            # the raw depth point cloud when no fresh grid exists (#11) so the
-            # lift — and thus spatial-memory ingest + recall_object — works even
-            # with octomap disabled. Both yield occupied centres in the base frame.
-            if voxels_fresh and grid is not None:
-                centers = decode_occupied_centers(
-                    origin=(grid.origin.x, grid.origin.y, grid.origin.z),
-                    # The grid's lattice is the OctoMap's, so its axes are not
-                    # base_frame's — dropping this puts every lifted object in
-                    # the wrong place whenever the base is not map-aligned.
-                    orientation_xyzw=(
-                        grid.orientation.x,
-                        grid.orientation.y,
-                        grid.orientation.z,
-                        grid.orientation.w,
-                    ),
-                    resolution=grid.resolution,
-                    size_xyz=(grid.size_x, grid.size_y, grid.size_z),
-                    occupancy=bytes(grid.occupancy),
-                )
-            else:
-                depth_centers = self._depth_centers_base(base_frame, now_ns)
-                if depth_centers is None:
-                    return  # no voxels and no usable depth cloud => skip
-                centers = depth_centers
+            centers = self._occupied_centers_base(base_frame, now_ns)
+            if centers is None:
+                return  # no voxels and no usable depth cloud => skip
+            # The points sit in the base frame of their own moment: anchor them in the
+            # map with that moment's pose when TF has it, so a turning base does not
+            # smear the box (the latest pose, as before, when it does not).
+            at_capture = self._lookup_4x4(self._map_frame, base_frame, at=self._centers_stamp)
+            if at_capture is not None:
+                t_map_from_base = at_capture
             cands = self._lifter.lift(  # type: ignore[union-attr]
                 detections=md.detections,
                 occupied_centers_base=centers,
@@ -954,41 +1035,133 @@ if _ROS2_AVAILABLE:
                 t_cam_from_base=t_cam_from_base,
                 t_map_from_base=t_map_from_base,
                 map_frame=self._map_frame,
+                pad_m=self._centers_pad_m,
             )
             self._candidate_buffer.append((md.sensor_id, cands))
 
         def _on_memory_tick(self) -> None:
-            """Associate buffered candidates, evict in-view misses, feed aggregator."""
-            import numpy as np
-            from openral_world_state import build_in_fov_predicate
-
+            """Associate buffered candidates, weigh the misses, feed aggregator."""
             if not self._lift_enabled or self._aggregator is None or self._memory is None:
                 return
             buffered = self._candidate_buffer
             self._candidate_buffer = []
             cands = [c for _sid, cs in buffered for c in cs]
             stamp_ns = self.get_clock().now().nanoseconds
+            built: list[Callable[[DetectedObject], MissEvidence]] = []
 
-            preds = []
-            base_frame = self._aggregator.description.base_frame
-            for cam_frame, intrinsics in self._seen_cameras.values():
-                t_cam_from_base = self._lookup_4x4(cam_frame, base_frame)
-                t_map_from_base = self._lookup_4x4(self._map_frame, base_frame)
-                if t_cam_from_base is None or t_map_from_base is None:
-                    continue
-                t_cam_from_map = t_cam_from_base @ np.linalg.inv(t_map_from_base)
-                preds.append(
-                    build_in_fov_predicate(
-                        intrinsics=intrinsics,
-                        t_cam_from_map=t_cam_from_map,
-                    )
-                )
+            def miss_evidence(obj: DetectedObject) -> MissEvidence:
+                if not built:  # decode + project only when some object went unmatched
+                    built.append(self._miss_evidence_fn({sid for sid, _cs in buffered}, stamp_ns))
+                return built[0](obj)
 
-            def in_fov(obj: DetectedObject) -> bool:
-                return any(p(obj) for p in preds)
-
-            objects = self._memory.tick(cands, stamp_ns=stamp_ns, in_fov=in_fov)
+            objects = self._memory.tick(cands, stamp_ns=stamp_ns, miss_evidence=miss_evidence)
             self._aggregator.update_detected_objects(objects)
+            self._save_object_memory(frozenset(o.track_id for o in objects))
+
+        def _miss_evidence_fn(
+            self, detector_ran: set[str], now_ns: int
+        ) -> Callable[[DetectedObject], MissEvidence]:
+            """What this tick's depth source says about an undetected remembered object.
+
+            ``FREE`` (seen through) needs no detector: the depth source is the
+            witness. ``OCCUPIED`` (still there, undetected) counts only for a camera
+            in ``detector_ran`` — one whose detector delivered a batch this tick —
+            because a detector that published nothing has not missed anything.
+            """
+            import numpy as np
+            from openral_world_state import MissEvidence, build_miss_classifier
+
+            assert self._aggregator is not None
+            base_frame = self._aggregator.description.base_frame
+            centers_base = self._occupied_centers_base(base_frame, now_ns)
+            # The points are in the base frame as it was when they were captured: place
+            # them in the map with that moment's pose, or a turning base smears them.
+            t_map_from_base = (
+                None
+                if centers_base is None
+                else self._lookup_4x4(self._map_frame, base_frame, at=self._centers_stamp)
+            )
+            # One observation is one piece of evidence: the same cloud or octree seen
+            # again on the next tick says nothing new.
+            fresh = self._centers_data_key != self._miss_evidence_key
+            if centers_base is None or t_map_from_base is None or not fresh:
+                return lambda _obj: MissEvidence.NONE
+            self._miss_evidence_key = self._centers_data_key
+            centers_map = centers_base @ t_map_from_base[:3, :3].T + t_map_from_base[:3, 3]
+            t_base_from_map = np.linalg.inv(t_map_from_base)
+            cameras = [
+                (
+                    sid in detector_ran,
+                    build_miss_classifier(
+                        occupied_centers_map=centers_map,
+                        intrinsics=intrinsics,
+                        t_cam_from_map=t_cam_from_base @ t_base_from_map,
+                        max_range_m=self._max_range_m,
+                        min_points=self._min_voxels,
+                        margin_m=self._miss_margin_m,
+                    ),
+                )
+                for sid, (cam_frame, intrinsics) in self._seen_cameras.items()
+                if (t_cam_from_base := self._lookup_4x4(cam_frame, base_frame)) is not None
+            ]
+
+            def miss_evidence(obj: DetectedObject) -> MissEvidence:
+                found = MissEvidence.NONE
+                for ran, classify in cameras:
+                    evidence = classify(obj)
+                    if evidence is MissEvidence.FREE:
+                        return evidence
+                    if evidence is MissEvidence.OCCUPIED and ran:
+                        found = evidence
+                return found
+
+            return miss_evidence
+
+        def _restore_object_memory(self) -> None:
+            """Seed the object memory from ``object_memory_path`` (opt-in, issue #636)."""
+            from openral_core.schemas import SceneGraph
+
+            self._memory_path = (
+                self.get_parameter("object_memory_path").get_parameter_value().string_value
+            )
+            self._saved_track_ids = None
+            path = Path(self._memory_path)
+            if not self._memory_path or self._memory is None or not path.is_file():
+                return
+            try:
+                graph = SceneGraph.model_validate_json(path.read_text())
+            except (OSError, ValueError) as exc:
+                # Not saved over either: the unreadable file is left for inspection.
+                self.get_logger().warning(
+                    f"object memory: '{path}' not restored; starting empty and NOT "
+                    f"persisting this session: {exc}"
+                )
+                self._memory_path = ""
+                return
+            count = self._memory.restore(graph, map_frame=self._map_frame)
+            # Published at once: a consumer must not read "nothing remembered" (and
+            # conclude everything was evicted) before the first memory tick.
+            if self._aggregator is not None:
+                self._aggregator.update_detected_objects(self._memory.objects())
+            self.get_logger().info(
+                f"object memory: restored {count} object(s) as uncertain from '{path}'"
+            )
+
+        def _save_object_memory(self, track_ids: frozenset[int | None]) -> None:
+            """Write the object memory when its set of objects changed (opt-in)."""
+            if not self._memory_path or self._memory is None or track_ids == self._saved_track_ids:
+                return
+            path = Path(self._memory_path)
+            tmp = path.with_name(path.name + ".tmp")
+            try:
+                tmp.write_text(self._memory.to_scene_graph().model_dump_json(indent=2))
+                tmp.replace(path)  # atomic: a crash mid-write never truncates the memory
+            except OSError as exc:
+                self.get_logger().warning(
+                    f"object memory: could not save '{path}': {exc}", throttle_duration_sec=30.0
+                )
+                return
+            self._saved_track_ids = track_ids
 
         def _publish_snapshot(self, *, event: bool = False) -> None:
             """Timer callback: snapshot → typed WorldStateStamped → publish.
@@ -1098,6 +1271,11 @@ def world_state_from_idl(msg: object) -> WorldState:
     lo = list(msg.detected_object_bbox_min)  # type: ignore[attr-defined]
     hi = list(msg.detected_object_bbox_max)  # type: ignore[attr-defined]
     has_boxes = len(valid) == len(lo) == len(hi) == len(labels)
+    # Older publishers send no existence array; NaN = no belief kept for that object.
+    existence = list(
+        msg.detected_object_existence  # type: ignore[attr-defined]  # reason: msg is untyped IDL
+    )
+    has_existence = len(existence) == len(labels)
     detected_objects = [
         DetectedObject(
             label=label,
@@ -1113,6 +1291,9 @@ def world_state_from_idl(msg: object) -> WorldState:
                 else None
             ),
             track_id=(int(tid) if int(tid) >= 0 else None),
+            existence=(
+                float(existence[i]) if has_existence and not math.isnan(existence[i]) else None
+            ),
         )
         for i, (label, conf, pos, tid) in enumerate(
             zip(
@@ -1391,6 +1572,10 @@ def _fill_detected_objects(msg: object, world_state: object) -> None:
     ]
     msg.detected_object_bbox_max = [  # type: ignore[attr-defined]
         Point(x=float(b[3]), y=float(b[4]), z=float(b[5])) for b in boxes
+    ]
+    # NaN = this producer keeps no belief for that object (DetectedObject.existence None).
+    msg.detected_object_existence = [  # type: ignore[attr-defined]  # reason: msg is untyped IDL
+        float("nan") if o.existence is None else float(o.existence) for o in objects
     ]
 
 
