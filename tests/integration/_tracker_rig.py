@@ -170,8 +170,11 @@ class TrackerRig:
         self.world_state.trigger_configure()
         self.world_state.trigger_activate()
 
-    def tracker(self, mode: str) -> Any:
-        """Create, configure and activate a real ``object_tracker_node`` in ``mode``."""
+    def tracker(self, mode: str, **extra: Any) -> Any:
+        """Create, configure and activate a real ``object_tracker_node`` in ``mode``.
+
+        ``extra``: further node parameters by name (e.g. ``place_zones_json``).
+        """
         from openral_world_state_ros.object_tracker_node import make_object_tracker_node
         from rclpy.parameter import Parameter
 
@@ -184,6 +187,7 @@ class TrackerRig:
                 Parameter("cameras", value=["top"]),
                 Parameter("grounding_wait_s", value=5.0),
                 Parameter("cell_m", value=float(self.grid.resolution)),
+                *(Parameter(name, value=value) for name, value in extra.items()),
             ]
         )
         self.executor.add_node(node)
