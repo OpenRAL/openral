@@ -166,6 +166,68 @@ def test_an_idle_robot_never_holds_the_world_back(served: tuple[str, _Scene]) ->
     assert scene.steps == 5
 
 
+def test_idle_takes_a_robot_out_of_the_barrier_at_once() -> None:
+    """The production ``_Lockstep``, no wall clock: release without any timeout drop."""
+    lock = sidecar._Lockstep(timeout_s=5.0)
+    lock.submit("a", b"ra", {}, now=0.0)
+    lock.submit("b", b"rb", {}, now=0.0)
+    assert [r for r, *_ in lock.release()] == ["a", "b"]
+    lock.submit("b", b"rb", {"idle": True}, now=0.1)  # b holds: still one period with a
+    lock.submit("a", b"ra", {}, now=0.1)
+    assert [r for r, *_ in lock.release()] == ["b", "a"]
+    lock.submit("a", b"ra", {}, now=0.2)  # b sends nothing more
+    assert lock.drop_late(now=0.2) == []  # nobody is late ...
+    assert [r for r, *_ in lock.release()] == ["a"]  # ... and a goes on alone
+
+
+def test_the_silence_clock_starts_at_the_reply() -> None:
+    """A slow world advance is not a robot's silence."""
+    lock = sidecar._Lockstep(timeout_s=5.0)
+    lock.submit("a", b"ra", {}, now=0.0)
+    lock.submit("b", b"rb", {}, now=0.0)
+    lock.release()
+    lock.replied(["a", "b"], now=10.0)  # the batch took 10 s
+    lock.submit("b", b"rb", {}, now=10.1)
+    assert lock.drop_late(now=12.0) == []  # a was answered 2 s ago
+    assert lock.drop_late(now=15.5) == ["a"]
+
+
+def test_a_refused_step_does_not_join_the_barrier(served: tuple[str, _Scene]) -> None:
+    url, _ = served
+    a, b = _req(url), _req(url)
+    assert (
+        "frames must be one of"
+        in _call(b, "step", {"robot": "b", "action": [0.0], "frames": "x"})["error"]
+    )
+    assert "needs an action" in _call(b, "step", {"robot": "b"})["error"]
+    for n in (1, 2):  # b never commanded: a never waits for it
+        assert _call(a, "step", {"robot": "a", "action": [0.0, 0.0]})["step"] == n
+    assert sidecar._FRAME_MODES == scene_base.FRAME_MODES
+
+
+def test_a_busy_socket_does_not_hold_a_waiting_robot_past_the_timeout(
+    served: tuple[str, _Scene],
+) -> None:
+    url, _ = served
+    a, b = _req(url), _req(url)
+    spam = zmq.Context.instance().socket(zmq.DEALER)  # many requests in flight at once
+    spam.setsockopt(zmq.LINGER, 0)
+    spam.connect(url)
+    render = msgpack.packb({"endpoint": "render", "data": {}}, use_bin_type=True)
+    _call(a, "step", {"robot": "a", "action": [0.0, 0.0]})
+    _call(b, "step", {"robot": "b", "action": [0.0, 0.0]})  # b commands, then goes silent
+    _send(a, "step", {"robot": "a", "action": [1.0, 0.0]})  # waits for b ...
+    deadline = time.monotonic() + 2.5
+    while not a.poll(0) and time.monotonic() < deadline:
+        for _ in range(200):  # ... while other requests keep the socket readable
+            spam.send_multipart([b"", render])
+        for _ in range(200):
+            spam.recv_multipart()
+    assert a.poll(0), "a's step was held past b's 0.5 s timeout"
+    assert _recv(a)["action"][0] == 1.0
+    spam.close()
+
+
 def test_a_silent_robot_is_dropped_after_the_timeout(served: tuple[str, _Scene]) -> None:
     url, _ = served
     a, b = _req(url), _req(url)
@@ -327,20 +389,23 @@ def test_each_endpoint_answers_for_the_robot_it_names(
     assert "no robot 'west'" in _call(c, "render", {"robot": "west"})["error"]
 
 
-def test_a_second_robots_reset_does_not_reset_the_running_world(
+def test_a_second_robots_reset_never_rewinds_the_shared_world(
     two_robots: tuple[str, _World, _Robot, _Robot],
 ) -> None:
     url, world, south, north = two_robots
     s, n = _req(url), _req(url)
     assert "observation" in _call(s, "reset", {"robot": "south"})
     assert world.resets == 1 and south.world_resets_seen == north.world_resets_seen == 1
-    _call(s, "step", {"robot": "south", "action": [1.0, 1.0]})
+    t = _call(s, "step", {"robot": "south", "action": [1.0, 1.0]})["sim_time_ns"]
     reply = _call(n, "reset", {"robot": "north"})  # north's graph starts while south runs
     assert world.resets == 1  # south keeps its world
     assert reply["observation"]["state"].size == 0  # north's own observation: no action yet
-    time.sleep(0.6)  # south silent past the barrier timeout: nobody runs any more
+    assert reply["sim_time_ns"] == t  # the running world's clock
+    time.sleep(0.6)  # south silent past the barrier timeout
     _call(n, "reset", {"robot": "north"})
-    assert world.resets == 2
+    _call(s, "reset", {"robot": "south"})  # south's graph restarts too
+    assert world.resets == 1  # neither graph's /clock ever goes back
+    assert _call(s, "step", {"robot": "south", "action": [0.0, 0.0]})["sim_time_ns"] > t
 
 
 def test_base_footprint_overlaps_are_logged_once_and_never_sent_in_a_step(

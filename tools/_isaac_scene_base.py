@@ -111,9 +111,15 @@ def _write_overview_frame() -> None:
         return
     from PIL import Image
 
-    Image.fromarray(np.ascontiguousarray(rgba[..., :3])).save(
-        _OVERVIEW["out"] / f"{now:.3f}.jpg", quality=85
-    )
+    try:
+        Image.fromarray(np.ascontiguousarray(rgba[..., :3])).save(
+            _OVERVIEW["out"] / f"{now:.3f}.jpg", quality=85
+        )
+    except OSError as exc:
+        # A recording, never a robot's: the physics step it follows stands. Stop recording.
+        print(f"[isaac_scene] overview recording stopped: {exc!r}", flush=True)
+        _OVERVIEW.clear()
+        return
     _OVERVIEW["last"] = now
 
 

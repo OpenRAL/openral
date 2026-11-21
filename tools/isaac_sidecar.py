@@ -420,6 +420,9 @@ _SCENE_MESH_MAX_BYTES = 10_000_000
 #: A commanding robot that sends no step for this long (wall time) is dropped from the lockstep:
 #: the world goes on without it (openral-pro#99).
 _BARRIER_TIMEOUT_S = 5.0
+#: ``_isaac_scene_base.FRAME_MODES``, checked before a step joins the lockstep (that module
+#: loads with Kit; a unit test asserts the two agree).
+_FRAME_MODES = ("render", "fresh", "none")
 
 
 class _Lockstep:
@@ -429,7 +432,7 @@ class _Lockstep:
     once **every commanding robot** has a step waiting; then every waiting step is answered.
     A robot is commanding from a step until it sends one marked ``idle`` (its HAL's hold
     stepper), and an idle robot never holds the world back. A commanding robot silent for
-    ``timeout_s`` is dropped (``drop_late``). With one robot every step is answered at once,
+    ``timeout_s`` since its last reply (``replied``) is dropped (``drop_late``). With one robot every step is answered at once,
     as before the lockstep existed. Robots are told apart by the ``robot`` field of a
     request (``""`` when absent, as every client before #99 sends).
 
@@ -472,6 +475,15 @@ class _Lockstep:
         self.waiting.clear()
         return out
 
+    def replied(self, robots: list[str], *, now: float) -> None:
+        """Restart the silence clock of the commanding ``robots`` whose replies were just sent.
+
+        A slow world advance is not the robot's silence: it may send its next step only now.
+        """
+        for r in robots:
+            if r in self.commanding:
+                self.commanding[r] = now
+
     def drop_late(self, *, now: float) -> list[str]:
         """Drop the commanding robots silent past the timeout while another robot waits."""
         if not self.waiting:
@@ -512,9 +524,10 @@ def _serve(
     """Serve ``scene`` (the world's first robot; ``scene.robot(name)`` reaches each) until ``close``.
 
     ``robots``: the robot list's identity (``_robots_identity``) when serving several, which
-    ``ping`` reports. A ``reset`` resets the whole world, unless another robot stepped in the
-    last ``_BARRIER_TIMEOUT_S``: then that robot is running, and the asking robot gets its
-    observation of the running world instead (its graph joined late, or restarted).
+    ``ping`` reports. A ``reset`` resets the whole world only while no other robot has reset
+    or stepped it: once one has, the asking robot gets its observation of the running world
+    instead (its graph joined late, or restarted). A world reset would rewind that other
+    robot's sim time, and its graph's ``/clock`` with it.
     """
     import msgpack
     import zmq
@@ -528,7 +541,7 @@ def _serve(
 
     lock = _Lockstep(_BARRIER_TIMEOUT_S)
     timing = _StepTiming() if os.environ.get("OPENRAL_SIDECAR_TIMING") == "1" else None
-    last_step: dict[str, float] = {}  # robot -> when its last step was answered (the reset rule)
+    served: set[str] = set()  # robots that have reset or stepped the world (the reset rule)
     overlaps: list[list[str]] = []  # robot pairs whose base footprints overlap now
     overlap_events: list[dict[str, Any]] = []  # each overlap's start since the last world reset
 
@@ -555,9 +568,7 @@ def _serve(
             )
         except Exception as exc:
             replies = {name: {"error": f"{type(exc).__name__}: {exc}"} for name, *_ in released}
-        now = time.monotonic()
-        for name, *_ in released:
-            last_step[name] = now
+        served.update(name for name, *_ in released)
         if robots is not None:
             try:
                 check_overlaps()
@@ -568,6 +579,7 @@ def _serve(
             mb = send(route, replies[name])
             if timing is not None:
                 _time_step(timing, scene.robot(name), data, replies[name], t_req, t_pack, mb)
+        lock.replied([name for name, *_ in released], now=time.monotonic())
 
     def check_overlaps() -> None:
         """Log each new base-footprint overlap between robots (ground truth, never a robot's)."""
@@ -581,14 +593,19 @@ def _serve(
     running = True
     while running:
         wait = lock.wait_s(now=time.monotonic())
-        if not sock.poll(None if wait is None else max(1, int(wait * 1000))):
-            for late in lock.drop_late(now=time.monotonic()):
-                print(
-                    f"[isaac_sidecar] robot {late!r} sent no step for "
-                    f"{_BARRIER_TIMEOUT_S:g} s: dropped from the lockstep",
-                    flush=True,
-                )
+        ready = sock.poll(None if wait is None else max(1, int(wait * 1000)))
+        # Deadlines first, readable or not: a stream of other requests must not hold a
+        # waiting robot past a silent one's timeout.
+        late = lock.drop_late(now=time.monotonic())
+        for r in late:
+            print(
+                f"[isaac_sidecar] robot {r!r} sent no step for "
+                f"{_BARRIER_TIMEOUT_S:g} s: dropped from the lockstep",
+                flush=True,
+            )
+        if late:
             answer_steps()
+        if not ready:
             continue
         route, _, raw = sock.recv_multipart()
         req = msgpack.unpackb(raw, object_hook=_decode_ndarray, raw=False)
@@ -598,8 +615,16 @@ def _serve(
         if endpoint == "step":
             try:
                 scene.robot(name)
+                # Checked before the robot joins the lockstep: a step the world would refuse
+                # must not leave its robot commanding, holding the others back.
+                frames = str(data.get("frames", "render"))
+                if frames not in _FRAME_MODES:
+                    raise ValueError(f"frames must be one of {_FRAME_MODES}, got {frames!r}")
+                if "action" not in data:
+                    raise ValueError("a step needs an action")
+                data = {**data, "action": np.asarray(data["action"], dtype=np.float32)}
                 lock.submit(name, route, data, now=time.monotonic())
-            except (KeyError, ValueError) as exc:
+            except (KeyError, ValueError, TypeError) as exc:
                 send(route, {"error": str(exc.args[0])})
             answer_steps()
             continue
@@ -630,14 +655,11 @@ def _serve(
                     reply["robots"] = robots
             elif endpoint == "reset":
                 asking = scene.robot(name)
-                t = time.monotonic()
-                busy = sorted(
-                    r for r, at in last_step.items() if r != name and t - at < _BARRIER_TIMEOUT_S
-                )
-                if busy:
+                others = sorted(served - {name})
+                if others:
                     print(
-                        f"[isaac_sidecar] reset from robot {name!r} while {busy} run: "
-                        "the world is not reset, it gets the running world's observation",
+                        f"[isaac_sidecar] reset from robot {name!r} after {others} used the "
+                        "world: it is not reset, the robot gets the running world's observation",
                         flush=True,
                     )
                     observation = asking.refresh_frames()
@@ -645,6 +667,7 @@ def _serve(
                     observation = asking.reset(seed=data.get("seed"))
                     overlaps.clear()
                     overlap_events.clear()
+                served.add(name)
                 # Carry sim time on reset too (≈0 after the
                 # world reset) so the HAL's cross-reset offset stays monotonic.
                 reply = {

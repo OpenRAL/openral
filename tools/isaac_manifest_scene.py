@@ -624,7 +624,12 @@ def _rect_corners(
 
 
 def _rects_overlap(a: NDArray[np.float64], b: NDArray[np.float64], margin: float) -> bool:
-    """Separating-axis test of two convex polygons ``(n, 2)``; ``margin`` (m) counts as contact."""
+    """Separating-axis test of two polygons ``(n, 2)``; ``margin`` (m) counts as contact.
+
+    Exact for convex polygons. A concave one is tested as its convex hull (its projections
+    are the hull's, and an axis from a notch edge separates only truly disjoint shapes), so
+    a shape in its notch counts as an overlap: over-reported, never missed.
+    """
     for quad in (a, b):
         for i in range(len(quad)):
             edge = quad[(i + 1) % len(quad)] - quad[i]
@@ -636,7 +641,9 @@ def _rects_overlap(a: NDArray[np.float64], b: NDArray[np.float64], margin: float
 
 
 def overlapping_footprints(footprints: Mapping[str, NDArray[np.float64]]) -> list[list[str]]:
-    """The pairs of robots whose world-frame base footprints (convex ``(n, 2)``) overlap.
+    """The pairs of robots whose world-frame base footprints (``(n, 2)``) overlap.
+
+    A concave ``footprint_polygon`` is checked as its convex hull (``_rects_overlap``).
 
     Example:
         >>> square = np.array([[0.5, 0.5], [-0.5, 0.5], [-0.5, -0.5], [0.5, -0.5]])
@@ -2077,6 +2084,9 @@ class IsaacManifestScene(IsaacSceneBase):
         self._robot_body_paths: list[str] = []
         self._body_positions: dict[str, NDArray[np.float64]] = {}
         self._prev_body_positions: dict[str, NDArray[np.float64]] = {}
+        # The world's sim time (ns) at each of those two samples (``_body_speed``).
+        self._body_time_ns: int | None = None
+        self._prev_body_time_ns: int | None = None
         # (prim path, 4x4 pose in the root frame at import) of the root rigid body.
         self._root_body: tuple[str, NDArray[np.float64]] = ("", np.eye(4))
         # Isaac >= 6: the importer pins the base with a fixed joint whose body0 is
@@ -3598,6 +3608,7 @@ class IsaacManifestScene(IsaacSceneBase):
         # A reset teleports the robot: no finite-difference link speed across it.
         self._body_positions = {}
         self._prev_body_positions = {}
+        self._body_time_ns = self._prev_body_time_ns = None
         self._jitter_objects(rng)
 
     def _jitter_objects(self, rng: np.random.Generator) -> None:
@@ -3883,7 +3894,12 @@ class IsaacManifestScene(IsaacSceneBase):
         settle_s = float(ps["settle_s"])
         turn_rate = math.radians(float(ps.get("rest_turn_deg_s", math.inf)))
         grades = []
-        held = self._robot_touched_paths() if ps.get("require_released") else set()
+        # Every robot's touch: a peer still holding the object has not released it either.
+        held = (
+            set().union(*(r._robot_touched_paths() for r in self._robots()))
+            if ps.get("require_released")
+            else set()
+        )
         for placement in map(self._placement_now, ps["placements"]):
             name = str(placement["object"])
             pos_raw, quat_raw = self._object_prims[name].get_world_pose()
@@ -4018,35 +4034,40 @@ class IsaacManifestScene(IsaacSceneBase):
         """Record every robot rigid body's world position for this step (finite-difference speed).
 
         Read through PhysX (``get_rigidbody_transformation``), which serves articulation
-        links too; the previous step's sample is kept so ``_body_speed`` is the link's
-        mean speed over the last control period.
+        links too; the previous sample is kept, with the world's sim time at each, so
+        ``_body_speed`` is the link's mean speed between them: one control period, or more
+        when other robots advanced the shared world without this one.
         """
         from omni.physx import get_physx_interface
 
         physx = get_physx_interface()
         self._prev_body_positions = self._body_positions
+        self._prev_body_time_ns, self._body_time_ns = self._body_time_ns, self.sim_time_ns()
         self._body_positions = {
             path: np.asarray(physx.get_rigidbody_transformation(path)["position"], dtype=float)
             for path in self._robot_body_paths
         }
 
     def _body_speed(self, collider: str) -> float | None:
-        """Mean world speed (m/s) over the last control period of the robot body owning ``collider``.
+        """Mean world speed (m/s) since the previous sample of the robot body owning ``collider``.
 
         The body is the deepest captured robot rigid-body path that prefixes the
-        collider path. ``None`` when no robot body owns it, on the first step after a
-        reset (no previous sample), or without a control period.
+        collider path. The interval is the sim time between the two samples, else one
+        control period. ``None`` when no robot body owns it, on the first step after a
+        reset (no previous sample), or without either interval.
         """
         owner = max(
             (b for b in self._robot_body_paths if collider == b or collider.startswith(b + "/")),
             key=len,
             default=None,
         )
-        tick = self.sim_dt_per_tick_s
-        if owner is None or not tick or owner not in self._prev_body_positions:
+        now, then = self._body_time_ns, self._prev_body_time_ns
+        elapsed = (now - then) * 1e-9 if now is not None and then is not None else None
+        interval = elapsed if elapsed is not None and elapsed > 0.0 else self.sim_dt_per_tick_s
+        if owner is None or not interval or owner not in self._prev_body_positions:
             return None
         delta = self._body_positions[owner] - self._prev_body_positions[owner]
-        return float(np.linalg.norm(delta) / tick)
+        return float(np.linalg.norm(delta) / interval)
 
     def static_collider_boxes(self) -> dict[str, Any]:
         """Every fixture collider of the stage in the manifest ``base_frame``: a box or a mesh.
