@@ -73,7 +73,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-from _isaac_scene_base import IsaacSceneBase, physics_dt_for
+from _isaac_scene_base import (
+    IsaacSceneBase,
+    add_overview_camera,
+    finish_overview_camera,
+    physics_dt_for,
+)
 from numpy.typing import NDArray
 
 # Joint drive gains applied when the Isaac >= 6 URDF importer converts the robot
@@ -2248,12 +2253,14 @@ class IsaacManifestScene(IsaacSceneBase):
         owner._add_stage_objects()
         for s in scenes:
             s._add_robot_rig()
+        add_overview_camera()
         owner._world.reset()
         # Opening/importing a stage can restore renderer defaults. Apply the
         # requested settings after those operations and before the first image.
         _configure_rendering(owner._spec)
         for s in scenes:
             s._finish_robot()
+        finish_overview_camera()
         ticks = {s.name: s.sim_dt_per_tick_s for s in scenes}
         if len(set(ticks.values())) > 1:
             raise ValueError(f"robots sharing a world must step at one control period: {ticks}")

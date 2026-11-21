@@ -49,8 +49,10 @@ keys and the client reuses its last frames, still stamped with the time they sho
 from __future__ import annotations
 
 import math
+import os
 import time
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -67,6 +69,52 @@ _MAX_CATCHUP_RENDERS = 8
 #: Isaac's default physics rate, the rate the finger contacts were validated at;
 #: the physics rate never drops below it.
 _MIN_PHYSICS_HZ = 60.0
+#: A world-fixed camera looking straight down on the whole scene, its frames written as JPEGs
+#: named by wall time, for a recording (openral-pro#99): ``<dir>@<x>,<y>,<height>`` in the
+#: world frame. Off when unset. Not a robot sensor: nothing in the graph sees it.
+OVERVIEW_ENV = "OPENRAL_ISAAC_OVERVIEW"
+_OVERVIEW_PERIOD_S = 0.1  # wall time between frames
+_OVERVIEW: dict[str, Any] = {}
+
+
+def add_overview_camera() -> None:
+    """Stand up the ``$OPENRAL_ISAAC_OVERVIEW`` camera (before the world resets), if set."""
+    spec = os.environ.get(OVERVIEW_ENV)
+    if not spec:
+        return
+    from isaacsim.sensors.camera import Camera
+
+    out, at = spec.rsplit("@", 1)
+    x, y, z = (float(v) for v in at.split(","))
+    Path(out).mkdir(parents=True, exist_ok=True)
+    cam = Camera(prim_path="/World/OverviewCamera", resolution=(1280, 960))
+    _OVERVIEW.update(cam=cam, out=Path(out), at=(x, y, z), last=0.0)
+
+
+def finish_overview_camera() -> None:
+    """Once the world has reset: point the overview camera straight down."""
+    if not _OVERVIEW:
+        return
+    cam = _OVERVIEW["cam"]
+    cam.initialize()
+    # USD camera axes: identity looks down -z with +x right and +y up in the image.
+    cam.set_world_pose(np.array(_OVERVIEW["at"]), np.array([1.0, 0.0, 0.0, 0.0]), camera_axes="usd")
+    cam.set_clipping_range(0.1, 100.0)
+
+
+def _write_overview_frame() -> None:
+    now = time.time()
+    if now - _OVERVIEW["last"] < _OVERVIEW_PERIOD_S:
+        return
+    rgba = _OVERVIEW["cam"].get_rgba()
+    if rgba is None or rgba.ndim != 3 or rgba.size == 0:
+        return
+    from PIL import Image
+
+    Image.fromarray(np.ascontiguousarray(rgba[..., :3])).save(
+        _OVERVIEW["out"] / f"{now:.3f}.jpg", quality=85
+    )
+    _OVERVIEW["last"] = now
 
 
 def physics_dt_for(control_freq_hz: float) -> float:
@@ -289,6 +337,8 @@ class IsaacSceneBase:
                 p._before_render()
             p._before_substep()
         self._world.step(render=render)
+        if render and _OVERVIEW:
+            _write_overview_frame()
 
     def _world_render(self) -> None:
         """Render the shared world without stepping it, every robot's cameras posed first."""
