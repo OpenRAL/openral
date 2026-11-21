@@ -84,7 +84,9 @@ def main(argv: list[str] | None = None) -> int:
         "--revision",
         default="",
         help="Hub revision (commit sha or tag) of the rSkill; a full sha is served from the "
-        "local cache without the Hub (a private rSkill on a host with no access to it).",
+        "local cache without the Hub (a private rSkill on a host with no access to it). "
+        "Applies to a Hub rSkill only: the runner resolves an in-tree id from its search "
+        "paths first, whatever the revision.",
     )
     parser.add_argument(
         "--server-timeout-s",
