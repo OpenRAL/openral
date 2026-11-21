@@ -1,16 +1,13 @@
-"""Shared floating-base helpers for the humanoid MuJoCo twins (G1, H2).
+"""Shared planar-base helpers for the sim HAL shell and the MuJoCo twins.
 
-Two pieces every pinned-humanoid twin needs, kept in ONE place:
-
+* **The planar-twist rule** — ``validate_planar_body_twist`` is the one check of a
+  ``BODY_TWIST`` a sim base can execute (a 6-float row, no linear-z / angular-x /
+  angular-y, no lateral ``vy`` on a differential base), with one tolerance,
+  ``PLANAR_TWIST_EPS``; ``integrate_planar_twist`` is the one Euler integrator of a
+  holonomic planar base.
 * **ADR-0087 kinematic glide** — the free joint is re-pinned upright every
-  physics step to an ``(x, y, yaw, z0)`` pose; a ``BODY_TWIST`` action
-  Euler-integrates ``(vx, vy, wz)`` into that pose. No balance, no gait: the pin
-  is what keeps a gravity-on twin standing without an S0 controller.
-* **Software PD over ``motor`` actuators** — Unitree's official MJCFs ship
-  torque actuators (``ctrl`` is N·m), so a position-target HAL runs
-  ``tau = kp (q* - q) - kd dq`` every step, clamped to ``ctrlrange`` — the
-  same split as ``unitree_sdk2`` (torque at the bus, position + Kp/Kd at the
-  user API).
+  physics step to an ``(x, y, yaw, z0)`` pose (``capture_base_pin`` /
+  ``write_base_pin``); ``mujoco_twin._GlideTwin`` is the twin that does it.
 
 Sim-only: nothing here is reachable from a real HAL.
 """
@@ -18,7 +15,7 @@ Sim-only: nothing here is reachable from a real HAL.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import Any
 
 from openral_core import BODY_TWIST_DIM
@@ -26,8 +23,8 @@ from openral_core.exceptions import ROSConfigError
 from openral_core.schemas import Action
 
 __all__ = [
+    "PLANAR_TWIST_EPS",
     "BasePin",
-    "apply_software_pd",
     "capture_base_pin",
     "integrate_planar_twist",
     "validate_planar_body_twist",
@@ -37,9 +34,10 @@ __all__ = [
 #: ``(x, y, yaw, z0)`` world pose the free joint is pinned to.
 BasePin = tuple[float, float, float, float]
 
-# Twist components a kinematic-glide base does not actuate (linear-z,
-# angular-x, angular-y).  Mirrors ``panda_mobile._PLANAR_TWIST_EPS``.
-_PLANAR_TWIST_EPS = 1e-9
+#: Tolerance for a twist component a planar sim base does not actuate (linear-z,
+#: angular-x, angular-y; lateral vy on a differential base): float noise, not a
+#: command. The value of ``panda_mobile`` and the real Unitree HAL.
+PLANAR_TWIST_EPS = 1e-9
 
 
 def capture_base_pin(qpos: Sequence[float]) -> BasePin:
@@ -83,53 +81,45 @@ def write_base_pin(data: Any, pin: BasePin) -> None:  # noqa: ANN401  # reason: 
     data.qvel[0:6] = 0.0
 
 
-def validate_planar_body_twist(action: Action, hal_name: str) -> tuple[float, float, float]:
-    """Return ``(vx, vy, wz)`` of a ``BODY_TWIST`` action, refusing non-planar rows.
+def validate_planar_body_twist(
+    action: Action, backend: str, *, differential: bool = False
+) -> tuple[float, float, float]:
+    """Return ``(vx, vy, wz)`` of a ``BODY_TWIST`` action, refusing what a planar base cannot do.
+
+    Args:
+        action: A ``BODY_TWIST`` action (its first row is the command).
+        backend: The HAL class name the messages carry.
+        differential: The base is differential (``base_kinematics: differential``):
+            a lateral ``vy`` is refused too, and ``vy`` is returned as ``0.0``.
 
     Raises:
-        ROSConfigError: Empty ``body_twist``, a row of the wrong width, or a
-            non-zero linear-z / angular-x / angular-y component (the glide base
-            is planar).
+        ROSConfigError: Empty ``body_twist``, a row of the wrong width, a non-zero
+            linear-z / angular-x / angular-y component, or (``differential``) a
+            non-zero ``vy`` — beyond ``PLANAR_TWIST_EPS``.
+
+    Example:
+        >>> twist = Action(control_mode="body_twist", body_twist=[[0.2, 0.0, 0.0, 0.0, 0.0, 0.5]])
+        >>> validate_planar_body_twist(twist, "X", differential=True)
+        (0.2, 0.0, 0.5)
     """
     if not action.body_twist:
-        raise ROSConfigError(f"{hal_name}.send_action: empty Action.body_twist for BODY_TWIST.")
+        raise ROSConfigError(f"{backend}.send_action: empty Action.body_twist for BODY_TWIST.")
     row = action.body_twist[0]
     if len(row) != BODY_TWIST_DIM:
         raise ROSConfigError(
-            f"{hal_name}: BODY_TWIST expects {BODY_TWIST_DIM} floats "
+            f"{backend}: BODY_TWIST expects {BODY_TWIST_DIM} floats "
             f"(vx, vy, vz, wx, wy, wz); got {len(row)}."
         )
-    if any(abs(row[i]) > _PLANAR_TWIST_EPS for i in (2, 3, 4)):
+    if any(abs(row[i]) > PLANAR_TWIST_EPS for i in (2, 3, 4)):
         raise ROSConfigError(
-            f"{hal_name}: BODY_TWIST row carries non-zero linear-z / "
-            "angular-x / angular-y; the glide base is planar — only "
-            "vx, vy, wz are actuated."
+            f"{backend}: BODY_TWIST row carries non-zero linear-z / "
+            "angular-x / angular-y; only vx, vy, wz are actuated (a holonomic planar base model)."
         )
+    if differential:
+        if abs(row[1]) > PLANAR_TWIST_EPS:
+            raise ROSConfigError(
+                f"{backend}: a differential base cannot execute a BODY_TWIST with "
+                f"vy={float(row[1])}; only vx and wz are actuated."
+            )
+        return (float(row[0]), 0.0, float(row[5]))
     return (float(row[0]), float(row[1]), float(row[5]))
-
-
-def apply_software_pd(
-    model: Any,  # noqa: ANN401  # reason: mujoco.MjModel
-    data: Any,  # noqa: ANN401  # reason: mujoco.MjData
-    targets: Mapping[str, float],
-    gains: Mapping[str, tuple[float, float]],
-    actuator_index: Mapping[str, int],
-    qpos_addr: Mapping[str, int],
-    qvel_addr: Mapping[str, int],
-) -> None:
-    """Write ``tau = kp (target - q) - kd dq``, clamped to ``ctrlrange``, into ``ctrl``.
-
-    One call per ``mj_step``: the torque is recomputed from the current state so
-    a torque-mode (``motor``) actuator tracks a *position* target. Joints with
-    no actuator are skipped.
-    """
-    for name, target in targets.items():
-        act_idx = actuator_index.get(name)
-        if act_idx is None:
-            continue
-        kp, kd = gains[name]
-        q = float(data.qpos[qpos_addr[name]])
-        dq = float(data.qvel[qvel_addr[name]])
-        tau = kp * (float(target) - q) - kd * dq
-        low, high = model.actuator_ctrlrange[act_idx]
-        data.ctrl[act_idx] = max(float(low), min(float(high), tau))

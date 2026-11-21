@@ -37,6 +37,12 @@ def test_openarm_tabletop_action_dim_matches_state_dim() -> None:
     pytest.importorskip("openral_sim")
     pytest.importorskip("mujoco")
     pytest.importorskip("robosuite")
+    from openral_sim._deps import get_plan
+
+    if not get_plan("openarm_robosuite").probe():
+        # A LIBERO venv's robosuite 1.4: the loader would refuse to swap it under
+        # live objects, so the scene cannot build in this process.
+        pytest.skip("openarm_tabletop needs robosuite>=1.5 (`just sync --group robocasa`)")
     from openral_core import RobotDescription
     from openral_hal.sim_attached import SimAttachedHAL
     from openral_hal.sim_bringup import build_sim_env_from_yaml

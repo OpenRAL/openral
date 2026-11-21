@@ -20,7 +20,7 @@ Joint inventory: the menagerie MJCF has 20 joints (19 actuated + 1
 floating base, not exposed on ``RobotDescription`` — implicit world
 state, not Skill-commanded) and 19 torque (``motor``) actuators in a
 fixed order, which ``H1MujocoHAL`` drives through a software PD position
-loop (see ``_per_step_update``):
+loop (see ``_H1Twin``):
 
     legs  : 2 x (hip_yaw, hip_roll, hip_pitch, knee, ankle)
     torso : 1 (yaw only)
@@ -52,6 +52,8 @@ Example:
 
 from __future__ import annotations
 
+import functools
+
 from openral_core.schemas import (
     AssetRefs,
     ControlMode,
@@ -66,8 +68,8 @@ from openral_core.schemas import (
     UrdfAsset,
 )
 
-from openral_hal._floating_base import apply_software_pd
 from openral_hal._mujoco_arm import MujocoArmHAL, _kinematic_group
+from openral_hal.mujoco_twin import _SoftwarePDTwin
 
 __all__ = ["H1_DESCRIPTION", "H1MujocoHAL"]
 
@@ -331,12 +333,21 @@ def _h1_pd_gains() -> dict[str, tuple[float, float]]:
     return gains
 
 
+class _H1Twin(_SoftwarePDTwin):
+    """The H1 twin: the software PD loop over the menagerie's torque actuators.
+
+    No torque before the first command (``hold_pose_on_load`` off: the H1's zero pose
+    is already upright neutral, and gravity-off contract tests start from it). A
+    ``reset_to_pose`` makes the snapped pose the target; a reconnect clears it.
+    """
+
+
 class H1MujocoHAL(MujocoArmHAL):
     """HAL adapter for the Unitree H1 humanoid (MuJoCo digital twin).
 
     Drives the 19 actuated joints of the menagerie ``unitree_h1`` MJCF
     through its torque (``motor``) actuators, closing a software PD
-    position loop every ``mj_step``.  Exposes a 19-D
+    position loop every ``mj_step`` (``_H1Twin``), idle slices included.  Exposes a 19-D
     ``openral_core.Action`` matching the joint order in
     ``H1_DESCRIPTION`` (left leg 5 → right leg 5 → torso 1 → left
     arm 4 → right arm 4).
@@ -397,44 +408,5 @@ class H1MujocoHAL(MujocoArmHAL):
             settle_steps=settle_steps,
             gravity_enabled=gravity_enabled,
             staleness_limit_s=staleness_limit_s,
+            twin=functools.partial(_H1Twin, pd_gains=_h1_pd_gains()),
         )
-        self._pd_gains: dict[str, tuple[float, float]] = _h1_pd_gains()
-
-    def _per_step_update(self, targets: list[float]) -> None:
-        """Run a software PD position loop every ``mj_step``.
-
-        Overrides the base no-op because the H1 MJCF uses ``motor``
-        actuators (torque-controlled): writing ``ctrl[i] = x`` applies
-        ``x`` N·m directly, not "drive joint i to position x".  We
-        recompute the torque every physics step from current state —
-        ``tau = kp * (target - q) - kv * dq`` clamped to the
-        actuator's ``ctrlrange`` — so the public
-        ``Action.joint_targets`` contract stays "position targets in
-        radians", the same as every other ``MujocoArmHAL`` subclass,
-        even though the underlying actuator is torque-mode.
-
-        This mirrors how the real ``unitree_sdk2`` driver works on
-        hardware: motors are torque-controlled at the bus, but the
-        user-facing API takes position targets and runs Kp/Kd in the
-        driver layer.
-        """
-        assert self._data is not None
-        assert self._model is not None
-        apply_software_pd(
-            self._model,
-            self._data,
-            dict(zip(self._joint_names, targets, strict=True)),
-            self._pd_gains,
-            self._actuator_index,
-            self._joint_qpos_addr,
-            self._joint_qvel_addr,
-        )
-
-    # The base ``_apply_arm_targets`` (called once before the settle
-    # loop) writes the raw position target to ``ctrl``, which is wrong
-    # for torque actuators.  We no-op that call and do the real work in
-    # ``_per_step_update`` so MuJoCo sees a sensible torque on every
-    # step rather than a stale position-as-torque value on step 0.
-    def _apply_arm_targets(self, targets: list[float]) -> None:
-        """No-op for H1; the per-step PD loop drives the actuators instead."""
-        del targets

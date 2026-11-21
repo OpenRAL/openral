@@ -197,6 +197,52 @@ def test_estop_stops_every_part_and_raises(hal: ComposedHAL) -> None:
     assert not getattr(arm, "_connected", True)  # the OpenArm twin released its model
 
 
+def test_a_latched_twin_part_refuses_the_tick_until_reset_estop(hal: ComposedHAL) -> None:
+    """A twin part's estop latch survives the reconnect; the composite never acks into it.
+
+    The latched twin drops what it is sent, so a dispatch that reached it would commit
+    and acknowledge a tick the arm never applied. The composite refuses the tick before
+    any part moves instead, and ``reset_estop`` re-arms the sim part (#683).
+    """
+    from openral_core.exceptions import ROSRuntimeError
+
+    robot = [j.name for j in hal.description.joints]
+    left = [0.0, -0.4, 0.0, 0.9, 0.0, 0.0, 0.0]
+    right = [0.0, 0.4, 0.0, 0.9, 0.0, 0.0, 0.0]
+    with pytest.raises(ROSEStopRequested):
+        hal.estop()
+    hal.connect()
+    arm = hal._parts[0]
+    assert getattr(arm, "estop_latched", False) is True
+    slots = _openarm_tick(robot, 1, left, right, 0.5)
+    for slot in slots[:-1]:
+        hal.send_action(slot)
+    with pytest.raises(ROSRuntimeError, match="e-stop latched"):
+        hal.send_action(slots[-1])
+    assert hal.last_committed_tick == 0
+    hal.reset_estop()
+    assert getattr(arm, "estop_latched", True) is False
+    for slot in _openarm_tick(robot, 2, left, right, 0.5):
+        hal.send_action(slot)
+    assert hal.last_committed_tick == 2
+
+
+def test_reset_estop_without_a_resettable_part_is_refused(description: RobotDescription) -> None:
+    """Held parts only: nothing to re-arm, so the composite refuses (as before #683)."""
+    held = ComposedHAL(
+        description=description,
+        parts=[
+            {
+                "entry": "openral_hal.composed:HeldJointsHAL",
+                "joints": [j.name for j in description.joints],
+                "params": {"positions": {j.name: 0.0 for j in description.joints}},
+            }
+        ],
+    )
+    with pytest.raises(ROSConfigError, match="no ros2_control part"):
+        held.reset_estop()
+
+
 def test_joint_ownership_must_be_complete_and_disjoint(description: RobotDescription) -> None:
     parts = _parts()
     with pytest.raises(ROSConfigError, match="no part owns"):

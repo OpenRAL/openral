@@ -418,7 +418,7 @@ _SCENE_MESH_MAX_BYTES = 10_000_000
 
 
 #: A commanding robot that sends no step for this long (wall time) is dropped from the lockstep:
-#: the world goes on without it (openral-pro#99; the same bound `openral deploy world` had).
+#: the world goes on without it (openral-pro#99).
 _BARRIER_TIMEOUT_S = 5.0
 
 

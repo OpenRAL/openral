@@ -623,6 +623,25 @@ class TestSlotGroupDispatch:
             hal.send_action(_bimanual_slot_group(tick=2)[0])
         assert recorder.sent == []
 
+    def test_a_slot_that_shrinks_the_tick_is_refused_and_nothing_is_published(
+        self, both_buses_up: Path
+    ) -> None:
+        # A later slot declaring a smaller group size used to release the tick
+        # short: two of four slots reached the controllers (#683). The stager now
+        # discards the tick instead; the next full tick still commits.
+        recorder = _Recorder()
+        hal = OpenArmRealHAL(publish_fn=recorder)
+        hal.connect()
+        slots = _bimanual_slot_group(tick=1)
+        hal.send_action(slots[0])
+        with pytest.raises(ROSRuntimeError, match="changed its declared size"):
+            hal.send_action(slots[1].model_copy(update={"tick_group_size": 2}))
+        assert recorder.sent == []
+        assert hal.last_committed_tick == 0
+        for action in _bimanual_slot_group(tick=2):
+            hal.send_action(action)
+        assert hal.last_committed_tick == 2
+
     def test_a_dropped_slot_costs_one_tick_not_the_run(self, both_buses_up: Path) -> None:
         # The refusal above must not consume the slot that triggered it. If it
         # did, tick 2 would start one slot short and never complete, tick 3

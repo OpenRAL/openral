@@ -36,7 +36,7 @@ roll/pitch are parallel linkages on hardware; the twin models them as serial
 joints, which is what the SDK's ``Mode::PR`` (series pitch/roll) exposes.
 
 The MJCF ships ``motor`` (torque) actuators, so ``H2MujocoHAL`` runs a software
-PD loop every ``mj_step`` (``_floating_base.apply_software_pd``) to keep the
+PD loop every ``mj_step`` (``mujoco_twin._SoftwarePDTwin``) to keep the
 position-target ``Action`` contract — also during ``idle_step``, so a held pose
 does not sag under gravity.
 
@@ -51,12 +51,10 @@ Example:
 
 from __future__ import annotations
 
-import time
+import functools
 
-import structlog
 from openral_core.exceptions import ROSConfigError
 from openral_core.schemas import (
-    Action,
     AssetRefs,
     ControlMode,
     EmbodimentKind,
@@ -70,17 +68,9 @@ from openral_core.schemas import (
     UrdfAsset,
 )
 
-from openral_hal._floating_base import (
-    BasePin,
-    apply_software_pd,
-    capture_base_pin,
-    integrate_planar_twist,
-    validate_planar_body_twist,
-    write_base_pin,
-)
-from openral_hal._mujoco_arm import _IDLE_STEP_CAP, MujocoArmHAL, _kinematic_group
-
-log = structlog.get_logger(__name__)
+from openral_hal._floating_base import capture_base_pin, write_base_pin
+from openral_hal._mujoco_arm import MujocoArmHAL, _kinematic_group
+from openral_hal.mujoco_twin import _GlideTwin, _SoftwarePDTwin
 
 __all__ = ["H2_DESCRIPTION", "H2MujocoHAL"]
 
@@ -319,12 +309,59 @@ _FOOT_BODIES = ("left_ankle_pitch_link", "right_ankle_pitch_link")
 # ── HAL ──────────────────────────────────────────────────────────────────────
 
 
+class _H2Twin(_GlideTwin, _SoftwarePDTwin):
+    """The H2 twin: the ADR-0087 glide pin and the software PD, before every physics step.
+
+    The MJCF ships ``motor`` (torque) actuators, so a command's target row becomes the
+    PD hold target (``_SoftwarePDTwin``; the loaded pose is held from ``load`` on) and
+    every physics step — actions and idle slices alike — re-pins the base, then
+    recomputes the PD torques. A ``BODY_TWIST`` slides the pin (``_GlideTwin``). The
+    pin is lowered at load so the feet stand on ``z = 0`` and, as on the G1, kept across
+    a ``reset_to_pose`` (which moves no free joint).
+    """
+
+    hold_pose_on_load = True
+
+    def _on_load(self) -> None:
+        """Hold the default pose and lower the base onto ``z = 0``.
+
+        The upstream MJCF spawns the pelvis at 1.2 m with the legs straight,
+        leaving the foot spheres ~0.16 m in the air; the pin height is lowered
+        so the lowest foot-sphere surface touches the ``z = 0`` floor plane.
+
+        Raises:
+            ROSConfigError: The MJCF has no foot contact sphere.
+        """
+        import mujoco as mj  # noqa: PLC0415  # reason: optional sim-only dep
+
+        super()._on_load()
+        model, data = self.model, self.data
+        assert model is not None and data is not None
+        foot_bottoms = [
+            float(data.geom_xpos[g][2]) - float(model.geom_size[g][0])
+            for g in range(model.ngeom)
+            if int(model.geom_type[g]) == int(mj.mjtGeom.mjGEOM_SPHERE)
+            and mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY, model.geom_bodyid[g]) in _FOOT_BODIES
+        ]
+        if not foot_bottoms:
+            raise ROSConfigError(
+                f"H2 MJCF has no foot contact sphere on {sorted(_FOOT_BODIES)}; "
+                "cannot set the standing height."
+            )
+        x, y, yaw, z = capture_base_pin(data.qpos)
+        self._base_pin = (x, y, yaw, z - min(foot_bottoms))
+        write_base_pin(data, self._base_pin)
+        data.ctrl[:] = 0.0
+        mj.mj_forward(model, data)
+
+
 class H2MujocoHAL(MujocoArmHAL):
     """HAL adapter for the Unitree H2 humanoid (MuJoCo digital twin).
 
     Exposes a 31-D ``JOINT_POSITION`` action in unitree_sdk2 motor order (left
     leg 6 → right leg 6 → waist 3 → left arm 7 → right arm 7 → head 2) and a
-    planar ``BODY_TWIST`` that slides the pinned base (ADR-0087).
+    planar ``BODY_TWIST`` that slides the pinned base (ADR-0087), both driven by
+    ``_H2Twin``.
 
     .. warning::
 
@@ -339,7 +376,11 @@ class H2MujocoHAL(MujocoArmHAL):
             control period from ``description.control_rate_hz``.
         gravity_enabled: ``False`` zeroes gravity at ``connect()``.
         staleness_limit_s: Maximum age of a cached state.
-        body_twist_dt_s: Seconds one BODY_TWIST action integrates the glide by.
+        body_twist_dt_s: Seconds one BODY_TWIST action integrates the glide by. The
+            H2 manifest declares no control rate (its rates are unverified), so the
+            twin has no control period to derive it from; the 0.05 s default keeps
+            the glide's commanded speed at a 20 Hz command rate. ``None`` is one
+            physics settle (``MujocoTwinRollout``).
         description: The loaded ``robots/h2/robot.yaml`` (threaded by
             ``build_hal``); ``None`` uses the in-code ``H2_DESCRIPTION`` mirror.
 
@@ -361,182 +402,18 @@ class H2MujocoHAL(MujocoArmHAL):
         settle_steps: int | None = None,
         gravity_enabled: bool = True,
         staleness_limit_s: float = 0.5,
-        body_twist_dt_s: float = 0.05,
+        body_twist_dt_s: float | None = 0.05,
         description: RobotDescription | None = None,
     ) -> None:
         """Initialise the H2 HAL; no MuJoCo state is created until ``connect()``."""
+        if body_twist_dt_s is not None and body_twist_dt_s <= 0.0:
+            raise ROSConfigError("H2MujocoHAL body_twist_dt_s must be > 0.")
         self._init_from_description(
             description or H2_DESCRIPTION,
             mjcf_path=mjcf_path,
             settle_steps=settle_steps,
             gravity_enabled=gravity_enabled,
             staleness_limit_s=staleness_limit_s,
+            body_twist_dt_s=body_twist_dt_s,
+            twin=functools.partial(_H2Twin, pd_gains=_h2_pd_gains()),
         )
-        if body_twist_dt_s <= 0.0:
-            raise ROSConfigError("H2MujocoHAL body_twist_dt_s must be > 0.")
-        self._body_twist_dt_s = body_twist_dt_s
-        self._pd_gains = _h2_pd_gains()
-        # Position targets the software PD tracks on every physics step,
-        # including idle steps; captured from qpos at connect.
-        self._hold_targets: dict[str, float] = {}
-        self._base_pin: BasePin | None = None
-        self._last_body_twist: tuple[float, float, float, float, float, float] = (0.0,) * 6
-
-    # ── Lifecycle ────────────────────────────────────────────────────────────
-
-    def connect(self) -> None:
-        """Load the MJCF, lower the base onto ``z = 0`` and hold the default pose.
-
-        The upstream MJCF spawns the pelvis at 1.2 m with the legs straight,
-        leaving the foot spheres ~0.16 m in the air; the pin height is lowered
-        so the lowest foot-sphere surface touches the ``z = 0`` floor plane.
-        """
-        super().connect()
-        import mujoco as mj  # noqa: PLC0415  # reason: optional sim-only dep
-
-        assert self._model is not None and self._data is not None
-        foot_bottoms = [
-            float(self._data.geom_xpos[g][2]) - float(self._model.geom_size[g][0])
-            for g in range(self._model.ngeom)
-            if int(self._model.geom_type[g]) == int(mj.mjtGeom.mjGEOM_SPHERE)
-            and mj.mj_id2name(self._model, mj.mjtObj.mjOBJ_BODY, self._model.geom_bodyid[g])
-            in _FOOT_BODIES
-        ]
-        if not foot_bottoms:
-            super().disconnect()
-            raise ROSConfigError(
-                f"H2 MJCF has no foot contact sphere on {sorted(_FOOT_BODIES)}; "
-                "cannot set the standing height."
-            )
-        lowest = min(foot_bottoms)
-        x, y, yaw, z = capture_base_pin(self._data.qpos)
-        self._base_pin = (x, y, yaw, z - lowest)
-        write_base_pin(self._data, self._base_pin)
-        self._data.ctrl[:] = 0.0
-        mj.mj_forward(self._model, self._data)
-        self._capture_hold_targets()
-
-    def reset_to_pose(self, pose: list[float]) -> None:
-        """Snap the joints to ``pose`` and make it the PD hold target."""
-        super().reset_to_pose(pose)
-        assert self._data is not None
-        # The base re-seeds ``ctrl`` from qpos (a position-actuator idiom); on a
-        # torque actuator that would apply qpos as N·m, so clear it.
-        self._data.ctrl[:] = 0.0
-        self._capture_hold_targets()
-
-    # ── Read accessors ───────────────────────────────────────────────────────
-
-    @property
-    def base_pose(self) -> tuple[float, float, float]:
-        """Current pinned base ``(x, y, yaw)``."""
-        self._require_connected("base_pose")
-        assert self._base_pin is not None
-        x, y, yaw, _z0 = self._base_pin
-        return (x, y, yaw)
-
-    @property
-    def base_twist(self) -> tuple[float, float, float, float, float, float]:
-        """Last commanded base twist (``base_link`` frame); zeroed on non-twist actions."""
-        return self._last_body_twist
-
-    # ── Actions ──────────────────────────────────────────────────────────────
-
-    def send_action(self, action: Action) -> None:
-        """Route BODY_TWIST to the glide base; JOINT_POSITION to the PD joint path.
-
-        BODY_TWIST integrates ``(vx, vy, wz)`` into the pin over
-        ``body_twist_dt_s``, then steps physics with the joints holding their
-        last targets. JOINT_POSITION makes the action's last waypoint the hold
-        target and steps ``settle_steps`` with PD + pin every step.
-        """
-        if action.control_mode != ControlMode.BODY_TWIST.value:
-            self._last_body_twist = (0.0,) * 6
-            super().send_action(action)
-            return
-        self._require_connected("send_action")
-        vx, vy, wz = validate_planar_body_twist(action, type(self).__name__)
-        supported = self.description.capabilities.supported_control_modes
-        if action.control_mode not in supported:
-            raise ROSConfigError(
-                f"Action control_mode '{action.control_mode}' is not in "
-                f"supported_control_modes {supported} for robot '{self.description.name}'."
-            )
-        assert self._base_pin is not None
-        self._last_body_twist = (vx, vy, 0.0, 0.0, 0.0, wz)
-        self._base_pin = integrate_planar_twist(self._base_pin, vx, vy, wz, self._body_twist_dt_s)
-        self._step(self._settle_steps)
-        self._last_state_time = time.monotonic()
-        self._last_action_ns = time.monotonic_ns()
-        log.debug(
-            "hal.send_action",
-            robot=self.description.name,
-            control_mode=action.control_mode,
-            body_twist=self._last_body_twist,
-        )
-
-    def idle_step(self, wall_dt_s: float | None = None) -> bool:
-        """HOLD-step with the base pinned and the PD tracking the held pose.
-
-        The base ``idle_step`` only calls ``mj_step``; on torque actuators that
-        would replay the last torque open-loop, so this recomputes PD + pin on
-        every step. Returns ``False`` (no-op) once disconnected / e-stopped.
-        """
-        if not self._connected or self._data is None or self._model is None:
-            return False
-        self._last_body_twist = (0.0,) * 6
-        steps = 1
-        if wall_dt_s is not None and wall_dt_s > 0:
-            timestep = float(self._model.opt.timestep)
-            if timestep > 0:
-                steps = max(1, min(_IDLE_STEP_CAP, round(wall_dt_s / timestep)))
-        self._step(steps)
-        self._last_state_time = time.monotonic()
-        return True
-
-    # ── MujocoArmHAL hooks ───────────────────────────────────────────────────
-
-    def _validate_action(self, action: Action) -> None:
-        if action.control_mode == ControlMode.BODY_TWIST.value:
-            validate_planar_body_twist(action, type(self).__name__)
-            return
-        super()._validate_action(action)
-
-    def _apply_arm_targets(self, targets: list[float]) -> None:
-        """Make ``targets`` the PD hold target (``ctrl`` is torque, never a position)."""
-        self._hold_targets = dict(zip(self._joint_names, (float(t) for t in targets), strict=True))
-
-    def _per_step_update(self, targets: list[float]) -> None:
-        """Re-pin the base and recompute the PD torques before every ``mj_step``."""
-        del targets  # ``_apply_arm_targets`` already stored them as the hold target
-        self._pin_and_pd()
-
-    # ── Internals ────────────────────────────────────────────────────────────
-
-    def _capture_hold_targets(self) -> None:
-        assert self._data is not None
-        self._hold_targets = {
-            name: float(self._data.qpos[self._joint_qpos_addr[name]]) for name in self._joint_names
-        }
-
-    def _pin_and_pd(self) -> None:
-        assert self._data is not None and self._model is not None
-        assert self._base_pin is not None
-        write_base_pin(self._data, self._base_pin)
-        apply_software_pd(
-            self._model,
-            self._data,
-            self._hold_targets,
-            self._pd_gains,
-            self._actuator_index,
-            self._joint_qpos_addr,
-            self._joint_qvel_addr,
-        )
-
-    def _step(self, n: int) -> None:
-        import mujoco as mj  # noqa: PLC0415  # reason: optional sim-only dep
-
-        assert self._data is not None and self._model is not None
-        for _ in range(n):
-            self._pin_and_pd()
-            mj.mj_step(self._model, self._data)

@@ -525,39 +525,59 @@ class TestBodyTwistGlide:
 
     @pytest.fixture()
     def glide_hal(self) -> Iterator[G1MujocoHAL]:
-        hal = G1MujocoHAL(settle_steps=50)  # gravity enabled (default)
+        hal = G1MujocoHAL(settle_steps=50)  # gravity enabled (default); wall-paced
         hal.connect()
         yield hal
         hal.disconnect()
+
+    @staticmethod
+    def _period(hal: G1MujocoHAL) -> float:
+        """What one command advances: ``settle_steps`` physics steps (wall-paced here)."""
+        assert hal._model is not None
+        return hal._settle_steps * float(hal._model.opt.timestep)
 
     def test_forward_twist_advances_base(self, glide_hal: G1MujocoHAL) -> None:
         x0, y0, yaw0 = glide_hal.base_pose
         glide_hal.send_action(_twist_action(vx=0.5))
         x1, y1, yaw1 = glide_hal.base_pose
-        assert x1 - x0 == pytest.approx(0.5 * _G1_DT, rel=1e-6)  # one control period
+        # One command = one period of physics: the base moves at the commanded speed.
+        assert x1 - x0 == pytest.approx(0.5 * self._period(glide_hal), rel=1e-6)
         assert y1 == pytest.approx(y0, abs=1e-9)
         assert yaw1 == pytest.approx(yaw0, abs=1e-9)
 
     def test_default_glide_step_is_one_control_period(self) -> None:
         # The runner ticks at action_spec.control_freq_hz; a glide step of any
         # other length would move the base faster or slower than commanded.
-        assert G1MujocoHAL()._body_twist_dt_s == pytest.approx(_G1_DT)
-        assert G1MujocoHAL(body_twist_dt_s=0.1)._body_twist_dt_s == pytest.approx(0.1)
+        from openral_hal.mujoco_twin import _GlideTwin
+
+        default = G1MujocoHAL()
+        default.connect()
+        try:
+            assert isinstance(default._twin, _GlideTwin)
+            assert default._twin.body_twist_dt_s == pytest.approx(_G1_DT)
+            assert default.sim_dt_per_tick_s == pytest.approx(_G1_DT)
+        finally:
+            default.disconnect()
+        slow = G1MujocoHAL(body_twist_dt_s=0.1)
+        with pytest.raises(ROSConfigError, match="body_twist_dt_s"):
+            slow.connect()
+        assert slow.mujoco_handles() is None  # a refused connect leaves nothing
 
     def test_yaw_twist_rotates_base(self, glide_hal: G1MujocoHAL) -> None:
         _, _, yaw0 = glide_hal.base_pose
         glide_hal.send_action(_twist_action(wz=1.0))
         _, _, yaw1 = glide_hal.base_pose
-        assert yaw1 - yaw0 == pytest.approx(1.0 * _G1_DT, rel=1e-6)
+        assert yaw1 - yaw0 == pytest.approx(1.0 * self._period(glide_hal), rel=1e-6)
 
     def test_twist_follows_heading(self, glide_hal: G1MujocoHAL) -> None:
         # Rotate ~90° in place, then drive "forward" — motion must be +y world.
-        for _ in range(round(1.6 / _G1_DT)):  # 1.0 rad/s for 1.6 s ≈ 92°
+        period = self._period(glide_hal)
+        for _ in range(round(1.6 / period)):  # 1.0 rad/s for 1.6 s ≈ 92°
             glide_hal.send_action(_twist_action(wz=1.0))
         _, _, yaw = glide_hal.base_pose
         assert yaw == pytest.approx(math.pi / 2, abs=0.15)
         x0, y0, _ = glide_hal.base_pose
-        for _ in range(round(0.1 / _G1_DT)):  # 0.5 m/s for 0.1 s = 0.05 m
+        for _ in range(round(0.1 / period)):  # 0.5 m/s for 0.1 s = 0.05 m
             glide_hal.send_action(_twist_action(vx=0.5))
         x1, y1, _ = glide_hal.base_pose
         assert y1 > y0 + 0.04  # forward is now world +y
@@ -599,13 +619,14 @@ class TestBodyTwistWalking:
 
     def test_forward_command_walks_under_gravity(self) -> None:
         try:
-            hal = G1MujocoHAL(walking_enabled=True, body_twist_dt_s=2.0)
+            hal = G1MujocoHAL(walking_enabled=True)
             hal.connect()
         except ROSConfigError as exc:
             pytest.skip(f"G1 walking assets unavailable: {exc}")
         try:
             x0, y0, _ = hal.base_pose
-            hal.send_action(_twist_action(vx=0.5))
+            for _ in range(round(2.0 / _G1_DT)):  # 2 s of walking, one period per command
+                hal.send_action(_twist_action(vx=0.5))
             x1, y1, _ = hal.base_pose
             assert math.hypot(x1 - x0, y1 - y0) > 0.5
             assert hal._data is not None

@@ -61,13 +61,13 @@ def test_read_state_recovers_after_executor_stall_no_latch() -> None:
 
     # Simulate a 1.0 s executor stall (> the 0.5 s default limit) before the
     # next serviced read — exactly what camera-render starvation produces.
-    hal._last_state_time -= 1.0  # type: ignore[attr-defined]  # reason: white-box stall injection
+    hal._twin.last_state_time -= 1.0  # type: ignore[attr-defined]  # reason: white-box stall injection
 
     # Must return live state, not raise, and must leave the clock fresh so the
     # call after it is trivially within the limit (the anti-latch guarantee).
     recovered = hal.read_state()  # type: ignore[attr-defined]  # reason: MujocoArmHAL surface
     assert recovered.position == pytest.approx(first.position)
-    assert (time.monotonic() - hal._last_state_time) < 0.5  # type: ignore[attr-defined]
+    assert (time.monotonic() - hal._twin.last_state_time) < 0.5  # type: ignore[attr-defined]
 
     # The latch regression would raise on this third call; it must not.
     again = hal.read_state()  # type: ignore[attr-defined]  # reason: MujocoArmHAL surface
@@ -88,14 +88,14 @@ def test_idle_step_advances_state_and_is_recoverable() -> None:
     assert authority.origin is ClockOrigin.SIMULATION
     assert authority.clock_id == "mujoco"
 
-    hal._last_state_time -= 1.0  # type: ignore[attr-defined]  # reason: prove idle_step refreshes it
+    hal._twin.last_state_time -= 1.0  # type: ignore[attr-defined]  # reason: prove idle_step refreshes it
     assert hal.idle_step() is True  # type: ignore[attr-defined]  # reason: MujocoArmHAL surface
     t1 = hal.sim_time_ns()  # type: ignore[attr-defined]  # reason: MujocoArmHAL clock seam
     assert t1 is not None
     assert t1 > t0
     # idle_step advanced the sim → clock fresh, so the publisher thread's
     # snapshot read is never stale while idle.
-    assert (time.monotonic() - hal._last_state_time) < 0.5  # type: ignore[attr-defined]
+    assert (time.monotonic() - hal._twin.last_state_time) < 0.5  # type: ignore[attr-defined]
 
 
 def test_idle_step_returns_false_after_estop() -> None:

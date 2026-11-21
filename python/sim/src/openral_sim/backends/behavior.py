@@ -354,7 +354,8 @@ class _BehaviorSidecar:
         if base_pose_raw is not None:
             base_pose = np.asarray(base_pose_raw, dtype=np.float32).reshape(-1)
             if base_pose.shape[0] >= 3:  # noqa: PLR2004  # reason: x/y/yaw triple
-                # SimAttachedHAL.base_pose reads this for its non-MuJoCo /odom path.
+                # SimAttachedHAL.base_pose serves this on a manifest that declares a
+                # planar base (base_joints); r1pro declares none, so no /odom reads it.
                 obs["base_pose"] = base_pose[:3]
         return obs
 

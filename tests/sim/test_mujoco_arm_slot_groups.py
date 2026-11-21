@@ -207,12 +207,42 @@ def test_estop_drops_a_half_staged_group(case: _Case) -> None:
     with pytest.raises(ROSEStopRequested):
         hal.estop()
     hal.connect()
-    # The survivors of tick 1 must never be committed after the stop: tick 2
-    # starts clean and completes on its own slots.
+    # The latch survives the reconnect (#683): only reset_estop re-arms the twin,
+    # and nothing is committed while it holds.
+    assert hal.estop_latched is True
     for slot in _group(hal, case, tick=2):
         hal.send_action(slot)
-    assert hal.last_committed_tick == 2
+    assert hal.last_committed_tick == 0
+    hal.reset_estop()
+    # The survivors of tick 1 must never be committed after the stop: tick 3
+    # starts clean and completes on its own slots.
+    for slot in _group(hal, case, tick=3):
+        hal.send_action(slot)
+    assert hal.last_committed_tick == 3
     hal.disconnect()
+
+
+@pytest.mark.parametrize("case", _CASES)
+def test_idle_never_steps_inside_a_half_staged_group(case: _Case) -> None:
+    """The idle stepper holds off while a tick's slots are in flight (#683).
+
+    The twin stages in the shell's ``SlotGroupStager``, so the shell's guard sees the
+    half-staged tick: no HOLD step is interleaved between its slots.
+    """
+    hal = case.make()
+    hal.connect()
+    try:
+        slots = _group(hal, case, tick=1)
+        hal.send_action(slots[0])
+        before = hal.sim_time_ns()
+        assert hal.idle_step(0.05) is False
+        assert hal.sim_time_ns() == before
+        for slot in slots[1:]:
+            hal.send_action(slot)
+        assert hal.last_committed_tick == 1
+        assert hal.idle_step(0.05) is True
+    finally:
+        hal.disconnect()
 
 
 @pytest.mark.parametrize("case", _CASES)
@@ -272,6 +302,8 @@ def test_estop_keeps_the_watermark_so_a_pre_stop_tick_is_still_refused(case: _Ca
             hal.estop()
         hal.connect()
         assert hal.last_committed_tick == 3
+        assert hal.estop_latched is True  # survives the reconnect (#683)
+        hal.reset_estop()
         with pytest.raises(ROSRuntimeError, match="stale slot group"):
             hal.send_action(_group(hal, case, tick=3)[0])
         # Disconnect clears the watermark: numbering restarts.

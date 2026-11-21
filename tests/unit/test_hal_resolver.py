@@ -86,8 +86,8 @@ class TestSimMode:
         control period per action at connect, so the pin stays ``None`` here.
         """
         hal = build_hal(_load("anvil_openarm_v2"), mode="sim")
-        assert hal._settle_steps_pinned is None  # type: ignore[attr-defined] # reason: sim-only introspection
-        assert hal._gravity_enabled is False  # type: ignore[attr-defined] # reason: sim-only introspection
+        assert hal._twin.settle_steps_pinned is None  # type: ignore[attr-defined] # reason: sim-only introspection
+        assert hal._twin.gravity_enabled is False  # type: ignore[attr-defined] # reason: sim-only introspection
 
 
 class TestRealMode:

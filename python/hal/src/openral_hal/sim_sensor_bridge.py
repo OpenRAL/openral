@@ -1,7 +1,8 @@
 # python/hal/src/openral_hal/sim_sensor_bridge.py
 """Shared sim-sensor + viewer bridge for scene-attached HAL lifecycle nodes.
 
-Republishes whatever a ``SimAttachedHAL`` exposes — RGB camera frames
+Republishes whatever a sim HAL (``SimAttachedHAL``: a scene-attached
+``SimAttachedHAL`` or a MuJoCo twin) exposes — RGB camera frames
 (``read_images``) on ``/openral/cameras/<n>/image`` and an optional live
 ``mujoco.viewer`` — for any manifest-driven node, so franka/ur5e/... reach
 deploy-sim scene+camera+viewer parity without per-package wiring. Phase 2
@@ -21,7 +22,9 @@ from __future__ import annotations
 import contextlib
 import json
 import math
+import os
 import struct
+import sys
 import time
 from collections import deque
 from typing import TYPE_CHECKING, Any
@@ -395,10 +398,10 @@ def frame_stamp_ns(
 def _frame_for_camera(images: dict[str, Any], obs_key: str, name: str) -> Any:
     """Resolve a camera's frame from a ``read_images()`` dict, or ``None``.
 
-    The two sim HALs key their frame dicts by different conventions:
-    ``SimAttachedHAL`` (scene-attached LIBERO /
+    The sim backends behind ``SimAttachedHAL`` key their frame dicts by
+    different conventions: a scene-attached rollout (LIBERO /
     robocasa) keys by the VLA slot (``obs_key`` — ``camera1`` / ``camera2``),
-    while ``MujocoArmHAL`` (bare or composed
+    while the ``MujocoTwinRollout`` of a ``MujocoArmHAL`` (bare or composed
     digital twin) keys by the sensor ``name``. Try the slot first, then fall
     back to the name so both conventions resolve.
 
@@ -3591,7 +3594,7 @@ class SimSensorBridge:
         """Create the sim-only idle-step timer, gated on a callable ``idle_step``.
 
         Gate (the PRIMARY safety gate): the HAL exposes a callable ``idle_step``,
-        defined ONLY on ``SimAttachedHAL``. A real
+        defined ONLY on the sim HAL shell (``SimAttachedHAL``). A real
         HAL never defines it, so the timer is never created against real
         hardware. This is the real guarantee, not "zero is harmless" (a zero
         vector is a HOLD in sim but "drive to 0 rad" — violent — on a real
@@ -3634,9 +3637,10 @@ class SimSensorBridge:
     def _idle_step_tick(self) -> None:
         """Advance the sim one HOLD tick when no recent real action has arrived.
 
-        Yields to active skills via ``should_idle_step``; the camera-publish
-        timer then republishes the freshened ``_last_obs`` (publish path
-        unchanged).
+        Yields to active skills via ``should_idle_step``, and holds while the node's
+        e-stop latch is set (sim physics frozen until ``/openral/estop_cleared``); the
+        camera-publish timer then republishes the freshened ``_last_obs`` (publish
+        path unchanged).
 
         Containment: ``idle_step`` fires autonomously on this timer (with
         ``last_action_ns == 0`` an idle scene starts stepping immediately). If
@@ -3649,6 +3653,13 @@ class SimSensorBridge:
         # Already disabled (e.g. by a prior error) — a callback queued before
         # the cancel must be a no-op, never re-trigger the disabled path.
         if self._idle_timer is None:
+            return
+        # The node's /openral/estop latch freezes sim physics until /openral/estop_cleared:
+        # the node drops every command while latched, and without this an idle tick kept
+        # stepping physics — the twin tracking its last ctrl, the clock running on. The
+        # HAL is not torn down (reads and cameras keep serving the frozen state); a real
+        # HAL never gets this timer. Same latch read as ``MobileBaseBridge``.
+        if getattr(self._node, "_estopped", False):
             return
         idle_step = getattr(self._hal, "idle_step", None)
         if not callable(idle_step):
@@ -3934,8 +3945,8 @@ class SimSensorBridge:
         cannot verify — including one it has *never heard about*: a world state
         whose ``attachment_stamp_ns`` is still 0 is treated as unverifiable and
         every JOINT chunk is dropped as ``attached_overflow``. A HAL without the
-        attachment API (``update_attached_objects`` / ``read_attached_objects``,
-        i.e. every ``MujocoArmHAL`` twin) has no attach mechanics at all, so
+        attachment API (``update_attached_objects`` / ``read_attached_objects``;
+        every sim HAL has it since #683) has no attach mechanics at all, so
         "nothing attached, fresh" is the exact truth for it, and saying so is
         what lets the kernel certify its motion. Seen on the OpenArm twin,
         lab Orin, 2026-09-22: zero publishers on ``/openral/attachment_state`` and
@@ -4331,6 +4342,32 @@ class SimSensorBridge:
         self._node.get_logger().info(
             f"automatic sim attachment revision {self._attachment_revision}: {object_ids}"
         )
+        self._publish_attachment_message()
+
+    def reset_attachments(self) -> None:
+        """Forget the previous episode's attachments after the HAL's ``reset_episode``.
+
+        The reset put every object back at its spawn pose, so nothing is held: the
+        MuJoCo evidence tracker restarts from no contact, and when this bridge owns
+        ``/openral/attachment_state`` it publishes an empty revision, staged as any
+        detach is (it masks nothing new, so no barrier is held). Under another
+        authority (the vision leg) that authority is reset by the caller.
+        """
+        handles = getattr(self._hal, "mujoco_handles", lambda: None)()
+        if self._attachment_tracker is not None and handles is not None:
+            from openral_hal._sim_attachment_evidence import SimAttachmentEvidenceTracker
+
+            self._attachment_tracker = SimAttachmentEvidenceTracker(
+                handles[0], self._description, stable_ticks=1
+            )
+        update = getattr(self._hal, "update_attached_objects", None)
+        read = getattr(self._hal, "read_attached_objects", None)
+        if self._attachment_pub is None or not callable(update) or not callable(read):
+            return
+        if self._attachment_desired:
+            self._stage_attachment_objects(
+                [], revision=self._attachment_revision + 1, update=update, read=read
+            )
         self._publish_attachment_message()
 
     def _publish_attachment_message(self) -> None:
@@ -5822,6 +5859,17 @@ class SimSensorBridge:
         if not self._viewer_enabled or handles is None:
             return
         model, data = handles
+        if sys.platform.startswith("linux") and not (
+            os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+        ):
+            # Checked up front: with no display, MuJoCo's GLFW init fails inside C
+            # (``mju_error``) and ends the whole process before the ``except`` below
+            # can turn it into a warning.
+            self._node.get_logger().warning(
+                "SimSensorBridge: no DISPLAY / WAYLAND_DISPLAY; viewer skipped, "
+                "continuing headless."
+            )
+            return
         try:
             import mujoco.viewer  # reason: optional dep — robosuite/mujoco ships it
 

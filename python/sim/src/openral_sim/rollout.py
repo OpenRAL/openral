@@ -310,6 +310,62 @@ class SimRollout(Protocol):
             skips both the MuJoCo viewer path AND the per-step
             ``viewer_render`` pump.
 
+        The sim HAL shell, ``openral_hal.sim_attached.SimAttachedHAL`` (which
+        ``SimAttachedHAL`` and the bare twin's ``MujocoArmHAL`` both are), reads
+        these hooks:
+
+        ``read_joint_state(self) -> openral_core.JointState``
+            — a backend that reads its own joint state (manifest joint
+            addresses, grippers in their public units) returns it here;
+            ``SimAttachedHAL.read_state`` then serves it instead of walking
+            the MJCF joints by name or reading ``obs["joint_positions"]``.
+
+        ``read_images(self) -> dict[str, NDArray[np.uint8]]``
+            — a backend that renders on demand returns the current state's
+            ``{camera: HxWx3 uint8}`` frames here; ``SimAttachedHAL.read_images``
+            serves them instead of the cached ``obs["images"]``. Such frames
+            show the current step, so the backend reports no
+            ``obs["image_time_ns"]`` (``read_image_times`` stays empty).
+
+        ``idle_step(self, wall_dt_s: float | None) -> bool``
+            — a backend that can advance a wall-time slice of physics without
+            a new command (``ctrl`` untouched) does it here;
+            ``SimAttachedHAL.idle_step`` calls it instead of stepping
+            ``idle_action`` and runs its usual post-step bookkeeping when it
+            returns ``True``.
+
+        ``step_action_group(self, actions: list[Action]) -> StepResult``
+            — a backend that takes typed commands rather than a packed vector.
+            Which commands reach it is the backend's explicit declaration, read
+            once when the HAL is built: ``action_group_size`` (``int`` > 0) —
+            every run of that many ungrouped slots, as one group (BEHAVIOR);
+            ``steps_every_command_as_group = True`` (class attribute) — every
+            command, an ungrouped action as a group of one (the MuJoCo twin);
+            neither — multi-slot groups only, an ungrouped action is refused.
+            A typed ``ROSError`` it raises propagates unchanged. An
+            ``info["applied_action"]`` in the result is recorded as the HAL's
+            ``last_applied_action`` for a slot group (an ungrouped action is
+            its own record).
+
+        ``read_base_pose(self) -> tuple[float, float, float]`` /
+        ``read_base_twist(self) -> tuple[float, ...]``
+            — a backend that knows its own planar base pose / held velocity
+            command (the twins' pinned or free base, the OpenAMRobot's planar
+            joints, the G1 GR00T WBC command) reports it;
+            ``SimAttachedHAL.base_pose`` / ``base_twist`` serve it.
+
+        ``clock_id: str`` / ``physics_dt_s: float | None`` /
+        ``time_base_fields: dict[str, str | float | int]``
+            — the clock id ``SimAttachedHAL.clock_authority`` reports (else the
+            backend's class name), the physics timestep it reports while the
+            backend declares no ``sim_dt_per_tick_s`` (a wall-paced twin), and
+            extra fields of the one ``sim.time_base`` line per connect.
+
+        All of the above, ``steps_every_command_as_group`` included, are
+        implemented by ``openral_hal.mujoco_twin.MujocoTwinRollout`` (the bare
+        MuJoCo twin behind ``MujocoArmHAL``) and its per-robot subclasses;
+        ``read_base_twist`` by the G1 GR00T WBC twin only.
+
         None of the above is part of the Protocol, so adapters need not
         stub a method they cannot honour; callers MUST use
         ``getattr(env, "<name>", None)`` and treat both a missing attribute
