@@ -1141,6 +1141,12 @@ def apply_finger_friction(
     displaced: list[str] = []
     for link in sorted(links):
         link_prim = stage.GetPrimAtPath(link)
+        # Each robot's finger colliders are its own, not instance proxies of a prototype:
+        # with two robots of one model in the world, the second robot's left fingers
+        # shared the first robot's collider prototypes and touched nothing (openral-pro#99,
+        # q5090 2026-11-21: zero contacts over a 60 s restock, the policy closing through
+        # the carton; built first, the same robot gripped it).
+        _deinstance(link_prim)
         pads.append(link_prim)
         pads.extend(p for p in Usd.PrimRange(link_prim) if p.IsInstance())
         displaced.extend(
