@@ -13468,6 +13468,11 @@ class DeployRuntime(BaseModel):
     identity through contact, a slip or a drop (``ObjectTracker.apply_instance_cells``). Needs
     ``object_tracking`` not ``off`` (the launch refuses it otherwise). Backward-compatible
     addition."""
+    release_rskill_after_goal: bool = False
+    """Unload the skill runner's policy from the GPU when each goal ends, instead of keeping
+    it resident for the next goal. For several robots sharing one GPU (openral-pro#99): a
+    robot's idle policy must not starve another robot's. The next goal pays the cold load.
+    Backward-compatible addition."""
     grounding_wait_s: float | None = Field(default=None, gt=0.0)
     """How long (source time) a goal waits for every query to reach CONFIRMED before the
     tracker logs ``grounding_incomplete``. Required whenever ``object_tracking`` is not

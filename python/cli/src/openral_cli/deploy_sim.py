@@ -2178,6 +2178,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
                 f"grounding_required:={str(rt.grounding_required).lower()}",
             ]
         )
+    if rt is not None and rt.release_rskill_after_goal:
+        argv_template.append("release_rskill_after_goal:=true")
     # EXPERIMENT (pro#51): forwarded whatever the tracking mode, so the launch refuses it with
     # tracking off instead of the flag being dropped silently.
     if rt is not None and rt.instance_cells:

@@ -4251,6 +4251,10 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 # deadline, leaving the policy its first chunk (a 60 s cap ended the wait at
                 # 8.4 s of a 7x-slow sim, before the target grounded).
                 "grounding_wait_wall_s": _FIRST_CHUNK_DEADLINE_S - _FIRST_CHUNK_MARGIN_S,
+                "release_rskill_after_goal": LaunchConfiguration("release_rskill_after_goal")
+                .perform(context)
+                .lower()
+                == "true",
                 "grounding_required": LaunchConfiguration("grounding_required")
                 .perform(context)
                 .lower()
@@ -5974,6 +5978,11 @@ def generate_launch_description() -> LaunchDescription:
                 "Safety-WG review; on also needs exemption_provider (ADR-0121). Also passed "
                 "to the skill runner and the reasoner."
             ),
+        ),
+        DeclareLaunchArgument(
+            "release_rskill_after_goal",
+            default_value="false",
+            description="DeployRuntime.release_rskill_after_goal: unload the policy after a goal.",
         ),
         DeclareLaunchArgument(
             "grounding_wait_s",

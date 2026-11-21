@@ -18699,6 +18699,11 @@
               "title": "Instance Cells",
               "type": "boolean"
             },
+            "release_rskill_after_goal": {
+              "default": false,
+              "title": "Release Rskill After Goal",
+              "type": "boolean"
+            },
             "grounding_wait_s": {
               "anyOf": [
                 {
@@ -21564,6 +21569,11 @@
             "instance_cells": {
               "default": false,
               "title": "Instance Cells",
+              "type": "boolean"
+            },
+            "release_rskill_after_goal": {
+              "default": false,
+              "title": "Release Rskill After Goal",
               "type": "boolean"
             },
             "grounding_wait_s": {
@@ -24570,6 +24580,11 @@
             "instance_cells": {
               "default": false,
               "title": "Instance Cells",
+              "type": "boolean"
+            },
+            "release_rskill_after_goal": {
+              "default": false,
+              "title": "Release Rskill After Goal",
               "type": "boolean"
             },
             "grounding_wait_s": {
