@@ -13471,7 +13471,10 @@ class DeployRuntime(BaseModel):
     release_rskill_after_goal: bool = False
     """Unload the skill runner's policy from the GPU when each goal ends, instead of keeping
     it resident for the next goal. For several robots sharing one GPU (openral-pro#99): a
-    robot's idle policy must not starve another robot's. The next goal pays the cold load.
+    robot's idle policy must not starve another robot's. The next goal pays the cold load
+    inside the deadman watchdog's first-chunk window (120 s in the deploy launch; goal to
+    first chunk measured 26-28 s for the restock pi0.5 on an RTX 5090). A policy whose cold
+    load exceeds that window is e-stopped at its next goal: leave this off for it.
     Backward-compatible addition."""
     grounding_wait_s: float | None = Field(default=None, gt=0.0)
     """How long (source time) a goal waits for every query to reach CONFIRMED before the
@@ -13642,7 +13645,8 @@ class SceneRobot(BaseModel):
         name: Names the robot in the scene, its graph and its fleet entry: lowercase letters
             and digits, a letter first.
         robot_id: Its manifest (``robots/<robot_id>/robot.yaml``); several entries may share one.
-        base_pose: Where it starts, in the scene's shared ``world`` frame. Its map starts here.
+        base_pose: Where it starts, in the scene's shared ``world`` frame. Its map starts here,
+            so in a scene with ``nav_goals`` it is on the ground plane (z 0, yaw only).
         robot_unit: As ``DeployScene.robot_unit``, for this robot.
 
     Example:
@@ -13897,6 +13901,19 @@ class DeployScene(BaseModel):
             raise ValueError(
                 f"robots: nav_goals and place_zones are in the shared {SHARED_SCENE_FRAME!r} "
                 f"frame in a scene with several robots; not: {off}."
+            )
+        # Each robot's map starts at its base_pose: a raised or tilted start would put every
+        # goal re-expressed in that map off the ground plane (a goal is planar).
+        tilted = [
+            r.name
+            for r in self.robots
+            if max(abs(r.base_pose.xyz[2]), *(abs(v) for v in r.base_pose.quat_xyzw[:2]))
+            > _PLANAR_TOL
+        ]
+        if self.nav_goals and tilted:
+            raise ValueError(
+                f"robots: with nav_goals, each robot starts on the ground plane (base_pose "
+                f"z = 0, yaw only); not: {tilted}."
             )
 
     @model_validator(mode="before")

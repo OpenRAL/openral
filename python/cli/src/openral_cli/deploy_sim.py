@@ -1235,6 +1235,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     robot_override: str | None,
     dashboard_port: int,
     reset_to_pose_service: str | None,
+    dry_run: bool = False,
     approach_skill_id: str | None = None,
     dataset_out: str | None = None,
     dataset_repo_id: str | None = None,
@@ -1282,7 +1283,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     ``rskill_auto_install`` installs the robot's openral.com rSkill list right after
     the account settings apply (``openral_cli.rskill_install.auto_install_rskills``);
     ``deploy run`` / ``deploy sim`` pass it unless ``--no-rskill-install`` or
-    ``--dry-run``.
+    ``--dry-run``. ``dry_run`` matters only for a scene with several robots, which runs
+    from here (``deploy_robots.run_scene_robots``): it prints each robot's command line
+    instead of starting them.
     """
     from openral_core import (  # reason: defer schema import
         ROBOT_UNIT_ENV,
@@ -1331,7 +1334,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         )
 
         assert config is not None  # reason: deploy_scene came from it
-        raise typer.Exit(code=run_scene_robots(deploy_scene, config, sys.argv[1:]))
+        raise typer.Exit(code=run_scene_robots(deploy_scene, config, sys.argv[1:], dry_run=dry_run))
     scene_robot_id = deploy_scene.robot_id if deploy_scene is not None else None
     robot_id = (
         _load_scene_robot_id(config, robot_override, sim=hal_mode == "sim")
@@ -4433,6 +4436,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
             foxglove_port=foxglove_port,
             initial_task_prompt=initial_task,
             rskill_auto_install=rskill_install and not dry_run,
+            dry_run=dry_run,
         )
     except ROSConfigError as exc:
         _console.print(f"[red]config error:[/red] {exc}")

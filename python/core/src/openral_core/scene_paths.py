@@ -13,12 +13,15 @@ import os
 from pathlib import Path
 from typing import TypeVar, cast
 
-__all__ = ["SCENE_ROBOT_ENV", "anchor_scene_paths"]
+__all__ = ["SCENE_ROBOT_ENV", "SCENE_ROBOT_MAP_FRAME_ENV", "anchor_scene_paths"]
 
 #: Set by ``openral deploy sim`` in each robot graph it starts for a scene with several
 #: ``robots`` (openral-pro#99): every loader then reads that robot's own one-robot scene
 #: (``geometry.raw_scene_for_robot``), so the graph needs no per-robot scene file.
 SCENE_ROBOT_ENV = "OPENRAL_SCENE_ROBOT"
+#: Beside it: that robot's ``RobotDescription.map_frame``, the frame its scene's nav goals and
+#: place zones are re-expressed in (``"map"`` when unset).
+SCENE_ROBOT_MAP_FRAME_ENV = "OPENRAL_SCENE_ROBOT_MAP_FRAME"
 
 _T = TypeVar("_T")
 
@@ -82,5 +85,7 @@ def anchor_scene_paths(raw: _T, scene_dir: Path) -> _T:
             raw_scene_for_robot,
         )
 
-        out = raw_scene_for_robot(out, robot)
+        out = raw_scene_for_robot(
+            out, robot, map_frame=os.environ.get(SCENE_ROBOT_MAP_FRAME_ENV) or "map"
+        )
     return cast("_T", out)

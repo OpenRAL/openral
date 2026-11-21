@@ -14,6 +14,7 @@ import contextlib
 import ctypes
 import json
 import os
+import shlex
 import signal
 import socket
 import subprocess
@@ -23,28 +24,40 @@ import time
 from collections.abc import Iterable
 from pathlib import Path
 
-from openral_core import DeployScene
+from openral_core import DeployScene, RobotDescription
 from openral_core.exceptions import ROSConfigError
-from openral_core.scene_paths import SCENE_ROBOT_ENV
+from openral_core.scene_paths import SCENE_ROBOT_ENV, SCENE_ROBOT_MAP_FRAME_ENV
+from openral_sim.backends.isaac_sim import shared_launch_id
+from openral_sim.policies.robots import resolve_robot_manifest
 from rich.console import Console
 
-__all__ = ["robot_argv", "robot_slots", "run_scene_robots", "shared_sidecar_argv"]
+from openral_cli._dds_scope import RESERVED_DOMAINS
+from openral_cli.deploy_sim import _repo_root_from
+
+__all__ = [
+    "robot_argv",
+    "robot_memory_dirs",
+    "robot_slots",
+    "run_scene_robots",
+    "shared_sidecar_argv",
+    "wait_for_entries",
+]
 
 _console = Console()
 
-#: Each robot's graph: ROS domain ``_DOMAIN_BASE + _DOMAIN_STEP * i`` (below the per-PID
-#: test domains 50-101 and clear of 42, ``_dds_scope.RESERVED_DOMAINS``; a step of 4 so a
-#: wider discovery range never reaches a neighbour), dashboard and Foxglove ports.
-_DOMAIN_BASE, _DOMAIN_STEP = 30, 4
+#: Each robot's graph's ROS domain, in scene order: every 4th from 30 below the per-PID test
+#: domains 50-101, skipping ``_dds_scope.RESERVED_DOMAINS`` (42); a step of 4 so a wider
+#: discovery range never reaches a neighbour. Its dashboard and Foxglove ports count up.
+_DOMAINS = tuple(d for d in range(30, 50, 4) if d not in RESERVED_DOMAINS)
 _DASHBOARD_BASE, _FOXGLOVE_BASE = 4330, 8830
-#: ponytail: five robots fit below domain 50; more need another domain plan.
-_MAX_ROBOTS = 5
+#: ponytail: four robots fit below domain 50; more need another domain plan.
+_MAX_ROBOTS = len(_DOMAINS)
 #: How long every robot's graph gets to leave its sidecar entry (its HAL's spec build).
 _ENTRY_TIMEOUT_S = 600.0
 #: How long a robot's ``deploy sim``, then the sidecar, get to end before they are killed.
 _CHILD_GRACE_S = 30.0
 #: Options this command sets per robot: dropped from the operator's command line.
-_PER_ROBOT_OPTIONS = ("--config", "-c", "--dashboard-port", "--foxglove-port")
+_PER_ROBOT_OPTIONS = ("--config", "-c", "--dashboard-port", "--foxglove-port", "--memory-dir")
 
 
 def robot_slots(scene: DeployScene) -> list[dict[str, int | str]]:
@@ -71,7 +84,7 @@ def robot_slots(scene: DeployScene) -> list[dict[str, int | str]]:
     return [
         {
             "name": r.name,
-            "domain": _DOMAIN_BASE + _DOMAIN_STEP * i,
+            "domain": _DOMAINS[i],
             "dashboard_port": _DASHBOARD_BASE + i,
             "foxglove_port": _FOXGLOVE_BASE + i,
         }
@@ -79,10 +92,13 @@ def robot_slots(scene: DeployScene) -> list[dict[str, int | str]]:
     ]
 
 
-def robot_argv(argv: list[str], config: Path, slot: dict[str, int | str]) -> list[str]:
+def robot_argv(
+    argv: list[str], config: Path, slot: dict[str, int | str], memory_dir: Path | None = None
+) -> list[str]:
     """One robot's ``openral deploy sim`` command line: the operator's, with its own ports.
 
     ``argv`` is the operator's arguments after ``openral`` (``deploy sim --config ...``).
+    ``memory_dir``: the robot's own memory bundle (``<--memory-dir>/<name>``), when one is set.
 
     Example:
         >>> robot_argv(
@@ -116,14 +132,17 @@ def robot_argv(argv: list[str], config: Path, slot: dict[str, int | str]) -> lis
         str(slot["dashboard_port"]),
         "--foxglove-port",
         str(slot["foxglove_port"]),
+        *(["--memory-dir", str(memory_dir)] if memory_dir is not None else []),
     ]
 
 
-def shared_sidecar_argv(entries: list[dict[str, object]], scene_id: str) -> list[str]:
+def shared_sidecar_argv(entries: list[dict[str, object]], launch_id: str) -> list[str]:
     """The one sidecar's command line from every robot's entry (the first robot's launch).
 
     Each entry's ``launch_argv`` is its own one-robot launch; the first one's, without its
     ``--robot``, plus ``--objects-json`` and every robot in ``--robots``, is the shared one.
+    ``launch_id`` is this run's (``isaac_sim.shared_launch_id``): each graph refuses a sidecar
+    that does not echo it in ``ping``.
 
     Example:
         >>> e = {
@@ -146,7 +165,7 @@ def shared_sidecar_argv(entries: list[dict[str, object]], scene_id: str) -> list
         {"name": e["name"], "robot_spec": e["robot_spec"], "spawn_pose": e["spawn_pose"]}
         for e in entries
     ]
-    return [*argv, "--robots", json.dumps(robots), "--launch-id", f"shared-{scene_id}"]
+    return [*argv, "--robots", json.dumps(robots), "--launch-id", launch_id]
 
 
 def _free_port() -> int:
@@ -194,16 +213,92 @@ def _spawn(argv: list[str], env: dict[str, str], log_path: Path) -> subprocess.P
         )
 
 
-def run_scene_robots(scene: DeployScene, config: Path, argv: list[str]) -> int:
+def _option_value(argv: list[str], option: str) -> str | None:
+    """The value of ``option`` on a command line (``--opt v`` or ``--opt=v``), else ``None``.
+
+    Example:
+        >>> _option_value(["deploy", "sim", "--memory-dir=/m"], "--memory-dir")
+        '/m'
+        >>> _option_value(["--memory-dir", "/m", "-c", "s.yaml"], "-c")
+        's.yaml'
+    """
+    for i, arg in enumerate(argv):
+        if arg == option and i + 1 < len(argv):
+            return argv[i + 1]
+        if arg.startswith(f"{option}="):
+            return arg.split("=", 1)[1]
+    return None
+
+
+def robot_memory_dirs(root: str | None, names: list[str]) -> dict[str, Path]:
+    """Each robot's own memory bundle, ``<root>/<name>``; none without a ``root``.
+
+    One bundle per robot: its ``object_memory.json`` holds poses in its own map, and each
+    graph rewrites its whole file, so robots sharing one would restore and overwrite each
+    other's objects. The directories are created when missing.
+
+    Raises:
+        ROSConfigError: ``root`` is not an existing directory.
+
+    Example:
+        >>> import tempfile
+        >>> root = tempfile.mkdtemp()
+        >>> {n: p.name for n, p in robot_memory_dirs(root, ["a", "b"]).items()}
+        {'a': 'a', 'b': 'b'}
+        >>> robot_memory_dirs(None, ["a"])
+        {}
+    """
+    if not root:
+        return {}
+    base = Path(root).expanduser()
+    if not base.is_dir():
+        raise ROSConfigError(
+            f"--memory-dir {root!r} is not an existing directory: a scene with several robots "
+            "keeps each robot's bundle in <memory-dir>/<robot name>."
+        )
+    dirs = {name: base / name for name in names}
+    for d in dirs.values():
+        d.mkdir(exist_ok=True)
+    return dirs
+
+
+def _map_frames(scene: DeployScene) -> dict[str, str]:
+    """Each robot's ``RobotDescription.map_frame``: the frame its one-robot scene's goals are in."""
+    root = _repo_root_from(Path(__file__))
+    return {
+        r.name: RobotDescription.from_yaml(
+            str(resolve_robot_manifest(r.robot_id, repo_root=root))
+        ).map_frame
+        for r in scene.robots
+    }
+
+
+def run_scene_robots(
+    scene: DeployScene, config: Path, argv: list[str], *, dry_run: bool = False
+) -> int:
     """Run every robot of ``scene`` in one Isaac world: a graph each, one sidecar.
 
     Returns the exit code: 0 after Ctrl-C, 1 when a robot's graph or the sidecar ended on
     its own (one robot gone ends the world: the others would command a world it left).
+    ``dry_run`` prints each robot's command line and environment and starts nothing.
 
     Raises:
         ROSConfigError: A robot never left its sidecar entry, or too many robots.
     """
     slots = robot_slots(scene)
+    names = [str(s["name"]) for s in slots]
+    map_frames = _map_frames(scene)
+    memory_root = _option_value(argv, "--memory-dir") or scene.memory_dir
+    if dry_run:
+        for slot in slots:
+            name = str(slot["name"])
+            memory = Path(memory_root).expanduser() / name if memory_root else None
+            shown = f"ROS_DOMAIN_ID={slot['domain']} {SCENE_ROBOT_ENV}={name} "
+            shown += f"{SCENE_ROBOT_MAP_FRAME_ENV}={map_frames[name]} "
+            shown += shlex.join(robot_argv(argv, config, slot, memory))
+            _console.print(f"  robot {name}: {shown}", soft_wrap=True, markup=False)
+        return 0
+    memory_dirs = robot_memory_dirs(memory_root, names)
     run_dir = Path(tempfile.mkdtemp(prefix=f"openral-robots-{scene.scene.id[:24]}-"))
     port = _free_port()
     _console.print(f"[bold]{scene.scene.id}[/bold]: {len(slots)} robots, logs in {run_dir}")
@@ -221,6 +316,7 @@ def run_scene_robots(scene: DeployScene, config: Path, argv: list[str]) -> int:
                 **os.environ,
                 "ROS_DOMAIN_ID": str(slot["domain"]),
                 SCENE_ROBOT_ENV: name,
+                SCENE_ROBOT_MAP_FRAME_ENV: map_frames[name],
                 "OPENRAL_ISAAC_SHARED_DIR": str(run_dir),
                 "OPENRAL_ISAAC_SHARED_PORT": str(port),
                 # Each robot is its own openral.com robot (`openral_core.robot_ui.enrolment_path`).
@@ -229,13 +325,17 @@ def run_scene_robots(scene: DeployScene, config: Path, argv: list[str]) -> int:
                 ),
                 "PYTHONUNBUFFERED": "1",
             }
-            children[name] = _spawn(robot_argv(argv, config, slot), env, run_dir / f"{name}.log")
+            children[name] = _spawn(
+                robot_argv(argv, config, slot, memory_dirs.get(name)),
+                env,
+                run_dir / f"{name}.log",
+            )
             _console.print(
                 f"  robot [bold]{name}[/bold]: ROS_DOMAIN_ID={slot['domain']} dashboard "
                 f"http://127.0.0.1:{slot['dashboard_port']}/ log {run_dir / f'{name}.log'}"
             )
-        entries = _wait_for_entries(run_dir, [str(s["name"]) for s in slots], children)
-        sidecar_argv = shared_sidecar_argv(entries, scene.scene.id)
+        entries = wait_for_entries(run_dir, names, children)
+        sidecar_argv = shared_sidecar_argv(entries, shared_launch_id(run_dir))
         children["(sidecar)"] = _spawn(sidecar_argv, dict(os.environ), run_dir / "sidecar.log")
         _console.print(
             f"  Isaac sidecar for every robot: port {port}, log {run_dir / 'sidecar.log'}"
@@ -257,18 +357,26 @@ def run_scene_robots(scene: DeployScene, config: Path, argv: list[str]) -> int:
     return code
 
 
-def _wait_for_entries(
-    run_dir: Path, names: list[str], children: dict[str, subprocess.Popen[bytes]]
+def wait_for_entries(
+    run_dir: Path,
+    names: list[str],
+    children: dict[str, subprocess.Popen[bytes]],
+    timeout_s: float = _ENTRY_TIMEOUT_S,
 ) -> list[dict[str, object]]:
-    """Every robot's sidecar entry, in scene order, once its HAL has written it."""
-    deadline = time.monotonic() + _ENTRY_TIMEOUT_S
+    """Every robot's sidecar entry, in scene order, once its HAL has written it.
+
+    Raises:
+        ROSConfigError: Any robot's graph ended (with its entry written or not: the world
+            would start without it), or an entry is still missing after ``timeout_s``.
+    """
+    deadline = time.monotonic() + timeout_s
     while True:
+        dead = [n for n in names if children[n].poll() is not None]
+        if dead:
+            raise ROSConfigError(f"robots {dead} ended before the sidecar started: see their logs")
         missing = [n for n in names if not (run_dir / f"{n}.json").is_file()]
         if not missing:
             return [json.loads((run_dir / f"{n}.json").read_text(encoding="utf-8")) for n in names]
-        dead = [n for n in missing if children[n].poll() is not None]
-        if dead:
-            raise ROSConfigError(f"robots {dead} ended before reaching the sidecar: see their logs")
         if time.monotonic() > deadline:
             raise ROSConfigError(f"robots {missing} never reached the sidecar: see their logs")
         time.sleep(1.0)

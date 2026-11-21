@@ -1728,7 +1728,7 @@
     },
     "SceneRobot": {
       "additionalProperties": false,
-      "description": "One robot of a scene that runs several (``DeployScene.robots``, openral-pro#99).\n\nAttributes:\n    name: Names the robot in the scene, its graph and its fleet entry: lowercase letters\n        and digits, a letter first.\n    robot_id: Its manifest (``robots/<robot_id>/robot.yaml``); several entries may share one.\n    base_pose: Where it starts, in the scene's shared ``world`` frame. Its map starts here.\n    robot_unit: As ``DeployScene.robot_unit``, for this robot.\n\nExample:\n    >>> SceneRobot(\n    ...     name=\"south\",\n    ...     robot_id=\"openamrobot_v2\",\n    ...     base_pose=Pose6D(xyz=(0.4, -1.1, 0.0), quat_xyzw=(0, 0, 0, 1), frame_id=\"world\"),\n    ... ).name\n    'south'",
+      "description": "One robot of a scene that runs several (``DeployScene.robots``, openral-pro#99).\n\nAttributes:\n    name: Names the robot in the scene, its graph and its fleet entry: lowercase letters\n        and digits, a letter first.\n    robot_id: Its manifest (``robots/<robot_id>/robot.yaml``); several entries may share one.\n    base_pose: Where it starts, in the scene's shared ``world`` frame. Its map starts here,\n        so in a scene with ``nav_goals`` it is on the ground plane (z 0, yaw only).\n    robot_unit: As ``DeployScene.robot_unit``, for this robot.\n\nExample:\n    >>> SceneRobot(\n    ...     name=\"south\",\n    ...     robot_id=\"openamrobot_v2\",\n    ...     base_pose=Pose6D(xyz=(0.4, -1.1, 0.0), quat_xyzw=(0, 0, 0, 1), frame_id=\"world\"),\n    ... ).name\n    'south'",
       "properties": {
         "name": {
           "pattern": "^[a-z][a-z0-9]{0,23}$",

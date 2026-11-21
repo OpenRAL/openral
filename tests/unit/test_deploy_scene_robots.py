@@ -137,3 +137,131 @@ def test_a_robot_graph_reads_its_own_scene_in_every_loader(
         assert scene.nav_goals[0].pose.xyz == pytest.approx((1.3, 0.8, 0.0), abs=1e-9)
     hal_scene = _load_scene_for_hal(str(path))  # the HAL keeps the scene, robot and start pose
     assert (hal_scene.robot_id, hal_scene.base_pose) == (north.robot_id, north.base_pose)
+
+
+def test_a_robot_with_nav_goals_starts_on_the_ground_plane() -> None:
+    """A raised or tilted start would put each goal re-expressed in its map off the ground."""
+    robots = _aisle()["robots"]
+    raised = {
+        **robots[0],
+        "base_pose": Pose6D(xyz=(0, 0, 1), quat_xyzw=(0, 0, 0, 1), frame_id="world"),
+    }
+    with pytest.raises(ValidationError, match=r"ground plane.*\['south'\]"):
+        DeployScene.model_validate(_aisle(robots=[raised, robots[1]]))
+    # Without nav goals a raised start (an arm on a table) stays valid.
+    DeployScene.model_validate(_aisle(robots=[raised, robots[1]], nav_goals=[]))
+
+
+def test_a_robot_graph_reads_its_scene_in_its_own_map_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openral_core.scene_paths import SCENE_ROBOT_ENV, SCENE_ROBOT_MAP_FRAME_ENV
+
+    raw = DeployScene.model_validate(_aisle()).model_dump(mode="json", exclude_defaults=True)
+    path = tmp_path / "aisle.yaml"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    monkeypatch.setenv(SCENE_ROBOT_ENV, "north")
+    monkeypatch.setenv(SCENE_ROBOT_MAP_FRAME_ENV, "north_map")
+    scene = DeployScene.from_yaml(str(path))
+    assert scene.nav_goals[0].pose.frame_id == "north_map"
+    assert scene.place_zones[0].region.frame_id == "north_map"
+
+
+# ── `openral deploy sim` of a several-robot scene (openral_cli.deploy_robots) ──────────
+
+
+def test_robot_domains_skip_the_reserved_ones() -> None:
+    from openral_cli._dds_scope import RESERVED_DOMAINS
+    from openral_cli.deploy_robots import _MAX_ROBOTS, robot_slots
+
+    robots = [
+        SceneRobot(name=f"r{i}", robot_id="openamrobot_v2", base_pose=_at(i, 0)) for i in range(4)
+    ]
+    scene = DeployScene.model_validate({**_aisle(), "robots": robots})
+    domains = [int(s["domain"]) for s in robot_slots(scene)]
+    assert domains == [30, 34, 38, 46]  # 42 is tools/_demo_env.sh's
+    assert not set(domains) & RESERVED_DOMAINS and max(domains) < 50
+    too_many = [*robots, SceneRobot(name="r9", robot_id="openamrobot_v2", base_pose=_at(9, 0))]
+    assert len(too_many) > _MAX_ROBOTS
+    with pytest.raises(ROSConfigError, match="at most 4"):
+        robot_slots(DeployScene.model_validate({**_aisle(), "robots": too_many}))
+
+
+def test_each_robot_gets_its_own_memory_bundle(tmp_path: Path) -> None:
+    from openral_cli.deploy_robots import robot_argv, robot_memory_dirs
+
+    dirs = robot_memory_dirs(str(tmp_path), ["south", "north"])
+    assert dirs == {"south": tmp_path / "south", "north": tmp_path / "north"}
+    assert all(d.is_dir() for d in dirs.values())
+    slot: dict[str, int | str] = {
+        "name": "north",
+        "domain": 34,
+        "dashboard_port": 4331,
+        "foxglove_port": 8831,
+    }
+    argv = robot_argv(
+        ["deploy", "sim", "--memory-dir", str(tmp_path), "-c", "s.yaml"],
+        Path("s.yaml"),
+        slot,
+        dirs["north"],
+    )
+    assert argv[argv.index("--memory-dir") + 1] == str(tmp_path / "north")
+    assert argv.count("--memory-dir") == 1
+    with pytest.raises(ROSConfigError, match="not an existing directory"):
+        robot_memory_dirs(str(tmp_path / "missing"), ["south"])
+
+
+def test_the_launcher_stops_when_any_robot_graph_ends(tmp_path: Path) -> None:
+    """Even one whose entry is written: the world would start without it."""
+    import subprocess
+    import sys
+
+    from openral_cli.deploy_robots import wait_for_entries
+
+    (tmp_path / "south.json").write_text("{}", encoding="utf-8")
+    ended = subprocess.Popen([sys.executable, "-c", "pass"])
+    running = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        ended.wait(timeout=10)
+        with pytest.raises(ROSConfigError, match=r"\['south'\] ended"):
+            wait_for_entries(
+                tmp_path, ["south", "north"], {"south": ended, "north": running}, timeout_s=5.0
+            )
+    finally:
+        running.kill()
+        running.wait()
+
+
+def test_a_dry_run_prints_each_robots_command_and_starts_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from openral_cli.deploy_robots import run_scene_robots
+
+    scene = DeployScene.model_validate(_aisle())
+    argv = ["deploy", "sim", "--config", "aisle.yaml", "--dry-run", "--memory-dir", str(tmp_path)]
+    assert run_scene_robots(scene, Path("aisle.yaml"), argv, dry_run=True) == 0
+    out = capsys.readouterr().out
+    assert "OPENRAL_SCENE_ROBOT=south" in out and "OPENRAL_SCENE_ROBOT=north" in out
+    assert "OPENRAL_SCENE_ROBOT_MAP_FRAME=map" in out
+    assert str(tmp_path / "north") in out
+    assert list(tmp_path.iterdir()) == []  # nothing written, nothing started
+
+
+def test_a_shared_scene_attachment_names_its_robot(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openral_core.scene_paths import SCENE_ROBOT_ENV
+    from openral_sim.backends.isaac_sim import (
+        SHARED_SIDECAR_PORT_ENV,
+        IsaacSimOptions,
+        _shared_sidecar_setup,
+    )
+
+    monkeypatch.setenv(SCENE_ROBOT_ENV, "north")
+    monkeypatch.setenv(SHARED_SIDECAR_PORT_ENV, "5999")
+    tote = {"prim": "Tote", "link": "lift_carriage_link"}
+    opts = IsaacSimOptions(
+        link_attachments=[{**tote, "robot": "south"}, {**tote, "prim": "Tote_01", "robot": "north"}]
+    )
+    _robot, _port, mine = _shared_sidecar_setup(opts)
+    assert [a.prim for a in mine.link_attachments] == ["Tote_01"]
+    with pytest.raises(ROSConfigError, match=r"\['Tote'\] name no robot"):
+        _shared_sidecar_setup(IsaacSimOptions(link_attachments=[tote]))

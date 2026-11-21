@@ -1023,7 +1023,8 @@ class IsaacLinkAttachment(BaseModel):
     link: str = Field(min_length=1)
     carries: list[str] = Field(default_factory=list)
     #: In a scene of several robots (``DeployScene.robots``), the robot that carries it
-    #: (each robot its own tote); ``None``: every robot's, as in a one-robot scene.
+    #: (each robot its own tote): required there, as two robots cannot carry one prim.
+    #: ``None``: the robot's, in a one-robot scene.
     robot: str | None = None
 
 
@@ -3376,13 +3377,33 @@ def _shared_sidecar_setup(opts: IsaacSimOptions) -> tuple[str, int, IsaacSimOpti
             f"${SHARED_SIDECAR_DIR_ENV} needs ${SCENE_ROBOT_ENV} and "
             f"${SHARED_SIDECAR_PORT_ENV}; `openral deploy sim` sets all three."
         )
-    # Each robot carries only its own tote (and the scene-wide attachments).
-    mine = [a for a in opts.link_attachments if a.robot in (None, robot)]
+    # Each robot carries only its own tote: one prim on two robots' links would be posed by both.
+    unassigned = [a.prim for a in opts.link_attachments if a.robot is None]
+    if unassigned:
+        raise ROSConfigError(
+            f"link_attachments {unassigned} name no robot: in a scene with several robots, "
+            "each attachment names the robot that carries it (`robot:`)."
+        )
+    mine = [a for a in opts.link_attachments if a.robot == robot]
     return (
         robot,
         int(os.environ[SHARED_SIDECAR_PORT_ENV]),
         opts.model_copy(update={"link_attachments": mine}),
     )
+
+
+def shared_launch_id(shared_dir: Path) -> str:
+    """The launch id of the shared sidecar of the run whose directory is ``shared_dir``.
+
+    ``openral deploy sim`` starts the sidecar with it (``deploy_robots.shared_sidecar_argv``)
+    and each robot graph requires it in ``ping``: the run directory is unique per run, so a
+    sidecar of another run on the port is refused even when it serves the same robots.
+
+    Example:
+        >>> shared_launch_id(Path("/tmp/openral-robots-aisle-x1y2"))
+        'shared-openral-robots-aisle-x1y2'
+    """
+    return f"shared-{shared_dir.name}"
 
 
 #: How long a robot graph waits for `openral deploy sim` to start the shared sidecar: every
@@ -3450,7 +3471,14 @@ def _join_shared_sidecar(
                 raise
             time.sleep(2.0)
     spec_hash = hashlib.sha256(robot_spec_bytes).hexdigest()
-    served = {r.get("name"): r for r in client.call("ping").get("robots") or []}
+    ping = client.call("ping")
+    if ping.get("launch_id") != shared_launch_id(shared_dir):
+        client.close()
+        raise ROSConfigError(
+            f"the Isaac sidecar on port {port} is not this run's shared sidecar (launch id "
+            f"{ping.get('launch_id')!r}, expected {shared_launch_id(shared_dir)!r})."
+        )
+    served = {r.get("name"): r for r in ping.get("robots") or []}
     if served.get(robot, {}).get("robot_spec_hash") != spec_hash:
         client.close()
         raise ROSConfigError(
