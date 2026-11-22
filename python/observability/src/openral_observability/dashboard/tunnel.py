@@ -30,6 +30,7 @@ from openral_observability.dashboard.ui_assets import PinnedAsset, _cache_root, 
 
 __all__ = [
     "CLOUDFLARED",
+    "REMOTE_PORT_ENV",
     "SERVICE",
     "TUNNEL_PORT",
     "TUNNEL_TOKEN_RE",
@@ -46,6 +47,10 @@ _logger = structlog.get_logger(__name__)
 
 TUNNEL_PORT = 4319
 """Where openral.com's tunnel ingress sends ``/api`` and ``/ws``: the remote listener."""
+
+REMOTE_PORT_ENV = "OPENRAL_DASHBOARD_REMOTE_PORT"
+"""This robot's remote listener port when it is not :data:`TUNNEL_PORT`: ``deploy sim`` sets one
+per robot of a scene, behind the scene's router on :data:`TUNNEL_PORT` (``remote_router``)."""
 
 _RELEASE = "https://github.com/cloudflare/cloudflared/releases/download/2026.10.7"
 CLOUDFLARED: dict[str, PinnedAsset] = {
@@ -158,6 +163,11 @@ def install_service(exe: Path) -> str | None:
         ``None`` on success, else why it couldn't (the dashboard then runs the tunnel).
     """
     unit = _unit_path()
+    held = _service_env()
+    if held is not None and held != tunnel_env_path():
+        # One user service per host: it stays the robot it was linked for. A scene's robots
+        # (each its own enrolment) run their tunnels with their dashboards instead.
+        return f"{SERVICE} already runs another robot's tunnel ({held})"
     unit.parent.mkdir(parents=True, exist_ok=True)
     unit.write_text(_UNIT.format(env=tunnel_env_path(), exe=exe), encoding="utf-8")
     if not _run("systemctl", "--user", "daemon-reload"):
@@ -174,6 +184,16 @@ def install_service(exe: Path) -> str | None:
     return None
 
 
+def _service_env() -> Path | None:
+    """The tunnel token file the installed user service runs with, or ``None`` (no unit)."""
+    try:
+        text = _unit_path().read_text(encoding="utf-8")
+    except OSError:
+        return None
+    line = next((ln for ln in text.splitlines() if ln.startswith("EnvironmentFile=")), None)
+    return Path(line.partition("=")[2].strip()) if line else None
+
+
 def service_active() -> bool:
     """Whether ``openral-tunnel.service`` is running for this user."""
     return _run("systemctl", "--user", "is-active", "--quiet", SERVICE)
@@ -187,9 +207,9 @@ def start_tunnel(remote_port: int) -> subprocess.Popen[bytes] | None:
     token = read_tunnel_token()
     if token is None:
         return None
-    if service_active():
-        return None
-    if remote_port != TUNNEL_PORT:
+    if service_active() and _service_env() == tunnel_env_path():
+        return None  # the user service runs this robot's tunnel (another robot's doesn't count)
+    if remote_port != TUNNEL_PORT and not os.environ.get(REMOTE_PORT_ENV):
         _logger.warning(
             "dashboard.tunnel_port_mismatch", remote_port=remote_port, ingress=TUNNEL_PORT
         )

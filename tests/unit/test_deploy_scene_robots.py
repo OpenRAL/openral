@@ -217,6 +217,46 @@ def test_robot_domains_skip_the_reserved_ones() -> None:
         robot_slots(DeployScene.model_validate({**_aisle(), "robots": too_many}))
 
 
+def test_each_linked_robot_gets_its_own_remote_port_behind_one_router(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every robot's tunnel reaches 4319 (openral.com sets the ingress): the router's table
+    sends each linked robot's host to that robot's own listener; an unlinked robot has none."""
+    from openral_cli.deploy_robots import robot_enrolment_path, robot_slots, tunnel_routes
+    from openral_core import RobotEnrolment
+    from openral_observability.dashboard.tunnel import TUNNEL_PORT
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    robots = [
+        SceneRobot(name=n, robot_id="openamrobot_v2", base_pose=_at(i, 0))
+        for i, n in enumerate("abc")
+    ]
+    scene = DeployScene.model_validate({**_aisle(), "robots": robots})
+    slots = robot_slots(scene)
+    ports = [int(s["remote_port"]) for s in slots]
+    assert len(set(ports)) == 3 and TUNNEL_PORT not in ports
+    assert not set(ports) & {int(s["dashboard_port"]) for s in slots}
+    for name, robot in (("a", "a1a1a"), ("c", "c3c3c")):  # b is not linked
+        path = robot_enrolment_path(scene.scene.id, name)
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            RobotEnrolment(
+                v=1,
+                robot=robot,
+                aud=f"https://r-{robot}.openral.com",
+                org="acme",
+                iss="https://www.openral.com/api/auth",
+                jwks="https://www.openral.com/api/auth/jwks",
+            ).model_dump_json()
+        )
+    assert tunnel_routes(scene.scene.id, slots) == {
+        "r-a1a1a.openral.com": ports[0],
+        "r-c3c3c.openral.com": ports[2],
+    }
+    robot_enrolment_path(scene.scene.id, "c").write_text("{not an enrolment")
+    assert list(tunnel_routes(scene.scene.id, slots)) == ["r-a1a1a.openral.com"]
+
+
 def test_each_robot_gets_its_own_memory_bundle(tmp_path: Path) -> None:
     from openral_cli.deploy_robots import robot_argv, robot_memory_dirs
 

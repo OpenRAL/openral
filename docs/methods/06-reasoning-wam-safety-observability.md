@@ -1310,24 +1310,34 @@ _The robot UI served at `/`: the pinned prebuilt robot console (source not in th
 
 _The robot's Cloudflare Tunnel (ADR-0129 §3): a user systemd service that survives reboots, or the dashboard's own child without user systemd; no install, no root. The token reaches cloudflared through `TUNNEL_TOKEN` / `EnvironmentFile`, never argv._
 
-- `TUNNEL_PORT: int` (L47) — 4319, where openral.com's tunnel ingress sends `/api` and `/ws`.
-- `CLOUDFLARED: dict[str, PinnedAsset]` (L51) — cloudflared 2026.10.7 per `platform.machine()` (x86_64, aarch64).
-- `TUNNEL_TOKEN_RE: re.Pattern[str]` (L66) — A Cloudflare tunnel token (base64 of its JSON credentials); `write_tunnel_token` refuses anything else.
-- `tunnel_env_path() -> Path` (L88) — `tunnel.env` next to the enrolment file.
-- `write_tunnel_token(token: str) -> Path` (L93) — Store `TUNNEL_TOKEN=<token>`, mode 0600, `O_NOFOLLOW`.
-- `read_tunnel_token() -> str | None` (L111) — The stored token, or `None` when not linked.
-- `SERVICE: str` (L69) — `openral-tunnel.service`, the user unit `openral robot link` installs.
-- `install_service(exe: Path) -> str | None` (L154) — Write the user unit (`EnvironmentFile=tunnel.env`, `Restart=always`), `systemctl --user enable --now` it and `loginctl enable-linger` (boot without login); `None`, or why not.
-- `service_active() -> bool` (L177) — Whether the user service is running.
-- `ensure_cloudflared() -> Path | None` (L123) — The pinned binary, fetched once into the cache; else one on `PATH`; else `None`.
-- `start_tunnel(remote_port: int) -> subprocess.Popen[bytes] | None` (L182) — Run `cloudflared tunnel --no-autoupdate run` as a child unless the user service already runs it; `None` when not linked, the service holds it, or no binary.
+- `TUNNEL_PORT: int` (L48) — 4319, where openral.com's tunnel ingress sends `/api` and `/ws`.
+- `REMOTE_PORT_ENV: str` (L51) — `OPENRAL_DASHBOARD_REMOTE_PORT`: a scene robot's own remote listener port, behind the scene's router on 4319 (`run_dashboard`'s default when `--remote-port` is not given).
+- `CLOUDFLARED: dict[str, PinnedAsset]` (L56) — cloudflared 2026.10.7 per `platform.machine()` (x86_64, aarch64).
+- `TUNNEL_TOKEN_RE: re.Pattern[str]` (L71) — A Cloudflare tunnel token (base64 of its JSON credentials); `write_tunnel_token` refuses anything else.
+- `tunnel_env_path() -> Path` (L93) — `tunnel.env` next to the enrolment file.
+- `write_tunnel_token(token: str) -> Path` (L98) — Store `TUNNEL_TOKEN=<token>`, mode 0600, `O_NOFOLLOW`.
+- `read_tunnel_token() -> str | None` (L116) — The stored token, or `None` when not linked.
+- `SERVICE: str` (L74) — `openral-tunnel.service`, the user unit `openral robot link` installs.
+- `install_service(exe: Path) -> str | None` (L159) — Write the user unit (`EnvironmentFile=tunnel.env`, `Restart=always`), `systemctl --user enable --now` it and `loginctl enable-linger` (boot without login); `None`, or why not. Refuses to replace a unit that runs another robot's tunnel (another `tunnel.env`): one service per host, kept by the robot it was linked for.
+- `service_active() -> bool` (L197) — Whether the user service is running.
+- `ensure_cloudflared() -> Path | None` (L128) — The pinned binary, fetched once into the cache; else one on `PATH`; else `None`.
+- `start_tunnel(remote_port: int) -> subprocess.Popen[bytes] | None` (L202) — Run `cloudflared tunnel --no-autoupdate run` as a child unless the user service already runs this robot's tunnel (its `EnvironmentFile` is this `tunnel.env`); `None` when not linked, the service holds it, or no binary. Warns on a `remote_port` other than 4319 unless `REMOTE_PORT_ENV` says a router fronts it.
+
+### `python/observability/src/openral_observability/dashboard/remote_router.py`
+
+_Several linked robots on one host (a `deploy sim` scene) share the tunnel port: every robot's tunnel ingress is `localhost:4319`. One router there splices each request to its robot's own remote listener by `Host`; each robot still checks its own tokens._
+
+- `route_host(aud: str) -> str` (L39) — A robot's tunnel host: its enrolment `aud`'s hostname, lower case.
+- `routed_head(head: bytes) -> tuple[str, bytes]` (L49) — The request's host and its head as sent on: `Connection: close` for a plain request (one request per connection, so the next is routed afresh), `Connection: Upgrade` kept for a WebSocket; `ValueError` without a `Host` or an HTTP/1 request line.
+- `serve_router(routes: Mapping[str, int], port: int = TUNNEL_PORT) -> asyncio.Server` (L128) — Listen on `127.0.0.1:port`; `421` for a host no robot answers to, `400` for a bad head, `502` when that robot's dashboard is down; `OSError` when the port is taken.
+- `main(argv=None) -> int` (L142) — `python -m openral_observability.dashboard.remote_router --route HOST=PORT ...`, as `deploy sim` starts it; exits 1 (logged) when the port is taken.
 
 ### `python/observability/src/openral_observability/dashboard/viz_assets.py`
 - module constant `LICHTBLICK: PinnedAsset` (L20) — Lichtblick v1.30.0 `lichtblick-web.tar.gz` (MPL-2.0), pinned by sha256 + size.
 - `ensure_viz_assets() -> Path | None` (L35) — The Lichtblick build (via `ensure_bundle`), with a `NOTICE.txt` naming its MPL-2.0 source; fetched on the first `/viz/` request.
 
 ### `python/observability/src/openral_observability/dashboard/server.py`
-- `run_dashboard(*, host="127.0.0.1", port=4318, remote_port=None, bridge_port=8765, manifest_path=None, inprocess_cmd=None, store=None, log_level="warning", world_pose=None) -> None` (L63) — Start the local listener on `host:port` and, when the robot is linked (`load_enrolment`), the remote listener on `127.0.0.1:remote_port` (default 4319; a `remote_port` without an enrolment is a `ValueError`) with a `TokenVerifier`; both with `proxy_headers` off and a 30 s WebSocket ping, run together until SIGINT/SIGTERM (one stopping stops both). Fetches the robot UI best-effort (`ensure_ui_assets`), starts the persistent `EstopPublisher`, the safety-status and perception-overlay subscribers and mDNS discovery, prints the URL banner and warnings for a non-loopback bind, write controls and remote control; when linked, also runs the robot's tunnel (`tunnel.start_tunnel`) and stops it on exit. `manifest_path` (a `RobotManifest` JSON file) is served until the runtime sends a fresher one; an unreadable file is logged and ignored. When `inprocess_cmd` is set, spawns it pointed at this dashboard's OTLP endpoint. `world_pose` (`(x, y, yaw)`) seeds `/api/mission`'s `world_pose` (`openral dashboard --world-pose`, passed by the deploy launch).
+- `run_dashboard(*, host="127.0.0.1", port=4318, remote_port=None, bridge_port=8765, manifest_path=None, inprocess_cmd=None, store=None, log_level="warning", world_pose=None) -> None` (L81) — Start the local listener on `host:port` and, when the robot is linked (`load_enrolment`), the remote listener on `127.0.0.1:remote_port` (default `$OPENRAL_DASHBOARD_REMOTE_PORT`, else 4319; a `remote_port` without an enrolment, or a variable that is not a port, is a `ValueError`) with a `TokenVerifier`; both with `proxy_headers` off and a 30 s WebSocket ping, run together until SIGINT/SIGTERM (one stopping stops both). Fetches the robot UI best-effort (`ensure_ui_assets`), starts the persistent `EstopPublisher`, the safety-status and perception-overlay subscribers and mDNS discovery, prints the URL banner and warnings for a non-loopback bind, write controls and remote control; when linked, also runs the robot's tunnel (`tunnel.start_tunnel`) and stops it on exit. `manifest_path` (a `RobotManifest` JSON file) is served until the runtime sends a fresher one; an unreadable file is logged and ignored. When `inprocess_cmd` is set, spawns it pointed at this dashboard's OTLP endpoint. `world_pose` (`(x, y, yaw)`) seeds `/api/mission`'s `world_pose` (`openral dashboard --world-pose`, passed by the deploy launch).
 - `spawn_dashboard` / `attached_dashboard` — Inverse of `--inprocess`; see `dashboard/attach.py` below (a separate module despite the name symmetry with this file).
 
 ### `python/observability/src/openral_observability/dashboard/attach.py`

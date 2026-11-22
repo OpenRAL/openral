@@ -24,7 +24,7 @@ import time
 from collections.abc import Iterable
 from pathlib import Path
 
-from openral_core import DeployScene, RobotDescription
+from openral_core import DeployScene, RobotDescription, RobotEnrolment
 from openral_core.exceptions import ROSConfigError
 from openral_core.scene_paths import (
     SCENE_PEERS_ENV,
@@ -32,6 +32,8 @@ from openral_core.scene_paths import (
     SCENE_ROBOT_MAP_FRAME_ENV,
     format_scene_peers,
 )
+from openral_observability.dashboard.remote_router import route_host
+from openral_observability.dashboard.tunnel import REMOTE_PORT_ENV, TUNNEL_PORT
 from openral_sim.backends.isaac_sim import shared_launch_id
 from openral_sim.policies.robots import resolve_robot_manifest
 from rich.console import Console
@@ -41,10 +43,13 @@ from openral_cli.deploy_sim import _repo_root_from
 
 __all__ = [
     "robot_argv",
+    "robot_enrolment_path",
     "robot_memory_dirs",
     "robot_slots",
+    "router_argv",
     "run_scene_robots",
     "shared_sidecar_argv",
+    "tunnel_routes",
     "wait_for_entries",
 ]
 
@@ -55,6 +60,8 @@ _console = Console()
 #: discovery range never reaches a neighbour. Its dashboard and Foxglove ports count up.
 _DOMAINS = tuple(d for d in range(30, 50, 4) if d not in RESERVED_DOMAINS)
 _DASHBOARD_BASE, _FOXGLOVE_BASE = 4330, 8830
+#: Each linked robot's remote listener; the scene's router holds the tunnel port (4319) for all.
+_REMOTE_BASE = 4350
 #: ponytail: four robots fit below domain 50; more need another domain plan.
 _MAX_ROBOTS = len(_DOMAINS)
 #: How long every robot's graph gets to leave its sidecar entry (its HAL's spec build).
@@ -92,6 +99,7 @@ def robot_slots(scene: DeployScene) -> list[dict[str, int | str]]:
             "domain": _DOMAINS[i],
             "dashboard_port": _DASHBOARD_BASE + i,
             "foxglove_port": _FOXGLOVE_BASE + i,
+            "remote_port": _REMOTE_BASE + i,
         }
         for i, r in enumerate(scene.robots)
     ]
@@ -141,6 +149,17 @@ def robot_argv(
     ]
 
 
+def router_argv(routes: dict[str, int]) -> list[str]:
+    """The scene's tunnel router's command line (``remote_router``), on this interpreter.
+
+    Example:
+        >>> router_argv({"r-a1.openral.com": 4350})[1:]
+        ['-m', 'openral_observability.dashboard.remote_router', '--route', 'r-a1.openral.com=4350']
+    """
+    route_args = [a for host, port in routes.items() for a in ("--route", f"{host}={port}")]
+    return [sys.executable, "-m", "openral_observability.dashboard.remote_router", *route_args]
+
+
 def shared_sidecar_argv(entries: list[dict[str, object]], launch_id: str) -> list[str]:
     """The one sidecar's command line from every robot's entry (the first robot's launch).
 
@@ -171,6 +190,57 @@ def shared_sidecar_argv(entries: list[dict[str, object]], launch_id: str) -> lis
         for e in entries
     ]
     return [*argv, "--robots", json.dumps(robots), "--launch-id", launch_id]
+
+
+def robot_enrolment_path(scene_id: str, name: str) -> Path:
+    """Where a scene robot's openral.com enrolment is: each robot is its own openral.com robot.
+
+    Example:
+        >>> robot_enrolment_path("isaac_sim", "a").parts[-4:]
+        ('robots', 'isaac_sim', 'a', 'robot.json')
+    """
+    return Path.home() / ".config/openral/robots" / scene_id / name / "robot.json"
+
+
+def tunnel_routes(scene_id: str, slots: list[dict[str, int | str]]) -> dict[str, int]:
+    """Each linked robot's tunnel host to its remote listener port: the scene router's table.
+
+    Robots not linked (no enrolment, or one that doesn't load) are left out: nothing reaches
+    them from openral.com.
+    """
+    routes: dict[str, int] = {}
+    for slot in slots:
+        path = robot_enrolment_path(scene_id, str(slot["name"]))
+        if not path.is_file():
+            continue
+        try:
+            enrolment = RobotEnrolment.model_validate_json(path.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            _console.print(
+                f"  robot {slot['name']}: enrolment {path} refused: {exc}", style="yellow"
+            )
+            continue
+        routes[route_host(enrolment.aud)] = int(slot["remote_port"])
+    return routes
+
+
+def _start_router(
+    scene_id: str, slots: list[dict[str, int | str]], run_dir: Path
+) -> subprocess.Popen[bytes] | None:
+    """The scene's tunnel router, when any robot is linked; ``None`` when none is.
+
+    Every linked robot's tunnel reaches 4319 (openral.com sets the ingress): the router there
+    sends each to its robot by host. It is not a robot: its exit (4319 taken) stops nothing.
+    """
+    routes = tunnel_routes(scene_id, slots)
+    if not routes:
+        return None
+    router = _spawn(router_argv(routes), dict(os.environ), run_dir / "router.log")
+    _console.print(
+        f"  tunnel router on 127.0.0.1:{TUNNEL_PORT} for {sorted(routes)}: "
+        f"log {run_dir / 'router.log'}"
+    )
+    return router
 
 
 def _free_port() -> int:
@@ -322,6 +392,7 @@ def run_scene_robots(
     port = _free_port()
     _console.print(f"[bold]{scene.scene.id}[/bold]: {len(slots)} robots, logs in {run_dir}")
     children: dict[str, subprocess.Popen[bytes]] = {}
+    router: subprocess.Popen[bytes] | None = None
     previous = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
     if previous[signal.SIGHUP] is signal.SIG_IGN:
         del previous[signal.SIGHUP]
@@ -340,9 +411,9 @@ def run_scene_robots(
                 "OPENRAL_ISAAC_SHARED_DIR": str(run_dir),
                 "OPENRAL_ISAAC_SHARED_PORT": str(port),
                 # Each robot is its own openral.com robot (`openral_core.robot_ui.enrolment_path`).
-                "OPENRAL_ROBOT_ENROLMENT": str(
-                    Path.home() / ".config/openral/robots" / scene.scene.id / name / "robot.json"
-                ),
+                "OPENRAL_ROBOT_ENROLMENT": str(robot_enrolment_path(scene.scene.id, name)),
+                # Its remote listener's own port: the scene's router holds the tunnel port.
+                REMOTE_PORT_ENV: str(slot["remote_port"]),
                 "PYTHONUNBUFFERED": "1",
             }
             children[name] = _spawn(
@@ -354,6 +425,7 @@ def run_scene_robots(
                 f"  robot [bold]{name}[/bold]: ROS_DOMAIN_ID={slot['domain']} dashboard "
                 f"http://127.0.0.1:{slot['dashboard_port']}/ log {run_dir / f'{name}.log'}"
             )
+        router = _start_router(scene.scene.id, slots, run_dir)
         entries = wait_for_entries(run_dir, names, children)
         sidecar_argv = shared_sidecar_argv(entries, shared_launch_id(run_dir))
         children["(sidecar)"] = _spawn(sidecar_argv, dict(os.environ), run_dir / "sidecar.log")
@@ -370,6 +442,8 @@ def run_scene_robots(
     finally:
         sidecar = children.pop("(sidecar)", None)
         _stop(children.values())  # the graphs first: their HALs leave the world
+        if router is not None:
+            _stop([router])
         if sidecar is not None:
             _stop([sidecar])
         for signum, handler in previous.items():
