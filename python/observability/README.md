@@ -55,7 +55,7 @@ port (ADR-0129; the user guide is `docs/quickstart/dashboard.md`):
 |---|---|---|---|
 | `--host`:`--port` (default `127.0.0.1:4318`) | loopback | `local` / operator | everything the manifest offers |
 | same, bound to a LAN address | any other host | `lan` / viewer | GETs, `estop`, `POST /api/viz/ticket`; OTLP ingest on `/v1/*` (a robot computer exporting to a LAN dashboard, ADR-0017) only with `OPENRAL_DASHBOARD_LAN_INGEST=1` (default off) |
-| `127.0.0.1:--remote-port` (default 4319 once linked) | the Cloudflare Tunnel | `remote` / the token's role | see below |
+| `127.0.0.1:--remote-port` (default 4319 once linked, or `$OPENRAL_DASHBOARD_REMOTE_PORT`) | the Cloudflare Tunnel | `remote` / the token's role | see below |
 
 `proxy_headers` is off on both, so a forwarded-for header never makes a LAN client
 loopback. The local listener refuses a state-changing request whose `Origin` names
@@ -69,7 +69,10 @@ The **remote listener** opens when the robot is linked (`openral robot link <cod
 writes `~/.config/openral/robot.json`, `OPENRAL_ROBOT_ENROLMENT` overrides the path, and
 `tunnel.env` beside it). The robot's Cloudflare Tunnel (`dashboard/tunnel.py`, a pinned
 `cloudflared`) runs as the user service `openral-tunnel.service`, which survives reboots,
-or, without user systemd, as the dashboard's own child process.
+or, without user systemd, as the dashboard's own child process (also when the service runs
+another robot's tunnel: one service per host, kept by the robot it was linked for). Several
+linked robots on one host (a `deploy sim` scene) each listen on their own port and share 4319
+through `dashboard/remote_router.py`, which routes each request by its `Host`.
 `dashboard/remote_auth.py` checks every request's `Authorization: Bearer <JWT>` in
 ADR-0129 Interface B order: header `alg` ES256 and `typ` absent or `at+jwt`, `kid` in
 the issuer's JWKS (cached on disk, refetched only for an unknown `kid`, at most once a

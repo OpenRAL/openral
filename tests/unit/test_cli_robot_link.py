@@ -432,3 +432,43 @@ def test_an_unreadable_robot_credential_does_not_stop_the_start(
     assert robot.apply_account_settings(echo=said.append) == []
     assert "OPENRAL_DASHBOARD_REMOTE_CONTROL" not in os.environ
     assert said and "can't read" in said[0]
+
+
+def test_a_second_robot_on_the_host_leaves_the_first_ones_service_alone(
+    enrolment: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A scene robot (its own enrolment) linked on a host whose service runs another robot's
+    tunnel: the service keeps that robot, and this robot's dashboard runs its own tunnel."""
+    from openral_observability.dashboard.tunnel import REMOTE_PORT_ENV, start_tunnel
+
+    log = _fake_cloudflared(tmp_path, monkeypatch, active=True)
+    assert CliRunner().invoke(app, ["robot", "link", _CODE]).exit_code == 0
+    unit = tmp_path / "xdg" / "systemd" / "user" / "openral-tunnel.service"
+    first = unit.read_text()
+
+    other = tmp_path / "robots" / "isaac_sim" / "b" / "robot.json"
+    monkeypatch.setenv("OPENRAL_ROBOT_ENROLMENT", str(other))
+    monkeypatch.setenv(REMOTE_PORT_ENV, "4351")
+    result = CliRunner().invoke(app, ["robot", "link", _CODE])
+    assert result.exit_code == 0, result.output
+    assert "already runs another robot's tunnel" in result.output
+    assert unit.read_text() == first  # still the first robot's
+
+    proc = start_tunnel(4351)  # the service runs the other robot's: this one starts its own
+    assert proc is not None
+    proc.wait(timeout=30)
+    assert log.exists()
+
+
+def test_a_scene_robot_listens_on_its_own_remote_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openral_observability.dashboard.server import _remote_port_from_env
+    from openral_observability.dashboard.tunnel import REMOTE_PORT_ENV, TUNNEL_PORT
+
+    monkeypatch.delenv(REMOTE_PORT_ENV, raising=False)
+    assert _remote_port_from_env() == TUNNEL_PORT
+    monkeypatch.setenv(REMOTE_PORT_ENV, "4351")
+    assert _remote_port_from_env() == 4351
+    for bad in ("0", "70000", "x"):
+        monkeypatch.setenv(REMOTE_PORT_ENV, bad)
+        with pytest.raises(ValueError, match="not a port"):
+            _remote_port_from_env()

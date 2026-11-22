@@ -33,6 +33,24 @@ _LOG = logging.getLogger(__name__)
 # Not "": uvicorn binds an empty host to every interface.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _DEFAULT_REMOTE_PORT = 4319
+_MAX_PORT = 65535
+
+
+def _remote_port_from_env() -> int:
+    """``$OPENRAL_DASHBOARD_REMOTE_PORT`` (a scene robot's, behind the scene's router), else 4319.
+
+    Raises:
+        ValueError: The variable is set but not a port.
+    """
+    from openral_observability.dashboard.tunnel import REMOTE_PORT_ENV
+
+    raw = os.environ.get(REMOTE_PORT_ENV, "").strip()
+    if not raw:
+        return _DEFAULT_REMOTE_PORT
+    if not raw.isdigit() or not 0 < int(raw) <= _MAX_PORT:
+        msg = f"{REMOTE_PORT_ENV}={raw!r} is not a port"
+        raise ValueError(msg)
+    return int(raw)
 
 
 def _exposure_warning(host: str) -> str | None:
@@ -133,7 +151,7 @@ def run_dashboard(  # noqa: PLR0915, PLR0912  # reason: linear bootstrap (app + 
         msg = "--remote-port needs a linked robot: run `openral robot link <code>` first"
         raise ValueError(msg)
     if enrolment is not None and remote_port is None:
-        remote_port = _DEFAULT_REMOTE_PORT
+        remote_port = _remote_port_from_env()
     verifier = (
         TokenVerifier(enrolment, JwksCache(enrolment.jwks, jwks_cache_file()))
         if enrolment is not None
