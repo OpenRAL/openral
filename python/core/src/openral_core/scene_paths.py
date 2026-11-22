@@ -9,11 +9,19 @@ scene is left as written, for the existing lookups (the repo root, then the cwd)
 from __future__ import annotations
 
 import copy
+import json
 import os
 from pathlib import Path
 from typing import TypeVar, cast
 
-__all__ = ["SCENE_ROBOT_ENV", "SCENE_ROBOT_MAP_FRAME_ENV", "anchor_scene_paths"]
+__all__ = [
+    "SCENE_PEERS_ENV",
+    "SCENE_ROBOT_ENV",
+    "SCENE_ROBOT_MAP_FRAME_ENV",
+    "anchor_scene_paths",
+    "format_scene_peers",
+    "parse_scene_peers",
+]
 
 #: Set by ``openral deploy sim`` in each robot graph it starts for a scene with several
 #: ``robots`` (openral-pro#99): every loader then reads that robot's own one-robot scene
@@ -22,6 +30,53 @@ SCENE_ROBOT_ENV = "OPENRAL_SCENE_ROBOT"
 #: Beside it: that robot's ``RobotDescription.map_frame``, the frame its scene's nav goals and
 #: place zones are re-expressed in (``"map"`` when unset).
 SCENE_ROBOT_MAP_FRAME_ENV = "OPENRAL_SCENE_ROBOT_MAP_FRAME"
+#: Beside them: the scene's other robots, a JSON list of ``[name, domain, manifest]``
+#: (``format_scene_peers``). Each robot's graph runs a peer producer on it, whose grid its
+#: safety kernel checks with no exemption (ADR-0137).
+SCENE_PEERS_ENV = "OPENRAL_SCENE_PEERS"
+_PEER_FIELDS = 3  # name, ROS domain, manifest path
+
+
+def format_scene_peers(peers: list[tuple[str, int, str]]) -> str:
+    """``(name, ROS domain, manifest path)`` per peer, as ``SCENE_PEERS_ENV`` carries them (JSON).
+
+    Example:
+        >>> format_scene_peers([("b", 34, "/r/amr/robot.yaml")])
+        '[["b", 34, "/r/amr/robot.yaml"]]'
+    """
+    return json.dumps([[n, d, m] for n, d, m in peers])
+
+
+def parse_scene_peers(value: str | None) -> list[tuple[str, int, str]]:
+    """The inverse of ``format_scene_peers``; empty for ``None`` or ``""``.
+
+    Raises:
+        ValueError: The value is not a JSON list of ``[name, domain, manifest]``.
+
+    Example:
+        >>> parse_scene_peers(format_scene_peers([("b", 34, "/srv/openral;lab/robot.yaml")]))
+        [('b', 34, '/srv/openral;lab/robot.yaml')]
+        >>> parse_scene_peers("{}")
+        Traceback (most recent call last):
+        ValueError: OPENRAL_SCENE_PEERS is not a list of [name, domain, manifest]: '{}'
+    """
+    if not value:
+        return []
+    bad = ValueError(f"{SCENE_PEERS_ENV} is not a list of [name, domain, manifest]: {value!r}")
+    try:
+        raw = json.loads(value)
+    except ValueError as exc:
+        raise bad from exc
+    entries = raw if isinstance(raw, list) else None
+    if entries is None or not all(isinstance(e, list) and len(e) == _PEER_FIELDS for e in entries):
+        raise bad
+    out: list[tuple[str, int, str]] = []
+    for name, domain, manifest in entries:
+        if not (isinstance(name, str) and isinstance(domain, int) and isinstance(manifest, str)):
+            raise bad
+        out.append((name, domain, manifest))
+    return out
+
 
 _T = TypeVar("_T")
 

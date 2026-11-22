@@ -57,6 +57,13 @@ inline constexpr std::int64_t kDefaultChunkValidationDeadlineUs = 1000;
 /// `tests/unit/test_perception_caps_mirror.py` pins both sides equal.
 inline constexpr double kMaxWorldVoxelDeadlineMs = 2000.0;
 inline constexpr double kMaxWorldVoxelDataAgeBudgetMs = 3000.0;
+/// Peer grid (ADR-0137): receipt deadline and data-age budget defaults. A peer
+/// moves on its own, so its cells must be far younger than the octomap's. The
+/// producer sweeps each peer along its measured velocity over at least the data-age
+/// budget, so a peer can not have left its cells before they are refused as stale.
+/// Configure caps both at the world grid's caps.
+inline constexpr double kDefaultPeerVoxelDeadlineMs = 300.0;
+inline constexpr double kDefaultPeerVoxelDataAgeBudgetMs = 300.0;
 inline constexpr double kDefaultWorldVoxelDataAgeBudgetMs = 1500.0;
 
 /// Cap on `grasp_region_max_age_s` / `place_region_max_age_s` — how old a
@@ -207,6 +214,10 @@ private:
 
   // Voxel phase — ingest a dense occupancy grid into a pre-sized buffer.
   void on_world_voxels(const openral_msgs::msg::OccupancyVoxels::SharedPtr msg);
+  // Peer phase (ADR-0137, hazard Entry 103) — the other robots of the workcell as
+  // occupied cells, from their own geometry. A second grid, never the octomap's:
+  // no contact exemption reads it, so a peer is refused even inside a grasp region.
+  void on_peer_voxels(const openral_msgs::msg::OccupancyVoxels::SharedPtr msg);
 
   // Attached-payload phase — ingest attached collision objects carried on
   // /openral/world_state_fast into the fixed-capacity attached model. A grasped
@@ -453,6 +464,7 @@ private:
   // Subscriptions / publishers / service / timer.
   rclcpp::Subscription<openral_msgs::msg::ActionChunk>::SharedPtr candidate_sub_;
   rclcpp::Subscription<openral_msgs::msg::OccupancyVoxels>::SharedPtr voxel_sub_;
+  rclcpp::Subscription<openral_msgs::msg::OccupancyVoxels>::SharedPtr peer_voxel_sub_;
   rclcpp::Subscription<openral_msgs::msg::WorldStateStamped>::SharedPtr world_state_sub_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr estop_sub_;
   rclcpp_lifecycle::LifecyclePublisher<openral_msgs::msg::ActionChunk>::SharedPtr safe_pub_;
@@ -548,6 +560,25 @@ private:
   /// other frame is refused: a region measured in one frame and applied in
   /// another is a relaxation aimed at the wrong volume.
   std::string voxel_frame_id_;
+
+  // Peer phase (ADR-0137). `peer_grid_` is a view into `peer_occupancy_`, sized
+  // like the world grid. It stays default-constructed apart from its lattice and
+  // cells: no place, grasp or workspace region and no provider, ever.
+  VoxelGrid peer_grid_;
+  /// Per link of `collision_model_`: 1 for a link no chunk moves (fixed to the root or
+  /// moved only by base dofs), which the peer check skips (`check_voxel_collision`'s
+  /// `unchecked_links`).
+  std::vector<std::uint8_t> peer_unchecked_links_;
+  std::vector<std::uint8_t> peer_occupancy_;
+  bool peer_voxel_enabled_{false};
+  double peer_voxel_deadline_s_{kDefaultPeerVoxelDeadlineMs / 1000.0};
+  double peer_voxel_data_age_budget_s_{kDefaultPeerVoxelDataAgeBudgetMs / 1000.0};
+  bool peer_received_{false};
+  bool peer_overflow_{false};
+  rclcpp::Time peer_stamp_{0, 0, RCL_ROS_TIME};
+  bool peer_source_known_{false};
+  rclcpp::Time peer_source_stamp_{0, 0, RCL_ROS_TIME};
+  std::string peer_frame_id_;
 
   // Attached-payload phase — grasped objects moved out of world occupancy and
   // re-checked as collision-active robot geometry (ADR-0092). Fixed-capacity
@@ -880,8 +911,8 @@ private:
   std::vector<std::uint64_t> workspace_command_holds_;
   std::uint64_t workspace_hold_max_consecutive_{0};
   /// A named geometry of a trip, formatted only when reported or logged: `tag` 'l'
-  /// robot link, 'a' attached payload, 'v' voxel cell, 'p' place-target primitive,
-  /// 'f' place force gate.
+  /// robot link, 'a' attached payload, 'v' voxel cell, 'r' peer-grid cell, 'p' place-target
+  /// primitive, 'f' place force gate.
   struct WsName {
     char tag{'l'};
     int idx{-1};

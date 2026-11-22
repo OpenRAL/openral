@@ -1726,6 +1726,41 @@ class SimAttachedHAL:
         """
         return _spec_id(getattr(self._env, "task", None))
 
+    def step_estop_hold(self) -> bool:
+        """One tick while the e-stop is latched (the node's latch or this HAL's own).
+
+        ``True`` when the backend's stop was stepped (one robot of a shared world,
+        ADR-0137), ``False`` when the robot freezes (a world of its own). The post-step
+        observers run after it, as after ``idle_step``.
+        """
+        try:
+            return self._step_estop_hold()
+        finally:
+            self._run_due_observers()
+
+    def _step_estop_hold(self) -> bool:
+        """While latched, one robot of a shared world steps its backend's stop (ADR-0137).
+
+        The other robots keep stepping its world, so freezing only its observation would
+        leave its ``/joint_states`` stale for every peer while its world moves on.
+        ``estop_hold_action`` keeps every joint target and stops the base; ``False``
+        (freeze) when the backend offers none, as for a world of its own.
+        """
+        hold_getter = getattr(self._env, "estop_hold_action", None)
+        hold = hold_getter(self._last_obs) if callable(hold_getter) else None
+        if hold is None or self._env_action_dim is None:
+            return False
+        hold = np.asarray(hold, dtype=np.float32).reshape(-1)
+        if hold.shape != (self._env_action_dim,):
+            raise ROSRuntimeError(
+                f"{type(self).__name__}.idle_step: backend estop_hold_action width "
+                f"{hold.shape[0]} != env_action_dim {self._env_action_dim}."
+            )
+        stepped = self._step_and_cache(hold, source="idle_step")
+        if stepped:
+            self._last_body_twist = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        return stepped
+
     def idle_step(self, wall_dt_s: float | None = None) -> bool:
         """Advance the wrapped sim one tick with a zero/HOLD action when idle (``_idle_step``).
 
@@ -1788,8 +1823,9 @@ class SimAttachedHAL:
             return False
         if self._estop_latched:
             # An estopped HAL freezes — honoring the estop contract is correct;
-            # the frozen scene is the intended, safe behaviour here.
-            return False
+            # the frozen scene is the intended, safe behaviour here. Except where
+            # the world does not freeze with it (ADR-0137, ``_step_estop_hold``).
+            return self._step_estop_hold()
         if self._env_action_dim is None:
             return False
         staged = self._stager.staged

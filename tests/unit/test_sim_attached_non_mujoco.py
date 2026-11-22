@@ -366,3 +366,55 @@ def test_stale_pending_group_releases_idle_step(monkeypatch: pytest.MonkeyPatch)
     now[0] += 6_000_000_000  # +6 s: the skill died mid-tick
     assert hal.idle_step() is True  # stale group discarded, scene stays live
     assert env.steps == 1
+
+
+class _SharedWorldSim(_FakeSim):
+    """One robot of a shared world: offers a stop for its last observation (ADR-0137)."""
+
+    def __init__(self, joint_positions: list[float], *, shared: bool) -> None:
+        super().__init__(joint_positions)
+        self.shared = shared
+        self.actions: list[NDArray[np.float32]] = []
+
+    def estop_hold_action(self, obs: dict[str, Any] | None) -> NDArray[np.float32] | None:
+        if not self.shared or obs is None:
+            return None
+        return np.full(self.action_dim, 0.25, dtype=np.float32)
+
+    def step(self, action: NDArray[np.float32]) -> StepResult:
+        self.actions.append(np.asarray(action))
+        return super().step(action)
+
+
+def test_a_latched_robot_of_a_shared_world_keeps_stepping_its_stop() -> None:
+    """Its world moves under it, so its joint states must keep coming (peer_voxels)."""
+    description = _franka_description()
+    env = _SharedWorldSim([0.0] * len(description.joints), shared=True)
+    hal = SimAttachedHAL(env, description)
+    hal.connect()
+    try:
+        hal.estop()
+        before = env.steps
+        assert hal.idle_step() is True, "the HAL's own latch"
+        assert env.steps == before + 1
+        before = env.steps
+        assert hal.step_estop_hold() is True, "the node's latch (SimSensorBridge)"
+        assert env.steps == before + 1
+        np.testing.assert_array_equal(env.actions[-1], np.full(env.action_dim, 0.25))
+    finally:
+        hal.disconnect()
+
+
+def test_a_latched_robot_alone_in_its_world_still_freezes() -> None:
+    description = _franka_description()
+    env = _SharedWorldSim([0.0] * len(description.joints), shared=False)
+    hal = SimAttachedHAL(env, description)
+    hal.connect()
+    try:
+        hal.estop()
+        before = env.steps
+        assert hal.step_estop_hold() is False
+        assert hal.idle_step() is False
+        assert env.steps == before
+    finally:
+        hal.disconnect()

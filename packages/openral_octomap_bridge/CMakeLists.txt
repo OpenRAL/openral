@@ -29,7 +29,7 @@ find_package(sensor_msgs REQUIRED)
 # ── Core library (octree → grid; ROS-graph-free, unit-testable) ───────────────
 
 add_library(octree_to_grid src/octree_to_grid.cpp src/payload_clearing.cpp src/self_filter.cpp
-  src/identity_clearing.cpp)
+  src/identity_clearing.cpp src/peer_grid.cpp)
 target_include_directories(octree_to_grid
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -54,6 +54,13 @@ target_link_libraries(robot_self_filter PRIVATE octree_to_grid)
 ament_target_dependencies(robot_self_filter
   PUBLIC rclcpp tf2 tf2_ros tf2_geometry_msgs geometry_msgs sensor_msgs openral_msgs)
 install(TARGETS robot_self_filter DESTINATION lib/${PROJECT_NAME})
+
+# The other robots of the workcell as the kernel's peer grid (ADR-0137).
+add_executable(peer_voxels src/peer_voxels_node.cpp)
+target_link_libraries(peer_voxels PRIVATE octree_to_grid)
+ament_target_dependencies(peer_voxels
+  PUBLIC rclcpp tf2 tf2_ros tf2_geometry_msgs geometry_msgs sensor_msgs openral_msgs)
+install(TARGETS peer_voxels DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY include/ DESTINATION include)
 install(
@@ -84,6 +91,8 @@ if(BUILD_TESTING)
   target_link_libraries(test_payload_clearing octree_to_grid)
   ament_add_gtest(test_identity_clearing test/test_identity_clearing.cpp)
   target_link_libraries(test_identity_clearing octree_to_grid)
+  ament_add_gtest(test_peer_grid test/test_peer_grid.cpp)
+  target_link_libraries(test_peer_grid octree_to_grid)
   # The real node, in-process: its class is the private src/ header.
   # The FK equivalence test links the kernel library: a TEST-only dependency,
   # so the filter's runtime stays in Layer 2 (see self_filter.hpp).

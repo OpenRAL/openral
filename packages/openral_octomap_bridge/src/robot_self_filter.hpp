@@ -79,6 +79,7 @@
 #include "openral_octomap_bridge/identity_clearing.hpp"
 #include "openral_octomap_bridge/payload_clearing.hpp"
 #include "openral_octomap_bridge/self_filter.hpp"
+#include "self_model_params.hpp"
 
 namespace openral_octomap_bridge {
 
@@ -86,40 +87,10 @@ class RobotSelfFilter : public rclcpp::Node {
 public:
   explicit RobotSelfFilter(const rclcpp::NodeOptions& options = rclcpp::NodeOptions())
       : rclcpp::Node("openral_robot_self_filter", options) {
-    SelfModelParams params;
-    params.n_links = this->declare_parameter<std::int64_t>("collision_n_links", 0);
-    params.parent = declare_ints("collision_parent");
-    params.joint_kind = declare_ints("collision_joint_kind");
-    params.dof_index = declare_ints("collision_dof_index");
-    params.origin_xyzrpy = declare_doubles("collision_origin_xyzrpy");
-    params.axis = declare_doubles("collision_axis");
-    params.mimic_multiplier = declare_doubles("collision_mimic_multiplier");
-    params.mimic_offset = declare_doubles("collision_mimic_offset");
-    params.curve_point_first = declare_ints("collision_curve_point_first");
-    params.curve_point_count = declare_ints("collision_curve_point_count");
-    params.curve_points = declare_doubles("collision_curve_points");
-    params.link_names = declare_strings("collision_link_names");
-    params.capsule_link = declare_ints("collision_capsule_link");
-    params.capsule_radius = declare_doubles("collision_capsule_radius");
-    params.capsule_half_length = declare_doubles("collision_capsule_half_length");
-    params.capsule_origin_xyzrpy = declare_doubles("collision_capsule_origin_xyzrpy");
-    params.box_link = declare_ints("collision_box_link");
-    params.box_half_extents = declare_doubles("collision_box_half_extents");
-    params.box_origin_xyzrpy = declare_doubles("collision_box_origin_xyzrpy");
-    // The kernel's tight geometry for those boxes (a 26-DOP and, within the
-    // kernel's vertex budget, the exact convex hull). A box that carries one is
-    // filtered against it rather than against the box's corner slack.
-    params.box_hull = declare_ints("collision_box_hull");
-    params.hull_dop_lo = declare_doubles("collision_hull_dop_lo");
-    params.hull_dop_hi = declare_doubles("collision_hull_dop_hi");
-    params.hull_vertex_first = declare_ints("collision_hull_vertex_first");
-    params.hull_vertex_count = declare_ints("collision_hull_vertex_count");
-    params.hull_vertices = declare_doubles("collision_hull_vertices");
-    const auto joint_names = declare_strings("collision_joint_names");
-    // Parallel to `collision_joint_names`: a second spelling each dof answers
-    // to (the manifest's `sim_joint_name`, which is the upstream name a vendor
-    // `/joint_states` uses). Empty entries are ignored.
-    const auto joint_aliases = declare_strings("collision_joint_aliases");
+    DeclaredSelfModel declared = declare_self_model(*this);
+    const SelfModelParams& params = declared.params;
+    const auto& joint_names = declared.joint_names;
+    const auto& joint_aliases = declared.joint_aliases;
 
     padding_m_ = this->declare_parameter<double>("padding_m", 0.02);
     max_skew_s_ = this->declare_parameter<double>("max_joint_state_skew_s", 0.1);

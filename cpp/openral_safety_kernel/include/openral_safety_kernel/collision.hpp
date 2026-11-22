@@ -1335,9 +1335,13 @@ bool jacobian_dls_step(const CollisionModel& model, const CollisionScratch& scra
 /// two exempt sets. Every tolerated pair within the margin is COUNTED in
 /// `workspace_pairs` with the deepest one's link/cell/distance — disclosure,
 /// never silent.
+/// `unchecked_links`: per link, non-zero = that link's primitives are not checked
+/// against this grid (null = every link is). ADR-0137: the peer grid skips the links
+/// no chunk moves. An argument, not a `VoxelGrid` field: `VoxelGrid` crosses the
+/// exemption-provider ABI (`CandidateView::grid`), whose layout this leaves alone.
 CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionScratch& scratch,
-                                   const VoxelGrid& grid, double margin,
-                                   double band_m = 0.0) noexcept;
+                                   const VoxelGrid& grid, double margin, double band_m = 0.0,
+                                   const std::uint8_t* unchecked_links = nullptr) noexcept;
 
 /// Validate + resolve parsed attached-object inputs into the fixed-capacity
 /// `out` model. `out.objects` / `out.primitives` / `out.touch_links` must

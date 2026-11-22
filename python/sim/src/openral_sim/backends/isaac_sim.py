@@ -526,6 +526,27 @@ class _IsaacSimSidecar(SidecarSimRollout):
             raise ROSConfigError("Isaac rollout built without an action layout.")
         return pack_isaac_action(action, self.layout, prev, carry_twist=carry_twist)
 
+    def estop_hold_action(self, obs: dict[str, Any] | None) -> NDArray[np.float32] | None:
+        """While this robot's e-stop is latched: its hold, in a shared world only; else ``None``.
+
+        One robot of a shared sidecar (openral-pro#99) does not freeze the world when it
+        stops stepping: the other robots step it, so its joint states would stop while its
+        world moves on, and every peer's ``peer_voxels`` would refuse them as stale
+        (ADR-0137). Stepped with the idle hold instead (every joint target kept, which is
+        one control tick from where the arm already is; the base stopped), its observation
+        stays current. Nothing is written to the targets, so carried objects stay carried.
+        ``None`` (freeze: nothing steps the world but this robot) for a sidecar of its own.
+        ``obs`` is unused; the hook takes it so a backend can hold from measured state.
+
+        Example:
+            >>> rollout.estop_hold_action(None)  # doctest: +SKIP
+            array([nan, nan, ..., 0., 0., 0.], dtype=float32)
+        """
+        del obs
+        if not self._client.robot:
+            return None
+        return self.idle_action()
+
     def idle_action(self) -> NDArray[np.float32]:
         """HOLD every joint target (NaN) and stop the base — never "drive to 0 rad"."""
         out = np.full(self.action_dim, np.nan, dtype=np.float32)
