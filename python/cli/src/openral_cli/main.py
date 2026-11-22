@@ -2608,7 +2608,7 @@ def _resolve_family_and_patch(
             f"[red]Invalid family:[/red] {response!r}. Valid values: {', '.join(RSKILL_FAMILIES)}"
         )
         raise typer.Exit(code=1)
-    return cast("RSkillFamily", response), None
+    return response, None
 
 
 def _resolve_or_prompt(value: str | None, *, prompt: str, default: str, skip_prompt: bool) -> str:

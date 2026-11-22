@@ -123,7 +123,7 @@ def _resolve_checkpoint(model: str, override_env: str = "OPENRAL_LINGBOT_VLA2_CK
     p = Path(model).expanduser()
     if p.is_dir():
         return str(p)
-    from huggingface_hub import snapshot_download
+    from huggingface_hub import constants, snapshot_download
 
     ref = model[len("hf://") :] if model.startswith("hf://") else model
     repo_id, _, revision = ref.partition("@")
@@ -133,6 +133,9 @@ def _resolve_checkpoint(model: str, override_env: str = "OPENRAL_LINGBOT_VLA2_CK
         # ``*.yaml`` fetches the V1 checkpoint's ``lingbotvla_cli.yaml`` (the V1
         # loader reads it from the ckpt dir directly); harmless for v2.
         allow_patterns=["*.safetensors", "*.json", "*.yaml", "tokenizer*"],
+        # huggingface_hub 1.33+ (not 1.13) lists the repo tree for a sha pin unless
+        # local_files_only, so offline it raised on a cache without a tree listing (#720).
+        local_files_only=constants.HF_HUB_OFFLINE,
     )
 
 

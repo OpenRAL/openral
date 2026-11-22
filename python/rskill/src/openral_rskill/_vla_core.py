@@ -1479,8 +1479,12 @@ def local_snapshot_dir(
     candidate = Path(repo_id)
     if candidate.is_dir():
         return str(candidate.resolve())
-    from huggingface_hub import snapshot_download
+    from huggingface_hub import is_offline_mode, snapshot_download
 
+    # huggingface_hub 1.33+ (not 1.13) skips its offline cache lookup for a sha-pinned
+    # snapshot_download unless local_files_only=True (it lists the repo tree instead and
+    # raises OfflineModeIsEnabled on caches written before tree listings were cached).
+    extra.setdefault("local_files_only", is_offline_mode())
     return str(
         snapshot_download(
             repo_id=repo_id, revision=revision, ignore_patterns=list(ignore_patterns), **extra

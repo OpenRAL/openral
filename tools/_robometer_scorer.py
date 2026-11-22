@@ -65,10 +65,12 @@ def _resolve_local_dir(weights: str) -> str:
     weights = weights.removeprefix("local://")
     if os.path.isdir(weights):
         return weights
-    from huggingface_hub import snapshot_download
+    from huggingface_hub import is_offline_mode, snapshot_download
 
     repo, rev = _split_repo_rev(weights)
-    return snapshot_download(repo, revision=rev)
+    # huggingface_hub 1.33+ (not 1.13) lists the repo tree for a sha pin unless
+    # local_files_only, so offline it raised on a cache without a tree listing.
+    return snapshot_download(repo, revision=rev, local_files_only=is_offline_mode())
 
 
 def _native_config() -> RobometerConfig:

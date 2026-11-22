@@ -296,9 +296,13 @@ def _make_wrapper(*, work: Path, source: Path, args: argparse.Namespace) -> Path
             # revision and rejects `@` in a repo id, so resolve the pin here.
             _model_path = {args.model!r}
             if "@" in _model_path and not os.path.exists(_model_path):
-                from huggingface_hub import snapshot_download
+                from huggingface_hub import constants, snapshot_download
                 _repo, _, _rev = _model_path.partition("@")
-                _model_path = snapshot_download(_repo, revision=_rev)
+                # local_files_only offline: huggingface_hub 1.33+ otherwise lists the
+                # repo tree for a sha pin and raises on an older cache (#720).
+                _model_path = snapshot_download(
+                    _repo, revision=_rev, local_files_only=constants.HF_HUB_OFFLINE
+                )
             sys.argv = [
                 "run_rldx_server",
                 "--model-path", _model_path,

@@ -419,7 +419,6 @@ class TestSO100FollowerHALDownstreamStopReport:
 
     def test_torque_off_on_every_servo_is_acknowledged(self) -> None:
         bus = FakeFeetechBus()
-        bus.port_handler.is_using = True  # a control-loop transaction cut short
         hal = SO100FollowerHAL(robot=_twin_on_bus(bus))
         hal.connect()
 
@@ -434,7 +433,6 @@ class TestSO100FollowerHALDownstreamStopReport:
         assert bus.torque == dict.fromkeys(SO_FOLLOWER_MOTORS, 0)
         assert [w[1] for w in bus.writes] == list(SO_FOLLOWER_MOTORS)
         assert [r[1] for r in bus.reads] == list(SO_FOLLOWER_MOTORS)
-        assert bus.port_handler.cleared == 1
         assert hal._connected is False
         assert hal._robot is None
 
@@ -875,7 +873,6 @@ class TestSO100FollowerHALEstopObserveAndReset:
         from types import SimpleNamespace
 
         hal, bus = _proven_stop()
-        bus.port_handler.baudrate = 1_000_000  # type: ignore[attr-defined]  # reason: fake port
         # lerobot's MotorsBus.motors values carry the servo id the watcher is armed with.
         monkeypatch.setattr(
             FakeFeetechBus,

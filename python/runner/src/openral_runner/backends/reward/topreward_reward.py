@@ -41,12 +41,22 @@ def _pinned_snapshot_dir(repo: str, revision: str) -> str:
 
     lerobot loads ``vlm_name`` with no ``revision=``, so a pin is honoured by
     handing it this directory instead of the repo id. No ``local_files_only``
-    shortcut: it returns a snapshot dir that exists even when only some files
-    were cached, which would hand lerobot a directory without the weights.
+    shortcut online: it returns a snapshot dir that exists even when only some
+    files were cached, which would hand lerobot a directory without the weights.
+    Offline it is the only lookup there is: huggingface_hub 1.33+ otherwise lists
+    the repo tree for a sha pin and raises on a cache written before tree
+    listings were cached.
     """
-    from huggingface_hub import snapshot_download  # noqa: PLC0415
+    from huggingface_hub import is_offline_mode, snapshot_download  # noqa: PLC0415
 
-    return str(snapshot_download(repo, revision=revision, ignore_patterns=_SNAPSHOT_IGNORE))
+    return str(
+        snapshot_download(
+            repo,
+            revision=revision,
+            ignore_patterns=_SNAPSHOT_IGNORE,
+            local_files_only=is_offline_mode(),
+        )
+    )
 
 
 class TOPRewardMonitor:

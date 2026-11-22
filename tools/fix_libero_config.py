@@ -5,7 +5,7 @@ init_states) into ``$LIBERO_CONFIG_PATH/config.yaml`` (default
 ``~/.libero/config.yaml``) on first import, and never refreshes them.
 Switching venv/clone/workspace leaves stale paths, and the next
 ``openral sim libero`` crashes inside
-``lerobot.envs.libero.get_task_init_states`` with a confusing
+``lerobot.sim.integrations.libero.get_task_init_states`` with a confusing
 ``FileNotFoundError``. This locates the active ``libero`` package, computes
 the canonical config, and rewrites the file only when stale or absent.
 Idempotent. Invoked from the ``_ensure-libero-config`` Justfile recipe so

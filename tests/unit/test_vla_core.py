@@ -482,7 +482,7 @@ def test_read_tokenizer_repo_handles_missing_and_malformed(tmp_path: Any) -> Non
 def _word_tokenizer(words: list[str]) -> Any:
     """A real transformers tokenizer over a whitespace word vocabulary (plus <unk>/<bos>)."""
     pytest.importorskip("transformers", reason="the sim/VLA install group carries transformers")
-    from tokenizers import (  # type: ignore[import-untyped]  # reason: tokenizers ships no stubs or py.typed
+    from tokenizers import (
         Tokenizer,
         models,
         pre_tokenizers,
