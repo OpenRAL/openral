@@ -420,6 +420,14 @@ _SCENE_MESH_MAX_BYTES = 10_000_000
 #: A commanding robot that sends no step for this long (wall time) is dropped from the lockstep:
 #: the world goes on without it (openral-pro#99).
 _BARRIER_TIMEOUT_S = 5.0
+#: While no robot commands, robots that only hold step the world together: one advance per
+#: round of the robots that held within ``_IDLE_ROUND_S``, waiting at most
+#: ``_IDLE_MAX_WAIT_S`` for a slow one. Each robot's observations then stay one control
+#: period apart; stepped one by one, three holding robots put three periods between a
+#: robot's joint states and its self-filter dropped every cloud (openral-pro#99, q5090
+#: three-robot runs: the restock target never grounded).
+_IDLE_ROUND_S = 1.0
+_IDLE_MAX_WAIT_S = 0.25
 #: ``_isaac_scene_base.FRAME_MODES``, checked before a step joins the lockstep (that module
 #: loads with Kit; a unit test asserts the two agree).
 _FRAME_MODES = ("render", "fresh", "none")
@@ -452,10 +460,20 @@ class _Lockstep:
         (['a'], ['b'])
     """
 
-    def __init__(self, timeout_s: float) -> None:
+    def __init__(
+        self,
+        timeout_s: float,
+        *,
+        idle_round_s: float = _IDLE_ROUND_S,
+        idle_max_wait_s: float = _IDLE_MAX_WAIT_S,
+    ) -> None:
         self.timeout_s = timeout_s
+        self.idle_round_s = idle_round_s
+        self.idle_max_wait_s = idle_max_wait_s
         self.waiting: dict[str, tuple[bytes, dict[str, Any]]] = {}  # robot -> (route, data)
         self.commanding: dict[str, float] = {}  # robot -> when its last step came
+        self.holding: dict[str, float] = {}  # robot -> when its last idle step came
+        self.since: dict[str, float] = {}  # robot -> when its waiting step came
 
     def submit(self, robot: str, route: bytes, data: dict[str, Any], *, now: float) -> None:
         """Hold ``robot``'s step until ``release`` says the world may advance."""
@@ -463,16 +481,30 @@ class _Lockstep:
             raise ValueError(f"robot {robot!r} already has a step waiting")
         if data.get("idle"):
             self.commanding.pop(robot, None)
+            self.holding[robot] = now
         else:
             self.commanding[robot] = now
+            self.holding.pop(robot, None)
         self.waiting[robot] = (route, data)
+        self.since[robot] = now
 
-    def release(self) -> list[tuple[str, bytes, dict[str, Any]]]:
-        """The steps to answer now, in arrival order: all waiting, once every commanding robot is."""
+    def release(self, *, now: float | None = None) -> list[tuple[str, bytes, dict[str, Any]]]:
+        """The steps to answer now, in arrival order.
+
+        All waiting, once every commanding robot is. With none commanding, once every robot
+        that held within ``idle_round_s`` is waiting, or the oldest has waited
+        ``idle_max_wait_s`` (``now=None``: at once, as when the round has run out).
+        """
         if not self.waiting or any(r not in self.waiting for r in self.commanding):
             return []
+        if not self.commanding and now is not None:
+            round_ = [r for r, t in self.holding.items() if now - t <= self.idle_round_s]
+            oldest = min(self.since[r] for r in self.waiting)
+            if any(r not in self.waiting for r in round_) and now - oldest < self.idle_max_wait_s:
+                return []
         out = [(r, route, data) for r, (route, data) in self.waiting.items()]
         self.waiting.clear()
+        self.since.clear()
         return out
 
     def replied(self, robots: list[str], *, now: float) -> None:
@@ -501,6 +533,8 @@ class _Lockstep:
         """How long the server may block before ``drop_late`` has work, or ``None``."""
         if not self.waiting:
             return None
+        if not self.commanding:  # a holding round: release at the latest when it runs out
+            return max(0.0, min(self.since.values()) + self.idle_max_wait_s - now)
         silent = [t for r, t in self.commanding.items() if r not in self.waiting]
         return max(0.0, min(silent) + self.timeout_s - now) if silent else None
 
@@ -551,7 +585,7 @@ def _serve(
         return len(payload) / 1e6
 
     def answer_steps() -> None:
-        released = lock.release()
+        released = lock.release(now=time.monotonic())
         if not released:
             return
         t_req = time.perf_counter()
@@ -603,8 +637,8 @@ def _serve(
                 f"{_BARRIER_TIMEOUT_S:g} s: dropped from the lockstep",
                 flush=True,
             )
-        if late:
-            answer_steps()
+        if late or not ready:
+            answer_steps()  # a dropped robot, or a holding round that ran out
         if not ready:
             continue
         route, _, raw = sock.recv_multipart()
