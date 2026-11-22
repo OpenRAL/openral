@@ -98,7 +98,7 @@ just bootstrap && just sync --group sim
 just sim-diffusion-pusht
 # which runs:
 #     openral benchmark scene --config scenes/benchmark/pusht.yaml \
-#       --rskill rskill://rskills/diffusion-pusht --no-update-manifest --n-episodes 1 --save-dir example_videos
+#       --rskill rskills/diffusion-pusht --no-write-eval --n-episodes 1 --save-dir example_videos
 
 # Full 50-episode protocol (eval/pusht.json):
 openral benchmark run --suite pusht --rskill diffusion-pusht

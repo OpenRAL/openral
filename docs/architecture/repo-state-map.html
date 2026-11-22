@@ -1654,7 +1654,7 @@ const CROSS = [
     title: "openral sim run subcommand",
     pkg: "python/sim · cli.py",
     status: "green",
-    desc: "Typer group `sim_app` mounted on the ral tree as `openral sim`; the leaf `openral sim run` accepts --config scenes/sim/*.yaml (rejects DeployScene + BenchmarkScene via load_scene_strict) plus --rskill rskill://rskills/<id> (and --task / --instruction / --max-steps / --n-episodes / --robot overrides). Composes the SimScene + rSkill manifest into the runtime bundle, then drives openral_sim.SimRunner.activate / run / deactivate to roll one or more episodes and print success / steps / latency. --view/--no-view opens a passive mujoco.viewer in real time; tri-state default auto-enables on a display and auto-disables under MUJOCO_GL=egl or with no DISPLAY (_resolve_view). OTel service name: `ral-sim`.",
+    desc: "Typer group `sim_app` mounted on the ral tree as `openral sim`; the leaf `openral sim run` accepts --config scenes/sim/*.yaml (rejects DeployScene + BenchmarkScene via load_scene_strict) plus --rskill rskills/<id> (and --task / --instruction / --max-steps / --n-episodes / --robot overrides). Composes the SimScene + rSkill manifest into the runtime bundle, then drives openral_sim.SimRunner.activate / run / deactivate to roll one or more episodes and print success / steps / latency. --view/--no-view opens a passive mujoco.viewer in real time; tri-state default auto-enables on a display and auto-disables under MUJOCO_GL=egl or with no DISPLAY (_resolve_view). OTel service name: `ral-sim`.",
     inputs: ["SimScene yaml", "RSkillManifest"],
     outputs: ["episode result", "live mujoco.viewer window"],
     schemas: ["SimScene", "RSkillManifest"],
