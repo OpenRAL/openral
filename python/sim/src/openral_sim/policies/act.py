@@ -19,6 +19,7 @@ This module imports torch / lerobot lazily.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -344,7 +345,6 @@ def _build_act(env_cfg: Any) -> _ACTAdapter:
         try:
             import torch
             from lerobot.policies.act.modeling_act import ACTPolicy
-            from openral_rskill import _lerobot_compat  # noqa: F401
         except ImportError as exc:  # pragma: no cover - opt-in
             raise ROSConfigError(
                 "ACT adapter requires torch + lerobot; install with: "
@@ -485,44 +485,16 @@ def _build_act(env_cfg: Any) -> _ACTAdapter:
 
 
 def _sanitize_act_config_json(snapshot_dir: str) -> None:
-    """Drop ACTConfig fields the installed lerobot version doesn't accept.
+    """Drop ``ACTConfig`` fields the installed lerobot rejects (training forks add some).
 
-    Training-side forks of ACT (e.g. ``kafarobotics/lerobot``) sometimes
-    add knobs like ``n_state_dim`` to ``ACTConfig`` and bake them into
-    the published ``config.json``. The vanilla ``lerobot==0.5.x``
-    ``ACTConfig`` rejects unknown fields under draccus's strict
-    dataclass decoding, breaking ``ACTPolicy.from_pretrained``. Strip
-    unknown keys in-place before the from-pretrained call so this is
-    transparent to the rest of the adapter.
-
-    Mutates ``config.json`` only when (a) the file exists, (b) it parses
-    as JSON, and (c) at least one key is unknown — otherwise it's a
-    no-op so re-runs are idempotent.
+    ``kafarobotics/lerobot``-trained ACT checkpoints bake ``n_state_dim`` into
+    ``config.json``; draccus refuses unknown keys, so ``ACTPolicy.from_pretrained``
+    would fail. See ``openral_rskill._lerobot_compat.strip_unknown_config_keys``.
     """
-    import dataclasses
-    import json
-    import os
-
     from lerobot.policies.act.configuration_act import ACTConfig
+    from openral_rskill._lerobot_compat import strip_unknown_config_keys
 
-    cfg_path = os.path.join(snapshot_dir, "config.json")
-    if not os.path.exists(cfg_path):
-        return
-    try:
-        with open(cfg_path) as f:
-            raw = json.load(f)
-    except Exception:
-        return
-    if not isinstance(raw, dict):
-        return
-    valid = {f.name for f in dataclasses.fields(ACTConfig)} | {"type"}
-    unknown = [k for k in raw if k not in valid]
-    if not unknown:
-        return
-    for k in unknown:
-        raw.pop(k, None)
-    with open(cfg_path, "w") as f:
-        json.dump(raw, f, indent=4)
+    strip_unknown_config_keys(ACTConfig, Path(snapshot_dir) / "config.json")
 
 
 def _apply_temporal_ensemble(policy: Any, spec_extra: dict[str, Any]) -> float | None:
