@@ -57,6 +57,10 @@ _LEGACY_NO_PROCESSORS_ALLOWLIST: frozenset[str] = frozenset(
         # consumes the server's physical EEF output; there is no lerobot
         # PolicyProcessorPipeline or processor JSON pair to materialize.
         "lingbot-va-galaxea-a1-fruit-placement",
+        # NaT VLA (pretrained): the published checkpoint ships no normalisation stats, so the
+        # nat_vla adapter builds its pipeline at load from the manifest's dataset_uri stats;
+        # there is no saved PolicyProcessorPipeline pair to point a processors block at.
+        "nat-vla-so101-pretrained-bf16",
         # InternVLA-N1: runs its own AutoProcessor + NavDP pipeline inside the
         # py3.11 sidecar; no lerobot PolicyProcessorPipeline. `internvla_n1` is
         # excluded from `_MODERN_PROCESSOR_FAMILIES` for the same reason.
