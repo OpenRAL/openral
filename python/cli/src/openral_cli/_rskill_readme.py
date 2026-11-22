@@ -35,7 +35,9 @@ __all__ = ["build_rskill_frontmatter", "build_rskill_readme", "render_frontmatte
 # lerobot ``PolicyProcessorPipeline`` families — these load through lerobot, so the
 # HF ``library_name`` widget should point there. Other families (gr00t / rldx run
 # out-of-process; molmoact2 is a transformers custom-code model) don't.
-_LEROBOT_FAMILIES = frozenset({"smolvla", "act", "pi05", "diffusion", "xvla", "cosmos3"})
+_LEROBOT_FAMILIES = frozenset(
+    {"smolvla", "act", "pi05", "diffusion", "xvla", "lingbot_vla_v2", "nat_vla", "cosmos3"}
+)
 
 # License posture → (HF license identifier, optional license_name). HF only knows
 # a fixed SPDX-ish set; anything non-standard maps to ``other`` + a descriptive

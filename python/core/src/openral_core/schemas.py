@@ -9239,7 +9239,7 @@ Membership is checked against the policy registry ``openral_sim.POLICIES``
 in-tree manifest). In-tree families: ``smolvla``, ``pi05``, ``xvla``, ``xr1``,
 ``act``, ``diffusion``, ``rldx``, ``molmoact2``, ``gr00t``, ``diffuser_actor``,
 ``openvla``, ``lingbot_vla2``, ``lingbot_vla_v2``, ``lingbot_vla``, ``lingbot_va_a1``,
-``cosmos3``, ``internvla_n1``.
+``nat_vla``, ``cosmos3``, ``internvla_n1``.
 
 Used by the eval / runner adapters to dispatch to the right
 ``openral_sim.backends.<family>`` policy adapter without
