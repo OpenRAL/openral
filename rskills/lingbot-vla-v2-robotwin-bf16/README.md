@@ -102,7 +102,7 @@ just sync --group sim
 OPENRAL_ROBOTWIN_AUTO_PROVISION=1 openral benchmark scene \
   --config scenes/benchmark/robotwin_place_empty_cup.yaml \
   --rskill rskills/lingbot-vla-v2-robotwin-bf16 \
-  --no-update-manifest --no-write-eval --n-episodes 2
+  --no-write-eval --n-episodes 2
 ```
 
 Needs a CUDA GPU with at least 16 GB (bf16 weights plus the SAPIEN renderer).
