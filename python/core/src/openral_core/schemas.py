@@ -7450,6 +7450,23 @@ class RSkillLicensePosture(str, Enum):
     PROPRIETARY = "proprietary"  # Helix, Skild, Gemini Robotics
     UNKNOWN = "unknown"
 
+    @property
+    def allows_commercial_use(self) -> bool:
+        """Whether weights under this posture may be deployed commercially.
+
+        The one source every consumer reads (the loader's license guard, the model
+        card, the SKILL.md discovery view): ``apache-2.0`` / ``mit`` / ``bsd``,
+        ``nvidia_open_model`` (GR00T N1.7+) and ``openmdw-1.1`` (NVIDIA Cosmos 3).
+        Every other posture, ``unknown`` included, is conservatively False.
+
+        Example:
+            >>> RSkillLicensePosture.OPENMDW_1_1.allows_commercial_use
+            True
+            >>> RSkillLicensePosture.LFM_OPEN_1_0.allows_commercial_use
+            False
+        """
+        return self in _LICENSES_ALLOWING_COMMERCIAL
+
 
 class RSkillRuntime(str, Enum):
     """Inference runtime hint declared in the manifest (RFC §7.3)."""
@@ -10442,13 +10459,14 @@ class RSkillManifest(BaseModel):
     def is_commercial_use_allowed(self) -> bool:
         """Derive commercial-use posture from ``license``.
 
-        ``apache-2.0`` / ``mit`` / ``bsd`` → True. Every other posture
+        ``RSkillLicensePosture.allows_commercial_use`` of the manifest's license:
+        permissive and commercial-OK postures → True, every other posture
         (including ``unknown``) → False, conservatively. The loader
         consults this in ``rSkill._check_license``; users wanting to
         deploy a non-commercial skill in a research context set
         ``OPENRAL_ALLOW_NONCOMMERCIAL=1`` per CLAUDE.md §1.9.
         """
-        return self.license in _LICENSES_ALLOWING_COMMERCIAL
+        return self.license.allows_commercial_use
 
     @property
     def is_scaffold_placeholder(self) -> bool:
