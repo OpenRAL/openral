@@ -683,9 +683,12 @@ _Strict YAML loaders for the three scene tiers._
 ### `python/core/src/openral_core/scene_paths.py`
 _Resolve a scene YAML's relative file references beside the scene file._
 
-- `SCENE_ROBOT_ENV: str` (L21) — `OPENRAL_SCENE_ROBOT`: the robot of a several-robot scene this graph runs; every scene loader then reads that robot's own scene (`geometry.raw_scene_for_robot`).
-- `SCENE_ROBOT_MAP_FRAME_ENV: str` (L24) — `OPENRAL_SCENE_ROBOT_MAP_FRAME`: that robot's `RobotDescription.map_frame`, the frame its scene's nav goals and place zones are re-expressed in (`"map"` when unset).
-- `def anchor_scene_paths(raw: _T, scene_dir: Path) -> _T` (L39) — `raw` (a scene's YAML mapping, unmodified) with `scene.assets_uri`, `backend_options.objects[].usd`, `runtime.static_geometry_file` and `runtime.vision_attachment.segmenter_manifest` made absolute when the file exists beside the scene; schemes, absolute paths and paths with nothing beside the scene are left for the repo-root / cwd lookups. Applied by `load_scene_strict`, `load_benchmark_suite`, `load_suite_task`, `DeployScene.from_yaml` and `tools/deploy_sim_batch.py`, so a scene shipping its own assets (in this repo or another) runs from any directory.
+- `SCENE_PEERS_ENV: str` (L36) — `OPENRAL_SCENE_PEERS`: the scene's other robots, a JSON list of `[name, domain, manifest]`; each robot's graph runs a peer producer on it, whose grid its safety kernel checks with no exemption (ADR-0137).
+- `format_scene_peers(peers: list[tuple[str, int, str]]) -> str` (L40) — `(name, ROS domain, manifest path)` per peer, as `SCENE_PEERS_ENV` carries them (JSON).
+- `parse_scene_peers(value: str | None) -> list[tuple[str, int, str]]` (L50) — The inverse of `format_scene_peers`; empty for `None` or `""`.
+- `SCENE_ROBOT_ENV: str` (L29) — `OPENRAL_SCENE_ROBOT`: the robot of a several-robot scene this graph runs; every scene loader then reads that robot's own scene (`geometry.raw_scene_for_robot`).
+- `SCENE_ROBOT_MAP_FRAME_ENV: str` (L32) — `OPENRAL_SCENE_ROBOT_MAP_FRAME`: that robot's `RobotDescription.map_frame`, the frame its scene's nav goals and place zones are re-expressed in (`"map"` when unset).
+- `def anchor_scene_paths(raw: _T, scene_dir: Path) -> _T` (L94) — `raw` (a scene's YAML mapping, unmodified) with `scene.assets_uri`, `backend_options.objects[].usd`, `runtime.static_geometry_file` and `runtime.vision_attachment.segmenter_manifest` made absolute when the file exists beside the scene; schemes, absolute paths and paths with nothing beside the scene are left for the repo-root / cwd lookups. Applied by `load_scene_strict`, `load_benchmark_suite`, `load_suite_task`, `DeployScene.from_yaml` and `tools/deploy_sim_batch.py`, so a scene shipping its own assets (in this repo or another) runs from any directory.
 
 ### `python/core/src/openral_core/usd_catalog.py`
 _Optional OpenUSD reader for deploy scene declarations; it never imports or starts Isaac Sim._
