@@ -539,12 +539,12 @@ class SO100FollowerHAL(HALBase):
             )
             try:
                 robot = SO100Follower(cfg)
-            except ModuleNotFoundError as exc:
-                # lerobot's SerialMotorsBus pulls in `rustypot` at __init__
-                # time; surface a typed config error instead of leaking the raw
-                # ImportError traceback.
+            except ImportError as exc:
+                # lerobot>=0.7's SerialMotorsBus checks for `rustypot` with
+                # `require_package`, which raises a plain ImportError (no `.name`);
+                # surface a typed config error instead of the raw traceback.
                 raise ROSConfigError(
-                    f"SO-100 driver dependency missing ({exc.name!r}). "
+                    f"SO-100 driver dependency missing: {exc}. "
                     "Install with: uv add 'lerobot[feetech]' --package openral-hal"
                 ) from exc
             if not os.path.exists(self._port):

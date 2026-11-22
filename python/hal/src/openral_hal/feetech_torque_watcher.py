@@ -22,7 +22,14 @@ two signals:
 
 On death it opens the serial port (the kernel closed the dead HAL's fd), writes
 ``Torque_Enable=0`` to every servo id and reads each back, logs the per-servo
-result and exits ``0`` only when every servo reads back torque off. The retry
+result and exits ``0`` only when every servo reads back torque off.
+
+lerobot>=0.7's rustypot bus opens the port exclusively (``TIOCEXCL``), so while
+the HAL holds it the watcher cannot open it. A dropped pipe from a HAL that is
+still alive is treated like death all the way: if the port will not open, the
+watcher SIGKILLs the HAL (logged), which makes the kernel release the port, and
+cuts torque then. A HAL that closed its bus before dropping the pipe (every
+``stop(clean=False)`` call site) never reaches the kill. The retry
 budget is explicit (``_OPEN_RETRIES`` port opens, ``_TORQUE_RETRIES`` tries per
 servo) and logged (CLAUDE.md §1.4). The watcher never writes anything but
 ``Torque_Enable=0``.
@@ -70,24 +77,28 @@ _OPEN_RETRY_S = 0.02
 _PARENT_POLL_S = 0.1
 # Only delays the cut when the HAL dropped the pipe while still alive.
 _EOF_NAME_S = 0.2
+# How long the escalation waits for the SIGKILLed HAL to die and release the port.
+_KILL_WAIT_S = 2.0
 _STOP_BYTE = b"q"
 _ARMED_LINE = b"armed\n"
 
 
-def cut_torque(port: str, servo_ids: Sequence[int], baudrate: int) -> dict[int, str]:
+def cut_torque(
+    port: str, servo_ids: Sequence[int], baudrate: int, *, open_retries: int = _OPEN_RETRIES
+) -> dict[int, str]:
     """Write ``Torque_Enable=0`` to every servo on ``port`` and read it back.
 
     Every servo is attempted even if an earlier one fails. Returns
     ``{servo_id: "torque_off" | "torque_on" | "torque_unknown: <why>"}``.
 
     Raises:
-        OSError: If the port cannot be opened after ``_OPEN_RETRIES`` tries.
+        OSError: If the port cannot be opened after ``open_retries`` tries.
     """
     from scservo_sdk import PacketHandler, PortHandler  # noqa: PLC0415
 
     handler = PortHandler(port)
     last: Exception | None = None
-    for _ in range(_OPEN_RETRIES):
+    for _ in range(open_retries):
         try:
             if handler.setBaudRate(baudrate):  # opens the port at this rate
                 break
@@ -95,7 +106,7 @@ def cut_torque(port: str, servo_ids: Sequence[int], baudrate: int) -> dict[int, 
             last = exc
         time.sleep(_OPEN_RETRY_S)
     else:
-        raise OSError(f"cannot open {port!r} after {_OPEN_RETRIES} tries: {last}")
+        raise OSError(f"cannot open {port!r} after {open_retries} tries: {last}")
     packets = PacketHandler(_PROTOCOL_VERSION)
     result: dict[int, str] = {}
     try:
@@ -147,6 +158,27 @@ def _wait_for_trigger(parent_pid: int) -> str:
             return "parent_died"
 
 
+def _kill_parent(parent_pid: int, open_error: OSError) -> bool:
+    """SIGKILL a HAL that dropped the pipe yet still holds the port; True once it is gone.
+
+    Only reached when the port would not open and the HAL is alive: lerobot>=0.7's
+    bus holds the tty exclusively, so the kernel releases it only when the HAL dies.
+    """
+    if os.getppid() != parent_pid:  # already dead and reparented: the port is free
+        return True
+    log.critical(
+        "hal.torque_watcher.killing_hal_holding_port",
+        parent_pid=parent_pid,
+        open_error=str(open_error),
+    )
+    with contextlib.suppress(ProcessLookupError):
+        os.kill(parent_pid, signal.SIGKILL)
+    deadline = time.monotonic() + _KILL_WAIT_S
+    while os.getppid() == parent_pid and time.monotonic() < deadline:
+        time.sleep(_OPEN_RETRY_S)
+    return os.getppid() != parent_pid
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Watcher process entry point (spawned by ``FeetechTorqueWatcher.spawn``)."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -182,8 +214,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         states = cut_torque(args.port, ids, args.baudrate)
     except OSError as exc:
-        log.critical("hal.torque_watcher.port_unavailable", port=args.port, error=str(exc))
-        return 2
+        if trigger != "pipe_closed" or not _kill_parent(args.parent_pid, exc):
+            log.critical("hal.torque_watcher.port_unavailable", port=args.port, error=str(exc))
+            return 2
+        try:
+            # The kernel frees the tty on the dead HAL's last close; a USB-ACM
+            # teardown can lag the death, so the reopen gets the whole wait budget.
+            states = cut_torque(
+                args.port, ids, args.baudrate, open_retries=int(_KILL_WAIT_S / _OPEN_RETRY_S)
+            )
+        except OSError as exc2:
+            log.critical("hal.torque_watcher.port_unavailable", port=args.port, error=str(exc2))
+            return 2
     ok = all(s == "torque_off" for s in states.values())
     log.critical(
         "hal.torque_watcher.torque_off" if ok else "hal.torque_watcher.torque_off_unproven",

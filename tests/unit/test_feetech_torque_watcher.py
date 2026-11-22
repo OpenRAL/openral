@@ -125,6 +125,59 @@ def test_a_dropped_pipe_without_the_stop_byte_fails_closed(bus: FakeFeetechSeria
     assert [bus.torque(i) for i in _IDS] == [0] * len(_IDS)
 
 
+# A stand-in HAL that holds the port the way lerobot>=0.7's rustypot bus does
+# (TIOCEXCL: any other open fails with EBUSY), arms the watcher, then drops the
+# watcher pipe WITHOUT the stop byte and keeps running.
+_HAL_HOLDING_PORT = """
+import fcntl, importlib.util, os, sys, termios, time
+import structlog
+structlog.configure(logger_factory=structlog.PrintLoggerFactory(file=sys.stderr))
+fd = os.open(sys.argv[2], os.O_RDWR | os.O_NOCTTY)
+fcntl.ioctl(fd, termios.TIOCEXCL)
+spec = importlib.util.spec_from_file_location("watcher", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+w = mod.FeetechTorqueWatcher.spawn(sys.argv[2], [int(i) for i in sys.argv[3].split(",")], 1000000)
+print(w.proc.pid, flush=True)
+w.proc.stdin.close()
+time.sleep(60)
+"""
+
+
+def test_a_dropped_pipe_from_a_live_hal_holding_the_port_still_cuts_torque(
+    bus: FakeFeetechSerial,
+) -> None:
+    """rustypot's exclusive open would leave torque on: the watcher kills the HAL first."""
+    hal = subprocess.Popen(  # reason: fixed argv
+        [
+            sys.executable,
+            "-c",
+            _HAL_HOLDING_PORT,
+            feetech_torque_watcher.__file__,
+            bus.path,
+            ",".join(map(str, _IDS)),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        assert hal.stdout is not None and hal.stderr is not None
+        watcher_pid = int(hal.stdout.readline())
+        # The watcher must kill the HAL to get the port; the moment it dies, do
+        # what the kernel does for a real tty on its last close.
+        returncode = hal.wait(timeout=5)
+        bus.release_exclusive()
+        log = _read_until_eof(hal.stderr, _CUT_BOUND_S + 2.0)
+    finally:
+        hal.kill()
+        hal.wait()
+    assert returncode == -signal.SIGKILL, log
+    assert b"killing_hal_holding_port" in log and b"pipe_closed" in log, log
+    assert [bus.torque(i) for i in _IDS] == [0] * len(_IDS), log
+    assert not _is_running(watcher_pid)
+    assert {(addr, value) for _, addr, value in bus.writes} == {(TORQUE_ENABLE_ADDR, 0)}
+
+
 def test_a_dark_servo_makes_the_watcher_exit_nonzero(bus: FakeFeetechSerial) -> None:
     watcher = FeetechTorqueWatcher.spawn(bus.path, (*_IDS, 7), _BAUD)
     assert watcher.stop(clean=False) == 1
