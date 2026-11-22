@@ -587,10 +587,19 @@ def _lerobot_key_map(policy: Any) -> KeyMap:
     ``embed_tokens``) and then prefixes ``model.`` onto every key lacking it.
     This calls the policy's own fixer with the key names as values, so a
     lerobot upgrade that changes the renames changes them here too.
+
+    lerobot 0.7 (transformers 5.22 flattened the SigLIP tower) adds one more
+    rename outside the fixer: a ``load_state_dict`` pre-hook,
+    ``rename_legacy_vision_model_keys``, maps ``vision_tower.vision_model.*`` to
+    ``vision_tower.*``. This loader copies tensors by name and never calls
+    ``load_state_dict``, so the hook is applied here; without it 437 SigLIP
+    tensors of ``lerobot/pi05_libero_finetuned_v044`` match nothing.
     """
+    from lerobot.policies.utils import rename_legacy_vision_model_keys
 
     def key_map(keys: list[str]) -> dict[str, str]:
         fixed = policy._fix_pytorch_state_dict_keys({k: _SourceKey(k) for k in keys}, policy.config)
+        rename_legacy_vision_model_keys(policy, fixed, "")
         return {
             (name if name.startswith("model.") else f"model.{name}"): str(source)
             for name, source in fixed.items()

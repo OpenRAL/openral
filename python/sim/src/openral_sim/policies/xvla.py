@@ -6,17 +6,19 @@ adapter rather than reusing the SmolVLA one:
 - Three RGB camera slots: ``camera1``, ``camera2`` plus an in-process
   zero-tensor ``empty_camera_0`` (224x224) injected here. The xVLA
   checkpoint's processor pipeline expects all three.
-- 20-D ``observation.state`` derived from the env's full ``robot_state``
-  (eef pose + 6D rotation + joints + gripper) by ``LiberoProcessorStep``.
-  The eval-layer ``Observation`` exposes the raw nested LIBERO obs under
-  ``observation["raw"]`` so the env preprocessor can run.
+- lerobot>=0.7's ``LiberoProcessorStep`` consumes the *canonical* LIBERO
+  observation: every camera rotated 180 degrees (it rotates every view but
+  ``image`` back, the orientation xVLA was trained on) and the 8-D state
+  ``eef_pos(3) | axis-angle(3) | gripper_qpos(2)``, which it turns into the
+  9-D ``eef_pos | rot6d`` state. The LIBERO scene already exposes that 8-D
+  state as ``observation["state"]``; this adapter rotates the raw frames.
 - BART tokenizer for the task language.
 - 20-D action output that ``XVLARotation6DToAxisAngle`` collapses to the
   7-D LIBERO control vector (eef pos + axis-angle + gripper).
 
 The full pipeline (env_preprocessor → policy_preprocessor →
 policy.select_action → policy_postprocessor → env_postprocessor) is the
-same one ``lerobot-eval`` would compose; only the *raw obs / action plumbing*
+same one ``lerobot-eval`` would compose; only the obs / action plumbing
 is openral-specific.
 
 This module imports torch / lerobot lazily so installing ``openral-sim``
@@ -51,6 +53,8 @@ from openral_sim._quantization import require_supported_dtype, resolve_quant_pla
 from openral_sim.policies._policy_loading import load_manifest_for_spec
 from openral_sim.policies._processors import resolve_processor_dir
 from openral_sim.registry import POLICIES
+
+_LIBERO_STATE_DIM = 8
 
 if TYPE_CHECKING:
     from openral_core import VLASpec
@@ -102,17 +106,7 @@ class _XVLAAdapter:
 
     def _prepared_batch(self, observation: Observation, instruction: str) -> dict[str, Any]:
         """Stages 1-2: env preprocessor + policy preprocessor."""
-        raw = observation.get("raw")
-        if not isinstance(raw, dict):
-            raise ROSCapabilityMismatch(
-                "xVLA is a LIBERO-engine-only checkpoint: its env preprocessor "
-                "(LiberoProcessorStep) consumes the nested LiberoEnv obs that the "
-                "scene must expose as observation['raw']. This scene does not "
-                f"populate it (got observation['raw'] of type {type(raw).__name__}), "
-                "so xvla cannot run here — use a LIBERO scene (e.g. libero_spatial) "
-                "or a non-LIBERO-bound checkpoint."
-            )
-        batch = self._build_raw_batch(raw, observation, instruction)
+        batch = self._canonical_batch(observation, instruction)
         # Stage 1: env preprocessor (LiberoProcessorStep + image normalize + domain id).
         batch = self._env_pre(batch)
         # Stage 2: policy preprocessor (rename, tokenize, device move, normalize).
@@ -155,40 +149,27 @@ class _XVLAAdapter:
             torch=self._torch,
         )
 
-    def _build_raw_batch(
-        self,
-        raw_obs: dict[str, Any],
-        observation: Observation,
-        instruction: str,
-    ) -> dict[str, Any]:
-        """Convert the LIBERO raw obs into the env-preprocessor's input dict.
+    def _canonical_batch(self, observation: Observation, instruction: str) -> dict[str, Any]:
+        """The canonical LIBERO observation ``LiberoProcessorStep`` consumes (lerobot>=0.7).
 
-        The xVLA env preprocessor (``LiberoProcessorStep``) consumes
-        ``observation.images.image{,2}``, ``observation.images.empty_camera_0``,
-        and a nested ``observation.robot_state`` dict with tensor fields. The
-        camera frames come from ``observation["images"]`` by slot, keyed by the
-        manifest's ``image_preprocessing`` aliases; the robot state comes from
-        the raw LiberoEnv observation.
+        Each slot's frame, rotated 180 degrees as lerobot's LIBERO integration
+        delivers it (``lerobot.sim.integrations.libero.canonical_observation``),
+        under the checkpoint key the manifest's ``image_preprocessing`` names; the
+        zero ``empty_camera_0``; and the scene's 8-D canonical state.
         """
         torch = self._torch
-        device = self.device
-
-        def _hwc_uint8_to_bchw_float(img: NDArray[np.uint8]) -> Any:
-            return image_to_chw_tensor(img, torch=torch, device=device).unsqueeze(0)
-
-        def _to_tensor(arr: Any, shape: tuple[int, ...]) -> Any:
-            if arr is None:
-                return torch.zeros((1, *shape), dtype=torch.float32, device=device)
-            np_arr = np.asarray(arr, dtype=np.float32)
-            return torch.from_numpy(np_arr).reshape(1, *shape).to(device)
-
+        state = np.asarray(observation.get("state"), dtype=np.float32).reshape(-1)
+        if state.shape[0] != _LIBERO_STATE_DIM:
+            raise ROSCapabilityMismatch(
+                "xVLA is a LIBERO-only checkpoint: it needs the 8-D canonical LIBERO state "
+                "eef_pos(3) | axis-angle(3) | gripper_qpos(2) as observation['state']; "
+                f"got {state.shape[0]}-D — use a LIBERO scene (e.g. libero_spatial)."
+            )
         images = observation.get("images", {})
         h, w = self._empty_camera_size
         batch: dict[str, Any] = {"task": instruction or observation.get("task", "")}
         from openral_sim.policies._video_capture import to_input_frame
 
-        # The last slot (LIBERO camera2 = eye-in-hand) is the preview.
-        preview = None
         for slot, key in zip(self._camera_keys, self._image_keys, strict=True):
             if slot not in images:
                 # Skipping it would hand the processor an incomplete batch.
@@ -196,33 +177,14 @@ class _XVLAAdapter:
                     f"xVLA needs camera slot {slot!r} in observation['images']; "
                     f"got {sorted(images)}"
                 )
-            preview = images[slot]
-            batch[key] = _hwc_uint8_to_bchw_float(preview)
-        if preview is not None:
-            self._last_input_frame = to_input_frame(preview)
+            frame = np.ascontiguousarray(np.asarray(images[slot])[::-1, ::-1])
+            batch[key] = image_to_chw_tensor(frame, torch=torch, device=self.device).unsqueeze(0)
+            # The last slot (LIBERO camera2 = eye-in-hand) is the preview.
+            self._last_input_frame = to_input_frame(images[slot])
         batch["observation.images.empty_camera_0"] = torch.zeros(
-            1, 3, h, w, dtype=torch.float32, device=device
+            1, 3, h, w, dtype=torch.float32, device=self.device
         )
-
-        robot_state = raw_obs.get("robot_state", {}) or {}
-        eef = robot_state.get("eef", {}) or {}
-        gripper = robot_state.get("gripper", {}) or {}
-        joints = robot_state.get("joints", {}) or {}
-        batch["observation.robot_state"] = {
-            "eef": {
-                "pos": _to_tensor(eef.get("pos"), (3,)),
-                "mat": _to_tensor(eef.get("mat"), (3, 3)),
-                "quat": _to_tensor(eef.get("quat"), (4,)),
-            },
-            "gripper": {
-                "qpos": _to_tensor(gripper.get("qpos"), (2,)),
-                "qvel": _to_tensor(gripper.get("qvel"), (2,)),
-            },
-            "joints": {
-                "pos": _to_tensor(joints.get("pos"), (7,)),
-                "vel": _to_tensor(joints.get("vel"), (7,)),
-            },
-        }
+        batch["observation.state"] = torch.from_numpy(state).unsqueeze(0).to(self.device)
         return batch
 
 
@@ -252,7 +214,6 @@ def _build_xvla(env_cfg: Any) -> _XVLAAdapter:
             transition_to_batch,
             transition_to_policy_action,
         )
-        from openral_rskill import _lerobot_compat  # noqa: F401
     except ImportError as exc:  # pragma: no cover - opt-in
         raise ROSConfigError(
             "xVLA adapter requires torch + lerobot[libero]; install with: "

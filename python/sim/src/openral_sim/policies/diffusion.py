@@ -165,7 +165,6 @@ def _build_diffusion(env_cfg: Any) -> _DiffusionAdapter:
     try:
         import torch
         from lerobot.policies.diffusion.modeling_diffusion import DiffusionPolicy
-        from openral_rskill import _lerobot_compat  # noqa: F401
     except ImportError as exc:  # pragma: no cover - opt-in
         raise ROSConfigError(
             "Diffusion Policy adapter requires torch + lerobot; install with: "

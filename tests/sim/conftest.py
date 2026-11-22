@@ -1,8 +1,5 @@
 """Sim test session bootstrap.
 
-Pre-stubs the broken ``lerobot.policies.groot.modeling_groot`` module before any test
-imports ``lerobot.policies``. See ``openral_rskill._lerobot_compat``.
-
 Pins every sim test to its own DDS domain — see the module-level ``os.environ`` block below
 for why that is a correctness requirement here, and the one setting that must NOT be added
 alongside it.
@@ -23,7 +20,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-import openral_rskill._lerobot_compat  # noqa: F401
 import pytest
 
 from tests.sim.safety._kernel_subprocess import isolated_domain_id

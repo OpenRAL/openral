@@ -394,8 +394,7 @@ class _LiberoSim:
             "state": state_8d,
             "task": getattr(self._env, "task_description", self.task.instruction),
             # Preserve the raw nested LiberoEnv observation for adapters that
-            # need the full robot_state dict (e.g. xVLA's env preprocessor
-            # consumes eef.mat / joints.pos / gripper.qvel directly).
+            # need fields the canonical `state` drops (eef.mat, joints, qvel).
             "raw": obs,
         }
 
