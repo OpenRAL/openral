@@ -271,9 +271,9 @@ just sim-act-libero                 # ACT × LIBERO            (paper protocol)
 # RoboCasa has no dedicated recipe — drive it through the generic `sim-eval`
 # with one of the in-tree RoboCasa SimScenes (XR-1 is the maintained pairing;
 # there is no π0.5 RoboCasa rSkill).
-just sim-eval scenes/sim/xr1_robocasa_pnp.yaml --rskill rskill://rskills/xr1-robocasa
+just sim-eval scenes/sim/xr1_robocasa_pnp.yaml --rskill rskills/xr1-robocasa
 
-# BenchmarkScene-tier — `openral benchmark scene --no-update-manifest \
+# BenchmarkScene-tier — `openral benchmark scene --no-write-eval \
 #     --n-episodes 1 --save-dir` (paper protocol, single rollout for smoke).
 just sim-metaworld --task metaworld/reach-v3
 just sim-maniskill3                 # SAPIEN-backed PickCube-v1

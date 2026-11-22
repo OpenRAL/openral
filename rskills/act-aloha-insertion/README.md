@@ -121,8 +121,8 @@ just sim-custom
 ```bash
 MUJOCO_GL=egl uv run --all-packages --group sim openral benchmark scene \
   --config scenes/benchmark/aloha_insertion.yaml \
-  --rskill rskill://rskills/act-aloha-insertion \
-  --no-update-manifest --n-episodes 1 --save-dir example_videos
+  --rskill rskills/act-aloha-insertion \
+  --no-write-eval --n-episodes 1 --save-dir example_videos
 ```
 
 ## License

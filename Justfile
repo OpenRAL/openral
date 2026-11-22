@@ -594,45 +594,45 @@ sim-pi05-libero *args: _strip-hf-libero-egg _ensure-libero-config
     MUJOCO_GL=egl uv run --all-packages --group libero openral sim run --config scenes/sim/libero_spatial.yaml --rskill rskills/pi05-libero-int8 --save-video example_videos {{args}}
 
 # MetaWorld push-v2 with SmolVLA — 1-episode demo via the BenchmarkScene tier
-# (no SimScene sibling for MetaWorld today). `--no-update-manifest
-# --no-write-eval` keeps the rSkill's recorded benchmark numbers (rskill.yaml and
-# eval/scene_*.json) untouched on a demo run, as in every benchmark-scene recipe
-# below; lift both flags (and bump `--n-episodes`) for a paper-comparable claim.
+# (no SimScene sibling for MetaWorld today). `--no-write-eval` keeps the rSkill's
+# recorded benchmark numbers (eval/scene_*.json and, since it skips the write-back
+# too, rskill.yaml) untouched on a demo run, as in every benchmark-scene recipe
+# below; drop it (and bump `--n-episodes`) for a paper-comparable claim.
 # Uses EGL (not osmesa) because osmesa hits "Default framebuffer is not complete, error 0x0"
 # on Sawyer's MetaWorld scenes; EGL renders offscreen against the GPU's framebuffer object.
 # Requires the metaworld benchmark package to be installed once:
 #   uv run pip install metaworld==3.0.0 --no-deps
 sim-metaworld *args:
-    MUJOCO_GL=egl uv run --all-packages --group metaworld openral benchmark scene --config scenes/benchmark/metaworld_push.yaml --rskill rskills/smolvla-metaworld --no-update-manifest --no-write-eval --n-episodes 1 --save-dir example_videos {{args}}
+    MUJOCO_GL=egl uv run --all-packages --group metaworld openral benchmark scene --config scenes/benchmark/metaworld_push.yaml --rskill rskills/smolvla-metaworld --no-write-eval --n-episodes 1 --save-dir example_videos {{args}}
 
 # gym-aloha bimanual cube-transfer with ACT — BenchmarkScene tier demo (1 episode).
 # Uses EGL (not osmesa) for the same reason as sim-metaworld: osmesa fails with
 # "Default framebuffer is not complete, error 0x0" on the aloha MJCF render context.
 sim-act-aloha *args:
-    MUJOCO_GL=egl uv run --all-packages --group sim openral benchmark scene --config scenes/benchmark/aloha_transfer_cube.yaml --rskill rskills/act-aloha --no-update-manifest --no-write-eval --n-episodes 1 --save-dir example_videos {{args}}
+    MUJOCO_GL=egl uv run --all-packages --group sim openral benchmark scene --config scenes/benchmark/aloha_transfer_cube.yaml --rskill rskills/act-aloha --no-write-eval --n-episodes 1 --save-dir example_videos {{args}}
 
 # gym-pusht with Diffusion Policy (pymunk 2-D rigid body) — BenchmarkScene tier demo (1 episode).
 sim-diffusion-pusht *args:
-    uv run --all-packages --group sim openral benchmark scene --config scenes/benchmark/pusht.yaml --rskill rskills/diffusion-pusht --no-update-manifest --no-write-eval --n-episodes 1 --save-dir example_videos {{args}}
+    uv run --all-packages --group sim openral benchmark scene --config scenes/benchmark/pusht.yaml --rskill rskills/diffusion-pusht --no-write-eval --n-episodes 1 --save-dir example_videos {{args}}
 
 # ManiSkill3 PickCube-v1 — 1-episode plumbing rollout against the adapter
 # (no MS3-specific rSkill ships in-tree yet; pass --rskill rskills/<id>
 # via {{args}} to swap in your own). Uses the BenchmarkScene tier so the
 # scene/task/seed plumbing matches what tests/sim covers end-to-end.
 sim-maniskill3 *args:
-    uv run --all-packages --group maniskill3 openral benchmark scene --config scenes/benchmark/maniskill_pick_cube.yaml --rskill rskills/smolvla-maniskill-franka --no-update-manifest --no-write-eval --n-episodes 1 --save-dir example_videos {{args}}
+    uv run --all-packages --group maniskill3 openral benchmark scene --config scenes/benchmark/maniskill_pick_cube.yaml --rskill rskills/smolvla-maniskill-franka --no-write-eval --n-episodes 1 --save-dir example_videos {{args}}
 
 # SimplerEnv WidowX carrot-on-plate — BenchmarkScene tier demo (1 episode).
 # Pairs with the rldx1-ft-simpler-widowx-nf4 rSkill (heavy out-of-process
 # sidecar; bootstraps lazily on first run).
 sim-simpler-widowx *args:
-    uv run --all-packages --group simpler-env openral benchmark scene --config scenes/benchmark/widowx_carrot_on_plate.yaml --rskill rskills/rldx1-ft-simpler-widowx-nf4 --no-update-manifest --no-write-eval --n-episodes 1 --save-dir example_videos {{args}}
+    uv run --all-packages --group simpler-env openral benchmark scene --config scenes/benchmark/widowx_carrot_on_plate.yaml --rskill rskills/rldx1-ft-simpler-widowx-nf4 --no-write-eval --n-episodes 1 --save-dir example_videos {{args}}
 
 # Custom example — ACT (insertion checkpoint) x gym-aloha AlohaInsertion-v0.
 # BenchmarkScene tier demo (1 episode); pairs with the rskills/act-aloha-insertion
 # rSkill. See scenes/benchmark/aloha_insertion.yaml for the canonical eval shape.
 sim-custom *args:
-    MUJOCO_GL=egl uv run --all-packages --group sim openral benchmark scene --config scenes/benchmark/aloha_insertion.yaml --rskill rskills/act-aloha-insertion --no-update-manifest --no-write-eval --n-episodes 1 --save-dir example_videos {{args}}
+    MUJOCO_GL=egl uv run --all-packages --group sim openral benchmark scene --config scenes/benchmark/aloha_insertion.yaml --rskill rskills/act-aloha-insertion --no-write-eval --n-episodes 1 --save-dir example_videos {{args}}
 
 # LIBERO sim eval with ACT (SimScene tier — per-policy comparison against
 # smolvla/xvla/pi05 on the same suite).

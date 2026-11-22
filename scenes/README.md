@@ -105,7 +105,7 @@ just sim-act-libero                 # ACT × LIBERO            (per-policy compa
 # OPENRAL_ALLOW_REMOTE_CODE=1 openral sim run --config scenes/sim/xr1_robocasa_pnp.yaml --rskill rskills/xr1-robocasa
 # OPENRAL_ALLOW_REMOTE_CODE=1 openral sim run --config scenes/sim/xr1_robocasa365_close_blender_lid.yaml --rskill rskills/xr1-robocasa365
 
-# BenchmarkScene-tier — `openral benchmark scene --no-update-manifest --n-episodes 1`.
+# BenchmarkScene-tier — `openral benchmark scene --no-write-eval --n-episodes 1`.
 just sim-metaworld --task metaworld/reach-v3
 just sim-maniskill3                 # SAPIEN-backed PickCube-v1
 just sim-simpler-widowx             # RLDX-1 × WidowX carrot-on-plate

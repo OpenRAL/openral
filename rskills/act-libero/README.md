@@ -83,7 +83,7 @@ CC=/usr/bin/gcc just sync --group libero    # first time only
 just sim-act-libero
 # which runs:
 #   openral sim run --config scenes/sim/libero_spatial.yaml \
-#     --rskill rskill://rskills/act-libero --save-video example_videos
+#     --rskill rskills/act-libero --save-video example_videos
 ```
 
 The shipped sim YAML pins `libero_spatial/0` for a 100-step
