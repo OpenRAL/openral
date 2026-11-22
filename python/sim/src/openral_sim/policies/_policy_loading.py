@@ -125,7 +125,6 @@ def lazy_import_lerobot(
     try:
         import torch
         from lerobot.policies.factory import make_pre_post_processors
-        from openral_rskill import _lerobot_compat  # noqa: F401
     except ImportError as exc:  # pragma: no cover - opt-in
         raise ROSConfigError(
             f"{adapter_name} adapter requires torch + lerobot; "

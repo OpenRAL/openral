@@ -1,70 +1,74 @@
-"""Compatibility shim for ``lerobot.policies`` import side-effects.
+"""Compatibility helpers for checkpoints saved by a different lerobot version.
 
-Importing ``lerobot.policies`` (any submodule) eagerly initialises
-``lerobot.policies.groot``. Upstream ``lerobot==0.5.0/0.5.1`` shipped a
-``GR00TN15Config`` dataclass that failed to construct on Python 3.12 with
-``transformers>=5.3`` (``TypeError: non-default argument 'backbone_cfg'
-follows default argument``), which crashed the whole package import.
-
-For that broken combination this module installs a stub
-``lerobot.policies.groot.modeling_groot`` so the package initialises.
-
-On ``lerobot>=0.6.0`` GR00T-N1.7 is first-party and imports cleanly, so the
-shim self-disables: it must NOT install the stub, because a stub
-``GrootPolicy`` would shadow the real class and break the in-process GR00T
-backend (``openral_sim.policies.gr00t``). Importing this module is therefore a
-harmless no-op on a modern lerobot.
+lerobot parses a checkpoint's ``config.json`` through draccus, which rejects any
+key the installed config dataclass does not declare. Checkpoints saved by
+another lerobot version or a training fork (e.g. ``kafarobotics/lerobot``'s
+``n_state_dim`` on ACT) carry such keys, so ``from_pretrained`` fails before it
+builds the policy. ``strip_unknown_config_keys`` drops them in place.
 """
 
 from __future__ import annotations
 
 import dataclasses
-import importlib
 import json
-import sys
-import types
 from pathlib import Path
+from typing import Any
 
 import structlog
 
 log = structlog.get_logger(__name__)
 
-_STUB_NAME = "lerobot.policies.groot.modeling_groot"
 
+def strip_unknown_config_keys(config_cls: type[Any], cfg_path: Path) -> list[str]:
+    """Rewrite ``cfg_path`` without the keys ``config_cls`` does not declare.
 
-def _install_stub() -> None:
-    if _STUB_NAME in sys.modules:
-        return
+    Keeps the draccus ``type`` discriminator. Idempotent: a missing, unparsable
+    or already-clean file is left untouched.
+
+    Args:
+        config_cls: The installed lerobot config dataclass (e.g. ``ACTConfig``).
+        cfg_path: The checkpoint's ``config.json``.
+
+    Returns:
+        The keys that were dropped (empty when nothing changed).
+
+    Example:
+        >>> import dataclasses, json, tempfile
+        >>> from pathlib import Path
+        >>> @dataclasses.dataclass
+        ... class Cfg:
+        ...     chunk_size: int = 1
+        >>> p = Path(tempfile.mkdtemp()) / "config.json"
+        >>> _ = p.write_text(json.dumps({"type": "x", "chunk_size": 2, "n_state_dim": 6}))
+        >>> strip_unknown_config_keys(Cfg, p)
+        ['n_state_dim']
+        >>> json.loads(p.read_text())
+        {'type': 'x', 'chunk_size': 2}
+    """
+    if not cfg_path.is_file():
+        return []
     try:
-        # lerobot >= 0.6.0: the real modeling_groot imports fine — use it, so the
-        # genuine GrootPolicy (with from_pretrained) is what callers resolve.
-        importlib.import_module(_STUB_NAME)
-        return
-    except Exception:
-        # Only the broken 0.5.x combination (or a groot-deps-less install) lands
-        # here; install the empty stub so `lerobot.policies` can still initialise.
-        stub = types.ModuleType(_STUB_NAME)
-        stub.GrootPolicy = type("GrootPolicy", (), {})  # type: ignore[attr-defined]
-        sys.modules[_STUB_NAME] = stub
-
-
-_install_stub()
+        raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(raw, dict):
+        return []
+    valid = {f.name for f in dataclasses.fields(config_cls)} | {"type"}
+    dropped = sorted(k for k in raw if k not in valid)
+    if dropped:
+        keep = {k: v for k, v in raw.items() if k in valid}
+        cfg_path.write_text(json.dumps(keep, indent=2), encoding="utf-8")
+        log.info("lerobot.config_sanitized", path=str(cfg_path), dropped=dropped)
+    return dropped
 
 
 def sanitize_smolvla_config(repo_id: str, *, revision: str | None = None) -> None:
     """Strip fields lerobot's ``SmolVLAConfig`` rejects from a checkpoint config.
 
-    Some published SO-101 SmolVLA checkpoints were saved by a different lerobot
-    version and carry config keys the installed one no longer accepts — e.g.
-    ``nota-gmbh/so101_pick_place_pen_smolvla`` ships ``pretrained_revision``,
-    which lerobot 0.5.x's draccus-backed ``SmolVLAConfig`` rejects with
-    ``DecodingError`` before ``from_pretrained`` can build the policy.
-
-    This resolves the checkpoint's ``config.json`` (local dir or HF cache) and
-    rewrites it in place with only the keys valid for ``SmolVLAConfig`` (plus
-    the draccus ``type`` discriminator). Idempotent, no-op when the config is
-    already clean or lerobot / the config are unavailable. Call it immediately
-    before ``SmolVLAPolicy.from_pretrained(repo_id)``.
+    Resolves the checkpoint's ``config.json`` (local dir or HF cache) and runs
+    ``strip_unknown_config_keys`` on it with ``SmolVLAConfig``. No-op when the
+    config is already clean or lerobot / the config are unavailable. Call it
+    immediately before ``SmolVLAPolicy.from_pretrained(repo_id)``.
 
     Args:
         repo_id: HF checkpoint id or a local checkpoint directory.
@@ -87,13 +91,4 @@ def sanitize_smolvla_config(repo_id: str, *, revision: str | None = None) -> Non
             cfg_path = Path(hf_hub_download(repo_id, "config.json", revision=revision))
         except Exception:
             return
-    if not cfg_path.exists():
-        return
-
-    raw = json.loads(cfg_path.read_text(encoding="utf-8"))
-    valid = {f.name for f in dataclasses.fields(SmolVLAConfig)}
-    keep = {k: v for k, v in raw.items() if k in valid or k == "type"}
-    dropped = sorted(set(raw) - set(keep))
-    if dropped:
-        cfg_path.write_text(json.dumps(keep, indent=2), encoding="utf-8")
-        log.info("smolvla.config_sanitized", repo_id=repo_id, dropped=dropped)
+    strip_unknown_config_keys(SmolVLAConfig, cfg_path)

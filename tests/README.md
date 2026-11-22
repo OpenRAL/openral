@@ -56,8 +56,6 @@ never faked. In a heavy lane a skip must match a declared capability gap
 
 - `tests/conftest.py` pins `NO_COLOR=1` / `TERM=dumb` and patches
   `rich.console.Console.__init__` so ANSI escapes never reach `CliRunner.output`.
-- `tests/sim/conftest.py` imports `openral_rskill._lerobot_compat` before any
-  sim test imports `lerobot.policies`.
 - Process/network-boundary doubles (the only ones allowed, CLAUDE.md §1.11)
   live in `tests/unit/fakes/` and `tests/integration/fakes/`.
 

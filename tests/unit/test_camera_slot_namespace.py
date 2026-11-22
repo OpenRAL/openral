@@ -233,15 +233,22 @@ def test_xvla_batch_takes_frames_by_slot() -> None:
         _camera_keys=("camera1", "camera2"),
         _image_keys=keys,
     )
-    obs = {"images": _frames("camera1", "camera2"), "raw": {}}
-    batch = adapter._build_raw_batch({}, obs, "pick")
+    state = np.arange(8, dtype=np.float32)
+    frames = _frames("camera1", "camera2")
+    frames["camera2"][0, 0] = 255  # top-left marker: rotated 180 degrees it lands bottom-right
+    batch = adapter._canonical_batch({"images": frames, "state": state}, "pick")
     assert float(batch["observation.images.image"].max()) == 0.0
-    assert float(batch["observation.images.image2"].max()) == pytest.approx(1 / 255)
+    image2 = batch["observation.images.image2"]
+    assert float(image2[0, :, -1, -1].max()) == 1.0  # lerobot's canonical 180-degree rotation
+    assert float(image2[0, :, 0, 0].max()) == pytest.approx(1 / 255)
+    assert batch["observation.state"].shape == (1, 8)
 
     from openral_core.exceptions import ROSCapabilityMismatch
 
     with pytest.raises(ROSCapabilityMismatch, match="camera2"):
-        adapter._build_raw_batch({}, {"images": _frames("camera1"), "raw": {}}, "pick")
+        adapter._canonical_batch({"images": _frames("camera1"), "state": state}, "pick")
+    with pytest.raises(ROSCapabilityMismatch, match="8-D"):
+        adapter._canonical_batch({"images": frames, "state": np.zeros(7)}, "pick")
 
 
 def test_gr00t_batch_takes_frames_by_slot() -> None:

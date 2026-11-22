@@ -360,8 +360,7 @@ _Test helpers for skill latency-budget enforcement (CLAUDE.md §2)._
 - `assert_within_budget(*, measured_ms, budget: RSkillLatencyBudget, stage="per_chunk", rskill_id=None, tolerance_pct=0.0) -> None` — Assert `measured_ms` does not exceed `budget`'s field for `stage` (`per_chunk_ms`/`warmup_ms`/`load_ms`), with an optional percent tolerance. Unset optional budget stages (`warmup_ms`/`load_ms` are `None`) pass silently — enforcement is opt-in per manifest. Raises `LatencyBudgetExceededError` on overrun, `ValueError` on a negative input. (L78)
 
 ### `python/rskill/src/openral_rskill/_lerobot_compat.py`
-_Compatibility shim for `lerobot.policies` import side-effects._
+_Compatibility helpers for checkpoints saved by a different lerobot version._
 
-- const `_STUB_NAME = "lerobot.policies.groot.modeling_groot"` (L32)
-- private: `_install_stub() -> None` (L35)
-- `sanitize_smolvla_config(repo_id, *, revision=None) -> None` — Strip config keys lerobot's `SmolVLAConfig` rejects (e.g. `pretrained_revision`) from a checkpoint's `config.json`, in place, before `SmolVLAPolicy.from_pretrained`. Idempotent; no-op when the config is already clean or lerobot/the config are unavailable. (L54)
+- `strip_unknown_config_keys(config_cls, cfg_path) -> list[str]` — Rewrites a checkpoint `config.json` without the keys the installed lerobot config dataclass does not declare (keeps `type`); draccus rejects unknown keys before `from_pretrained` builds the policy. Returns the dropped keys; idempotent. Shared by `sanitize_smolvla_config` and ACT's `_sanitize_act_config_json`. (L22)
+- `sanitize_smolvla_config(repo_id, *, revision=None) -> None` — Strip config keys lerobot's `SmolVLAConfig` rejects (via `strip_unknown_config_keys`) from a checkpoint's `config.json`, in place, before `SmolVLAPolicy.from_pretrained`. Idempotent; no-op when the config is already clean or lerobot/the config are unavailable. (L65)

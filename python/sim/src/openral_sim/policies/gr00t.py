@@ -116,33 +116,6 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _import_real_groot_policy() -> Any:
-    """Return the real lerobot ``GrootPolicy``, evicting the 0.5.x compat stub.
-
-    ``openral_rskill._lerobot_compat`` installs an empty stub for
-    ``lerobot.policies.groot.modeling_groot`` (a workaround for lerobot
-    0.5.0/0.5.1's GR00T-N1.5 config crashing to import under transformers 5.x).
-    lerobot 0.6.0 ships a real, importable ``GrootPolicy`` (GR00T N1.7), so the
-    stub is now stale and would shadow it with a class that has no
-    ``from_pretrained``. Evict the stub and import the real module.
-
-    ``_lerobot_compat`` is now self-disabling on lerobot >= 0.6.0 (it only stubs
-    when the real ``modeling_groot`` genuinely fails to import), so on a healthy
-    install there is nothing to evict — this stays as belt-and-suspenders for a
-    stale interpreter that imported an older lerobot first.
-    """
-    import importlib
-    import sys
-
-    name = "lerobot.policies.groot.modeling_groot"
-    stubbed = sys.modules.get(name)
-    stub_policy = getattr(stubbed, "GrootPolicy", None) if stubbed is not None else None
-    if stubbed is not None and not hasattr(stub_policy, "from_pretrained"):
-        del sys.modules[name]
-    module = importlib.import_module(name)
-    return module.GrootPolicy
-
-
 def _patch_groot_dtype_property(torch: Any) -> None:
     """Make ``GR00TN17.dtype`` report the first *floating* param dtype.
 
@@ -485,9 +458,8 @@ def _build_gr00t(env_cfg: Any) -> PolicyAdapter:  # reason: staged loader
         torch, make_processors = lazy_import_lerobot(
             "GR00T", install_hint="just sync --all-packages --group gr00t"
         )
+        from lerobot.policies.groot.modeling_groot import GrootPolicy
         from openral_rskill import local_snapshot_dir
-
-        GrootPolicy = _import_real_groot_policy()  # noqa: N806 — class object, not a value
 
     # The GR00T processor factory only recognises a *local* raw-checkpoint dir
     # (is_raw_groot_n1_7_checkpoint reads config.json off disk); an HF id would
