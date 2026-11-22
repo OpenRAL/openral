@@ -176,7 +176,9 @@ def test_boot_wrapper_resolves_a_pinned_model_to_its_revision(tmp_path: Path) ->
     )
     src = sidecar._make_wrapper(work=tmp_path, source=tmp_path, args=args).read_text()
     compile(src, "boot_server.py", "exec")
-    assert "snapshot_download(_repo, revision=_rev)" in src
+    assert "snapshot_download(\n" in src and "_repo, revision=_rev," in src
+    # Offline, a sha pin must answer from the cache (huggingface_hub 1.33+, #720).
+    assert "local_files_only=constants.HF_HUB_OFFLINE" in src
     assert '"--model-path", _model_path,' in src
     assert f"_model_path = {model!r}" in src
     # Loopback only: the adapter dials 127.0.0.1; the server is never on the LAN.
