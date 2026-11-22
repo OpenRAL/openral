@@ -11,7 +11,7 @@ What is asserted
   proprio) returns a **finite 14-D** action — a real forward pass, the checkpoint's
   pre/post pipeline included (55-D canonical slots back to 14-D).
 * The 50-step chunk replays ``n_action_steps`` (25): after the first step the
-  policy's queue holds the remaining 24 steps.
+  chunk executor holds the remaining 24 steps.
 
 Skip policy
 -----------
@@ -40,9 +40,13 @@ _MIN_VRAM_GIB = 16
 
 def _unavailable() -> str:
     """Empty string when the test can run, else the skip reason."""
-    if importlib.util.find_spec("lerobot.policies.lingbot_vla_v2") is None:
-        return "lerobot>=0.7 with lingbot_vla_v2 is not installed"
-    import torch
+    try:
+        # find_spec imports the parent packages, so a missing lerobot raises here.
+        if importlib.util.find_spec("lerobot.policies.lingbot_vla_v2") is None:
+            return "lerobot>=0.7 with lingbot_vla_v2 is not installed"
+        import torch
+    except ImportError:
+        return "lerobot>=0.7 / torch are not installed"
 
     if not torch.cuda.is_available():
         return "LingBot-VLA 2.0 bf16 needs a CUDA GPU"
@@ -103,4 +107,8 @@ def test_step_returns_finite_14d_action(adapter: Any) -> None:
 def test_chunk_replays_n_action_steps(adapter: Any) -> None:
     adapter.reset()
     adapter.step(_robotwin_obs(), "pick up the hammer and beat the block")
-    assert len(adapter._policy._queues["action"]) == adapter._policy.config.n_action_steps - 1
+    # n_action_steps=25 routes every step through the chunk executor, which keeps
+    # the rest of the chunk in its own buffer (the policy's queue stays unused).
+    executor = adapter._chunk_executor
+    assert executor is not None
+    assert len(executor._buffer) == adapter._policy.config.n_action_steps - 1
