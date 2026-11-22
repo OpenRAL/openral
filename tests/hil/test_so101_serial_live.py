@@ -121,16 +121,16 @@ def _servo_ids_answering() -> frozenset[int]:
     except ImportError:  # reason: lerobot optional -> no live servos to gate on
         return frozenset()
     defaults = _scene_hal_defaults()
-    bus = SO100Follower(
-        SOFollowerRobotConfig(
-            port=_bench_port(),
-            id=str(defaults["id"]),
-            calibration_dir=_bench_calibration_file().parent,
-        )
-    ).bus
     try:
+        bus = SO100Follower(
+            SOFollowerRobotConfig(
+                port=_bench_port(),
+                id=str(defaults["id"]),
+                calibration_dir=_bench_calibration_file().parent,
+            )
+        ).bus
         bus.connect(handshake=False)
-    except Exception:  # reason: port busy/unopenable is a bench fact -> skip
+    except Exception:  # reason: no driver, bad calibration or busy port is a bench fact -> skip
         return frozenset()
     try:
         found = {m.id for m in bus.motors.values() if bus.ping(m.id) is not None}
