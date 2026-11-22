@@ -888,7 +888,7 @@ _Exports a LeRobot ACT policy to a single whole-model ONNX graph (`ACTPolicy.mod
 ### `tools/export_rtdetr_onnx.py`
 _Exports `PekingU/rtdetr_r18vd_coco_o365` to ONNX matching `ObjectsDetector`'s contract: single image input, /255 preprocessing, two 3-D outputs (pre-sigmoid logits + cxcywh-normalised boxes). Run in an isolated `uv run --isolated --no-project` overlay — the project venv's torchvision would shadow it and break the `RTDetrForObjectDetection` import; do not `uv sync` the onnx-export group._
 
-- `export(out_path, model_id="PekingU/rtdetr_r18vd_coco_o365") -> None` — CLI entry (`--out`). (L30)
+- `export(out_path, model_id="PekingU/rtdetr_r18vd_coco_o365") -> None` — CLI entry (`--out`). (L63)
 
 ### `tools/gen_nav2_visual.py`
 _Generates `packages/openral_nav2_bringup/config/nav2_visual.yaml` (the Nav2 costmap profile for the visual-SLAM backend — cuVSLAM + nvblox, `static_layer` off the backend-agnostic `/map` OccupancyGrid instead of ray-casting `/scan`) from the base lidar profile `nav2_panda_mobile.yaml`, so the two stay in sync. One-shot; re-run after editing the base config._
