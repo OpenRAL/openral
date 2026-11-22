@@ -273,12 +273,13 @@ class _XR1Policy:
 
         repo_id, revision = _split_model_ref(self._source_model)
         if revision is not None or not Path(repo_id).exists():
-            from huggingface_hub import snapshot_download
+            from huggingface_hub import constants, snapshot_download
 
             metadata_dir = Path(
                 snapshot_download(
                     repo_id,
                     revision=revision,
+                    local_files_only=constants.HF_HUB_OFFLINE,  # #720
                     allow_patterns=[
                         "*.py",
                         "*.json",

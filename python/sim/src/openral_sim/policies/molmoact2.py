@@ -277,19 +277,18 @@ def _restore_checkpoint_state(model: Any, repo_id: str, revision: str | None) ->
     """
     from pathlib import Path
 
-    from huggingface_hub import is_offline_mode, snapshot_download
+    from openral_rskill import local_snapshot_dir
     from safetensors.torch import load_file
 
-    # huggingface_hub 1.33+ (not 1.13) skips its offline cache lookup for a sha-pinned
-    # snapshot_download unless local_files_only=True (it lists the repo tree instead and
-    # raises OfflineModeIsEnabled on caches written before tree listings were cached).
+    # local_snapshot_dir applies the offline cache-only lookup (#720), which the
+    # cached-first pass below relies on (it flips HF_HUB_OFFLINE on).
     snapshot = Path(
         _hf_cached_first(
-            lambda: snapshot_download(
+            lambda: local_snapshot_dir(
                 repo_id,
                 revision=revision,
+                ignore_patterns=(),
                 allow_patterns=["*.safetensors"],
-                local_files_only=is_offline_mode(),
             ),
             repo_id=repo_id,
         )

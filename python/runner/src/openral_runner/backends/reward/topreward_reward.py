@@ -47,16 +47,9 @@ def _pinned_snapshot_dir(repo: str, revision: str) -> str:
     the repo tree for a sha pin and raises on a cache written before tree
     listings were cached.
     """
-    from huggingface_hub import is_offline_mode, snapshot_download  # noqa: PLC0415
+    from openral_rskill import local_snapshot_dir  # noqa: PLC0415
 
-    return str(
-        snapshot_download(
-            repo,
-            revision=revision,
-            ignore_patterns=_SNAPSHOT_IGNORE,
-            local_files_only=is_offline_mode(),
-        )
-    )
+    return local_snapshot_dir(repo, revision=revision, ignore_patterns=_SNAPSHOT_IGNORE)
 
 
 class TOPRewardMonitor:

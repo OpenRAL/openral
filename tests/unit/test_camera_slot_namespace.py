@@ -249,6 +249,24 @@ def test_xvla_batch_takes_frames_by_slot() -> None:
         adapter._canonical_batch({"images": _frames("camera1"), "state": state}, "pick")
     with pytest.raises(ROSCapabilityMismatch, match="8-D"):
         adapter._canonical_batch({"images": frames, "state": np.zeros(7)}, "pick")
+    with pytest.raises(ROSCapabilityMismatch, match="provides none"):
+        adapter._canonical_batch({"images": frames}, "pick")
+
+
+def test_xvla_refuses_a_non_libero_scene_before_loading() -> None:
+    """An 8-D state that is not eef_pos|axis-angle|gripper must never reach xVLA."""
+    from openral_core import SceneSpec, SimEnvironment, TaskSpec, VLASpec
+    from openral_core.exceptions import ROSCapabilityMismatch
+    from openral_sim.registry import POLICIES
+
+    env_cfg = SimEnvironment(
+        robot_id="franka_panda",
+        scene=SceneSpec(id="robocasa", observation_height=256, observation_width=256),
+        task=TaskSpec(id="robocasa/PnPCounterToCab", scene_id="robocasa", success_key="is_success"),
+        vla=VLASpec(id="xvla", weights_uri="rskills/xvla-libero"),
+    )
+    with pytest.raises(ROSCapabilityMismatch, match="LIBERO-only"):
+        POLICIES.get("xvla")(env_cfg)
 
 
 def test_gr00t_batch_takes_frames_by_slot() -> None:
