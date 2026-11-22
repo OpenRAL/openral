@@ -70,6 +70,7 @@ def run_dashboard(  # noqa: PLR0915, PLR0912  # reason: linear bootstrap (app + 
     inprocess_cmd: list[str] | None = None,
     store: TelemetryStore | None = None,
     log_level: str = "warning",
+    world_pose: tuple[float, float, float] | None = None,
 ) -> None:
     """Start the dashboard's listeners and block until SIGINT.
 
@@ -98,6 +99,8 @@ def run_dashboard(  # noqa: PLR0915, PLR0912  # reason: linear bootstrap (app + 
             tests that want to assert against the store after a run.
         log_level: uvicorn log level. ``warning`` is quiet enough for a
             demo without being silent on errors.
+        world_pose: ``(x, y, yaw)`` of this robot's map in its scene's shared ``world``,
+            for a robot of a scene with several robots (``/api/mission``'s ``world_pose``).
 
     Raises:
         ValueError: ``remote_port`` was given but the robot is not linked, or the
@@ -146,6 +149,8 @@ def run_dashboard(  # noqa: PLR0915, PLR0912  # reason: linear bootstrap (app + 
             _LOG.warning("dashboard.manifest_file_unreadable path=%s error=%s", manifest_path, exc)
         else:
             app.state.store.set_manifest(manifest)
+    if world_pose is not None:
+        app.state.store.set_world_pose(*world_pose)
 
     # The robot UI: the pinned release, fetched once into $OPENRAL_CACHE_DIR (see
     # ui_assets.py). Best-effort: offline, `/` serves the built-in fallback page.

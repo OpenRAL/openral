@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import contextlib
 import json as _json
+import math
 import os
 import platform
 import re
@@ -3978,6 +3979,15 @@ def dashboard(
         "--log-level",
         help="uvicorn log level (debug | info | warning | error).",
     ),
+    world_pose: str | None = typer.Option(
+        None,
+        "--world-pose",
+        help=(
+            "X,Y,YAW: where this robot's map sits in its scene's shared `world` frame "
+            "(m, m, rad), served as `world_pose` in /api/mission. `openral deploy sim` passes "
+            "it for each robot of a scene with several robots."
+        ),
+    ),
     inprocess: str | None = typer.Option(
         None,
         "--inprocess",
@@ -4005,6 +4015,18 @@ def dashboard(
     apply_account_settings(echo=typer.echo, names=CONTROL_SETTINGS)
 
     inprocess_cmd = shlex.split(inprocess) if inprocess else None
+    pose: tuple[float, float, float] | None = None
+    if world_pose is not None:
+        parts = world_pose.split(",")
+        try:
+            x, y, yaw = (float(v) for v in parts)
+        except ValueError:
+            typer.echo(f"openral dashboard: --world-pose {world_pose!r} is not X,Y,YAW", err=True)
+            raise typer.Exit(code=2) from None
+        if not all(math.isfinite(v) for v in (x, y, yaw)):
+            typer.echo(f"openral dashboard: --world-pose {world_pose!r} is not finite", err=True)
+            raise typer.Exit(code=2)
+        pose = (x, y, yaw)
     try:
         run_dashboard(
             host=host,
@@ -4014,6 +4036,7 @@ def dashboard(
             manifest_path=manifest,
             inprocess_cmd=inprocess_cmd,
             log_level=log_level,
+            world_pose=pose,
         )
     except ValueError as exc:
         typer.echo(f"openral dashboard: {exc}", err=True)

@@ -38,6 +38,9 @@ _UI_KEYS = {
     "trace_id",
     "stamp_unix",
     "ts_unix",
+    # When this latch began and the kernel stop that caused it (openral-pro#99).
+    "latched_since_unix",
+    "latch_detail",
 }
 
 

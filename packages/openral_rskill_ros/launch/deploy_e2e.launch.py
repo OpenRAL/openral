@@ -85,6 +85,8 @@ from openral_core import (
     ROBOT_UNIT_ENV,
     CameraTopicKind,
     DeployRuntime,
+    DeployScene,
+    Pose6D,
     UnitIdentity,
     apply_sensor_overlays,
     camera_topic,
@@ -1234,6 +1236,43 @@ def _optical_mounts(sensors: Sequence[SensorSpec], hal_mode: str) -> dict[str, s
         return {}
     placed = (optical_mount(s, sensors) for s in sensors if s.modality == "rgb")
     return {m.frame: m.optical for m in placed if m is not None and m.optical != m.frame}
+
+
+def _scene_robot_world_pose(scene: DeployScene | None) -> Pose6D | None:
+    """Where this robot's map sits in its scene's shared ``world``; ``None`` for one robot.
+
+    ``openral deploy sim`` of a scene with several robots (openral-pro#99) starts each
+    robot's graph with ``$OPENRAL_SCENE_ROBOT``, so ``DeployScene.from_yaml`` reads that
+    robot's own scene (``geometry.scene_for_robot``): its ``base_pose`` is its start in
+    ``world``, where its map's origin is.
+    """
+    from openral_core import SHARED_SCENE_FRAME
+    from openral_core.scene_paths import SCENE_ROBOT_ENV
+
+    if scene is None or not os.environ.get(SCENE_ROBOT_ENV) or scene.base_pose is None:
+        return None
+    return scene.base_pose if scene.base_pose.frame_id == SHARED_SCENE_FRAME else None
+
+
+def _world_map_tf_node(world_pose: Pose6D, map_frame: str) -> Node:
+    """Static ``world -> map_frame`` TF: the robot's map origin in the scene's shared world.
+
+    tf2's parent -> child transform is the child's pose in the parent, so it is the
+    ``base_pose`` itself (``scene_for_robot`` re-expresses goals through its inverse).
+    """
+    x, y, z = (str(v) for v in world_pose.xyz)
+    qx, qy, qz, qw = (str(v) for v in world_pose.quat_xyzw)
+    return Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name=f"static_{world_pose.frame_id}_to_{map_frame}",
+        arguments=[
+            *("--x", x, "--y", y, "--z", z),
+            *("--qx", qx, "--qy", qy, "--qz", qz, "--qw", qw),
+            *("--frame-id", world_pose.frame_id, "--child-frame-id", map_frame),
+        ],
+        output="log",
+    )
 
 
 def _optical_tf_node(parent: str, optical: str) -> Node:
@@ -3231,10 +3270,12 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     joint_states_override: str | None = None
     scene_unit: str | None = None
     scene_backend: str | None = None
+    world_pose: Pose6D | None = None
     if deploy_config:
         from openral_core import DeployScene
 
         _scene = DeployScene.from_yaml(deploy_config)
+        world_pose = _scene_robot_world_pose(_scene)
         scene_sensors = list(_scene.sensors)
         scene_drivers = list(_scene.drivers)
         scene_unit = _scene.robot_unit
@@ -3718,6 +3759,14 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 bridge_on=enable_foxglove,
                 unit_serial=unit_identity.serial,
             ),
+        ]
+    if world_pose is not None:
+        from openral_core.geometry import quat_xyzw_to_yaw
+
+        dashboard_cmd += [
+            "--world-pose",
+            f"{world_pose.xyz[0]!r},{world_pose.xyz[1]!r},"
+            f"{quat_xyzw_to_yaw(*world_pose.quat_xyzw)!r}",
         ]
     dashboard = ExecuteProcess(
         cmd=dashboard_cmd,
@@ -4645,6 +4694,10 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     #   publishes its own URDF on ``/robot_description``. ``resolve_asset`` returns ``None`` for
     #   it, so RSP is skipped (the URDF is already on the bus).
     extra_nodes: list[LaunchDescriptionEntity] = []
+    # A robot of a scene with several robots: its map's place in the shared world, so a
+    # consumer holding every robot's TF (the fleet console) draws them in one frame.
+    if world_pose is not None:
+        extra_nodes.append(_world_map_tf_node(world_pose, description.map_frame))
 
     # Vendor ros2_control bringup, on the real path only — see
     # ``_build_real_bringup_include``. This is what keeps ``deploy run`` a
