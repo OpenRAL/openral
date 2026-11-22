@@ -9,11 +9,13 @@ only; the refusal cases copy one and rewrite lines.
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import get_args
 
 import pytest
+import structlog
 import yaml
 from openral_core import EXECUTE_RSKILL_KINDS, RSKILL_ROLE_BY_KIND, RSkillKind
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
@@ -125,7 +127,20 @@ def test_invalid_yaml_is_a_config_error(tmp_path: Path) -> None:
         rSkill.from_yaml(path)
 
 
-def test_only_execute_rskill_kinds_naming_their_embodiments_are_dispatchable() -> None:
+def test_only_execute_rskill_kinds_naming_their_embodiments_are_dispatchable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A fresh, uncached logger at DEBUG: an earlier test in the same process may leave
+    # structlog caching loggers (the OTel bridge) or filtering above WARNING, and
+    # capture_logs() then sees nothing (CI shard order, openral#709).
+    monkeypatch.setattr(
+        "openral_rskill.loader.log",
+        structlog.wrap_logger(
+            structlog.PrintLogger(),
+            wrapper_class=structlog.make_filtering_bound_logger(logging.DEBUG),
+            cache_logger_on_first_use=False,
+        ),
+    )
     vla = RSkillManifest.from_yaml(str(_VLA))
     rSkill.check_dispatchable(vla)
     vlm = RSkillManifest.from_yaml(str(_VLM))
