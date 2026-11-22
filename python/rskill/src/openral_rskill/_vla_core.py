@@ -1484,7 +1484,8 @@ def local_snapshot_dir(
     # huggingface_hub 1.33+ (not 1.13) skips its offline cache lookup for a sha-pinned
     # snapshot_download unless local_files_only=True (it lists the repo tree instead and
     # raises OfflineModeIsEnabled on caches written before tree listings were cached).
-    extra.setdefault("local_files_only", is_offline_mode())
+    # The one place workspace code applies this (#720); a forced re-download stays online.
+    extra.setdefault("local_files_only", is_offline_mode() and not extra.get("force_download"))
     return str(
         snapshot_download(
             repo_id=repo_id, revision=revision, ignore_patterns=list(ignore_patterns), **extra

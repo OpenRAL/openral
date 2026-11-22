@@ -330,7 +330,7 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
             >>> # rSkill.install_snapshot("openral/rskill-pick-cube-so100", manifest, path)
         """
         try:
-            from huggingface_hub import is_offline_mode, snapshot_download  # noqa: PLC0415
+            import huggingface_hub  # noqa: F401, PLC0415  # reason: presence probe
         except ImportError as exc:
             raise ROSConfigError(
                 "rSkill.install_snapshot requires 'huggingface_hub'. "
@@ -344,15 +344,15 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
         pinned = commit if _COMMIT_SHA.fullmatch(commit) else revision
         log.info("rskill.download_snapshot", repo_id=repo_id, revision=pinned)
         try:
-            # huggingface_hub 1.33+ (not 1.13) skips its offline cache lookup for a sha-pinned
-            # snapshot_download unless local_files_only=True (it lists the repo tree instead and
-            # raises OfflineModeIsEnabled on caches written before tree listings were cached).
-            local_dir_str = snapshot_download(
-                repo_id=repo_id,
+            from openral_rskill._vla_core import local_snapshot_dir  # noqa: PLC0415
+
+            # local_snapshot_dir applies the offline cache-only lookup (#720).
+            local_dir_str = local_snapshot_dir(
+                repo_id,
                 revision=pinned,
+                ignore_patterns=(),
                 cache_dir=str(cache_dir or _CACHE_HOME),
                 force_download=force_download,
-                local_files_only=is_offline_mode() and not force_download,
             )
         except Exception as exc:
             gated_err = gated_repo_error(repo_id, exc)
