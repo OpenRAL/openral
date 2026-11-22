@@ -549,3 +549,32 @@ class TestGraphOccupancyGuard:
             _dds_scope.assert_graph_unoccupied({}, hal_mode="sim")
         assert "0 (unset)" in str(excinfo.value)
         assert "SUBNET (unset)" in str(excinfo.value)
+
+
+class TestScanGraphReadsTheProbeThroughDdsLogs:
+    """Fast DDS logs to the probe's stdout from its own thread (docker-build 44997629639)."""
+
+    _LOG = "\x1b[37;1m2026-11-22 07:44:58.508 "
+    _SHM = "\x1b[31;1m[RTPS_MSG_OUT Error] No such file or directory -> Function init"
+
+    def _scan(self, monkeypatch: pytest.MonkeyPatch, stdout: str) -> object:
+        """The real ``_scan_graph`` over a real subprocess that prints ``stdout``."""
+        monkeypatch.setattr(_dds_scope, "_probe_source", lambda: f"print({stdout!r}, end='')")
+        return _dds_scope._scan_graph({})
+
+    def test_a_log_line_before_and_around_the_result_is_skipped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        graph = '{"joint_state_publishers": [], "nodes": ["/openral_test_domain_high"]}'
+        stdout = f"{self._SHM}\n{self._LOG}{_dds_scope._PROBE_RESULT}{graph}\n{self._SHM}\n"
+        assert self._scan(monkeypatch, stdout) == {
+            "joint_state_publishers": [],
+            "nodes": ["/openral_test_domain_high"],
+        }
+
+    def test_logs_without_a_result_are_an_unreadable_graph(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The fail-closed outcome stays: no tagged result, no graph read."""
+        assert self._scan(monkeypatch, f"{self._SHM}\n") is None
+        assert self._scan(monkeypatch, '{"joint_state_publishers": [], "nodes": []}') is None

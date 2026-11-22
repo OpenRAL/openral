@@ -127,6 +127,12 @@ _PROBE_SPIN_S: Final[float] = 3.0
 
 _PROBE_NODE_NAME: Final[str] = "openral_graph_scope_probe"
 
+#: Tags the probe's result line. Fast DDS logs to the probe's stdout from its own
+#: thread (a refused shared-memory segment, an access-control denial), so a log line
+#: can precede the result or open the very line it is printed on (docker-build run
+#: 44997629639: a 64 MiB container ``/dev/shm`` made every probe log SHM errors).
+_PROBE_RESULT: Final[str] = "OPENRAL_GRAPH_PROBE "
+
 #: Returned by ``_scan_graph`` when ``rclpy`` is not importable at all.
 #: Distinct from "the probe failed": a host with no ROS has no graph to join and
 #: cannot run ``ros2 launch`` either, so the launch fails on its own with a
@@ -252,11 +258,11 @@ def confine_real_scope(env: MutableMapping[str, str], *, robot_id: str) -> None:
 def _probe_source() -> str:
     """The probe body, run in a subprocess under the launch environment."""
     return f"""
-import json, sys, time
+import json, time
 try:
     import rclpy
 except ImportError:
-    json.dump({{"no_ros": True}}, sys.stdout)
+    print({_PROBE_RESULT!r} + json.dumps({{"no_ros": True}}), flush=True)
     raise SystemExit(0)
 rclpy.init(args=None)
 node = rclpy.create_node({_PROBE_NODE_NAME!r})
@@ -272,7 +278,8 @@ names = [
     for name, ns in node.get_node_names_and_namespaces()
     if name != {_PROBE_NODE_NAME!r}
 ]
-json.dump({{"joint_state_publishers": publishers, "nodes": sorted(names)}}, sys.stdout)
+result = {{"joint_state_publishers": publishers, "nodes": sorted(names)}}
+print({_PROBE_RESULT!r} + json.dumps(result), flush=True)
 node.destroy_node()
 rclpy.shutdown()
 """
@@ -302,11 +309,18 @@ def _scan_graph(env: dict[str, str]) -> dict[str, list[object]] | str | None:
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    if completed.returncode != 0 or not completed.stdout.strip():
+    if completed.returncode != 0:
         return None
+    # One flushed print is one write, so the payload runs intact to its line's end.
+    results = [
+        line.partition(_PROBE_RESULT)[2]
+        for line in completed.stdout.splitlines()
+        if _PROBE_RESULT in line
+    ]
     try:
-        parsed = json.loads(completed.stdout)
-    except json.JSONDecodeError:
+        (result,) = results  # none or several is as unreadable as malformed JSON
+        parsed = json.loads(result)
+    except ValueError:  # json.JSONDecodeError is a ValueError
         return None
     if not isinstance(parsed, dict):
         return None
