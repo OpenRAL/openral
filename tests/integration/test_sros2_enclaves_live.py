@@ -233,15 +233,18 @@ def secured_env(
 
 #: Tags a probe's result line. Fast DDS logs every access-control refusal to stdout from
 #: its own thread, so under load a log line can follow the result (docker-build run
-#: 43402624616 parsed "[DATA_READER Error] Problem creating associated Reader").
+#: 43402624616 parsed "[DATA_READER Error] Problem creating associated Reader"), or open
+#: the very line the result lands on: run 44997629639 printed a log line's timestamp,
+#: then the result, then the rest of that log line on the next. The probe's flushed
+#: print is one write, so the payload runs intact from the tag to its line's end.
 _RESULT = "SROS2_PROBE_RESULT "
 
 
 def _result(stdout: str) -> str:
     """The payload of the probe's one result line in ``stdout``."""
-    lines = [line for line in stdout.splitlines() if line.startswith(_RESULT)]
+    lines = [line.partition(_RESULT)[2] for line in stdout.splitlines() if _RESULT in line]
     assert len(lines) == 1, stdout
-    return lines[0].removeprefix(_RESULT)
+    return lines[0]
 
 
 def _run(env: dict[str, str], enclave: str | None, code: str, *args: str) -> str:
