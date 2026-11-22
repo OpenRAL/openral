@@ -8463,6 +8463,65 @@ TEST_F(LifecycleKernelTest, DuringTheReleaseWindowANonTouchLinkStillTripsOnThePa
   EXPECT_EQ(logs.count("safety.tracked_release_closed"), 0U) << "still in the window";
 }
 
+// ── Issue #706: the releasing arm's wrist, offered to the provider ───────────
+//
+// The release rig re-ordered into one chain: "other" (prismatic along y) carries the hand, so it
+// is the hand's wrist, and its capsule sits 15 mm from the payload when the hand lets go (inside
+// the 20 mm payload margin). ArmReleaser is OpenRAL Pro's rule: tolerate exactly the pairs the
+// kernel offers as the releasing arm's.
+namespace {
+
+std::vector<rclcpp::Parameter> arm_release_params(const std::string& provider) {
+  auto p = release_params();
+  p = with_param(p, "exemption_provider", rclcpp::ParameterValue(provider));
+  p = with_param(p, "collision_parent",
+                 rclcpp::ParameterValue(std::vector<std::int64_t>{-1, 0, 1}));
+  p = with_param(p, "collision_joint_kind",
+                 rclcpp::ParameterValue(std::vector<std::int64_t>{2, 1, 1}));
+  p = with_param(p, "collision_dof_index",
+                 rclcpp::ParameterValue(std::vector<std::int64_t>{2, 0, 1}));
+  p = with_param(p, "collision_axis",
+                 rclcpp::ParameterValue(std::vector<double>{0, 1, 0, 0, 0, 1, 1, 0, 0}));
+  p = with_param(p, "collision_capsule_link",
+                 rclcpp::ParameterValue(std::vector<std::int64_t>{1, 2, 0}));
+  p = with_param(p, "collision_capsule_origin_xyzrpy",
+                 rclcpp::ParameterValue(std::vector<double>{0.05, 0, 0, 0, 0, 0, 0.10, 0, 0, 0, 0,
+                                                            0, 0.10, -0.03, 0, 0, 0, 0}));
+  p = with_param(p, "collision_capsule_radius",
+                 rclcpp::ParameterValue(std::vector<double>{0.01, 0.005, 0.005}));
+  return with_param(p, "collision_link_names",
+                    rclcpp::ParameterValue(std::vector<std::string>{"other", "hand", "finger"}));
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, AReleasingWristIsOfferedToTheProviderOnlyWhileNoDeeper) {
+  LogCapture logs;
+  ReleaseRig r("kernel_release_arm", arm_release_params(osk_test::test_provider("ArmReleaser")));
+  ASSERT_TRUE(r.rig.node->exemption_provider_loaded()) << logs.joined();
+  r.jaw(0.30, 300);
+  r.release();
+  ASSERT_EQ(logs.count("safety.tracked_release object=trk:1 epoch=0"), 1U) << logs.joined();
+  ASSERT_EQ(logs.count("safety.release_arm_pair object=trk:1 link=other floor_m=0.015"), 1U)
+      << logs.joined();
+  EXPECT_TRUE(r.passes(0.0)) << "the wrist where it let go: " << logs.joined();
+  EXPECT_FALSE(r.passes(0.0, 0.01)) << "the wrist 10 mm deeper: " << logs.joined();
+  EXPECT_EQ(logs.count("b=other step="), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AReleasingWristStillTripsWhenTheProviderRefusesIt) {
+  // The same rig under the plain Releaser (refuses every payload-self pair): the kernel records
+  // and offers the wrist, and the provider's refusal keeps the stop.
+  LogCapture logs;
+  ReleaseRig r("kernel_release_arm_refused",
+               arm_release_params(osk_test::test_provider("Releaser")));
+  r.jaw(0.30, 300);
+  r.release();
+  ASSERT_EQ(logs.count("safety.release_arm_pair object=trk:1 link=other"), 1U) << logs.joined();
+  EXPECT_FALSE(r.passes(0.0)) << logs.joined();
+  EXPECT_EQ(logs.count("b=other step="), 1U) << logs.joined();
+}
+
 // ── A producer-declared release (`released_by_link`) ────────────────────────
 //
 // The release rig plus a fixed root link "base" (no geometry, origin x = 0.05), the link a

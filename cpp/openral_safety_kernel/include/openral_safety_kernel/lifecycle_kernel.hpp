@@ -293,6 +293,8 @@ private:
   // every world-state message. No-op without a provider: the open kernel never
   // releases on its own decision.
   void apply_tracked_release();
+  /// Issue #706: log the releasing arm's links a just-opened window may offer the provider.
+  void log_release_arm_links(const std::string& object_id, const AttachedObject& obj) const;
   /// A producer-released record (`released_by_link`): frozen, its window kept by the kernel.
   void apply_declared_release(const std::vector<openral_msgs::msg::AttachedCollisionObject>& wire);
   // Issue #418 — record the live grasp declaration's `declaration_key`
@@ -715,6 +717,9 @@ private:
     std::uint32_t epoch{0};
     std::int64_t stamp_ns{0};
     std::int64_t opened_ns{0};
+    /// Issue #706: the releasing arm's links that met the payload when the window opened.
+    std::array<int, kMaxReleaseArmLinks> arm_link{-1, -1};
+    std::array<double, kMaxReleaseArmLinks> arm_floor{0.0, 0.0};
   };
   std::vector<ReleasedRecord> released_records_;
   /// Per accepted attachment, the wire's `released_by_link` resolved to a collision link (-1 =
@@ -959,8 +964,11 @@ private:
     enum class Release : std::uint8_t { kHeld, kWindow, kClosed };
     Release release{Release::kHeld};
     std::int64_t window_opened_ns{0};
-    Transform frozen{};              ///< base-frame pose at release
-    int hand_link{-1};               ///< the attach link that held it
+    Transform frozen{};  ///< base-frame pose at release
+    int hand_link{-1};   ///< the attach link that held it
+    /// Issue #706: the releasing arm's links that met the payload when the window opened.
+    std::array<int, kMaxReleaseArmLinks> arm_link{-1, -1};
+    std::array<double, kMaxReleaseArmLinks> arm_floor{0.0, 0.0};
     bool in_map{false};              ///< closed and the map carries it: the frozen box is dropped
     ReleaseMemory release_memory{};  ///< the provider's release-rule memory (API v5), never read
   };

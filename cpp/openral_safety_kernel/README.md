@@ -1555,8 +1555,20 @@ Pro's K2). The open ADR-0115 region then exempts nothing, which only narrows the
 `grid_cell_of` are exported from `collision.hpp`, so a provider's rules use the kernel's own
 arithmetic.
 
-**API v5** quotes the kernel's own verdicts, so a provider never re-derives an open rule
-(`kExemptionProviderApiVersion` 5; a v4 provider is refused: `refused: api_version 4 != 5`):
+**API v6** (issue #706, ADR-0121 2026-11-22 amendment, hazard-log Entry 104, Safety-WG review
+pending; `kExemptionProviderApiVersion` 6, any other version refused): the releasing arm's wrist
+and forearm. When a K5 release window opens (either path), `release_arm_floors` records the
+releasing hand's ancestors with at most two movable joints between them and the hand (OpenArm
+`link6`, `link5`) that lie within the payload margin of the frozen payload, each with its distance
+then (its floor), and logs `safety.release_arm_pair object= link= floor_m=`. While the window is
+open, `check_attached_self_collision` offers a payload-self pair on a recorded link to
+`payload_self_pair`, though the link is not in the mask, only while the pair is no deeper than its
+floor (`PayloadPairQuery::release_arm_floor_m`, +inf for every other pair). The kernel never
+exempts it itself; a pair deeper than its floor, the upper arm, the other arm, the torso and the
+world are never offered; the window still closes on separation or timeout
+(`ReleaseArm.*`, `AReleasingWrist*`).
+
+**API v5** quotes the kernel's own verdicts, so a provider never re-derives an open rule:
 - **#349 verdict.** `workspace_contact_config()` (replaces v3's `brake_config`) lets a provider
   enable the kernel's own #349 rule, on the provider's bounds, while the in-tree rule is off;
   the kernel validates them at load (unsound bounds, a brake without the rule, or the rule without

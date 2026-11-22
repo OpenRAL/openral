@@ -5915,6 +5915,21 @@ void SafetyKernelLifecycleNode::union_bound_geometry(
   }
 }
 
+void SafetyKernelLifecycleNode::log_release_arm_links(const std::string& object_id,
+                                                      const AttachedObject& obj) const {
+  // Issue #706: disclose every arm pair a release window may offer the provider, with its floor.
+  for (std::size_t k = 0; k < kMaxReleaseArmLinks; ++k) {
+    const int link = obj.release_arm_link[k];
+    if (link >= 0 && static_cast<std::size_t>(link) < collision_link_names_.size()) {
+      RCLCPP_WARN(this->get_logger(),
+                  "safety.release_arm_pair object=%s link=%s floor_m=%g: met at release, offered "
+                  "to the provider only while no deeper (issue #706)",
+                  object_id.c_str(), collision_link_names_[static_cast<std::size_t>(link)].c_str(),
+                  obj.release_arm_floor[k]);
+    }
+  }
+}
+
 void SafetyKernelLifecycleNode::apply_declared_release(
     const std::vector<openral_msgs::msg::AttachedCollisionObject>& wire) {
   // A producer (the HAL's release window, the object tracker) let a payload go and re-attached it
@@ -5945,6 +5960,7 @@ void SafetyKernelLifecycleNode::apply_declared_release(
         break;
       }
     }
+    bool opened = false;
     if (rec == nullptr) {
       for (auto& r : released_records_) {
         if (!r.used) {
@@ -5964,6 +5980,7 @@ void SafetyKernelLifecycleNode::apply_declared_release(
       // station: the box no longer sits where the object does, so its window opens closed (a
       // plain obstacle), like the windows the motion itself closed.
       rec->closed = predates_base_motion(w.stamp_ns);
+      opened = !rec->closed;
       if (rec->closed) {
         RCLCPP_WARN(this->get_logger(),
                     "safety.released_payload_closed object=%s reason=predates_base_motion: a "
@@ -5993,6 +6010,15 @@ void SafetyKernelLifecycleNode::apply_declared_release(
     obj.has_support_witness = false;
     attached_binding_[i].off_hand = "released";  // never a handover, no witness
     obj.release_hand_link = released_by;
+    if (opened) {
+      release_arm_floors(collision_model_, binding_scratch_, attached_model_, obj,
+                         attached_collision_margin_m_);
+      rec->arm_link = obj.release_arm_link;
+      rec->arm_floor = obj.release_arm_floor;
+      log_release_arm_links(w.object_id, obj);
+    }
+    obj.release_arm_link = rec->arm_link;
+    obj.release_arm_floor = rec->arm_floor;
     if (!rec->closed) {
       const char* why = nullptr;
       if (static_cast<double>(now - rec->opened_ns) >= release_timeout_s_ * 1e9) {
@@ -6079,11 +6105,20 @@ void SafetyKernelLifecycleNode::apply_tracked_release() {
       e.hand_link = obj.attach_link;
       e.release = BoundPayload::Release::kWindow;
       e.window_opened_ns = now;
+      // Issue #706: the wrist and forearm that already meet the box it now freezes as.
+      obj.attach_link = -1;
+      obj.pose_in_link = e.frozen;
+      obj.release_hand_link = e.hand_link;
+      release_arm_floors(collision_model_, binding_scratch_, attached_model_, obj,
+                         attached_collision_margin_m_);
+      e.arm_link = obj.release_arm_link;
+      e.arm_floor = obj.release_arm_floor;
       RCLCPP_WARN(this->get_logger(),
                   "safety.tracked_release object=%s epoch=%u by=provider:%s: frozen in base, hand "
                   "and touch links exempt until %g m clear or %g s (ADR-0121)",
                   e.object_id.c_str(), static_cast<unsigned>(e.epoch), provider_->name(),
                   release_clear_m_, release_timeout_s_);
+      log_release_arm_links(e.object_id, obj);
       if (grasp_latched_ && grasp_latched_tracked_ && grasp_latched_object_ == e.object_id &&
           grasp_latched_epoch_ == e.epoch) {
         retire_grasp_declaration("tracked_release");
@@ -6096,6 +6131,8 @@ void SafetyKernelLifecycleNode::apply_tracked_release() {
     attached_binding_[i].off_hand = "released";  // never a handover, no witness
     if (e.release == BoundPayload::Release::kWindow) {
       obj.release_hand_link = e.hand_link;
+      obj.release_arm_link = e.arm_link;
+      obj.release_arm_floor = e.arm_floor;
       const char* why = nullptr;
       if (static_cast<double>(now - e.window_opened_ns) >= release_timeout_s_ * 1e9) {
         why = "timeout";

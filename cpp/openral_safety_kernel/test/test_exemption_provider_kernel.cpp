@@ -137,12 +137,13 @@ TEST_F(ExemptionProviderKernelTest, AnApiVersionMismatchIsRefused) {
 }
 
 TEST_F(ExemptionProviderKernelTest, AnApiV4ProviderIsRefused) {
-  // API v5 quotes the kernel's own #349 verdict, freshness and release memory; a provider built
-  // against v4 re-derives them and is refused with the typed log path.
-  ASSERT_EQ(osk::kExemptionProviderApiVersion, 5U);
+  // API v6 offers the releasing arm's wrist/forearm (issue #706) on top of v5's quoted #349
+  // verdict, freshness and release memory; a provider built against v4 is refused with the typed
+  // log path.
+  ASSERT_EQ(osk::kExemptionProviderApiVersion, 6U);
   auto node = configured("osk_prov_api_v4", options(cls("ApiV4"), "sim", {"link1"}));
   EXPECT_FALSE(node->exemption_provider_loaded());
-  EXPECT_EQ(node->exemption_provider_status(), "refused: api_version 4 != 5");
+  EXPECT_EQ(node->exemption_provider_status(), "refused: api_version 4 != 6");
 }
 
 TEST_F(ExemptionProviderKernelTest, AnUnsoundWorkspaceContactConfigIsRefused) {

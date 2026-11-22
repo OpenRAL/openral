@@ -11,7 +11,10 @@
 //    trip;
 //  * only on a link in the kernel's relaxable-link mask (the manifest's hand
 //    links, `exemption_provider_links`), ANDed with every answer;
-//  * self and payload pairs only when every robot link of the pair is in the mask;
+//  * self and payload pairs only when every robot link of the pair is in the mask, with one
+//    kernel-bounded exception (API v6, issue #706): a frozen payload in its release window
+//    against a wrist/forearm link of the arm that let it go, only when that link already met it
+//    at release and is no deeper now (`PayloadPairQuery::release_arm_floor_m`);
 //  * never for a joint/speed/torque limit, the
 //    workspace envelope, a lead bound or a watchdog;
 //  * the #349 workspace-contact rule's verdict is the kernel's own (API v5): with the in-tree
@@ -43,7 +46,7 @@ namespace openral_safety_kernel {
 
 /// Bumped on any change to this header's layout or hook semantics. A provider
 /// built against another version is refused at load (fail closed).
-inline constexpr std::uint32_t kExemptionProviderApiVersion = 5;
+inline constexpr std::uint32_t kExemptionProviderApiVersion = 6;
 
 /// A provider's answer for one pair. Anything but `kTolerate` keeps the open
 /// kernel's verdict.
@@ -219,7 +222,8 @@ struct SelfPairQuery {
 /// A carried payload about to trip against an occupied cell (`payload_voxel_pair`) or against a
 /// robot link (`payload_self_pair`). Its attach link (and, for a self pair, `other_link`) are in
 /// the mask. A frozen payload is offered only to `payload_self_pair`, only in its release window,
-/// on the hand that let it go (`release_hand_link`, masked).
+/// on the hand that let it go (`release_hand_link`, masked); its other link is in the mask too, or
+/// is one of that arm's links it met at release (`release_arm_floor_m`, API v6).
 struct PayloadPairQuery {
   std::size_t object{0};                         ///< index into the kernel's AttachedModel
   const AttachedModel* attached_model{nullptr};  ///< its primitives and hulls
@@ -229,7 +233,13 @@ struct PayloadPairQuery {
   /// payload_self_pair only: a FROZEN payload (attach_link -1) in its K5 release window, offered
   /// on the hand that let it go; -1 otherwise.
   int release_hand_link{-1};
-  int other_link{-1};       ///< payload_self_pair only
+  int other_link{-1};  ///< payload_self_pair only
+  /// payload_self_pair only (API v6, issue #706): `other_link` is a wrist/forearm link of the arm
+  /// that released this frozen payload, recorded when the window opened because it already met
+  /// the payload then (`AttachedObject::release_arm_link`); this is its distance then (m). The
+  /// kernel offers the pair only while `distance >= release_arm_floor_m` (no deeper than at
+  /// release), whether or not `other_link` is in the mask. +inf for every other pair.
+  double release_arm_floor_m{std::numeric_limits<double>::infinity()};
   std::size_t cell{0};      ///< payload_voxel_pair only
   Vec3 cell_center_base{};  ///< payload_voxel_pair only
   Vec3 cell_center_grid{};  ///< payload_voxel_pair only, grid axes

@@ -7,6 +7,7 @@
 
 #include "openral_safety_kernel/exemption_provider.hpp"
 
+#include <cmath>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -81,6 +82,19 @@ public:
       }
     }
     return osk::ProviderVerdict::kRefuse;
+  }
+};
+
+/// API v6 (issue #706): the Releaser, also tolerating a frozen payload against a wrist/forearm
+/// link of the arm that let it go, exactly when the kernel offers it as such (`release_arm_floor_m`
+/// finite): OpenRAL Pro's rule. Every other payload-self pair is refused (the Recorder's default).
+class ArmReleaser : public Releaser {
+public:
+  const char* name() const noexcept override { return "arm-releaser/1"; }
+  osk::ProviderVerdict payload_self_pair(const osk::PayloadPairQuery& q) noexcept override {
+    return q.release_hand_link >= 0 && std::isfinite(q.release_arm_floor_m)
+               ? osk::ProviderVerdict::kTolerate
+               : osk::ProviderVerdict::kRefuse;
   }
 };
 
@@ -344,4 +358,6 @@ PLUGINLIB_EXPORT_CLASS(openral_safety_kernel_test::UnsoundWorkspaceConfig,
 PLUGINLIB_EXPORT_CLASS(openral_safety_kernel_test::BrakeWithoutContact,
                        openral_safety_kernel::ExemptionProvider)
 PLUGINLIB_EXPORT_CLASS(openral_safety_kernel_test::MemoryReleaser,
+                       openral_safety_kernel::ExemptionProvider)
+PLUGINLIB_EXPORT_CLASS(openral_safety_kernel_test::ArmReleaser,
                        openral_safety_kernel::ExemptionProvider)

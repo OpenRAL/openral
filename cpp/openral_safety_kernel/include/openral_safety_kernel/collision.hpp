@@ -830,6 +830,11 @@ struct AttachedPrimitive {
 /// normal: it points **from the supporting solid toward the payload**, so the
 /// support occupies the half-space `(x - support_point)·support_normal <= 0`.
 /// No attestation (`has_support_witness == false`) means no exemption.
+/// Issue #706: how far up the releasing hand's chain (in movable joints) a release window looks
+/// for wrist and forearm links to offer a provider, and how many it records (the OpenArm's link6
+/// and link5).
+inline constexpr std::size_t kMaxReleaseArmLinks = 2;
+
 struct AttachedObject {
   Transform pose_in_link{};  ///< object pose in the attach-link frame (base frame if frozen)
   /// Robot link index the object is attached to. -1 = frozen in the base frame
@@ -839,6 +844,12 @@ struct AttachedObject {
   /// Issue #418 K5: while a released payload's window is open, the hand link
   /// that held it, exempt against it like a touch link; -1 otherwise.
   int release_hand_link{-1};
+  /// Issue #706: while the window is open, the releasing arm's links that already met the frozen
+  /// payload when it was let go (`release_arm_floors`), each with its distance then (m); -1 = none.
+  /// Never exempt by the kernel: offered to a loaded provider (`payload_self_pair`) only while that
+  /// pair is no deeper than its floor. Cleared when the window closes.
+  std::array<int, kMaxReleaseArmLinks> release_arm_link{-1, -1};
+  std::array<double, kMaxReleaseArmLinks> release_arm_floor{0.0, 0.0};
   int prim_first{0};                    ///< offset into AttachedModel.primitives
   int prim_count{0};                    ///< number of primitives owned by this object
   int touch_first{0};                   ///< offset into AttachedModel.touch_links
@@ -1723,6 +1734,22 @@ bool tracked_box_meets_hand(const CollisionModel& model, const CollisionScratch&
 double released_payload_clearance(const CollisionModel& model, const CollisionScratch& scratch,
                                   const AttachedModel& attached,
                                   const AttachedObject& object) noexcept;
+
+/// Record which of the releasing arm's links already meet a just-frozen payload (issue #706).
+///
+/// Walks up from `object.release_hand_link` (which must be set, the payload frozen:
+/// `attach_link == -1`) over the ancestors with at most `kMaxReleaseArmLinks` movable joints
+/// between them and the hand (the wrist and forearm: the OpenArm's link6 and link5 under hand
+/// link7), skipping any link already exempt against the payload (`attached_allows_link`) or
+/// carrying no geometry; at most `kMaxReleaseArmLinks` are recorded. A link whose distance to the
+/// payload (plain primitives, as `released_payload_clearance`) is `<= margin` at the configuration
+/// FK'd into `scratch` is recorded in `release_arm_link` with that distance as its floor; every
+/// other slot is cleared to -1. The payload's frozen box is the padded bind-time model, so the
+/// wrist that just let go of it overlaps it from the first tick (issue #706: 4 of 5 restock stops).
+/// Returns the number recorded. Call once, when the window opens. Allocation-free.
+std::size_t release_arm_floors(const CollisionModel& model, const CollisionScratch& scratch,
+                               const AttachedModel& attached, AttachedObject& object,
+                               double margin) noexcept;
 
 /// Stable snake_case token naming `status`, for the `reason=` key of the
 /// kernel's grasp-region log lines. Never null; unknown values read `unknown`.

@@ -2100,6 +2100,7 @@ AttachIngestStatus ingest_attached_objects(const std::vector<AttachedObjectInput
     o.pose_in_link = in.pose_in_link;
     o.attach_link = attach;
     o.release_hand_link = -1;
+    o.release_arm_link.fill(-1);
     o.has_support_witness = in.has_support_witness;
     o.support_point = in.support_point;
     o.support_normal = support_normal;
@@ -2931,8 +2932,20 @@ CollisionHit check_attached_self_collision(const CollisionModel& model,
     bool provider_exempt = false;
     const AttachedObject& obj = attached.objects[static_cast<std::size_t>(object)];
     const int hand_link = obj.attach_link >= 0 ? obj.attach_link : obj.release_hand_link;
+    // Issue #706: a frozen payload in its window, against a link of the arm that let it go that
+    // already met it at release (`release_arm_floors`) and is no deeper now, is offered too,
+    // though that link is not in the mask. A pair that deepens past its floor never is.
+    double arm_floor = std::numeric_limits<double>::infinity();
+    if (obj.attach_link < 0 && obj.release_hand_link >= 0) {
+      for (std::size_t k = 0; k < kMaxReleaseArmLinks; ++k) {
+        if (obj.release_arm_link[k] == link && link >= 0 && d >= obj.release_arm_floor[k]) {
+          arm_floor = obj.release_arm_floor[k];
+        }
+      }
+    }
     if (!exempt && d <= margin && gate != nullptr && hand_link >= 0 &&
-        provider_relaxable(*gate, hand_link) && provider_relaxable(*gate, link)) {
+        provider_relaxable(*gate, hand_link) &&
+        (provider_relaxable(*gate, link) || std::isfinite(arm_floor))) {
       PayloadPairQuery q;
       q.object = static_cast<std::size_t>(object);
       q.attached_model = &attached;
@@ -2941,6 +2954,7 @@ CollisionHit check_attached_self_collision(const CollisionModel& model,
       q.attach_link = obj.attach_link;
       q.release_hand_link = obj.attach_link >= 0 ? -1 : obj.release_hand_link;
       q.other_link = link;
+      q.release_arm_floor_m = arm_floor;
       q.distance = d;
       q.row = gate->row;
       q.row_fk = &scratch;
@@ -3106,6 +3120,79 @@ double released_payload_clearance(const CollisionModel& model, const CollisionSc
     }
   }
   return gap;
+}
+
+std::size_t release_arm_floors(const CollisionModel& model, const CollisionScratch& scratch,
+                               const AttachedModel& attached, AttachedObject& object,
+                               double margin) noexcept {
+  object.release_arm_link.fill(-1);
+  object.release_arm_floor.fill(0.0);
+  const int n_links = static_cast<int>(model.parent.size());
+  if (object.attach_link >= 0 || object.release_hand_link < 0 ||
+      object.release_hand_link >= n_links || !std::isfinite(margin)) {
+    return 0;
+  }
+  const Transform obj_xf = attached_object_transform(object, scratch);
+  // Distance from the payload's plain primitives to every geometry of `link`; +inf when none.
+  const auto distance_to = [&](int link) {
+    double gap = std::numeric_limits<double>::infinity();
+    for (int p = 0; p < object.prim_count; ++p) {
+      const AttachedPrimitive& prim =
+          attached.primitives[static_cast<std::size_t>(object.prim_first + p)];
+      const Transform prim_xf = compose(obj_xf, prim.pose_in_object);
+      for (std::size_t c = 0; c < model.capsules.size() && c < model.capsule_link.size(); ++c) {
+        if (model.capsule_link[c] != link) {
+          continue;
+        }
+        const Capsule& cap = model.capsules[c];
+        gap = std::min(gap,
+                       attached_primitive_capsule_distance(
+                           prim, prim_xf,
+                           compose(scratch.link_world[static_cast<std::size_t>(link)], cap.origin),
+                           cap.radius, cap.half_length));
+      }
+      for (std::size_t b = 0; b < model.boxes.size() && b < model.box_link.size(); ++b) {
+        if (model.box_link[b] != link) {
+          continue;
+        }
+        const Transform box_j =
+            compose(scratch.link_world[static_cast<std::size_t>(link)], model.boxes[b].origin);
+        gap = std::min(gap, prim.kind == AttachedShapeKind::kBox
+                                ? box_box_distance(prim_xf, prim.half_extents, box_j,
+                                                   model.boxes[b].half_extents)
+                                : box_capsule_distance(box_j, model.boxes[b].half_extents, prim_xf,
+                                                       prim.radius, prim.half_length));
+      }
+    }
+    return gap;
+  };
+  // ponytail: "wrist and forearm" = the hand's nearest kMaxReleaseArmLinks movable joints, not a
+  // declared elbow; a manifest field is the upgrade if an arm's wrist has more joints than that.
+  // An ancestor is on the wrist/forearm while at most kMaxReleaseArmLinks movable joints lie
+  // between it and the hand (OpenArm hand link7: link6 behind j7, link5 behind j7 and j6).
+  std::size_t recorded = 0;
+  std::size_t between = 0;
+  int link = object.release_hand_link;
+  for (int guard = 0; guard < n_links && recorded < kMaxReleaseArmLinks; ++guard) {
+    if (static_cast<std::size_t>(link) < model.dof_index.size() &&
+        model.dof_index[static_cast<std::size_t>(link)] >= 0) {
+      ++between;
+    }
+    link = model.parent[static_cast<std::size_t>(link)];
+    if (link < 0 || link >= n_links || between > kMaxReleaseArmLinks) {
+      break;
+    }
+    if (attached_allows_link(attached, object, link)) {
+      continue;
+    }
+    const double d = distance_to(link);
+    if (std::isfinite(d) && d <= margin) {
+      object.release_arm_link[recorded] = link;
+      object.release_arm_floor[recorded] = d;
+      ++recorded;
+    }
+  }
+  return recorded;
 }
 
 // ── Issue #418: the robot's hands, built for an ADR-0121 exemption provider ──

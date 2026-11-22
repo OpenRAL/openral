@@ -7705,6 +7705,138 @@ TEST(ExemptionProvider, APayloadSelfPairNeedsTheAttachAndTheOtherLinkMasked) {
   EXPECT_EQ(provider.asked_payload_self, asked_closed);
 }
 
+// ── API v6 / issue #706: the releasing arm's wrist and forearm ──
+//
+// The q5090 restock stops: a payload frozen where the hand let go of it (its padded bind-time box)
+// already overlaps the wrist that held it, and the retracting wrist/forearm stopped on it. The
+// kernel records which of that arm's links met the box at release and offers those pairs to the
+// provider, only while no deeper than then. It never exempts them itself.
+
+namespace {
+
+// 0 base (fixed) -> 1 upper arm (j) -> 2 forearm (j) -> 3 wrist (j) -> 4 hand (j); 5 other arm
+// (j, on the base). Capsules on 1, 2, 3 and 5 all overlap a payload at the origin.
+osk::CollisionModel arm_model() {
+  osk::CollisionModel m;
+  m.n_links = 6;
+  m.parent = {-1, 0, 1, 2, 3, 0};
+  m.joint_kind = {osk::JointKind::kFixed,    osk::JointKind::kRevolute, osk::JointKind::kRevolute,
+                  osk::JointKind::kRevolute, osk::JointKind::kRevolute, osk::JointKind::kRevolute};
+  m.dof_index = {-1, 0, 1, 2, 3, 4};
+  m.origin = std::vector<osk::Transform>(6, identity());
+  m.axis = std::vector<osk::Vec3>(6, osk::Vec3{0, 0, 1});
+  for (const int link : {1, 2, 3, 5}) {
+    add_capsule(m, link, 0.05, 0.0, translate(0.12, 0.0, 0.0));  // d = 0.12 - 0.15 = -0.03
+  }
+  return m;
+}
+
+osk::CollisionScratch arm_scratch() {
+  osk::CollisionScratch s;
+  s.link_world = std::vector<osk::Transform>(6, identity());
+  return s;
+}
+
+// A payload frozen at the origin (attach_link -1) in its window on hand link 4.
+osk::AttachedModel frozen_on_hand() {
+  osk::AttachedModel att;
+  append_object(att, -1, identity(), {sphere_prim(0.1)});
+  att.objects[0].release_hand_link = 4;
+  return att;
+}
+
+}  // namespace
+
+TEST(ReleaseArm, RecordsOnlyTheWristAndForearmThatMeetTheFrozenPayload) {
+  const osk::CollisionModel m = arm_model();
+  const osk::CollisionScratch s = arm_scratch();
+  osk::AttachedModel att = frozen_on_hand();
+  EXPECT_EQ(osk::release_arm_floors(m, s, att, att.objects[0], 0.0), 2U);
+  EXPECT_EQ(att.objects[0].release_arm_link[0], 3) << "the wrist";
+  EXPECT_EQ(att.objects[0].release_arm_link[1], 2) << "the forearm; never the upper arm or base";
+  EXPECT_NEAR(att.objects[0].release_arm_floor[0], -0.03, 1e-9);
+  EXPECT_NEAR(att.objects[0].release_arm_floor[1], -0.03, 1e-9);
+}
+
+TEST(ReleaseArm, RecordsNothingClearOfTheMarginOrWithoutAWindow) {
+  const osk::CollisionModel m = arm_model();
+  osk::CollisionScratch s = arm_scratch();
+  osk::AttachedModel att = frozen_on_hand();
+  s.link_world[2] = translate(0.2, 0.0, 0.0);  // the forearm clear of the payload at release
+  EXPECT_EQ(osk::release_arm_floors(m, s, att, att.objects[0], 0.0), 1U);
+  EXPECT_EQ(att.objects[0].release_arm_link[0], 3);
+  EXPECT_EQ(att.objects[0].release_arm_link[1], -1) << "not met at release: never offered";
+  // No release window, or a payload still carried: nothing, and stale slots are cleared.
+  att.objects[0].release_hand_link = -1;
+  EXPECT_EQ(osk::release_arm_floors(m, s, att, att.objects[0], 0.0), 0U);
+  EXPECT_EQ(att.objects[0].release_arm_link[0], -1);
+  att.objects[0].release_hand_link = 4;
+  att.objects[0].attach_link = 4;
+  EXPECT_EQ(osk::release_arm_floors(m, s, att, att.objects[0], 0.0), 0U);
+  // A touch link on the arm is already exempt: not recorded (and not double-counted).
+  osk::AttachedModel touched;
+  append_object(touched, -1, identity(), {sphere_prim(0.1)}, {3});
+  touched.objects[0].release_hand_link = 4;
+  EXPECT_EQ(osk::release_arm_floors(m, arm_scratch(), touched, touched.objects[0], 0.0), 1U);
+  EXPECT_EQ(touched.objects[0].release_arm_link[0], 2);
+}
+
+TEST(ReleaseArm, AWristPairIsOfferedOnlyWhileNoDeeperThanAtRelease) {
+  const osk::CollisionModel m = arm_model();
+  osk::CollisionScratch s = arm_scratch();
+  osk::AttachedModel att = frozen_on_hand();
+  s.link_world[1] = translate(0.5, 0.0, 0.0);  // upper arm and other arm clear: only 2 and 3
+  s.link_world[5] = translate(0.5, 0.0, 0.0);
+  ASSERT_EQ(osk::release_arm_floors(m, s, att, att.objects[0], 0.0), 2U);
+  const auto today = osk::check_attached_self_collision(m, att, s, 0.0);
+  ASSERT_TRUE(today.hit) << "the open kernel alone never exempts the wrist";
+  TolerateEveryPair provider;
+  const std::vector<std::uint8_t> mask6{0, 0, 0, 0, 1, 0};  // the hand only, never the wrist
+  osk::ProviderGate gate{&provider, mask6.data(), mask6.size(), 0};
+  const auto at_release = osk::check_attached_self_collision(m, att, s, 0.0, nullptr, &gate);
+  EXPECT_FALSE(at_release.hit);
+  EXPECT_GE(at_release.provider_pairs, 1);
+  EXPECT_EQ(provider.last_payload.release_hand_link, 4);
+  EXPECT_NEAR(provider.last_payload.release_arm_floor_m, -0.03, 1e-9);
+  // Moving away (shallower): still offered.
+  s.link_world[3] = translate(0.01, 0.0, 0.0);
+  EXPECT_FALSE(osk::check_attached_self_collision(m, att, s, 0.0, nullptr, &gate).hit);
+  // Deeper than at release: never offered, the open verdict.
+  s.link_world[3] = translate(-0.02, 0.0, 0.0);
+  const auto deeper = osk::check_attached_self_collision(m, att, s, 0.0, nullptr, &gate);
+  ASSERT_TRUE(deeper.hit);
+  EXPECT_EQ(deeper.link_b, 3);
+  s.link_world[3] = identity();
+  // The provider decides: one that refuses keeps the stop.
+  DefaultRefuses refuses;
+  osk::ProviderGate no{&refuses, mask6.data(), 6, 0};
+  EXPECT_TRUE(osk::check_attached_self_collision(m, att, s, 0.0, nullptr, &no).hit);
+  // The window closed: never offered.
+  att.objects[0].release_hand_link = -1;
+  EXPECT_TRUE(osk::check_attached_self_collision(m, att, s, 0.0, nullptr, &gate).hit);
+}
+
+TEST(ReleaseArm, TheOtherArmAndTheUpperArmStillTrip) {
+  const osk::CollisionModel m = arm_model();
+  osk::CollisionScratch s = arm_scratch();
+  osk::AttachedModel att = frozen_on_hand();
+  ASSERT_EQ(osk::release_arm_floors(m, s, att, att.objects[0], 0.0), 2U);
+  TolerateEveryPair provider;
+  const std::vector<std::uint8_t> hand{0, 0, 0, 0, 1, 0};
+  osk::ProviderGate gate{&provider, hand.data(), hand.size(), 0};
+  const auto hit = osk::check_attached_self_collision(m, att, s, 0.0, nullptr, &gate);
+  ASSERT_TRUE(hit.hit) << "links 1 (upper arm) and 5 (other arm) are not the releasing wrist";
+  EXPECT_TRUE(hit.link_b == 1 || hit.link_b == 5) << hit.link_b;
+  // And a carried payload (no window) is never offered the arm, whatever was recorded.
+  att.objects[0].attach_link = 4;
+  att.objects[0].release_hand_link = -1;
+  s.link_world[1] = translate(0.5, 0.0, 0.0);
+  s.link_world[5] = translate(0.5, 0.0, 0.0);
+  const auto carried = osk::check_attached_self_collision(m, att, s, 0.0, nullptr, &gate);
+  ASSERT_TRUE(carried.hit);
+  EXPECT_TRUE(carried.link_b == 2 || carried.link_b == 3) << carried.link_b;
+}
+
 // ── API v5: the #349 verdict quoted to a provider is the in-tree rule's own ──
 //
 // With the in-tree rule off, a provider that enabled it gets the kernel's verdict for each pair
