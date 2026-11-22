@@ -474,3 +474,43 @@ def test_a_robot_without_its_own_physics_callback_takes_the_shared_world_step(
     assert south._observed_sim_dt_per_tick_s == pytest.approx(0.1)  # 2 substeps
     north._observed_physics_step_dt_s = None
     assert south._observed_sim_dt_per_tick_s is None  # nothing measured: still fails closed
+
+
+def test_holding_robots_step_the_world_together() -> None:
+    """With none commanding, one advance per round: each robot's steps stay one period apart.
+
+    Stepped one by one, three holding robots put three periods between one robot's joint
+    states and its self-filter dropped every cloud (openral-pro#99).
+    """
+    lock = sidecar._Lockstep(timeout_s=5.0, idle_round_s=1.0, idle_max_wait_s=0.25)
+    hold = {"idle": True}
+    lock.submit("a", b"a", hold, now=0.0)
+    assert [x for x, *_ in lock.release(now=0.0)] == ["a"]  # alone: at once
+    lock.submit("b", b"b", hold, now=0.01)
+    lock.submit("c", b"c", hold, now=0.02)
+    assert lock.release(now=0.02) == []  # a held a moment ago: the round waits for it
+    lock.submit("a", b"a", hold, now=0.03)
+    assert [x for x, *_ in lock.release(now=0.03)] == ["b", "c", "a"]
+    lock.submit("a", b"a", hold, now=0.1)
+    lock.submit("b", b"b", hold, now=0.11)
+    assert lock.release(now=0.12) == []  # c held a moment ago: the round waits for it
+    assert lock.wait_s(now=0.12) == pytest.approx(0.23)
+    lock.submit("c", b"c", hold, now=0.13)
+    assert [x for x, *_ in lock.release(now=0.13)] == ["a", "b", "c"]  # one advance
+    lock.submit("a", b"a", hold, now=0.2)
+    assert lock.release(now=0.3) == []
+    assert [x for x, *_ in lock.release(now=0.46)] == ["a"]  # b and c late: the round ran out
+    lock.submit("a", b"a", hold, now=2.0)  # b and c held over a second ago: out of the round
+    assert [x for x, *_ in lock.release(now=2.0)] == ["a"]
+
+
+def test_a_holders_round_clock_restarts_at_its_reply() -> None:
+    """A slow advance must not age a holding robot out of the next round."""
+    lock = sidecar._Lockstep(timeout_s=5.0, idle_round_s=1.0, idle_max_wait_s=0.25)
+    hold = {"idle": True}
+    lock.submit("a", b"a", hold, now=0.0)
+    lock.submit("b", b"b", hold, now=0.0)
+    assert [x for x, *_ in lock.release(now=0.0)] == ["a", "b"]
+    lock.replied(["a", "b"], now=2.0)  # the advance took 2 s
+    lock.submit("a", b"a", hold, now=2.1)
+    assert lock.release(now=2.1) == []  # b was answered 0.1 s ago: still in the round
