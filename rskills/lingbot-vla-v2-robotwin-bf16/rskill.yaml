@@ -1,0 +1,119 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §3 rSkill packaging)
+# Wraps: lerobot/lingbot_vla_v2_robotwin — Robbyant LingBot-VLA 2.0 RoboTwin 2.0
+#        post-train (`checkpoints/global_step_50000`), converted to LeRobot format.
+#        The weights are robbyant/lingbot-vla-v2-6b-robotwin unchanged (fp32,
+#        every tensor checked against upstream per the model card), plus a
+#        LeRobot config and policy_{pre,post}processor pipeline. Apache-2.0.
+# Paper: "From Foundation to Application: Improving VLA Models in Practice"
+#        (huggingface.co/papers/2607.06403)
+#
+# Runs IN-PROCESS through lerobot>=0.7's vendored LingbotVLAV2Policy
+# (openral_sim.policies.lingbot_vla_v2): no Triton-MoE kernels and no
+# transformers 4.57 pin, so no sidecar venv. The sidecar family
+# (`lingbot_vla2`, rskills/lingbot-vla2-robotwin) keeps the upstream-format
+# foundation checkpoint and its 8 GB NF4 path.
+#
+# Contract (checkpoint config.json + policy_preprocessor.json): 3 cameras
+# cam_high / cam_left_wrist / cam_right_wrist (resized with padding to 256x256),
+# 14-D observation.state [arm_l(6) grip_l(1) arm_r(6) grip_r(1)], 14-D action;
+# the checkpoint pipeline maps both onto the 55-D canonical slots. chunk_size 50,
+# 25-step replay as upstream's RoboTwin deploy (`--use_length 25`).
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-lingbot_vla_v2-aloha_agilex-robotwin-bf16"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "vla"
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "lingbot_vla_v2"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+embodiment_tags:
+  - "aloha_agilex"
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 256
+    min_height: 256
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 256
+    min_height: 256
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera3"
+    min_width: 256
+    min_height: 256
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  # lerobot casts the whole model to config.dtype at build; bf16 halves the
+  # 25.5 GB fp32 checkpoint.
+  dtype: "bf16"
+  backend: "pytorch"
+min_vram_gb:
+  fp32: 25.5
+  bf16: 12.8
+weights_uri: "hf://lerobot/lingbot_vla_v2_robotwin@54f79a4b6e9166bda91b5010088097ff3191bca2"
+
+# ── Preprocessing ──────────────────────────────────────────────────────────
+# The checkpoint's lerobot PolicyProcessorPipeline. Its steps also carry artefact
+# directories (image_processor/, tokenizer/, chat_template_tokenizer/) that a
+# per-file fetch of these two JSONs would miss, so the adapter loads the pipeline
+# from the pinned checkpoint snapshot (same commit), validating every step first.
+processors:
+  preprocessor_uri: "hf://lerobot/lingbot_vla_v2_robotwin@54f79a4b6e9166bda91b5010088097ff3191bca2/policy_preprocessor.json"
+  postprocessor_uri: "hf://lerobot/lingbot_vla_v2_robotwin@54f79a4b6e9166bda91b5010088097ff3191bca2/policy_postprocessor.json"
+image_preprocessing:
+  input_template: "observation.images.{cam}"
+  aliases:
+    camera1: "cam_high"
+    camera2: "cam_left_wrist"
+    camera3: "cam_right_wrist"
+state_contract:
+  dim: 14
+
+# ── Execution semantics ────────────────────────────────────────────────────
+chunk_size: 50
+n_action_steps: 25
+latency_budget:
+  per_chunk_ms: 1500.0
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+paper_url: "https://huggingface.co/papers/2607.06403"
+source_repo: "hf://robbyant/lingbot-vla-v2-6b-robotwin"
+
+description: >
+  LingBot-VLA 2.0 (6.38 B, Qwen3-VL-4B backbone + sparse-MoE flow-matching
+  action expert), RoboTwin 2.0 post-train, run in-process through lerobot's
+  vendored policy. Predicts 50-step chunks (25-step replay) of a 14-DoF
+  dual-arm joint command for the AgileX Cobot Magic from three RGB views
+  (head + per-wrist) and a language instruction. bf16, needs a ≥16 GB GPU.
+
+evaluated_tasks: ["robotwin"]
+
+actions:
+  - "generalist"
+  - "pick"
+  - "place"
+  - "transfer"
+  - "pour"
+objects:
+  - "block"
+  - "bottle"
+  - "cup"
+  - "bowl"
+scenes:
+  - "tabletop"
+
+action_contract:
+  dim: 14
+  representation: "joint_positions"
+  joint_units: "radians"
