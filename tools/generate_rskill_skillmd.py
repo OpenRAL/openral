@@ -33,10 +33,21 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _RSKILLS_DIR = _REPO_ROOT / "rskills"
 
-# Weight licenses that are NOT fully permissive open source — the generated
-# SKILL.md surfaces a warning so a discovering agent does not assume free
-# commercial use. Mirrors RSkillLicensePosture semantics (third-party weights).
-_PERMISSIVE_WEIGHT_LICENSES = {"apache-2.0", "mit", "bsd-3-clause", "nvidia_open_model"}
+
+def _weights_permissive(license_str: str) -> bool:
+    """Whether the manifest's weight license allows commercial use.
+
+    Reads ``RSkillLicensePosture.allows_commercial_use``, the loader's own gate, so
+    the discovery view cannot drift from it. A non-commercial posture gets a warning
+    in the generated SKILL.md so a discovering agent does not assume free use.
+    """
+    from openral_core import RSkillLicensePosture
+
+    try:
+        return RSkillLicensePosture(license_str.lower()).allows_commercial_use
+    except ValueError:
+        return False
+
 
 _KIND_NOUN = {
     "vla": "Vision-Language-Action policy",
@@ -94,7 +105,7 @@ def _yaml_inline(value: Any) -> str:
 def _build_metadata(m: dict[str, Any], skill_name: str, rel_manifest: str) -> str:
     """Emit the ``metadata:`` block, including only fields present in the manifest."""
     license_str = str(m.get("license", "")).strip()
-    weights_permissive = license_str.lower() in _PERMISSIVE_WEIGHT_LICENSES
+    weights_permissive = _weights_permissive(license_str)
     lines: list[str] = ["metadata:"]
 
     def add(key: str, value: Any, *, inline: bool = False) -> None:
@@ -171,7 +182,7 @@ def render_skill_md(manifest_path: Path) -> str:
     skill_name = manifest_path.parent.name
     rel_manifest = "./rskill.yaml"
     license_str = str(m.get("license", "")).strip()
-    weights_permissive = license_str.lower() in _PERMISSIVE_WEIGHT_LICENSES
+    weights_permissive = _weights_permissive(license_str)
     kind = str(m.get("kind", "")).strip()
     noun = _KIND_NOUN.get(kind, "rSkill")
 

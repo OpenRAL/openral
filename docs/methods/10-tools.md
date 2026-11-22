@@ -630,8 +630,8 @@ Mirrors `openral rskill new`; exists so power users can scaffold without install
 _Generate the standard agent-skill `SKILL.md` discovery view for every in-tree rSkill from its `rskill.yaml`._
 The single canonical producer of the `SKILL.md` mirror: `rskill.yaml` is authoritative and the generated file is discovery-only, never hand-edited. `--check` fails on any stale or missing `SKILL.md`, across every skill kind including `playbook`.
 
-- `render_skill_md(manifest_path: Path) -> str` (L162) — Render the `SKILL.md` text (YAML frontmatter + capability/verb summary + license/provenance) from one manifest; `_KIND_NOUN` maps each `kind` to its discovery noun.
-- `main(argv=None) -> int` (L266) — Entry point. No args = regenerate every `rskills/<id>/SKILL.md`; positional ids regenerate a subset; `--check` reports stale/missing without writing (exit 1 on drift).
+- `render_skill_md(manifest_path: Path) -> str` (L173) — Render the `SKILL.md` text (YAML frontmatter + capability/verb summary + license/provenance) from one manifest; `_KIND_NOUN` maps each `kind` to its discovery noun. The weights' permissive / NOT-permissive wording comes from `RSkillLicensePosture.allows_commercial_use` (`_weights_permissive`), the loader's own gate, so it cannot drift from it.
+- `main(argv=None) -> int` (L277) — Entry point. No args = regenerate every `rskills/<id>/SKILL.md`; positional ids regenerate a subset; `--check` reports stale/missing without writing (exit 1 on drift).
 
 ### `tools/rldx_sidecar.py`
 _Boot helper for the RLDX-1 inference sidecar, companion to `openral_sim.policies.rldx`._
