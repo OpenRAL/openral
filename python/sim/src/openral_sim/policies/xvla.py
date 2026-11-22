@@ -158,7 +158,13 @@ class _XVLAAdapter:
         zero ``empty_camera_0``; and the scene's 8-D canonical state.
         """
         torch = self._torch
-        state = np.asarray(observation.get("state"), dtype=np.float32).reshape(-1)
+        raw_state = observation.get("state")
+        if raw_state is None:
+            raise ROSCapabilityMismatch(
+                "xVLA needs the 8-D canonical LIBERO state as observation['state']; "
+                "the scene provides none."
+            )
+        state = np.asarray(raw_state, dtype=np.float32).reshape(-1)
         if state.shape[0] != _LIBERO_STATE_DIM:
             raise ROSCapabilityMismatch(
                 "xVLA is a LIBERO-only checkpoint: it needs the 8-D canonical LIBERO state "
@@ -197,6 +203,17 @@ def _build_xvla(env_cfg: Any) -> _XVLAAdapter:
     """Load an xVLA-LIBERO checkpoint + its four-stage processor pipeline."""
     spec = env_cfg.vla
     device = resolve_device(spec)
+
+    # The 8-D state xVLA reads is eef_pos | axis-angle | gripper_qpos, which only the
+    # LIBERO scenes produce; another scene's 8-D state (e.g. 7 joints + gripper)
+    # would pass the per-step shape check and be misread, so refuse it before loading.
+    from openral_sim.backends.libero import _LIBERO_SUITES
+
+    if env_cfg.scene.id not in _LIBERO_SUITES:
+        raise ROSCapabilityMismatch(
+            f"xVLA is a LIBERO-only checkpoint: scene {env_cfg.scene.id!r} is not one of "
+            f"{_LIBERO_SUITES}."
+        )
 
     try:
         import torch

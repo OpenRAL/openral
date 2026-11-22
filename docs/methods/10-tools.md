@@ -647,7 +647,7 @@ _Boot helper + inference server for Xiaomi Robotics XR-1. The launcher provision
 - `_NDARRAY_SENTINEL = "__ndarray__"` (_xr1_server.py L17) — Marker key for the msgpack ndarray codec (mirrors `openral_sim.sidecar.encode_ndarray`'s `_NDARRAY_SENTINEL`, re-implemented here because the sidecar venv cannot import `openral_sim`).
 - `_STATE_DIM = 60` (_xr1_server.py L18) — XR-1's internal padded state width; `_pad_state` pads any frame/history up to this.
 - `_ACTION_DIMS = {"robocasa_mg": 7, "robocasa365": 12, "vlabench_choice": 7}` (_xr1_server.py L19) — Per-benchmark-profile action width the checkpoint processor decodes.
-- `main() -> int` (_xr1_server.py L430) — ZMQ REP server loop entry point; loads the pinned checkpoint then answers `ping/reset/get_action/close`.
+- `main() -> int` (_xr1_server.py L431) — ZMQ REP server loop entry point; loads the pinned checkpoint then answers `ping/reset/get_action/close`.
 - `_messages(profile, images, instruction) -> list[dict[str, Any]]` — exact RoboCasa, RoboCasa365-video, or VLABench message layout from upstream revision `7c20088`.
 - `_pad_state(state) -> NDArray[np.float32]` — pad one frame or a four-frame history to XR-1's 60-D internal state.
 - `_local_snapshot(model) -> str` — resolve a local path or `hf://repo@sha` ref to a local snapshot dir (`snapshot_download`, works offline). transformers 4.57.1's `AutoProcessor` drops `revision` from its config probes, so a repo id + `revision=` reads `main` (offline without a cached `refs/main`: falls back to the bare Qwen2 tokenizer).
