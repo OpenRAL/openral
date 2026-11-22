@@ -540,12 +540,12 @@ class SO100FollowerHAL(HALBase):
             try:
                 robot = SO100Follower(cfg)
             except ModuleNotFoundError as exc:
-                # lerobot's FeetechMotorsBus pulls in `scservo_sdk` at __init__
+                # lerobot's SerialMotorsBus pulls in `rustypot` at __init__
                 # time; surface a typed config error instead of leaking the raw
                 # ImportError traceback.
                 raise ROSConfigError(
                     f"SO-100 driver dependency missing ({exc.name!r}). "
-                    "Install with: uv add scservo_sdk --package openral-hal"
+                    "Install with: uv add 'lerobot[feetech]' --package openral-hal"
                 ) from exc
             if not os.path.exists(self._port):
                 raise ROSConfigError(
@@ -560,7 +560,7 @@ class SO100FollowerHAL(HALBase):
                 self._torque_watcher = FeetechTorqueWatcher.spawn(
                     self._port,
                     [m.id for m in robot.bus.motors.values()],
-                    robot.bus.port_handler.baudrate,
+                    robot.bus.default_baudrate,
                 )
             except (OSError, RuntimeError) as exc:
                 raise ROSRuntimeError(
@@ -908,7 +908,6 @@ class SO100FollowerHAL(HALBase):
         ):
             problems.append("robot exposes no motor bus: torque off cannot be written or read back")
         else:
-            notes.extend(self._release_bus_port(bus))
             for motor in motors:
                 try:
                     # ``MotorsBus.write`` waits for the servo's status packet, so a
@@ -962,25 +961,6 @@ class SO100FollowerHAL(HALBase):
         )
         return report
 
-    @staticmethod
-    def _release_bus_port(bus: object) -> list[str]:
-        """Free the serial port for the stop writes, as lerobot's own ``disconnect`` does.
-
-        A control-loop transaction cut short by the stop can leave the port
-        flagged busy; ``MotorsBus.disconnect(disable_torque=True)`` clears it
-        the same way before its torque-off writes. Returns notes for the report
-        (empty when there is nothing to release or it succeeded).
-        """
-        port = getattr(bus, "port_handler", None)
-        if port is None:
-            return []
-        try:
-            port.clearPort()
-            port.is_using = False
-        except Exception as exc:  # reason: the writes below are the proof, not this
-            return [f"port release failed: {type(exc).__name__}: {exc}"]
-        return []
-
     def reset_estop(self) -> None:
         """Re-arm after a proven e-stop, holding the present pose.
 
@@ -1022,7 +1002,7 @@ class SO100FollowerHAL(HALBase):
                 watcher = FeetechTorqueWatcher.spawn(
                     self._port,
                     [m.id for m in bus.motors.values()],
-                    bus.port_handler.baudrate,
+                    bus.default_baudrate,
                 )
             except (OSError, RuntimeError) as exc:
                 raise ROSRuntimeError(
@@ -1042,7 +1022,6 @@ class SO100FollowerHAL(HALBase):
             if not getattr(bus.enable_torque, "holds_pose", False):
                 _hold_pose_on_torque_enable(bus)
             try:
-                self._release_bus_port(bus)
                 bus.enable_torque(num_retry=_ESTOP_TORQUE_RETRIES)
                 wrong = [
                     motor

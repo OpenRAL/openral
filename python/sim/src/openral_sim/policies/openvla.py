@@ -760,7 +760,7 @@ def _load_openvla_model(
 
     load_kwargs: dict[str, Any] = {
         **common,
-        "torch_dtype": torch.bfloat16,
+        "dtype": torch.bfloat16,
         "low_cpu_mem_usage": True,
         "attn_implementation": "eager",
     }

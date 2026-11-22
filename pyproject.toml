@@ -241,7 +241,7 @@ vla = [
     # `molmoact2` (transformers, peft, scipy), `timm-dep` (OpenVLA's
     # trust_remote_code prismatic backbone).
     "lerobot[pi,smolvla,xvla,molmoact2,timm-dep]",
-    "transformers>=5.4.0,<5.6.0",  # reason: restates lerobot's `transformers-dep` ceiling so a lerobot upgrade cannot lift it silently. Above 5.6 the PaliGemma attention path changes and pi05's vision-tower keys are renamed; `PI05Policy.from_pretrained` *warns rather than raises*, so the policy loads with a randomly-initialized vision tower and emits confident, meaningless action chunks. Verified on a Jetson AGX Thor: 5.5.4 loads all 813 keys clean.
+    "transformers>=5.22.0,<5.23.0",  # reason: restates lerobot's `transformers-dep` ceiling so a lerobot upgrade cannot lift it silently. Above 5.6 the PaliGemma attention path changes and pi05's vision-tower keys are renamed; `PI05Policy.from_pretrained` *warns rather than raises*, so the policy loads with a randomly-initialized vision tower and emits confident, meaningless action chunks. Verified on a Jetson AGX Thor: 5.5.4 loads all 813 keys clean.
 ]
 clip = [
     # Open-vocabulary object matching via OpenCLIP ViT-B/32 (MIT
@@ -497,7 +497,7 @@ omdet = [
     # backend (openral_runner.backends.gstreamer.omdet_turbo_detector) lazily
     # imports torch + transformers; this group provides them. Required by the
     # `deploy sim --object-detector-manifest <…omdet-turbo-indoor…>` leg.
-    "transformers>=5.4.0,<5.6.0",  # reason: AutoModelForZeroShotObjectDetection (OmDet-Turbo). Pinned to match the sim / vla groups so a multi-group sync resolves to one transformers version.
+    "transformers>=5.22.0,<5.23.0",  # reason: AutoModelForZeroShotObjectDetection (OmDet-Turbo). Pinned to match the sim / vla groups so a multi-group sync resolves to one transformers version.
     "torch>=2.2",           # reason: OmDet-Turbo forward pass + .to(device); CUDA when available, CPU fallback for GPU-less hosts / deploy sim.
     "pillow>=10.0",         # reason: BGR frame -> RGB PIL.Image for the processor.
     "timm>=1.0",            # reason: OmDet-Turbo's Swin backbone loads via TimmBackbone under transformers 5.3; also used to rebuild the backbone at the processor's 640² input (the pretrained checkpoint is pinned to 224² — see _fit_timm_backbone_to_processor).
@@ -513,7 +513,7 @@ sam2 = [
     # peak on an RTX 4070 Laptop, which co-resides trivially with a VLA. The
     # backend (openral_runner.backends.gstreamer.sam2_segmenter) lazily imports
     # torch + transformers; this group provides them.
-    "transformers>=5.4.0,<5.6.0",  # reason: Sam2Model / Sam2Processor. Pinned to match the omdet / sim / vla groups so a multi-group sync resolves to one transformers version.
+    "transformers>=5.22.0,<5.23.0",  # reason: Sam2Model / Sam2Processor. Pinned to match the omdet / sim / vla groups so a multi-group sync resolves to one transformers version.
     "torch>=2.2",           # reason: SAM 2.1 forward pass + .to(device); CUDA when available, CPU fallback for GPU-less hosts and pre-sm_70 dev boxes.
     "pillow>=10.0",         # reason: BGR frame -> RGB PIL.Image for Sam2Processor.
 ]

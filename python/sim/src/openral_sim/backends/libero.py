@@ -1,4 +1,4 @@
-"""LIBERO scene adapter — wraps ``lerobot.envs.libero.LiberoEnv``.
+"""LIBERO scene adapter — wraps ``lerobot.sim.integrations.libero.LiberoEnv``.
 
 Driven by a ``openral_core.SimScene`` config, this adapter is
 the canonical entry point for LIBERO physics-backed rollouts (used by
@@ -421,7 +421,7 @@ def _seed_libero_config_if_absent() -> None:
     whenever its config file does not yet exist. Under pytest's captured stdin
     (and any non-interactive process — a deploy-sim subprocess, a cron CI run)
     that ``input()`` raises ``OSError: reading from stdin while output is
-    captured``, crashing the very first ``from lerobot.envs.libero import
+    captured``, crashing the very first ``from lerobot.sim.integrations.libero import
     LiberoEnv`` before ``_ensure_libero_config_matches_active_install``
     below ever gets a chance to run.
 
@@ -497,7 +497,7 @@ def _ensure_libero_config_matches_active_install() -> None:
 
 
 def _build_libero_scene(env_cfg: SimEnvironment) -> _LiberoSim:
-    """Lazily import ``lerobot.envs.libero`` and build a ``_LiberoSim``."""
+    """Lazily import ``lerobot.sim.integrations.libero`` and build a ``_LiberoSim``."""
     if env_cfg.scene.id not in _LIBERO_SUITES:
         raise ROSConfigError(
             f"libero scene id must be one of {_LIBERO_SUITES}, got {env_cfg.scene.id!r}"
@@ -507,21 +507,21 @@ def _build_libero_scene(env_cfg: SimEnvironment) -> _LiberoSim:
 
     ensure_backend_deps("libero")
 
-    # Seed ~/.libero/config.yaml BEFORE importing lerobot.envs.libero, which
+    # Seed ~/.libero/config.yaml BEFORE importing lerobot.sim.integrations.libero, which
     # transitively imports libero.libero whose module-level first-run input()
     # prompt crashes under captured/non-interactive stdin (see the helper).
     _seed_libero_config_if_absent()
 
     try:
-        from lerobot.envs.libero import LiberoEnv, _get_suite
+        from lerobot.sim.integrations.libero import LiberoEnv, _get_suite
     except ImportError as exc:  # pragma: no cover - tested via runtime error path
         # ensure_backend_deps re-probes after running its plan so this
         # branch is only reached when the install ran but
-        # lerobot.envs.libero still refuses to import (e.g. partial
+        # lerobot.sim.integrations.libero still refuses to import (e.g. partial
         # C-extension compile failure). Keep the typed error so the
         # user has somewhere to look.
         raise ROSConfigError(
-            "LIBERO backend installed but lerobot.envs.libero still refuses "
+            "LIBERO backend installed but lerobot.sim.integrations.libero still refuses "
             "to import. Inspect the auto-install output above and re-run: "
             "CC=/usr/bin/gcc just sync --all-packages --group libero"
         ) from exc

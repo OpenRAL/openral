@@ -104,32 +104,41 @@ def _rig_is_present() -> bool:
 
 
 def _servo_ids_answering() -> frozenset[int]:
-    """Broadcast-ping the Feetech bus and return the ids that replied.
+    """Ping every declared Feetech servo and return the ids that replied.
 
-    Pure read: the port is opened without lerobot's handshake, one broadcast
-    ping goes out, and the port is closed with ``disable_torque=False`` so not
-    a single register is written. An absent bus, an absent lerobot, or a port
-    another process holds all yield the empty set — this is a skip gate, and a
-    gate that raises would turn "the arm is off" into a red lab run.
+    Pure read: the port is opened without lerobot's handshake, each servo of
+    the SO follower's own bus gets one ping, and the port is closed with
+    ``disable_torque=False`` so not a single register is written (lerobot>=0.7's
+    rustypot ``SerialMotorsBus`` has no public broadcast ping). An absent bus,
+    an absent lerobot, or a port another process holds all yield the empty set —
+    this is a skip gate, and a gate that raises would turn "the arm is off" into
+    a red lab run.
     """
     if not _rig_is_present():
         return frozenset()
     try:
-        from lerobot.motors.feetech import FeetechMotorsBus
+        from lerobot.robots.so_follower import SO100Follower, SOFollowerRobotConfig
     except ImportError:  # reason: lerobot optional -> no live servos to gate on
         return frozenset()
-    bus = FeetechMotorsBus(_bench_port(), {})
+    defaults = _scene_hal_defaults()
+    bus = SO100Follower(
+        SOFollowerRobotConfig(
+            port=_bench_port(),
+            id=str(defaults["id"]),
+            calibration_dir=_bench_calibration_file().parent,
+        )
+    ).bus
     try:
         bus.connect(handshake=False)
     except Exception:  # reason: port busy/unopenable is a bench fact -> skip
         return frozenset()
     try:
-        found = bus.broadcast_ping()
-    except Exception:  # reason: a silent bus raises rather than returning {}
-        found = None
+        found = {m.id for m in bus.motors.values() if bus.ping(m.id) is not None}
+    except Exception:  # reason: a silent bus raises rather than returning None
+        found = set()
     finally:
         bus.disconnect(disable_torque=False)
-    return frozenset(found or {})
+    return frozenset(found)
 
 
 requires_rig = pytest.mark.skipif(
@@ -144,7 +153,7 @@ requires_live_servos = pytest.mark.skipif(
     not set(_EXPECTED_SERVO_IDS) <= _ANSWERING,
     reason=(
         f"SO-101 serial port is present but only servo ids {sorted(_ANSWERING)} answer a "
-        f"broadcast ping (expected {list(_EXPECTED_SERVO_IDS)}) — the motor bus is dark, "
+        f"ping (expected {list(_EXPECTED_SERVO_IDS)}) — the motor bus is dark, "
         "which on this arm means the 12 V supply is off (USB alone browns the servos out)"
     ),
 )

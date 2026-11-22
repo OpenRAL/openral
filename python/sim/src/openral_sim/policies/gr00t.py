@@ -362,6 +362,7 @@ def _build_groot_config(
     pin the action head to the real 7-D LIBERO action instead of the 132-D
     padded default.
     """
+    import torch
     from lerobot.configs import FeatureType, PolicyFeature
     from lerobot.policies.groot.configuration_groot import GrootConfig
     from lerobot.utils.constants import ACTION, OBS_STATE
@@ -376,7 +377,10 @@ def _build_groot_config(
         base_model_path=local_path,
         embodiment_tag=embodiment_tag,
         # Quantized params cannot be fp32-cast (see _groot_nf4_config bug (a)).
-        model_params_fp32=not quantize,
+        # lerobot>=0.7 replaced `model_params_fp32` with `dtype`: GrootPolicy casts
+        # every param to fp32 only when dtype is float32, so any other dtype is the
+        # old `model_params_fp32=False` (no cast).
+        dtype=torch.bfloat16 if quantize else torch.float32,
         input_features=input_features,
         output_features=output_features,
     )
@@ -462,7 +466,7 @@ def _build_gr00t(env_cfg: Any) -> PolicyAdapter:  # reason: staged loader
     # manifest's declared dtype.
     plan = resolve_quant_plan(spec, manifest, default="nf4")
     # nf4 packs the backbone (or the whole model); an unpacked load runs the
-    # params in fp32 (`model_params_fp32=not quantize` below), so bf16 / fp16
+    # params in fp32 (`dtype=float32` in `_groot_config` when unquantized), so bf16 / fp16
     # have no load path here and int8 would silently NF4-pack.
     require_supported_dtype(plan, frozenset({"nf4", "fp32", "none"}), "gr00t")
     quantization = plan.dtype or "nf4"

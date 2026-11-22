@@ -41,6 +41,27 @@ def test_an_installed_snapshot_round_trips_through_the_resolver(tmp_path: Path) 
     assert local_snapshot_dir(repo_id, revision=revision) == repo_id
 
 
+def test_a_sha_pin_resolves_offline_from_a_cache_without_a_tree_listing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Offline, a pinned snapshot already in the cache is returned — no Hub call.
+
+    huggingface_hub 1.33 lists the repo tree for a sha pin unless
+    ``local_files_only=True``, so offline it raised ``OfflineModeIsEnabled`` on a
+    cache with no ``trees/<sha>.json``, which is every cache written by an older
+    hub (1.13 returned the snapshot). Real huggingface_hub, real on-disk cache.
+    """
+    from huggingface_hub import constants
+
+    sha = "84a7c23178445c6bbf7e1a884ff497017910f653"
+    snapshot = tmp_path / "models--lerobot--diffusion_pusht" / "snapshots" / sha
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("{}")
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(constants, "HF_HUB_OFFLINE", True)
+    assert local_snapshot_dir("lerobot/diffusion_pusht", revision=sha) == str(snapshot)
+
+
 def test_a_hub_id_snapshots_when_cached() -> None:
     pytest.importorskip("huggingface_hub")
     from huggingface_hub.errors import LocalEntryNotFoundError

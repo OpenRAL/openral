@@ -231,7 +231,7 @@ lerobot-eval \
 
 Suite max steps: `libero_spatial` 280, `libero_object` 280, `libero_goal` 300, `libero_10` 520.
 
-Note: `libero_10` is the lerobot/upstream name for LIBERO-Long. `LiberoProcessorStep` is injected automatically by `lerobot.envs.LiberoEnv` — no separate LIBERO gym install is required beyond the lerobot extras.
+Note: `libero_10` is the lerobot/upstream name for LIBERO-Long. `LiberoProcessorStep` is injected automatically by `lerobot.sim.integrations.libero.LiberoEnv` — no separate LIBERO gym install is required beyond the lerobot extras.
 
 ---
 
@@ -268,7 +268,7 @@ Note: `libero_10` is the lerobot/upstream name for LIBERO-Long. `LiberoProcessor
 
 - **MetaWorld uses Sawyer, not Franka** (see §3.3): the `franka_panda` tag in the lerobot metaworld dataset metadata refers to the broader manipulation skill class. Do not use smolvla_metaworld weights on a real Franka without re-training.
 
-- **LIBERO `~/.libero/config.yaml` must point at the data files**: After installing `hf-libero` via pip, the config file at `~/.libero/config.yaml` pins absolute paths computed at first import and is never refreshed when you switch venv / workspace path. The next `just sim-libero` / `just sim-xvla-libero` / `just sim-pi05-libero` run then crashes inside `lerobot.envs.libero.get_task_init_states` with a `FileNotFoundError` on `<stale-path>/init_files/<task>.pruned_init`. The `_ensure-libero-config` private recipe (chained off every libero `just sim-*` target) invokes [`tools/fix_libero_config.py`](https://github.com/OpenRAL/openral/blob/master/tools/fix_libero_config.py) to detect + rewrite the file when stale; idempotent. Run it manually any time with `uv run --group libero python tools/fix_libero_config.py --verbose`, or set `LIBERO_CONFIG_PATH` to a project-local dir to bypass `~/.libero` entirely.
+- **LIBERO `~/.libero/config.yaml` must point at the data files**: After installing `hf-libero` via pip, the config file at `~/.libero/config.yaml` pins absolute paths computed at first import and is never refreshed when you switch venv / workspace path. The next `just sim-libero` / `just sim-xvla-libero` / `just sim-pi05-libero` run then crashes inside `lerobot.sim.integrations.libero.get_task_init_states` with a `FileNotFoundError` on `<stale-path>/init_files/<task>.pruned_init`. The `_ensure-libero-config` private recipe (chained off every libero `just sim-*` target) invokes [`tools/fix_libero_config.py`](https://github.com/OpenRAL/openral/blob/master/tools/fix_libero_config.py) to detect + rewrite the file when stale; idempotent. Run it manually any time with `uv run --group libero python tools/fix_libero_config.py --verbose`, or set `LIBERO_CONFIG_PATH` to a project-local dir to bypass `~/.libero` entirely.
 
 ## 6. Runtime posture per VLA family
 

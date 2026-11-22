@@ -1,8 +1,8 @@
-"""VLABench scene adapter — wraps ``lerobot.envs.configs.VLABenchEnv``.
+"""VLABench scene adapter — wraps ``lerobot.sim.integrations.vlabench.VLABenchEnv``.
 
 VLABench (ICCV 2025, OpenMOSS) is a MuJoCo + dm_control language-conditioned
-manipulation benchmark on a Franka Panda arm. lerobot 0.6.0 ships a native
-``vlabench`` env config; this adapter drives it through OpenRAL's unbatched
+manipulation benchmark on a Franka Panda arm. lerobot ships a native
+``vlabench`` env; this adapter drives it through OpenRAL's unbatched
 ``SimRollout`` contract.
 
 Env contract (``obs_type="pixels_agent_pos"``, ``n_envs=1``):
@@ -12,9 +12,11 @@ Env contract (``obs_type="pixels_agent_pos"``, ``n_envs=1``):
 - action — 7-D end-effector, batched ``(1, 7)``.
 - ``info["is_success"]`` — per-env success flag.
 
-``lerobot``'s ``VLABenchEnv.create_envs`` returns a nested
-``{task_group: {idx: SyncVectorEnv}}`` mapping; we extract the single
-``SyncVectorEnv`` and unwrap the ``n_envs=1`` batch dimension here.
+The env is built directly as a one-env ``gym.vector.SyncVectorEnv`` over
+``lerobot.sim.integrations.vlabench.VLABenchEnv`` (raw ``pixels`` /
+``agent_pos`` keys). lerobot>=0.7's ``VLABenchEnvConfig.create_envs`` instead
+returns canonical ``observation.*`` keys, which this adapter does not parse;
+we unwrap the ``n_envs=1`` batch dimension here.
 
 Task ID convention: ``"vlabench/<task-name>"`` (e.g. ``"vlabench/select_fruit"``).
 ``scene.id`` MUST be ``"vlabench"``.
@@ -268,7 +270,9 @@ def _build_vlabench_scene(env_cfg: SimEnvironment) -> _VLABenchSim:
     ensure_backend_deps("vlabench")
     try:
         _resolve_vlabench_root()
-        from lerobot.envs.configs import VLABenchEnv
+        import gymnasium as gym
+        from lerobot.envs.configs import VLABenchEnvConfig
+        from lerobot.sim.integrations.vlabench import VLABenchEnv
     except ImportError as exc:  # pragma: no cover
         raise ROSConfigError(
             "VLABench backend not installed; the 'vlabench' install plan "
@@ -279,7 +283,7 @@ def _build_vlabench_scene(env_cfg: SimEnvironment) -> _VLABenchSim:
         ) from exc
     _check_vlabench_assets()
 
-    cfg = VLABenchEnv(
+    cfg = VLABenchEnvConfig(
         task=task_name,
         obs_type="pixels_agent_pos",
         episode_length=int(env_cfg.task.max_steps or 500),
@@ -288,10 +292,7 @@ def _build_vlabench_scene(env_cfg: SimEnvironment) -> _VLABenchSim:
             env_cfg.scene.observation_width,
         ),
     )
-    env_groups = cfg.create_envs(n_envs=1)
-    # create_envs returns {task_group: {idx: SyncVectorEnv}}; take the sole env.
-    group = env_groups[next(iter(env_groups))]
-    env = group[next(iter(group))]
+    env = gym.vector.SyncVectorEnv([lambda: VLABenchEnv(task=task_name, **cfg.gym_kwargs)])
     return _VLABenchSim(scene=env_cfg.scene, task=env_cfg.task, _env=env)
 
 

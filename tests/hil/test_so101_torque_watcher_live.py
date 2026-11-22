@@ -60,7 +60,7 @@ port, ident, cal_dir, max_drift = sys.argv[1], sys.argv[2], sys.argv[3], int(sys
 robot = SO100Follower(SOFollowerRobotConfig(port=port, id=ident, calibration_dir=Path(cal_dir)))
 bus = robot.bus
 ids = [m.id for m in bus.motors.values()]
-baud = bus.port_handler.baudrate
+baud = bus.default_baudrate
 watcher = FeetechTorqueWatcher.spawn(port, ids, baud)  # as SO100FollowerHAL.connect
 bus.connect()
 
