@@ -164,10 +164,14 @@ def install_service(exe: Path) -> str | None:
     """
     unit = _unit_path()
     held = _service_env()
-    if held is not None and held != tunnel_env_path():
-        # One user service per host: it stays the robot it was linked for. A scene's robots
-        # (each its own enrolment) run their tunnels with their dashboards instead.
-        return f"{SERVICE} already runs another robot's tunnel ({held})"
+    if held is not None and held != tunnel_env_path() and held.is_file() and service_active():
+        # One user service per host: while it runs another robot's tunnel it stays that
+        # robot's. This robot's dashboard runs its tunnel instead. A unit whose robot is gone
+        # (its tunnel.env removed) or stopped is taken over.
+        return (
+            f"{SERVICE} runs another robot's tunnel ({held}); `systemctl --user disable --now "
+            f"{SERVICE}` frees it"
+        )
     unit.parent.mkdir(parents=True, exist_ok=True)
     unit.write_text(_UNIT.format(env=tunnel_env_path(), exe=exe), encoding="utf-8")
     if not _run("systemctl", "--user", "daemon-reload"):
