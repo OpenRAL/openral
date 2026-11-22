@@ -1254,3 +1254,17 @@ def test_a_failed_rig_write_leaves_no_camera_rig_file(repo_root: Path, tmp_path:
     assert proc.returncode == 0, proc.stderr[-2000:]
     assert "REFUSED" in proc.stdout and "File too large" in proc.stdout, proc.stdout
     assert sorted(p.name for p in tmp_path.iterdir()) == ["arm.xml"]
+
+
+def test_a_pd_twin_stop_holds_through_its_pd_target_not_ctrl(
+    robot_description: Describe, connect_twin: ConnectTwin
+) -> None:
+    """openral#700 item 1 on a torque twin: ``hold_present_pose`` sets the PD target to the
+    current pose and writes no joint angle into ``ctrl`` (N·m here)."""
+    hal = connect_twin(_h1(robot_description))
+    twin = hal._twin
+    hal.send_action(_joint_action([0.1] * len(hal.description.joints)))
+    ctrl_before = np.array(twin.data.ctrl[twin._pd_act], copy=True)
+    hal.stop_stale_motion()
+    np.testing.assert_allclose(twin._pd_targets, twin._driven_qpos())
+    np.testing.assert_array_equal(twin.data.ctrl[twin._pd_act], ctrl_before)

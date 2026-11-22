@@ -868,6 +868,18 @@ class MujocoTwinRollout:
     def _on_load(self) -> None:
         """After the MJCF is loaded and the time base resolved (robot-specific setup)."""
 
+    def hold_present_pose(self) -> None:
+        """Every non-gripper joint's actuator targets its current position (no stale goal).
+
+        For ``SimAttachedHAL.stop_stale_motion`` at an e-stop latch and its clear: an
+        arm target still in flight would otherwise be reached after the clear. Gripper
+        actuators keep their targets (their ctrl is not a joint position, and a held
+        object stays held).
+        """
+        if self.data is None:
+            return
+        self._hold_qpos_in_ctrl([n for n in self.joint_names if n not in self.grippers_by_joint])
+
     def _held_ctrl_targets(self) -> dict[str, float]:
         """Current ctrl target of each ``hold_if_uncommanded`` joint."""
         assert self.data is not None
@@ -1132,7 +1144,13 @@ class _SoftwarePDTwin(MujocoTwinRollout):
         super()._on_load()
         model = self.model
         assert model is not None
-        driven = [n for n in self.joint_names if n in self.actuator_index]
+        # Grippers keep their own ctrl path (``apply_gripper_targets``): their command is
+        # not a joint position, and they need no PD gains (#700 item 10).
+        driven = [
+            n
+            for n in self.joint_names
+            if n in self.actuator_index and n not in self.grippers_by_joint
+        ]
         self._pd_rows = np.array([self.joint_names.index(n) for n in driven], dtype=np.intp)
         self._pd_act = np.array([self.actuator_index[n] for n in driven], dtype=np.intp)
         self._pd_qpos = np.array([self.joint_qpos_addr[n] for n in driven], dtype=np.intp)
@@ -1153,13 +1171,25 @@ class _SoftwarePDTwin(MujocoTwinRollout):
 
         super().reset_to_pose(pose)
         assert self.model is not None and self.data is not None
-        self.data.ctrl[:] = 0.0
+        # Only the torque actuators: the gripper ctrl the base just wrote stays.
+        self.data.ctrl[self._pd_act] = 0.0
         mj.mj_forward(self.model, self.data)  # efforts against the zeroed torque
         self._pd_targets = self._driven_qpos()
 
+    def hold_present_pose(self) -> None:
+        """The PD target becomes the current pose (``ctrl`` is torque here, never a qpos)."""
+        if self.data is None:
+            return
+        self._pd_targets = self._driven_qpos()
+
     def _apply_targets(self, targets: list[float]) -> None:
-        """Make ``targets`` the PD target (``ctrl`` is torque, written every step)."""
+        """Make ``targets`` the PD target (``ctrl`` is torque, written every step).
+
+        A gripper's command goes to its own actuator, as on every twin.
+        """
         self._pd_targets = np.asarray(targets, dtype=np.float64)[self._pd_rows]
+        if self.grippers_by_joint:
+            self.apply_gripper_targets(targets)
 
     def _per_step(self) -> None:
         """The next block's hook, then the PD torques from the current ``qpos`` / ``qvel``."""

@@ -264,6 +264,8 @@ class MujocoArmHAL(SimAttachedHAL):
 
         Raises:
             ROSRuntimeError: If not connected.
+            ROSEStopRequested: The e-stop is latched: a teleport is motion too, refused
+                like every command until ``reset_estop`` (openral#700 item 9).
             ROSConfigError: If ``pose`` length doesn't match the joint
                 count.
 
@@ -272,6 +274,11 @@ class MujocoArmHAL(SimAttachedHAL):
             >>> # hal.reset_to_pose([0.0] * len(hal.description.joints))
         """
         self._require_connected("reset_to_pose")
+        if self.estop_latched:
+            raise ROSEStopRequested(
+                f"reset_to_pose refused on robot '{self.description.name}': the e-stop is "
+                "latched (reset_estop first)."
+            )
         self._twin.reset_to_pose(pose)
         log.info(
             "hal.reset_to_pose",

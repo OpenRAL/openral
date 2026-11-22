@@ -797,14 +797,16 @@ class SimAttachedHAL:
         )
         self._sim_dt_per_tick_s = dt
         fields = dict(getattr(self._env, "time_base_fields", None) or {})
-        structlog.get_logger(_TIME_BASE_LOGGER).info(
-            _EVENT_TIME_BASE,
-            backend=fields.pop("backend", backend),
-            sim_dt_per_tick_s=round(dt, 6),
-            control_freq_hz=rate,
-            robot=self.description.name,
+        # The checked values win: a backend field of the same name (#700 item 13) is
+        # dropped rather than passed twice (a raw TypeError out of connect()).
+        record: dict[str, object] = {
             **fields,
-        )
+            "backend": fields.get("backend", backend),
+            "sim_dt_per_tick_s": round(dt, 6),
+            "control_freq_hz": rate,
+            "robot": self.description.name,
+        }
+        structlog.get_logger(_TIME_BASE_LOGGER).info(_EVENT_TIME_BASE, **record)
 
     @property
     def sim_dt_per_tick_s(self) -> float | None:
@@ -841,8 +843,9 @@ class SimAttachedHAL:
         # along as the next pack's ``prev`` (an absolute-target env would move
         # the arm back to its pre-reset pose on the first base twist).
         self._last_env_action = None
-        # Nor may a held base setpoint drive the new episode.
+        # Nor may a held base setpoint drive the new episode, or /odom report its twist.
         self._held_twist = None
+        self._last_body_twist = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         # Every object is back at its spawn pose: nothing is held, nothing masked.
         self._attached_objects = {}
         self._attached_body_ids = frozenset()
@@ -2722,9 +2725,30 @@ class SimAttachedHAL:
         )
 
     def reset_estop(self) -> None:
-        """Clear the estop latch. Caller asserts the cause has been resolved."""
+        """Clear the estop latch. Caller asserts the cause has been resolved.
+
+        The robot comes back holding its present pose (``stop_stale_motion``), the
+        ``ResettableLifecycleEStopHAL`` contract.
+        """
         self._estop_latched = False
         self._latched_drop_logged = False
+        self.stop_stale_motion()
+
+    def stop_stale_motion(self) -> None:
+        """Drop every setpoint still in flight: the held base twist and the arm's targets.
+
+        Called by the HAL lifecycle node at its ``/openral/estop`` latch and at
+        ``/openral/estop_cleared`` (openral#700 item 1). The node's latch alone froze
+        stepping but kept a held ``/cmd_vel`` setpoint and the twin's ctrl targets, so
+        the base drove on and the arm finished its last move after the clear. A backend
+        that exposes ``hold_present_pose`` (the MuJoCo twins) holds its joints where they
+        are; the base twist is dropped and ``/odom`` reads still.
+        """
+        self._held_twist = None
+        self._latch_twist(None)
+        hold = getattr(self._env, "hold_present_pose", None)
+        if callable(hold) and self._connected:
+            hold()
 
     def read_policy_state(self) -> list[float] | None:
         """Return the simulator-native policy state, when the backend exposes one.
@@ -2757,7 +2781,9 @@ class SimAttachedHAL:
             The seed the env was reset with.
 
         Raises:
-            ROSRuntimeError: Not connected, or ``env.reset`` raised.
+            ROSRuntimeError: Not connected, or ``env.reset`` raised an untyped error.
+            ROSError: ``env.reset`` raised a typed refusal (e.g. ``ROSConfigError`` for a
+                twin's MJCF that does not load); it keeps its type.
 
         """
         self._require_connected("reset_episode")

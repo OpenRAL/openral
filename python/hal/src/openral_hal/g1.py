@@ -984,7 +984,7 @@ class G1MujocoHAL(MujocoArmHAL):
                 f"G1 s0_controller={s0_controller!r} requires gravity_enabled=True."
             )
         desc = description if description is not None else G1_DESCRIPTION
-        if body_twist_dt_s is not None and body_twist_dt_s <= 0.0:
+        if body_twist_dt_s is not None and not body_twist_dt_s > 0.0:  # NaN too
             raise ROSConfigError("G1MujocoHAL body_twist_dt_s must be > 0.")
         twin: Callable[..., MujocoTwinRollout]
         if s0_controller == "playground_walk":

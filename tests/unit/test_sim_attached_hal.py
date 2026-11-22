@@ -1754,3 +1754,32 @@ def test_a_refused_time_base_leaves_a_scene_attached_hal_disconnected() -> None:
     with pytest.raises(ROSRuntimeError, match="not connected"):
         hal.read_state()
     assert hal.idle_step(0.05) is False
+
+
+def test_a_backend_time_base_field_named_like_a_checked_one_does_not_break_connect() -> None:
+    """openral#700 item 13: the checked values win; no raw TypeError out of connect()."""
+    env = FakeSimEnv(action_dim=11)
+    env.sim_dt_per_tick_s = 1.0 / 30.0  # type: ignore[attr-defined]  # reason: 30 Hz, as declared
+    env.time_base_fields = {"robot": "spoof", "control_freq_hz": 7.0, "physics_dt_s": 0.002}  # type: ignore[attr-defined]  # reason: a backend's extra fields
+    desc = _two_dof_description().model_copy(
+        update={"action_spec": ActionSpec(control_freq_hz=30.0)}
+    )
+    hal = SimAttachedHAL(env, desc)
+    hal.connect()
+    try:
+        assert hal.sim_dt_per_tick_s == pytest.approx(1.0 / 30.0)
+    finally:
+        hal.disconnect()
+
+
+def test_a_reset_leaves_no_stale_base_twist_on_odom() -> None:
+    """openral#700 item 6: /odom reads still after a reset, not the last commanded twist."""
+    env = FakeSimEnv(action_dim=11)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    try:
+        hal._last_body_twist = (0.3, 0.0, 0.0, 0.0, 0.0, 0.2)  # a base that was driving
+        hal.reset_episode()
+        assert hal.base_twist == (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    finally:
+        hal.disconnect()
