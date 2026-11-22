@@ -9214,7 +9214,7 @@ Membership is checked against the policy registry ``openral_sim.POLICIES``
 (the runner refuses an unregistered family at dispatch; CI checks every
 in-tree manifest). In-tree families: ``smolvla``, ``pi05``, ``xvla``, ``xr1``,
 ``act``, ``diffusion``, ``rldx``, ``molmoact2``, ``gr00t``, ``diffuser_actor``,
-``openvla``, ``lingbot_vla2``, ``lingbot_vla``, ``lingbot_va_a1``,
+``openvla``, ``lingbot_vla2``, ``lingbot_vla_v2``, ``lingbot_vla``, ``lingbot_va_a1``,
 ``internvla_n1``.
 
 Used by the eval / runner adapters to dispatch to the right
@@ -9240,6 +9240,11 @@ via a ZMQ sidecar in its own Python 3.12 + torch-2.9.1 venv — the upstream
 custom Triton MoE kernels, incompatible with the workspace transformers>=5
 (the torch half of that pin set is overridden to 2.9.1 because 2.8.0 has no
 linux-aarch64 wheel; adapter: ``openral_sim.policies.lingbot_vla2``).
+
+``lingbot_vla_v2`` is the same LingBot-VLA 2.0 model run **in-process** through
+lerobot>=0.7's vendored ``LingbotVLAV2Policy`` (no Triton-MoE / transformers 4.57
+pins), for LeRobot-format checkpoints that ship their ``policy_{pre,post}processor``
+pipeline (adapter: ``openral_sim.policies.lingbot_vla_v2``).
 
 ``lingbot_vla`` (Robbyant LingBot-VLA 1.0, 4B Qwen2.5-VL-3B backbone + a *dense*
 Qwen2 flow-matching action expert; paper "A Pragmatic VLA Foundation Model",
@@ -11131,6 +11136,7 @@ CANONICAL_MODEL_TOKENS: frozenset[str] = frozenset(
         "3d_diffuser_actor",  # family diffuser_actor
         "lingbot_vla",  # family lingbot_vla
         "lingbot_vla2",  # family lingbot_vla2
+        "lingbot_vla_v2",  # family lingbot_vla_v2 (lerobot in-process port)
         "lingbot_va_a1",  # family lingbot_va_a1
         "internvla_n1",  # family internvla_n1 (InternVLA-N1 / DualVLN)
         # Non-VLA tool-model tokens (detector / segmenter / vlm / reward).

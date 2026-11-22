@@ -22,6 +22,7 @@ def _register_policies() -> None:
         internvla_n1,
         lingbot_va_a1,
         lingbot_vla2,
+        lingbot_vla_v2,
         mock,
         molmoact2,
         openvla,
