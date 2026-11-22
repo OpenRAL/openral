@@ -324,6 +324,8 @@ def refresh_file(md_path: Path, *, check: bool) -> tuple[int, list[str], dict[Pa
 
 _SOURCE_ROOTS = ("python", "packages", "tools")
 _SOURCE_SKIP = {".git", ".venv", "build", "install", "log", "site", "__pycache__", ".claude"}
+# Third-party code vendored unmodified (its own upstream API, not OpenRAL's): see its README.
+_VENDORED_DIRS = {"_nat_vla"}
 
 
 def _public_symbols(path: Path) -> set[str]:
@@ -357,7 +359,7 @@ def _source_files() -> list[Path]:
     for root in _SOURCE_ROOTS:
         for path in sorted((REPO_ROOT / root).rglob("*.py")):
             parts = set(path.relative_to(REPO_ROOT).parts)
-            if parts & _SOURCE_SKIP or {"tests", "test"} & parts:
+            if parts & (_SOURCE_SKIP | _VENDORED_DIRS) or {"tests", "test"} & parts:
                 continue
             if path.name in {"setup.py", "conftest.py"}:
                 continue

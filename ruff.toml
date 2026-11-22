@@ -1,6 +1,9 @@
 line-length = 100
 target-version = "py310"
-exclude = ["build", "install", "log", ".venv", "**/_generated/**"]
+# _nat_vla is lerobot's nat_vla vendored byte-identical at its merge commit (lerobot 0.7.0
+# predates it); kept unformatted so it diffs cleanly against upstream and is deleted once
+# lerobot ships it (openral_sim.policies.nat_vla prefers lerobot's own copy).
+exclude = ["build", "install", "log", ".venv", "**/_generated/**", "python/sim/src/openral_sim/policies/_nat_vla/**"]
 
 [lint]
 select = ["E","F","W","I","B","UP","N","SIM","PL","RUF","ASYNC","ANN","D"]

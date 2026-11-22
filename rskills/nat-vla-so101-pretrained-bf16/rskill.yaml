@@ -1,0 +1,109 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §3 rSkill packaging)
+# Wraps: ahad-j/nat-vla-450m — NaT VLA (LFM2-VL-450M writing NAT action tokens),
+#        the multi-robot PRETRAINED checkpoint (DROID, Bridge, RT-1, BC-Z, Franka,
+#        bimanual YAM and SO-100/101 data). Not fine-tuned on any OpenRAL task:
+#        this skill runs it zero-shot on the SO-ARM it saw in pretraining.
+# Code:  lerobot `nat_vla` (huggingface/lerobot#5416, Apache-2.0); lerobot 0.7.0
+#        predates it, so openral_sim.policies._nat_vla vendors it at the merge commit.
+# Paper: "NAT: Scaling Causal Neural Action Tokenizers Across Embodiments"
+#        (https://ahadjawaid.com/nat-paper).
+#
+# LICENSE: weights are a derivative of LiquidAI LFM2-VL-450M under the LFM Open
+# License v1.0 — commercial use only for organizations under $10M annual revenue.
+# Posture `lfm1.0` is not commercial-allowed: a commercial deploy needs
+# OPENRAL_ALLOW_NONCOMMERCIAL=1 (logged).
+#
+# The pretrained config carries no features and no normalisation stats, so this
+# manifest supplies them: 2 cameras (fixed overview + wrist), the 6-D SO-ARM
+# state/action in LeRobot servo degrees (gripper 0-100), and the stats of an
+# SO-101 LeRobot dataset (q01/q99 state, min/max action).
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-nat_vla-so101-pretrained-bf16"
+version: "0.1.0"
+license: "lfm1.0"
+role: "s1"
+kind: "vla"
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "nat_vla"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+embodiment_tags:
+  - "so101_follower"
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 224
+    min_height: 224
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 224
+    min_height: 224
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  dtype: "bf16"
+  backend: "pytorch"
+# MEASURED on an RTX 5070 Laptop (2026-11-22, two 640x480 cameras): 1.14 GiB
+# resident, 1.21 GiB peak.
+min_vram_gb:
+  bf16: 1.5
+weights_uri: "hf://ahad-j/nat-vla-450m@a5c2e13d45832050e364265962f6ad536460e955"
+# Normalisation stats (q01/q99 state, min/max action) of a real SO-101 teleop
+# dataset in LeRobot servo degrees.
+dataset_uri: "hf://makermods/eraser_place_unblurry_real"
+
+# ── Preprocessing ──────────────────────────────────────────────────────────
+# Slots camera1 (fixed overview) / camera2 (wrist) -> checkpoint image keys; the
+# prompt lists the images in this order.
+image_preprocessing:
+  flip_180: false
+  input_template: "observation.images.{cam}"
+  aliases:
+    camera1: "front"
+    camera2: "wrist"
+state_contract:
+  dim: 6
+policy_extras:
+  # The setup / control-mode strings NaT's pretraining used for the SO-ARM.
+  setup: "single so100/so101 robotic arm in molmoact2"
+  control_mode: "absolute joint pose"
+
+# ── Execution semantics ────────────────────────────────────────────────────
+# 32-step chunks; 16 replayed (the tokenizer decodes the first 16 after 7 tokens).
+chunk_size: 32
+n_action_steps: 16
+latency_budget:
+  per_chunk_ms: 500.0
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+paper_url: "https://ahadjawaid.com/nat-paper"
+source_repo: "hf://ahad-j/nat-vla-450m"
+
+description: >
+  NaT VLA (450M, LiquidAI LFM2-VL-450M writing NAT action tokens) multi-robot
+  pretrained checkpoint, run zero-shot on the SO-101 follower: 6-DoF absolute
+  joint chunks (32, 16 replayed) in LeRobot servo degrees from a fixed overview
+  and a wrist camera. Not fine-tuned on an OpenRAL task; LFM Open License v1.0
+  weights (commercial use only under $10M revenue).
+
+actions:
+  - "generalist"
+  - "pick"
+  - "place"
+objects: []
+scenes:
+  - "tabletop"
+
+action_contract:
+  dim: 6
+  representation: "joint_positions"
+  joint_units: "degrees"
+  gripper_scale: 100.0

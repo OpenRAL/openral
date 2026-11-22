@@ -7440,6 +7440,10 @@ class RSkillLicensePosture(str, Enum):
     RLWRLD_NON_COMMERCIAL = "rlwrld_non_commercial"  # RLDX-1 weights
     CC_BY_NC_SA_4_0 = "cc-by-nc-sa-4.0"  # InternVLA-N1 weights (InternRobotics)
     FLUX_NON_COMMERCIAL = "flux_non_commercial"  # Open Vision Banana (FLUX.2 [klein]) weights
+    # LFM Open License v1.0 (LiquidAI LFM2 derivatives, e.g. NaT VLA): commercial use only for
+    # organizations under $10M annual revenue. Treated as not commercial-allowed (the
+    # loader needs OPENRAL_ALLOW_NONCOMMERCIAL=1 for a commercial deploy, and logs it).
+    LFM_OPEN_1_0 = "lfm1.0"
     PROPRIETARY = "proprietary"  # Helix, Skild, Gemini Robotics
     UNKNOWN = "unknown"
 
@@ -11137,6 +11141,7 @@ CANONICAL_MODEL_TOKENS: frozenset[str] = frozenset(
         "lingbot_vla",  # family lingbot_vla
         "lingbot_vla2",  # family lingbot_vla2
         "lingbot_vla_v2",  # family lingbot_vla_v2 (lerobot in-process port)
+        "nat_vla",  # family nat_vla (NaT VLA, LFM2-VL + NAT action tokens)
         "lingbot_va_a1",  # family lingbot_va_a1
         "internvla_n1",  # family internvla_n1 (InternVLA-N1 / DualVLN)
         # Non-VLA tool-model tokens (detector / segmenter / vlm / reward).
