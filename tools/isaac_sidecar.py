@@ -508,13 +508,15 @@ class _Lockstep:
         return out
 
     def replied(self, robots: list[str], *, now: float) -> None:
-        """Restart the silence clock of the commanding ``robots`` whose replies were just sent.
+        """Restart the silence (and holding-round) clock of the ``robots`` whose replies were just sent.
 
         A slow world advance is not the robot's silence: it may send its next step only now.
         """
         for r in robots:
             if r in self.commanding:
                 self.commanding[r] = now
+            if r in self.holding:  # a slow advance does not age a holder out of the round
+                self.holding[r] = now
 
     def drop_late(self, *, now: float) -> list[str]:
         """Drop the commanding robots silent past the timeout while another robot waits."""
@@ -637,8 +639,9 @@ def _serve(
                 f"{_BARRIER_TIMEOUT_S:g} s: dropped from the lockstep",
                 flush=True,
             )
-        if late or not ready:
-            answer_steps()  # a dropped robot, or a holding round that ran out
+        # Every pass, readable or not: a dropped robot, or a holding round that ran out,
+        # must not wait behind a stream of other requests.
+        answer_steps()
         if not ready:
             continue
         route, _, raw = sock.recv_multipart()

@@ -502,3 +502,15 @@ def test_holding_robots_step_the_world_together() -> None:
     assert [x for x, *_ in lock.release(now=0.46)] == ["a"]  # b and c late: the round ran out
     lock.submit("a", b"a", hold, now=2.0)  # b and c held over a second ago: out of the round
     assert [x for x, *_ in lock.release(now=2.0)] == ["a"]
+
+
+def test_a_holders_round_clock_restarts_at_its_reply() -> None:
+    """A slow advance must not age a holding robot out of the next round."""
+    lock = sidecar._Lockstep(timeout_s=5.0, idle_round_s=1.0, idle_max_wait_s=0.25)
+    hold = {"idle": True}
+    lock.submit("a", b"a", hold, now=0.0)
+    lock.submit("b", b"b", hold, now=0.0)
+    assert [x for x, *_ in lock.release(now=0.0)] == ["a", "b"]
+    lock.replied(["a", "b"], now=2.0)  # the advance took 2 s
+    lock.submit("a", b"a", hold, now=2.1)
+    assert lock.release(now=2.1) == []  # b was answered 0.1 s ago: still in the round
