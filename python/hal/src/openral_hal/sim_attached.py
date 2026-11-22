@@ -1726,17 +1726,17 @@ class SimAttachedHAL:
         """
         return _spec_id(getattr(self._env, "task", None))
 
-    @property
-    def steps_while_estopped(self) -> bool:
-        """Whether this HAL keeps stepping a stop while its e-stop is latched.
+    def step_estop_hold(self) -> bool:
+        """One tick while the e-stop is latched (the node's latch or this HAL's own).
 
-        Only where the world does not freeze with it: one robot of a shared world, whose
-        backend offers an ``estop_hold_action`` for its last observation (ADR-0137).
+        ``True`` when the backend's stop was stepped (one robot of a shared world,
+        ADR-0137), ``False`` when the robot freezes (a world of its own). The post-step
+        observers run after it, as after ``idle_step``.
         """
-        if not self._estop_latched:  # only the HAL's own latch steps a stop, never a HOLD
-            return False
-        hold_getter = getattr(self._env, "estop_hold_action", None)
-        return callable(hold_getter) and hold_getter(self._last_obs) is not None
+        try:
+            return self._step_estop_hold()
+        finally:
+            self._run_due_observers()
 
     def _step_estop_hold(self) -> bool:
         """While latched, one robot of a shared world steps its backend's stop (ADR-0137).

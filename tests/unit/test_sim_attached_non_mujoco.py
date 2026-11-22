@@ -393,11 +393,12 @@ def test_a_latched_robot_of_a_shared_world_keeps_stepping_its_stop() -> None:
     hal = SimAttachedHAL(env, description)
     hal.connect()
     try:
-        assert not hal.steps_while_estopped, "only while latched"
         hal.estop()
-        assert hal.steps_while_estopped
         before = env.steps
-        assert hal.idle_step() is True
+        assert hal.idle_step() is True, "the HAL's own latch"
+        assert env.steps == before + 1
+        before = env.steps
+        assert hal.step_estop_hold() is True, "the node's latch (SimSensorBridge)"
         assert env.steps == before + 1
         np.testing.assert_array_equal(env.actions[-1], np.full(env.action_dim, 0.25))
     finally:
@@ -411,8 +412,8 @@ def test_a_latched_robot_alone_in_its_world_still_freezes() -> None:
     hal.connect()
     try:
         hal.estop()
-        assert not hal.steps_while_estopped
         before = env.steps
+        assert hal.step_estop_hold() is False
         assert hal.idle_step() is False
         assert env.steps == before
     finally:

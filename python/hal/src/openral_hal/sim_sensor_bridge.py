@@ -3660,10 +3660,20 @@ class SimSensorBridge:
         # HAL is not torn down (reads and cameras keep serving the frozen state); a real
         # HAL never gets this timer. Same latch read as ``MobileBaseBridge``.
         # The exception: one robot of a shared world (ADR-0137), which the other robots
-        # keep stepping; its HAL steps a stop instead (``SimAttachedHAL.steps_while_estopped``).
-        if getattr(self._node, "_estopped", False) and not getattr(
-            self._hal, "steps_while_estopped", False
-        ):
+        # keep stepping. Its HAL steps a stop instead (``SimAttachedHAL.step_estop_hold``:
+        # the arm held where it was measured), so its joint states stay current.
+        if getattr(self._node, "_estopped", False):
+            step_estop_hold = getattr(self._hal, "step_estop_hold", None)
+            if callable(step_estop_hold):
+                try:
+                    stepped = bool(step_estop_hold())
+                except Exception as exc:  # reason: contain a per-tick crash-loop, as below
+                    self._node.get_logger().warning(
+                        f"SimSensorBridge: e-stop hold step failed: {exc}; freezing instead"
+                    )
+                    stepped = False
+                if stepped and self._on_step is not None:
+                    self._on_step()  # the proprio snapshot, so /joint_states follows the step
             return
         idle_step = getattr(self._hal, "idle_step", None)
         if not callable(idle_step):
