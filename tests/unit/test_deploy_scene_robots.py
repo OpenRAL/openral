@@ -253,8 +253,31 @@ def test_each_linked_robot_gets_its_own_remote_port_behind_one_router(
         "r-a1a1a.openral.com": ports[0],
         "r-c3c3c.openral.com": ports[2],
     }
+    # One link code used for two robots: the second keeps no route (said), the first keeps its.
+    robot_enrolment_path(scene.scene.id, "c").write_text(
+        robot_enrolment_path(scene.scene.id, "a").read_text()
+    )
+    assert tunnel_routes(scene.scene.id, slots) == {"r-a1a1a.openral.com": ports[0]}
+    # An enrolment that doesn't load, or can't be read, leaves that robot out, never the scene.
     robot_enrolment_path(scene.scene.id, "c").write_text("{not an enrolment")
     assert list(tunnel_routes(scene.scene.id, slots)) == ["r-a1a1a.openral.com"]
+    robot_enrolment_path(scene.scene.id, "a").chmod(0)
+    try:
+        assert tunnel_routes(scene.scene.id, slots) == {}
+    finally:
+        robot_enrolment_path(scene.scene.id, "a").chmod(0o600)
+
+
+def test_a_router_that_could_not_bind_is_seen(tmp_path: Path) -> None:
+    """The router exits when 4319 is taken: the scene says so instead of claiming it is up."""
+    import subprocess
+    import sys
+
+    from openral_cli.deploy_robots import _router_up
+
+    gone = subprocess.Popen([sys.executable, "-c", "raise SystemExit(1)"])
+    gone.wait()
+    assert not _router_up(gone, timeout_s=1.0)
 
 
 def test_each_robot_gets_its_own_memory_bundle(tmp_path: Path) -> None:

@@ -12,12 +12,14 @@ import logging
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from openral_core import RobotManifest
+from openral_core.exceptions import ROSConfigError
 
 if TYPE_CHECKING:
     import uvicorn
@@ -40,7 +42,7 @@ def _remote_port_from_env() -> int:
     """``$OPENRAL_DASHBOARD_REMOTE_PORT`` (a scene robot's, behind the scene's router), else 4319.
 
     Raises:
-        ValueError: The variable is set but not a port.
+        ROSConfigError: The variable is set but not a port.
     """
     from openral_observability.dashboard.tunnel import REMOTE_PORT_ENV
 
@@ -49,8 +51,19 @@ def _remote_port_from_env() -> int:
         return _DEFAULT_REMOTE_PORT
     if not raw.isdigit() or not 0 < int(raw) <= _MAX_PORT:
         msg = f"{REMOTE_PORT_ENV}={raw!r} is not a port"
-        raise ValueError(msg)
+        raise ROSConfigError(msg)
     return int(raw)
+
+
+def _port_taken(port: int) -> bool:
+    """Whether ``127.0.0.1:port`` is held by another process (a listener bound to it)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # as uvicorn binds
+        try:
+            s.bind(("127.0.0.1", port))
+        except OSError:
+            return True
+    return False
 
 
 def _exposure_warning(host: str) -> str | None:
@@ -151,7 +164,27 @@ def run_dashboard(  # noqa: PLR0915, PLR0912  # reason: linear bootstrap (app + 
         msg = "--remote-port needs a linked robot: run `openral robot link <code>` first"
         raise ValueError(msg)
     if enrolment is not None and remote_port is None:
-        remote_port = _remote_port_from_env()
+        try:
+            remote_port = _remote_port_from_env()
+        except ROSConfigError as exc:  # the local dashboard and its E-STOP start regardless
+            _LOG.error("dashboard.remote_port_refused remote listener off: %s", exc)
+            enrolment = None
+    if remote_port is not None and enrolment is not None and _port_taken(remote_port):
+        # Another dashboard, or a deploy scene's tunnel router, holds it: binding would end
+        # this whole dashboard (uvicorn exits), local listener and E-STOP included.
+        _LOG.error(
+            "dashboard.remote_port_taken remote listener and tunnel off: 127.0.0.1:%d is held "
+            "(another robot's dashboard, or a deploy scene's tunnel router)",
+            remote_port,
+        )
+        print(
+            f"WARNING: 127.0.0.1:{remote_port} is taken: this robot is not reachable from "
+            "openral.com (its remote listener and tunnel are off).",
+            file=sys.stderr,
+            flush=True,
+        )
+        remote_port = None
+        enrolment = None
     verifier = (
         TokenVerifier(enrolment, JwksCache(enrolment.jwks, jwks_cache_file()))
         if enrolment is not None

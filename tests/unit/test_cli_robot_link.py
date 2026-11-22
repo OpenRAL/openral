@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import socket
 import stat
 import sys
 import urllib.error
@@ -451,7 +452,7 @@ def test_a_second_robot_on_the_host_leaves_the_first_ones_service_alone(
     monkeypatch.setenv(REMOTE_PORT_ENV, "4351")
     result = CliRunner().invoke(app, ["robot", "link", _CODE])
     assert result.exit_code == 0, result.output
-    assert "already runs another robot's tunnel" in result.output
+    assert "runs another robot's tunnel" in result.output and "disable --now" in result.output
     assert unit.read_text() == first  # still the first robot's
 
     proc = start_tunnel(4351)  # the service runs the other robot's: this one starts its own
@@ -460,8 +461,28 @@ def test_a_second_robot_on_the_host_leaves_the_first_ones_service_alone(
     assert log.exists()
 
 
+def test_a_service_whose_robot_is_gone_is_taken_over(
+    enrolment: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A unit naming a robot whose tunnel.env no longer exists (its directory removed) is not
+    kept for it: the next link takes the service over."""
+    from openral_observability.dashboard.tunnel import tunnel_env_path
+
+    _fake_cloudflared(tmp_path, monkeypatch, active=True)
+    scene = tmp_path / "robots" / "isaac_sim" / "a" / "robot.json"
+    monkeypatch.setenv("OPENRAL_ROBOT_ENROLMENT", str(scene))
+    assert CliRunner().invoke(app, ["robot", "link", _CODE]).exit_code == 0
+    tunnel_env_path().unlink()  # that scene's robot is gone
+    monkeypatch.setenv("OPENRAL_ROBOT_ENROLMENT", str(enrolment))
+    result = CliRunner().invoke(app, ["robot", "link", _CODE])
+    assert result.exit_code == 0, result.output
+    unit = tmp_path / "xdg" / "systemd" / "user" / "openral-tunnel.service"
+    assert f"EnvironmentFile={tunnel_env_path()}" in unit.read_text()
+
+
 def test_a_scene_robot_listens_on_its_own_remote_port(monkeypatch: pytest.MonkeyPatch) -> None:
-    from openral_observability.dashboard.server import _remote_port_from_env
+    from openral_core.exceptions import ROSConfigError
+    from openral_observability.dashboard.server import _port_taken, _remote_port_from_env
     from openral_observability.dashboard.tunnel import REMOTE_PORT_ENV, TUNNEL_PORT
 
     monkeypatch.delenv(REMOTE_PORT_ENV, raising=False)
@@ -470,5 +491,13 @@ def test_a_scene_robot_listens_on_its_own_remote_port(monkeypatch: pytest.Monkey
     assert _remote_port_from_env() == 4351
     for bad in ("0", "70000", "x"):
         monkeypatch.setenv(REMOTE_PORT_ENV, bad)
-        with pytest.raises(ValueError, match="not a port"):
+        with pytest.raises(ROSConfigError, match="not a port"):
             _remote_port_from_env()
+    # A port another process listens on is seen as taken: the dashboard then keeps its local
+    # listener (and E-STOP) and turns only the remote one off, instead of exiting.
+    with socket.socket() as held:
+        held.bind(("127.0.0.1", 0))
+        held.listen()
+        port = held.getsockname()[1]
+        assert _port_taken(port)
+    assert not _port_taken(port)

@@ -157,16 +157,21 @@ The listener answers only `/api/*` and `/ws`, with a valid token; the OTLP recei
 never reachable through it.
 
 **Several linked robots on one host** (`openral deploy sim` of a scene with several robots,
-each its own openral.com robot): link each one with its own enrolment,
+each its own openral.com robot): link each one with its own enrolment and no service,
 `OPENRAL_ROBOT_ENROLMENT=~/.config/openral/robots/<scene id>/<robot name>/robot.json openral robot
-link <its code>`. openral.com points every robot's tunnel at `localhost:4319`, so the deploy
+link --no-service <its code>` (each scene robot's dashboard runs its tunnel; the user service is
+the host's own robot's). openral.com points every robot's tunnel at `localhost:4319`, so the deploy
 gives each robot's remote listener a port of its own (`4350 + i`, through
 `OPENRAL_DASHBOARD_REMOTE_PORT`) and runs one router on `127.0.0.1:4319` that sends each
-request to its robot by host (`r-<id>.openral.com`); every robot still checks its own tokens.
+connection to its robot by the host of its first request (`r-<id>.openral.com`; each robot's
+tunnel carries only its own); every robot still checks its own tokens. The deploy says whether
+the router took the port.
 Each robot's dashboard runs its own tunnel. The user service keeps the robot it was linked
 for: `openral robot link` never replaces a service that runs another robot's tunnel. Port
-4319 must be free while the scene runs (a host robot's own dashboard holding it leaves the
-scene's robots unreachable from openral.com; the router logs it to `router.log`).
+4319 is the router's while the scene runs: a host robot's own dashboard holding it leaves the
+scene's robots unreachable from openral.com (the deploy says so), and a host robot's dashboard
+started during the scene keeps its local listener and E-STOP but turns its remote listener off
+(it warns).
 
 **Settings levels.** openral.com holds settings at four levels. Each setting lives at exactly
 one of them, and a robot reads two: its own robot settings and one account.

@@ -24,7 +24,7 @@ import time
 from collections.abc import Iterable
 from pathlib import Path
 
-from openral_core import DeployScene, RobotDescription, RobotEnrolment
+from openral_core import DeployScene, RobotDescription
 from openral_core.exceptions import ROSConfigError
 from openral_core.scene_paths import (
     SCENE_PEERS_ENV,
@@ -32,6 +32,7 @@ from openral_core.scene_paths import (
     SCENE_ROBOT_MAP_FRAME_ENV,
     format_scene_peers,
 )
+from openral_observability.dashboard.remote_auth import load_enrolment
 from openral_observability.dashboard.remote_router import route_host
 from openral_observability.dashboard.tunnel import REMOTE_PORT_ENV, TUNNEL_PORT
 from openral_sim.backends.isaac_sim import shared_launch_id
@@ -205,23 +206,48 @@ def robot_enrolment_path(scene_id: str, name: str) -> Path:
 def tunnel_routes(scene_id: str, slots: list[dict[str, int | str]]) -> dict[str, int]:
     """Each linked robot's tunnel host to its remote listener port: the scene router's table.
 
-    Robots not linked (no enrolment, or one that doesn't load) are left out: nothing reaches
-    them from openral.com.
+    Robots not linked (no enrolment, or one that doesn't load or can't be read) are left out,
+    and so is a robot whose enrolment names a host another robot of the scene already has (one
+    link code used twice): nothing reaches them from openral.com, and each is said why.
     """
     routes: dict[str, int] = {}
     for slot in slots:
-        path = robot_enrolment_path(scene_id, str(slot["name"]))
-        if not path.is_file():
-            continue
+        name = str(slot["name"])
+        path = robot_enrolment_path(scene_id, name)
         try:
-            enrolment = RobotEnrolment.model_validate_json(path.read_text(encoding="utf-8"))
-        except ValueError as exc:
+            enrolment = load_enrolment(path)
+        except (ValueError, OSError) as exc:
+            _console.print(f"  robot {name}: enrolment {path} refused: {exc}", style="yellow")
+            continue
+        if enrolment is None:
+            continue
+        host = route_host(enrolment.aud)
+        if host in routes:
             _console.print(
-                f"  robot {slot['name']}: enrolment {path} refused: {exc}", style="yellow"
+                f"  robot {name}: {host} is another robot's of this scene (one link code for "
+                "two robots?): not reachable from openral.com",
+                style="yellow",
             )
             continue
-        routes[route_host(enrolment.aud)] = int(slot["remote_port"])
+        routes[host] = int(slot["remote_port"])
     return routes
+
+
+#: How long the router gets to bind 4319 (or exit, it taken) before the scene goes on.
+_ROUTER_START_S = 5.0
+
+
+def _router_up(router: subprocess.Popen[bytes], timeout_s: float = _ROUTER_START_S) -> bool:
+    """Whether the router holds 4319: it accepts a connection before it exits or time runs out."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline and router.poll() is None:
+        with (
+            contextlib.suppress(OSError),
+            socket.create_connection(("127.0.0.1", TUNNEL_PORT), timeout=0.5),
+        ):
+            return router.poll() is None  # this router's, not a dashboard's that held it first
+        time.sleep(0.1)
+    return False
 
 
 def _start_router(
@@ -230,16 +256,24 @@ def _start_router(
     """The scene's tunnel router, when any robot is linked; ``None`` when none is.
 
     Every linked robot's tunnel reaches 4319 (openral.com sets the ingress): the router there
-    sends each to its robot by host. It is not a robot: its exit (4319 taken) stops nothing.
+    sends each to its robot by host. It is not a robot: its exit (4319 taken) stops nothing,
+    but it is said, since then no linked robot of the scene is reachable from openral.com.
     """
     routes = tunnel_routes(scene_id, slots)
     if not routes:
         return None
-    router = _spawn(router_argv(routes), dict(os.environ), run_dir / "router.log")
-    _console.print(
-        f"  tunnel router on 127.0.0.1:{TUNNEL_PORT} for {sorted(routes)}: "
-        f"log {run_dir / 'router.log'}"
-    )
+    log = run_dir / "router.log"
+    router = _spawn(router_argv(routes), dict(os.environ), log)
+    if _router_up(router):
+        _console.print(
+            f"  tunnel router on 127.0.0.1:{TUNNEL_PORT} for {sorted(routes)}: log {log}"
+        )
+    else:
+        _console.print(
+            f"  tunnel router did not start (127.0.0.1:{TUNNEL_PORT} taken? see {log}): "
+            f"{sorted(routes)} are not reachable from openral.com",
+            style="yellow",
+        )
     return router
 
 
@@ -360,6 +394,32 @@ def _map_frames(scene: DeployScene) -> dict[str, str]:
     }
 
 
+def _print_dry_run(
+    scene: DeployScene,
+    config: Path,
+    argv: list[str],
+    slots: list[dict[str, int | str]],
+    map_frames: dict[str, str],
+    memory_root: str | None,
+    peers: dict[str, str],
+) -> None:
+    """What ``--dry-run`` shows: each robot's environment and command line, and the router's."""
+    for slot in slots:
+        name = str(slot["name"])
+        memory = Path(memory_root).expanduser() / name if memory_root else None
+        shown = f"ROS_DOMAIN_ID={slot['domain']} {SCENE_ROBOT_ENV}={name} "
+        shown += f"{SCENE_ROBOT_MAP_FRAME_ENV}={map_frames[name]} "
+        shown += f"{SCENE_PEERS_ENV}={shlex.quote(peers[name])} "
+        shown += f"OPENRAL_ROBOT_ENROLMENT={robot_enrolment_path(scene.scene.id, name)} "
+        shown += f"{REMOTE_PORT_ENV}={slot['remote_port']} "
+        shown += shlex.join(robot_argv(argv, config, slot, memory))
+        _console.print(f"  robot {name}: {shown}", soft_wrap=True, markup=False)
+    routes = tunnel_routes(scene.scene.id, slots)
+    if routes:
+        shown = shlex.join(router_argv(routes))
+        _console.print(f"  tunnel router: {shown}", soft_wrap=True, markup=False)
+
+
 def run_scene_robots(
     scene: DeployScene, config: Path, argv: list[str], *, dry_run: bool = False
 ) -> int:
@@ -378,14 +438,7 @@ def run_scene_robots(
     peers = scene_peers(scene, slots)
     memory_root = _option_value(argv, "--memory-dir") or scene.memory_dir
     if dry_run:
-        for slot in slots:
-            name = str(slot["name"])
-            memory = Path(memory_root).expanduser() / name if memory_root else None
-            shown = f"ROS_DOMAIN_ID={slot['domain']} {SCENE_ROBOT_ENV}={name} "
-            shown += f"{SCENE_ROBOT_MAP_FRAME_ENV}={map_frames[name]} "
-            shown += f"{SCENE_PEERS_ENV}={shlex.quote(peers[name])} "
-            shown += shlex.join(robot_argv(argv, config, slot, memory))
-            _console.print(f"  robot {name}: {shown}", soft_wrap=True, markup=False)
+        _print_dry_run(scene, config, argv, slots, map_frames, memory_root, peers)
         return 0
     memory_dirs = robot_memory_dirs(memory_root, names)
     run_dir = Path(tempfile.mkdtemp(prefix=f"openral-robots-{scene.scene.id[:24]}-"))

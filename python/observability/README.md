@@ -72,7 +72,9 @@ writes `~/.config/openral/robot.json`, `OPENRAL_ROBOT_ENROLMENT` overrides the p
 or, without user systemd, as the dashboard's own child process (also when the service runs
 another robot's tunnel: one service per host, kept by the robot it was linked for). Several
 linked robots on one host (a `deploy sim` scene) each listen on their own port and share 4319
-through `dashboard/remote_router.py`, which routes each request by its `Host`.
+through `dashboard/remote_router.py`, which routes each connection by its first request's
+`Host`. A remote port that is not a port, or is held by another process, turns the remote
+listener off; the local listener and its E-STOP always start.
 `dashboard/remote_auth.py` checks every request's `Authorization: Bearer <JWT>` in
 ADR-0129 Interface B order: header `alg` ES256 and `typ` absent or `at+jwt`, `kid` in
 the issuer's JWKS (cached on disk, refetched only for an unknown `kid`, at most once a
