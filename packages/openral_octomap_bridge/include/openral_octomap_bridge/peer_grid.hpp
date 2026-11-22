@@ -73,6 +73,9 @@ public:
   std::int64_t newest_ns(const std::vector<std::size_t>& required) const;
 
   const std::vector<double>& q() const { return q_; }
+  /// Each dof extrapolated from its own stamp along its velocity to `t_ns`, so joints
+  /// measured at different times are posed at one instant (a dof never measured: 0).
+  std::vector<double> q_at(std::int64_t t_ns) const;
   const std::vector<double>& dq() const { return dq_; }
 
 private:

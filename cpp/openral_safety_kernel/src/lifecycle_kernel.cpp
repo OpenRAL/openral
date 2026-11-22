@@ -62,7 +62,8 @@ bool occupancy_grid_usable(const openral_msgs::msg::OccupancyVoxels& msg,
                            std::size_t max_cells) noexcept {
   std::size_t cells = 0;
   const bool shape_ok =
-      msg.size_x <= max_cells && msg.size_y <= max_cells && msg.size_z <= max_cells &&
+      msg.size_x > 0 && msg.size_y > 0 && msg.size_z > 0 && msg.size_x <= max_cells &&
+      msg.size_y <= max_cells && msg.size_z <= max_cells &&
       !__builtin_mul_overflow(static_cast<std::size_t>(msg.size_x), msg.size_y, &cells) &&
       !__builtin_mul_overflow(cells, msg.size_z, &cells);
   return shape_ok && msg.occupancy.size() == cells && cells <= max_cells &&
@@ -1672,8 +1673,9 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         }
       }
       if (world_voxel_enabled_) {
-        const bool fresh = voxel_received_ && !voxel_overflow_ &&
-                           (this->now() - voxel_stamp_).seconds() <= world_voxel_deadline_s_;
+        const double voxel_receipt_s = (this->now() - voxel_stamp_).seconds();
+        const bool fresh = voxel_received_ && !voxel_overflow_ && voxel_receipt_s >= 0.0 &&
+                           voxel_receipt_s <= world_voxel_deadline_s_;
         if (!fresh) {
           if (voxel_overflow_) {
             unavailable("voxel_overflow", openral_msgs::msg::SafetyStatus::DROP_VOXEL_OVERFLOW);
@@ -1691,7 +1693,9 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         if (voxel_source_known_) {
           const double data_age_ms = (this->now() - voxel_source_stamp_).seconds() * 1e3;
           span->SetAttribute("safety.world_voxel_data_age_ms", data_age_ms);
-          if (data_age_ms > world_voxel_data_age_budget_s_ * 1e3) {
+          // Both ways, as the peer grid's: a world stamped further ahead than the
+          // budget is from a clock that disagrees with this one and would never age.
+          if (std::abs(data_age_ms) > world_voxel_data_age_budget_s_ * 1e3) {
             RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
                                  "safety.voxel_stale data_age_ms=%.0f budget_ms=%.0f", data_age_ms,
                                  world_voxel_data_age_budget_s_ * 1e3);
@@ -1709,8 +1713,11 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       // Peer grid (ADR-0137): missing, malformed, late, stale or in another frame
       // than the world grid is a refusal. Where the peers are is never assumed.
       if (peer_voxel_enabled_) {
-        const bool fresh = peer_received_ && !peer_overflow_ &&
-                           (this->now() - peer_stamp_).seconds() <= peer_voxel_deadline_s_;
+        // A negative receipt age is a clock that jumped back since the grid arrived:
+        // the stored grid belongs to another timeline until a new one comes in.
+        const double peer_receipt_s = (this->now() - peer_stamp_).seconds();
+        const bool fresh = peer_received_ && !peer_overflow_ && peer_receipt_s >= 0.0 &&
+                           peer_receipt_s <= peer_voxel_deadline_s_;
         if (!fresh) {
           if (peer_overflow_) {
             unavailable("peer_voxel_overflow",

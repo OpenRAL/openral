@@ -104,6 +104,16 @@ void PeerJoints::update(const std::vector<int>& dof, const std::vector<double>& 
   }
 }
 
+std::vector<double> PeerJoints::q_at(std::int64_t t_ns) const {
+  std::vector<double> out(q_);
+  for (std::size_t d = 0; d < out.size(); ++d) {
+    if (stamp_ns_[d] != 0) {
+      out[d] += dq_[d] * static_cast<double>(t_ns - stamp_ns_[d]) * 1e-9;
+    }
+  }
+  return out;
+}
+
 bool PeerJoints::complete(const std::vector<std::size_t>& required) const {
   return std::all_of(required.begin(), required.end(),
                      [&](std::size_t d) { return d < stamp_ns_.size() && stamp_ns_[d] != 0; });

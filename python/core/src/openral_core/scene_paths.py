@@ -9,6 +9,7 @@ scene is left as written, for the existing lookups (the repo root, then the cwd)
 from __future__ import annotations
 
 import copy
+import json
 import os
 from pathlib import Path
 from typing import TypeVar, cast
@@ -29,39 +30,40 @@ SCENE_ROBOT_ENV = "OPENRAL_SCENE_ROBOT"
 #: Beside it: that robot's ``RobotDescription.map_frame``, the frame its scene's nav goals and
 #: place zones are re-expressed in (``"map"`` when unset).
 SCENE_ROBOT_MAP_FRAME_ENV = "OPENRAL_SCENE_ROBOT_MAP_FRAME"
-#: Beside them: the scene's other robots, ``name=domain=manifest`` joined by ``;``
+#: Beside them: the scene's other robots, a JSON list of ``[name, domain, manifest]``
 #: (``format_scene_peers``). Each robot's graph runs a peer producer on it, whose grid its
 #: safety kernel checks with no exemption (ADR-0137).
 SCENE_PEERS_ENV = "OPENRAL_SCENE_PEERS"
 
 
 def format_scene_peers(peers: list[tuple[str, int, str]]) -> str:
-    """``(name, ROS domain, manifest path)`` per peer, as ``SCENE_PEERS_ENV`` carries them.
+    """``(name, ROS domain, manifest path)`` per peer, as ``SCENE_PEERS_ENV`` carries them (JSON).
 
     Example:
-        >>> format_scene_peers([("b", 34, "/r/amr/robot.yaml"), ("c", 38, "/r/amr/robot.yaml")])
-        'b=34=/r/amr/robot.yaml;c=38=/r/amr/robot.yaml'
+        >>> format_scene_peers([("b", 34, "/r/amr/robot.yaml")])
+        '[["b", 34, "/r/amr/robot.yaml"]]'
     """
-    return ";".join(f"{n}={d}={m}" for n, d, m in peers)
+    return json.dumps([[n, d, m] for n, d, m in peers])
 
 
 def parse_scene_peers(value: str | None) -> list[tuple[str, int, str]]:
     """The inverse of ``format_scene_peers``; empty for ``None`` or ``""``.
 
     Raises:
-        ValueError: An entry is not ``name=domain=manifest``.
+        ValueError: The value is not a JSON list of ``[name, domain, manifest]``.
 
     Example:
-        >>> parse_scene_peers("b=34=/r/amr/robot.yaml")
-        [('b', 34, '/r/amr/robot.yaml')]
+        >>> parse_scene_peers(format_scene_peers([("b", 34, "/srv/openral;lab/robot.yaml")]))
+        [('b', 34, '/srv/openral;lab/robot.yaml')]
     """
-    out: list[tuple[str, int, str]] = []
-    for entry in (value or "").split(";"):
-        if not entry:
-            continue
-        name, domain, manifest = entry.split("=", 2)
-        out.append((name, int(domain), manifest))
-    return out
+    if not value:
+        return []
+    try:
+        return [(str(n), int(d), str(m)) for n, d, m in json.loads(value)]
+    except (TypeError, ValueError) as exc:  # a bad JSON value, or an entry not of three
+        raise ValueError(
+            f"{SCENE_PEERS_ENV} is not a list of [name, domain, manifest]: {value!r}"
+        ) from exc
 
 
 _T = TypeVar("_T")

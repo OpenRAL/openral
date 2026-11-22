@@ -207,3 +207,12 @@ TEST(PeerJoints, AStampFromTheFutureIsNotFresh) {
   EXPECT_FALSE(ob::within_age(0.4, 0.3)) << "stale";
   EXPECT_FALSE(ob::within_age(-0.4, 0.3)) << "from the future: would never age";
 }
+
+TEST(PeerJoints, JointsMeasuredAtDifferentTimesArePosedAtOneInstant) {
+  ob::PeerJoints j(2);
+  j.update({0}, {0.0}, {1.0}, 1'000'000'000);  // 1 rad/s, measured at 1.0 s
+  j.update({1}, {0.5}, {0.0}, 1'200'000'000);  // still, measured at 1.2 s
+  const auto q = j.q_at(1'300'000'000);
+  EXPECT_NEAR(q[0], 0.3, 1e-9) << "0.3 s on from its own stamp";
+  EXPECT_NEAR(q[1], 0.5, 1e-9);
+}

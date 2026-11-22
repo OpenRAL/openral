@@ -273,7 +273,7 @@ def test_a_dry_run_prints_each_robots_command_and_starts_nothing(
     out = capsys.readouterr().out
     assert "OPENRAL_SCENE_ROBOT=south" in out and "OPENRAL_SCENE_ROBOT=north" in out
     assert "OPENRAL_SCENE_ROBOT_MAP_FRAME=map" in out
-    assert "OPENRAL_SCENE_PEERS=north=34=" in out and "OPENRAL_SCENE_PEERS=south=30=" in out
+    assert '"north", 34' in out and '"south", 30' in out  # each robot's peers
     assert str(tmp_path / "north") in out
     assert list(tmp_path.iterdir()) == []  # nothing written, nothing started
 

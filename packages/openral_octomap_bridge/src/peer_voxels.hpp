@@ -241,6 +241,8 @@ private:
   // `world_from_base` now and its planar motion over the last `kTwistWindowS`. A
   // static-only chain (a fixed arm) is stamped 0: it never ages and does not move.
   enum class Pose { kOk, kMissing, kStale, kNoHistory };
+  // `world_from_base` is returned advanced along `twist` from its own stamp to `now`,
+  // so every input of a sweep sample is posed at the same instant.
   Pose base_pose(tf2_ros::Buffer& buffer, const std::string& base, const rclcpp::Time& now,
                  tf2::Transform& world_from_base, PlanarTwist& twist, rclcpp::Time& oldest) {
     rclcpp::Time stamp;
@@ -263,6 +265,7 @@ private:
       return Pose::kNoHistory;
     }
     twist = planar_twist(before, world_from_base, kTwistWindowS);
+    world_from_base = advance_planar(world_from_base, twist, (now - stamp).seconds());
     return Pose::kOk;
   }
 
@@ -308,7 +311,8 @@ private:
         if (!peer->joints->complete(peer->required)) {
           return refuse("not every joint measured yet", peer->name);
         }
-        q = peer->joints->q();
+        // At `now`: each joint from its own stamp, as each base pose below.
+        q = peer->joints->q_at(now.nanoseconds());
         dq = peer->joints->dq();
         js_oldest = peer->joints->oldest_ns(peer->required);
         js_newest = peer->joints->newest_ns(peer->required);
