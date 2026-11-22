@@ -52,6 +52,25 @@ bool is_unit_quaternion(const Quaternion& q) noexcept {
   return std::isfinite(norm2) && std::fabs(norm2 - 1.0) <= 1e-6;
 }
 
+/// Can the kernel read `msg` as geometry? Each dimension and the cell count fit
+/// `max_cells` without wrapping (2^22 * 2^21 * 2^21 is 0 in size_t, and an empty
+/// occupancy would then "match" a grid indexed far past its storage), the occupancy
+/// matches the shape, and the resolution, origin and orientation are usable: an unset
+/// orientation is the all-zero quaternion, which read as identity would put every cell
+/// where the robot is not (fail-OPEN). Shared by the world and peer grids.
+bool occupancy_grid_usable(const openral_msgs::msg::OccupancyVoxels& msg,
+                           std::size_t max_cells) noexcept {
+  std::size_t cells = 0;
+  const bool shape_ok =
+      msg.size_x <= max_cells && msg.size_y <= max_cells && msg.size_z <= max_cells &&
+      !__builtin_mul_overflow(static_cast<std::size_t>(msg.size_x), msg.size_y, &cells) &&
+      !__builtin_mul_overflow(cells, msg.size_z, &cells);
+  return shape_ok && msg.occupancy.size() == cells && cells <= max_cells &&
+         std::isfinite(msg.resolution) && msg.resolution > 0.0 && std::isfinite(msg.origin.x) &&
+         std::isfinite(msg.origin.y) && std::isfinite(msg.origin.z) &&
+         is_unit_quaternion(msg.orientation);
+}
+
 /// Every rotation entry and translation component finite. A wire pose with a
 /// non-finite translation or quaternion component decodes to NaN entries here,
 /// and NaN geometry yields NaN distances, which a `d <= margin` reads as clear.
@@ -1105,7 +1124,7 @@ SafetyKernelLifecycleNode::configure_from_params(const rclcpp_lifecycle::State& 
   // A peer against those is base clearance, Nav2's (hazard HZ-0137-14), and a peer
   // reaching into them is refused by the peer's own kernel: refusing this robot's arm
   // for it would stop a motion that is not moving toward anything.
-  peer_check_model_ = collision_model_;
+  peer_unchecked_links_.assign(collision_model_.n_links, 0);
   {
     std::vector<std::uint8_t> moves(collision_model_.n_links, 0);
     for (std::size_t l = 0; l < collision_model_.n_links; ++l) {
@@ -1115,31 +1134,7 @@ SafetyKernelLifecycleNode::configure_from_params(const rclcpp_lifecycle::State& 
                           collision_base_dofs_.end();
       const int parent = collision_model_.parent[l];
       moves[l] = own || (parent >= 0 && moves[static_cast<std::size_t>(parent)] != 0) ? 1 : 0;
-    }
-    const auto moving = [&](int link) {
-      return link >= 0 && static_cast<std::size_t>(link) < moves.size() &&
-             moves[static_cast<std::size_t>(link)] != 0;
-    };
-    CollisionModel& m = peer_check_model_;
-    m.capsule_link.clear();
-    m.capsules.clear();
-    m.box_link.clear();
-    m.boxes.clear();
-    m.box_hull.clear();
-    for (std::size_t i = 0; i < collision_model_.capsules.size(); ++i) {
-      if (moving(collision_model_.capsule_link[i])) {
-        m.capsule_link.push_back(collision_model_.capsule_link[i]);
-        m.capsules.push_back(collision_model_.capsules[i]);
-      }
-    }
-    for (std::size_t i = 0; i < collision_model_.boxes.size(); ++i) {
-      if (moving(collision_model_.box_link[i])) {
-        m.box_link.push_back(collision_model_.box_link[i]);
-        m.boxes.push_back(collision_model_.boxes[i]);
-        if (!collision_model_.box_hull.empty()) {
-          m.box_hull.push_back(collision_model_.box_hull[i]);
-        }
-      }
+      peer_unchecked_links_[l] = moves[l] != 0 ? 0 : 1;
     }
   }
   station_anchor_.assign(collision_base_dofs_.size(), 0.0);
@@ -1734,7 +1729,9 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         }
         const double peer_age_ms = (this->now() - peer_source_stamp_).seconds() * 1e3;
         span->SetAttribute("safety.peer_voxel_data_age_ms", peer_age_ms);
-        if (peer_age_ms > peer_voxel_data_age_budget_s_ * 1e3) {
+        // Both ways: a grid stamped further ahead than the budget comes from a clock that
+        // disagrees with this one, and would otherwise never age (Entry 103, HZ-0137-11).
+        if (std::abs(peer_age_ms) > peer_voxel_data_age_budget_s_ * 1e3) {
           unavailable("peer_voxel_stale", openral_msgs::msg::SafetyStatus::DROP_VOXEL_UNAVAILABLE,
                       "/openral/peer_voxels", peer_age_ms, peer_voxel_data_age_budget_s_ * 1e3);
           return;
@@ -2425,7 +2422,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         // robots' own geometry. `peer_grid_` carries no region and no provider, so no
         // contact exemption applies: a peer cell trips wherever it is.
         if (peer_voxel_enabled_) {
-          const auto hit = check_voxel_collision(peer_check_model_, collision_scratch_, peer_grid_,
+          const auto hit = check_voxel_collision(collision_model_, collision_scratch_, peer_grid_,
                                                  world_voxel_margin_m_ + extra_margin,
                                                  collision_scale_proximity_m_);
           note_slack(hit, world_voxel_margin_m_ + extra_margin);
@@ -4326,6 +4323,7 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   peer_grid_ = VoxelGrid{};
   peer_occupancy_.assign(peer_voxel_enabled_ ? world_voxel_max_cells_ : 0, 0);
   peer_grid_.occupancy = peer_occupancy_.data();
+  // `peer_unchecked_links_` is filled once the model's base dofs are known (configure).
 
   // Attached-payload config (ADR-0092). Pre-size the fixed-capacity attached
   // model + label buffer once so the world-state callback fills in place and the
@@ -4864,26 +4862,7 @@ void SafetyKernelLifecycleNode::on_world_voxels(
   }
   tracked_cover_dirty_ = true;  // #418: the cover check runs once per grid
   ++voxel_grid_seq_;            // ADR-0121: a provider caches per grid on this
-  // The cell count must not wrap: 2^22 * 2^21 * 2^21 is 0 in size_t, and an
-  // empty occupancy would then "match" a grid the collision check indexes far
-  // past its storage. Each dimension is also bounded by the cell cap, so the
-  // retained int dimensions stay representable whatever the other two are.
-  std::size_t cells = 0;
-  const bool shape_ok =
-      msg->size_x <= world_voxel_max_cells_ && msg->size_y <= world_voxel_max_cells_ &&
-      msg->size_z <= world_voxel_max_cells_ &&
-      !__builtin_mul_overflow(static_cast<std::size_t>(msg->size_x), msg->size_y, &cells) &&
-      !__builtin_mul_overflow(cells, msg->size_z, &cells);
-  // The grid's lattice is the source map's, so `orientation` is load-bearing
-  // geometry, not metadata. An unset field is the all-zero quaternion, which is
-  // not a rotation: reading it as identity would place every obstacle somewhere
-  // the robot is not, and a world check against a misplaced map is fail-OPEN.
-  // Refuse it exactly as an over-large or malformed grid is refused, and a NaN
-  // resolution or non-finite origin too (`<= 0.0` reads NaN as positive).
-  if (!shape_ok || msg->occupancy.size() != cells || cells > world_voxel_max_cells_ ||
-      !(std::isfinite(msg->resolution) && msg->resolution > 0.0) || !std::isfinite(msg->origin.x) ||
-      !std::isfinite(msg->origin.y) || !std::isfinite(msg->origin.z) ||
-      !is_unit_quaternion(msg->orientation)) {
+  if (!occupancy_grid_usable(*msg, world_voxel_max_cells_)) {
     voxel_overflow_ = true;
     voxel_received_ = true;
     voxel_stamp_ = this->now();
@@ -4933,20 +4912,10 @@ void SafetyKernelLifecycleNode::on_peer_voxels(
   if (msg == nullptr) {
     return;
   }
-  // The world grid's shape checks, unchanged: a malformed grid is refused, never
-  // read as free space.
-  std::size_t cells = 0;
-  const bool shape_ok =
-      msg->size_x <= world_voxel_max_cells_ && msg->size_y <= world_voxel_max_cells_ &&
-      msg->size_z <= world_voxel_max_cells_ &&
-      !__builtin_mul_overflow(static_cast<std::size_t>(msg->size_x), msg->size_y, &cells) &&
-      !__builtin_mul_overflow(cells, msg->size_z, &cells);
   peer_received_ = true;
   peer_stamp_ = this->now();
-  if (!shape_ok || msg->occupancy.size() != cells || cells > peer_occupancy_.size() ||
-      !(std::isfinite(msg->resolution) && msg->resolution > 0.0) || !std::isfinite(msg->origin.x) ||
-      !std::isfinite(msg->origin.y) || !std::isfinite(msg->origin.z) ||
-      !is_unit_quaternion(msg->orientation)) {
+  // The world grid's checks: a malformed grid is refused, never read as free space.
+  if (!occupancy_grid_usable(*msg, peer_occupancy_.size())) {
     peer_overflow_ = true;
     return;
   }
@@ -4960,6 +4929,8 @@ void SafetyKernelLifecycleNode::on_peer_voxels(
   peer_grid_.sx = static_cast<int>(msg->size_x);
   peer_grid_.sy = static_cast<int>(msg->size_y);
   peer_grid_.sz = static_cast<int>(msg->size_z);
+  peer_grid_.unchecked_links =
+      peer_unchecked_links_.empty() ? nullptr : peer_unchecked_links_.data();
   peer_frame_id_ = msg->header.frame_id;
   peer_source_known_ =
       msg->source_stamp.sec > 0 || (msg->source_stamp.sec == 0 && msg->source_stamp.nanosec != 0);

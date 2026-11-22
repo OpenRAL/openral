@@ -1621,6 +1621,9 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
   const std::size_t n_caps = model.capsules.size();
   for (std::size_t c = 0; c < n_caps; ++c) {
     const int li = model.capsule_link[c];
+    if (grid.unchecked_links != nullptr && grid.unchecked_links[li] != 0) {
+      continue;
+    }
     const Transform cap =
         compose(grid_from_base, compose(scratch.link_world[static_cast<std::size_t>(li)],
                                         model.capsules[c].origin));
@@ -1685,6 +1688,9 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
   int stage2_budget = kMaxStage2PerCheck;
   for (std::size_t b = 0; b < n_boxes; ++b) {
     const int lb = model.box_link[b];
+    if (grid.unchecked_links != nullptr && grid.unchecked_links[lb] != 0) {
+      continue;
+    }
     // In the GRID's axes, so the cells stay axis-aligned cubes — which the
     // staged tight path below requires, not merely prefers.
     const Transform box_w =

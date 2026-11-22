@@ -486,6 +486,12 @@ def _octomap_frames(description: RobotDescription) -> tuple[str, str]:
     return (description.odom_frame if mobile else base_frame), base_frame
 
 
+#: ADR-0137, hazard-log Entry 103 (Safety-WG, 2026-11-22): one bound for the peer grid. The
+#: kernel refuses a grid received, or describing a world, more than this long ago; the producer
+#: sweeps each peer over this long and publishes nothing from inputs older than it.
+_PEER_BOUND_S = 0.3
+
+
 def _peer_params(peers: list[tuple[str, int, str]]) -> dict[str, object]:
     """``peer_voxels``' per-peer parameters (ADR-0137), under ``peer_<name>.``.
 
@@ -511,24 +517,20 @@ def _peer_params(peers: list[tuple[str, int, str]]) -> dict[str, object]:
         # prefer; those are hand-authored to contain the links. Lower the MJCF here too if a
         # robot's manifest geometry ever under-covers its MJCF.
         description = RobotDescription.from_yaml(manifest)
-        params = collision_params_from_description(description)
-        params["collision_joint_names"] = [j.name for j in description.joints]
-        params["collision_joint_aliases"] = [j.sim_joint_name or "" for j in description.joints]
-        base_dofs = _collision_base_dofs(description, params)
-        if base_dofs:
-            params["collision_base_dofs"] = base_dofs
-        names = cast("list[str]", params.get("collision_link_names", []))
-        frame = description.base_frame if base_dofs else (names[0] if names else "")
-        params["base_frame"] = frame
+        collision = collision_params_from_description(description)
+        params = _posed_model_params(
+            description, collision, _collision_base_dofs(description, collision)
+        )
+        if "base_frame" not in params:  # a fixed arm: posed in its model's root link
+            names = cast("list[str]", params.get("collision_link_names", []))
+            params["base_frame"] = names[0] if names else ""
         # Boxes, not their tight hulls (a box contains its hull); no pairs (a peer has no self).
         skip = ("collision_allowed_pairs", "collision_box_hull", "collision_hull_")
         out.update(
             {
                 f"peer_{name}.{k}": v
                 for k, v in params.items()
-                if (k.startswith("collision_") or k == "base_frame")
-                and not k.startswith(skip)
-                and v != []  # launch_ros rejects an empty list
+                if not k.startswith(skip) and v != []  # launch_ros rejects an empty list
             }
         )
     return out
@@ -817,6 +819,35 @@ def _station_mode(description: object, object_tracking: str) -> bool:
     return object_tracking != "off" and bool(_collision_base_dofs(description))
 
 
+def _posed_model_params(
+    description: object, collision_params: Mapping[str, object], base_dofs: list[int] | None
+) -> dict[str, object]:
+    """A robot's collision model as a node that poses it from ``/joint_states`` reads it.
+
+    The kernel's ``collision_*`` arrays, the joint names each dof answers to (the manifest
+    name and its ``sim_joint_name``) and, on a mobile base, ``collision_base_dofs`` with the
+    ``base_frame`` the model is posed in. Shared by the robot self-filter (its own robot)
+    and ``peer_voxels`` (each peer, ADR-0137).
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> d = RobotDescription.from_yaml("robots/openamrobot_v2/robot.yaml")
+        >>> p = _posed_model_params(d, {"collision_n_links": 1}, [0, 1, 2])
+        >>> p["collision_base_dofs"], p["base_frame"], len(p["collision_joint_names"]) > 3
+        ([0, 1, 2], 'base_footprint', True)
+    """
+    joints = list(getattr(description, "joints", []))
+    params: dict[str, object] = {
+        k: v for k, v in collision_params.items() if k.startswith("collision_")
+    }
+    params["collision_joint_names"] = [j.name for j in joints]
+    params["collision_joint_aliases"] = [j.sim_joint_name or "" for j in joints]
+    if base_dofs:  # omitted when empty: launch_ros rejects an empty list (see the kernel's)
+        params["collision_base_dofs"] = base_dofs
+        params["base_frame"] = getattr(description, "base_frame", "")
+    return params
+
+
 def _self_filter_params(
     collision_params: dict[str, object],
     description: object,
@@ -859,17 +890,9 @@ def _self_filter_params(
         >>> round(p["joint_state_period_s"], 4), p["robot_mask_topics"]
         (0.0333, ['/openral/cameras/top/robot_mask'])
     """
-    joints = list(getattr(description, "joints", []))
-    params: dict[str, object] = {
-        k: v for k, v in collision_params.items() if k.startswith("collision_")
-    }
-    params["collision_joint_names"] = [j.name for j in joints]
-    params["collision_joint_aliases"] = [j.sim_joint_name or "" for j in joints]
+    params = _posed_model_params(description, collision_params, base_dofs)
     params["joint_states_topic"] = joint_states_topic
     params["padding_m"] = padding_m
-    if base_dofs:  # omitted when empty: launch_ros rejects an empty list (see the kernel's)
-        params["collision_base_dofs"] = base_dofs
-        params["base_frame"] = getattr(description, "base_frame", "")
     rate_hz = getattr(description, "control_rate_hz", None)
     if isinstance(rate_hz, float) and rate_hz > 0.0:
         params["joint_state_period_s"] = 1.0 / rate_hz
@@ -3750,9 +3773,10 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         }
         if scene_peers:
             # ADR-0137: the other robots, from their own geometry, checked with no exemption.
-            # The kernel's defaults bound the grid's age (300 ms receipt, 300 ms data);
-            # `peer_voxels` sweeps each peer over that same 300 ms.
+            # One bound for the grid's receipt and data age, and the producer's sweep below.
             kernel_params["peer_voxel_enabled"] = True
+            kernel_params["peer_voxel_deadline_ms"] = _PEER_BOUND_S * 1000.0
+            kernel_params["peer_voxel_data_age_budget_ms"] = _PEER_BOUND_S * 1000.0
     if scene_peers and not kernel_params.get("peer_voxel_enabled"):
         from openral_core.exceptions import ROSConfigError
 
@@ -5356,6 +5380,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                             "coverage_center_y": coverage.centre[1],
                             "coverage_center_z": coverage.centre[2],
                             "use_sim_time": use_sim_time,
+                            "sweep_horizon_s": _PEER_BOUND_S,
+                            "max_input_age_s": _PEER_BOUND_S,
                             **_peer_params(scene_peers),
                         }
                     ],

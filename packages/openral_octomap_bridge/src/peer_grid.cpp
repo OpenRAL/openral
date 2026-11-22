@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/LinearMath/Quaternion.h>
@@ -25,38 +26,103 @@ PeerGrid empty_peer_grid(const tf2::Vector3& centre, double radius_m, double res
   return grid;
 }
 
-void rasterize_primitives(const std::vector<PayloadPrimitive>& primitives, double pad_m,
+namespace {
+
+bool finite(const tf2::Vector3& v) {
+  return std::isfinite(v.x()) && std::isfinite(v.y()) && std::isfinite(v.z());
+}
+
+bool primitive_finite(const PayloadPrimitive& prim) {
+  const tf2::Quaternion r = prim.pose.getRotation();
+  return finite(prim.pose.getOrigin()) && std::isfinite(r.x()) && std::isfinite(r.y()) &&
+         std::isfinite(r.z()) && std::isfinite(r.w()) && std::isfinite(prim.radius) &&
+         std::isfinite(prim.half_length) && finite(prim.half_extents);
+}
+
+}  // namespace
+
+bool rasterize_primitives(const std::vector<PayloadPrimitive>& primitives, double pad_m,
                           PeerGrid& grid) {
   const double res = grid.resolution;
   const double reach_pad = res * std::sqrt(3.0) / 2.0 + pad_m;
+  const std::size_t n = static_cast<std::size_t>(grid.n);
+  // Clamped as a double before the cast: a coordinate far outside the grid (or a
+  // huge one) is a cell index past the edge, never an int overflow.
   const auto index = [&](double v, double o) {
-    return std::clamp(static_cast<int>(std::floor((v - o) / res)), 0, grid.n);
+    return static_cast<int>(std::clamp(std::floor((v - o) / res), 0.0, static_cast<double>(n)));
   };
   for (const auto& prim : primitives) {
+    if (!primitive_finite(prim)) {
+      return false;
+    }
     const tf2::Vector3 c = prim.pose.getOrigin();
     const double r = primitive_bounding_radius(prim) + reach_pad;
     int lo[3];
     int hi[3];
     for (int a = 0; a < 3; ++a) {
       lo[a] = index(c[a] - r, grid.origin[a]);
-      hi[a] = index(c[a] + r, grid.origin[a]) + 1;
-      hi[a] = std::min(hi[a], grid.n);
+      hi[a] = std::min(index(c[a] + r, grid.origin[a]) + 1, grid.n);
     }
     const tf2::Transform inv = prim.pose.inverse();
     for (int iz = lo[2]; iz < hi[2]; ++iz) {
       for (int iy = lo[1]; iy < hi[1]; ++iy) {
         for (int ix = lo[0]; ix < hi[0]; ++ix) {
+          std::uint8_t& cell =
+              grid.occupancy[static_cast<std::size_t>(ix) +
+                             n * (static_cast<std::size_t>(iy) + n * static_cast<std::size_t>(iz))];
+          if (cell != 0) {
+            continue;  // an earlier primitive or swept pose already holds it
+          }
           const tf2::Vector3 p =
               grid.origin + tf2::Vector3((ix + 0.5) * res, (iy + 0.5) * res, (iz + 0.5) * res);
           if (primitive_surface_distance(prim, inv * p) <= reach_pad) {
-            grid.occupancy[static_cast<std::size_t>(ix) +
-                           static_cast<std::size_t>(grid.n) *
-                               (iy + static_cast<std::size_t>(grid.n) * iz)] = 1;
+            cell = 1;
           }
         }
       }
     }
   }
+  return true;
+}
+
+void PeerJoints::update(const std::vector<int>& dof, const std::vector<double>& position,
+                        const std::vector<double>& velocity, std::int64_t stamp_ns) {
+  constexpr std::int64_t kMinDifferenceNs = 1'000'000;  // 1 ms
+  for (std::size_t i = 0; i < dof.size() && i < position.size(); ++i) {
+    const int d = dof[i];
+    if (d < 0 || static_cast<std::size_t>(d) >= q_.size() || !std::isfinite(position[i])) {
+      continue;
+    }
+    const std::size_t k = static_cast<std::size_t>(d);
+    if (i < velocity.size() && std::isfinite(velocity[i])) {
+      dq_[k] = velocity[i];
+    } else if (stamp_ns_[k] != 0 && stamp_ns - stamp_ns_[k] >= kMinDifferenceNs) {
+      dq_[k] = (position[i] - q_[k]) / (static_cast<double>(stamp_ns - stamp_ns_[k]) * 1e-9);
+    }
+    q_[k] = position[i];
+    stamp_ns_[k] = stamp_ns;
+  }
+}
+
+bool PeerJoints::complete(const std::vector<std::size_t>& required) const {
+  return std::all_of(required.begin(), required.end(),
+                     [&](std::size_t d) { return d < stamp_ns_.size() && stamp_ns_[d] != 0; });
+}
+
+std::int64_t PeerJoints::oldest_ns(const std::vector<std::size_t>& required) const {
+  std::int64_t out = std::numeric_limits<std::int64_t>::max();
+  for (const auto d : required) {
+    out = std::min(out, stamp_ns_[d]);
+  }
+  return out;
+}
+
+std::int64_t PeerJoints::newest_ns(const std::vector<std::size_t>& required) const {
+  std::int64_t out = std::numeric_limits<std::int64_t>::min();
+  for (const auto d : required) {
+    out = std::max(out, stamp_ns_[d]);
+  }
+  return out;
 }
 
 namespace {
@@ -90,28 +156,41 @@ PlanarTwist planar_twist(const tf2::Transform& before, const tf2::Transform& aft
   return {d.x() / dt, d.y() / dt, std::remainder(yaw_of(after) - yaw_of(before), 2.0 * M_PI) / dt};
 }
 
-void peer_swept_primitives(const SelfModel& model, const std::vector<double>& q,
+bool peer_swept_primitives(const SelfModel& model, const std::vector<double>& q,
                            const std::vector<double>& dq, const std::vector<std::size_t>& base_dofs,
-                           const tf2::Transform& own_base_from_world,
-                           const tf2::Transform& world_from_peer_base, const PlanarTwist& twist,
-                           double horizon_s, std::vector<PayloadPrimitive>& out) {
+                           const tf2::Transform& world_from_own_base, const PlanarTwist& own_twist,
+                           const tf2::Transform& world_from_peer_base,
+                           const PlanarTwist& peer_twist, double horizon_s,
+                           std::vector<PayloadPrimitive>& out) {
   out.clear();
   const double h = std::max(horizon_s, 0.0);
+  // The poses the sweep needs. A NaN (`std::max` would quietly skip it) or a step count
+  // past the cap withholds the grid.
   double steps = 0.0;
+  bool usable = true;
+  const auto need = [&](double v) {
+    usable = usable && std::isfinite(v);
+    steps = std::max(steps, v);
+  };
   for (std::size_t i = 0; i < q.size() && i < dq.size(); ++i) {
     if (std::find(base_dofs.begin(), base_dofs.end(), i) == base_dofs.end()) {
-      steps = std::max(steps, std::abs(dq[i]) * h / kPeerJointStepRad);
+      need(std::abs(dq[i]) * h / kPeerJointStepRad);
     }
   }
-  steps = std::max(steps, std::hypot(twist.vx, twist.vy) * h / kPeerBaseStepM);
-  steps = std::max(steps, std::abs(twist.wz) * h / kPeerJointStepRad);
+  for (const PlanarTwist* tw : {&own_twist, &peer_twist}) {
+    need(std::hypot(tw->vx, tw->vy) * h / kPeerBaseStepM);
+    need(std::abs(tw->wz) * h / kPeerJointStepRad);
+  }
+  if (!usable || steps > static_cast<double>(kPeerMaxSweepPoses - 1)) {
+    return false;
+  }
   const int n = std::max(1, static_cast<int>(std::ceil(steps)));
   std::vector<double> qk(q.size());
   std::vector<tf2::Transform> link_world;
   for (int k = 0; k <= n; ++k) {
     const double t = h * k / n;
     for (std::size_t i = 0; i < q.size(); ++i) {
-      const double v = i < dq.size() && std::isfinite(dq[i]) ? dq[i] : 0.0;
+      const double v = i < dq.size() ? dq[i] : 0.0;
       qk[i] = q[i] + v * t;
     }
     for (const auto d : base_dofs) {
@@ -121,9 +200,11 @@ void peer_swept_primitives(const SelfModel& model, const std::vector<double>& q,
     }
     self_forward_kinematics(model, qk.data(), qk.size(), link_world);
     place_self_primitives(model, link_world,
-                          own_base_from_world * advance_planar(world_from_peer_base, twist, t),
+                          advance_planar(world_from_own_base, own_twist, t).inverse() *
+                              advance_planar(world_from_peer_base, peer_twist, t),
                           out);
   }
+  return true;
 }
 
 }  // namespace openral_octomap_bridge

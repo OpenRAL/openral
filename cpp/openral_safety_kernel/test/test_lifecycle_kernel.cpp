@@ -10557,3 +10557,48 @@ TEST_F(LifecycleKernelTest, APeerAgainstALinkNoChunkMovesDoesNotStopTheArm) {
   EXPECT_TRUE(rig.offer(nullptr, 0.0));
   EXPECT_FALSE(rig.node->fault_latched());
 }
+
+TEST_F(LifecycleKernelTest, APeerGridFromTheFutureOrMalformedIsDropped) {
+  // Stamped 1 s ahead: a clock that disagrees with this one. It would never age.
+  GraspRig ahead("kernel_peer_future", peer_params());
+  ahead.voxels = empty_like(ahead.voxels);
+  ahead.peer_voxels = ahead.voxels;
+  ahead.peer_age_s = -1.0;
+  ahead.start();
+  ahead.warm(nullptr, kGraspClearQ, 200);
+  EXPECT_FALSE(ahead.offer(nullptr, kGraspClearQ, 400)) << "a peer grid from the future";
+  EXPECT_FALSE(ahead.node->fault_latched());
+
+  // Occupancy that does not match its shape: refused, never read as free space.
+  GraspRig bad("kernel_peer_malformed", peer_params());
+  bad.voxels = empty_like(bad.voxels);
+  bad.peer_voxels = bad.voxels;
+  bad.peer_voxels->occupancy.clear();
+  bad.start();
+  bad.warm(nullptr, kGraspClearQ, 200);
+  EXPECT_FALSE(bad.offer(nullptr, kGraspClearQ, 400)) << "a malformed peer grid";
+  EXPECT_FALSE(bad.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, ACarriedPayloadInAPeerCellStops) {
+  // The finger's link is a base dof here (skipped by the peer check), so only the
+  // carried payload, attached to it at the same spot, can meet the peer cell.
+  auto params = with_param(peer_params(), "collision_base_dofs",
+                           rclcpp::ParameterValue(std::vector<std::int64_t>{0}));
+  params = with_param(params, "attached_collision_enabled", rclcpp::ParameterValue(true));
+  GraspRig rig("kernel_peer_payload", params);
+  rig.peer_voxels = rig.voxels;
+  rig.voxels = empty_like(rig.voxels);
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.carrying = true;
+  b.revision = 1;
+  rig.warm(&b, 0.0, 300);
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched()) << "a carried payload inside a peer stops";
+  rig.spin_for(200);  // the failure report
+  EXPECT_NE(rig.collision_evidence.find("peer_voxel_0"), std::string::npos)
+      << rig.collision_evidence;
+  EXPECT_NE(rig.collision_evidence.find("attached"), std::string::npos) << rig.collision_evidence;
+}

@@ -669,6 +669,9 @@ struct VoxelGrid {
   WorkspaceContactRegion workspace_region{};           ///< live confirmed workspace, if any (#349)
   /// ADR-0121: the exemption provider for the world-voxel and payload-voxel checks.
   ProviderGate provider_gate{};
+  /// Per link, non-zero = that link's primitives are not checked against this grid
+  /// (null = every link is). ADR-0137: the peer grid skips the links no chunk moves.
+  const std::uint8_t* unchecked_links{nullptr};
 };
 
 /// One collision check's outcome — and, on a hit, the E-stop evidence.
