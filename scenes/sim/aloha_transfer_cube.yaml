@@ -4,7 +4,7 @@
 # so it loads as a SimScene rather than a BenchmarkScene). Same scene + task as
 # the benchmark variant; used by tests/sim/test_dataset_emission.py.
 # Run: openral sim run --config scenes/sim/aloha_transfer_cube.yaml \
-#                      --rskill rskill://rskills/act-aloha
+#                      --rskill rskills/act-aloha
 # Setup: just sync --all-packages --group sim  (set MUJOCO_GL=egl)
 #
 # No `robot_id:` — the aloha_transfer_cube scene hard-fixes the physics robot

@@ -5,7 +5,7 @@
 # GR1 variant for `robocasa/gr1/*` scene ids.
 # Setup: just sync --all-packages --group robocasa
 # Run: openral sim run --config scenes/sim/robocasa_gr1_pnp_cup_to_drawer.yaml \
-#                      --rskill rskill://rskills/rldx1-ft-gr1-nf4
+#                      --rskill rskills/rldx1-ft-gr1-nf4
 
 scene:
   id: robocasa/gr1/PnPCupToDrawerClose
