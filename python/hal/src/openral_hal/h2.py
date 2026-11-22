@@ -393,8 +393,6 @@ class H2MujocoHAL(MujocoArmHAL):
         >>> hal.disconnect()  # doctest: +SKIP
     """
 
-    _step_while_active = False
-
     def __init__(
         self,
         *,
@@ -406,7 +404,7 @@ class H2MujocoHAL(MujocoArmHAL):
         description: RobotDescription | None = None,
     ) -> None:
         """Initialise the H2 HAL; no MuJoCo state is created until ``connect()``."""
-        if body_twist_dt_s is not None and body_twist_dt_s <= 0.0:
+        if body_twist_dt_s is not None and not body_twist_dt_s > 0.0:  # NaN too
             raise ROSConfigError("H2MujocoHAL body_twist_dt_s must be > 0.")
         self._init_from_description(
             description or H2_DESCRIPTION,

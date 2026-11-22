@@ -2153,6 +2153,7 @@ if _ROS2_AVAILABLE:
             # is exactly the blind spot this exists to close.
             try:
                 self._invoke_hal_estop()
+                self._stop_stale_motion("estop")
             finally:
                 self._discard_staged_slots("estop")
                 self._emit_estop_telemetry()
@@ -2182,6 +2183,21 @@ if _ROS2_AVAILABLE:
                 self.get_logger().info(
                     f"openral_hal.slot_group_discarded boundary={boundary} slots={dropped}"
                 )
+
+        def _stop_stale_motion(self, boundary: str) -> None:
+            """A sim HAL drops the setpoints in flight at the latch and its clear (#700 item 1).
+
+            Real HALs stop through ``estop()`` / ``reset_estop()``; a sim HAL that does not
+            opt into those (``SimAttachedHAL``) otherwise kept a held base twist and its
+            arm targets across the latch and moved toward them after the clear.
+            """
+            stop = getattr(self._hal, "stop_stale_motion", None)
+            if not callable(stop):
+                return
+            try:
+                stop()
+            except Exception as exc:  # reason: a stop path must never take the node down
+                self.get_logger().error(f"hal.stop_stale_motion failed at {boundary}: {exc}")
 
         def _invoke_hal_estop(self) -> None:
             """Call the vendor stop path for HALs that opt into it."""
@@ -2290,6 +2306,7 @@ if _ROS2_AVAILABLE:
             self._discard_staged_slots("estop_cleared")
             if not self._estopped:
                 return
+            self._stop_stale_motion("estop_cleared")
 
             from openral_hal.protocol import (
                 EStopRecovery,
@@ -2948,6 +2965,12 @@ if _ROS2_AVAILABLE:
             if self._hal is None:
                 response.success = False  # type: ignore[attr-defined]  # reason: rosidl srv response is untyped
                 response.failure_reason = "HAL not connected"  # type: ignore[attr-defined]
+                return response
+            if self._estopped:
+                # The node's latch, not only the HAL's own: a sim HAL is latch-only here,
+                # and a teleport is motion (#700 item 9).
+                response.success = False  # type: ignore[attr-defined]  # reason: rosidl srv response is untyped
+                response.failure_reason = "ROSEStopRequested: e-stop latched; reset it first"  # type: ignore[attr-defined]
                 return response
             try:
                 self._hal.reset_to_pose(pose)  # type: ignore[attr-defined]  # reason: presence guaranteed by on_configure_post_hal reflection

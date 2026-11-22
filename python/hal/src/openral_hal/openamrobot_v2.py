@@ -155,7 +155,7 @@ class OpenAMRobotV2MujocoHAL(MujocoArmHAL):
                 "OpenAMRobotV2MujocoHAL needs base_joints [x, y, yaw]; "
                 f"got {description.base_joints}"
             )
-        if body_twist_dt_s is not None and body_twist_dt_s <= 0.0:
+        if body_twist_dt_s is not None and not body_twist_dt_s > 0.0:  # NaN too
             raise ROSConfigError("OpenAMRobotV2MujocoHAL body_twist_dt_s must be > 0.")
         self._init_from_description(
             description,

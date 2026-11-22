@@ -1027,12 +1027,14 @@ def test_an_empty_action_group_is_refused(rollout: Callable[[str], MujocoTwinRol
 
 
 def test_a_non_finite_twist_interval_is_refused(robot_description: Describe) -> None:
-    """``body_twist_dt_s=nan`` passed both comparisons and put NaN into the base pose."""
-    hal = OpenAMRobotV2MujocoHAL(
-        description=robot_description("openamrobot_v2"), body_twist_dt_s=float("nan")
-    )
-    expect_refusal(hal.connect, "body_twist_dt_s=nan", "openamrobot_v2 twin")
-    assert hal._connected is False
+    """``body_twist_dt_s=nan`` passed both comparisons and put NaN into the base pose.
+
+    Refused at construction (#700 item 12), before any twin is loaded.
+    """
+    with pytest.raises(ROSConfigError, match="body_twist_dt_s must be > 0"):
+        OpenAMRobotV2MujocoHAL(
+            description=robot_description("openamrobot_v2"), body_twist_dt_s=float("nan")
+        )
 
 
 def test_a_twist_on_a_baseless_twin_leaves_the_arm_targets(connect_twin: ConnectTwin) -> None:
@@ -1254,3 +1256,33 @@ def test_a_failed_rig_write_leaves_no_camera_rig_file(repo_root: Path, tmp_path:
     assert proc.returncode == 0, proc.stderr[-2000:]
     assert "REFUSED" in proc.stdout and "File too large" in proc.stdout, proc.stdout
     assert sorted(p.name for p in tmp_path.iterdir()) == ["arm.xml"]
+
+
+def test_a_pd_twin_stop_holds_through_its_pd_target_not_ctrl(
+    robot_description: Describe, connect_twin: ConnectTwin
+) -> None:
+    """openral#700 item 1 on a torque twin: ``hold_present_pose`` sets the PD target to the
+    current pose and writes no joint angle into ``ctrl`` (N·m here)."""
+    hal = connect_twin(_h1(robot_description))
+    twin = hal._twin
+    hal.send_action(_joint_action([0.1] * len(hal.description.joints)))
+    ctrl_before = np.array(twin.data.ctrl[twin._pd_act], copy=True)
+    hal.stop_stale_motion()
+    np.testing.assert_allclose(twin._pd_targets, twin._driven_qpos())
+    np.testing.assert_array_equal(twin.data.ctrl[twin._pd_act], ctrl_before)
+
+
+def test_a_gr00t_stop_holds_the_arms_through_their_goal(connect_twin: ConnectTwin) -> None:
+    """``ctrl`` is torque recomputed from ``_arm_targets``: the hold moves that goal to the
+    present arm pose and stops the walk command (#700 item 1)."""
+    from openral_hal._g1_gr00t_wbc import S0_JOINT_COUNT
+
+    hal = connect_twin(_TWINS["g1_gr00t"])
+    twin = hal._twin
+    twin._arm_targets = twin._arm_targets + 0.3  # a pre-stop goal the arms are driving to
+    twin._s0_command = (0.4, 0.0, 0.0)
+    hal.stop_stale_motion()
+    start = 7 + S0_JOINT_COUNT
+    present = twin.data.qpos[start : start + len(twin._arm_targets)]
+    np.testing.assert_allclose(twin._arm_targets, present)
+    assert twin._s0_command == (0.0, 0.0, 0.0)

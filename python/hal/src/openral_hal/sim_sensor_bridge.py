@@ -20,10 +20,12 @@ Diagnostics only: nothing on that path gates, delays, or alters actuation.
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import math
 import os
 import struct
+import subprocess
 import sys
 import time
 from collections import deque
@@ -261,6 +263,32 @@ def scan_ranges_on_wire(ranges: Sequence[float], *, max_range_m: float) -> list[
     # the clamp must be compared at float32 precision or it reads as a return.
     limit = min(max_range_m, struct.unpack("f", struct.pack("f", max_range_m))[0])
     return [float(r) if r < limit else math.inf for r in ranges]
+
+
+@functools.lru_cache(maxsize=1)
+def glfw_display_usable() -> bool:
+    """Whether GLFW can open a display here, probed in a child process.
+
+    MuJoCo's viewer initialises GLFW in C, and a failure there (``mju_error``) exits
+    the whole process: a ``DISPLAY`` that is set but unreachable, or a
+    ``WAYLAND_DISPLAY`` without a Wayland session, cannot be caught in-process. The
+    child takes that exit instead. Cached: the answer does not change while the node
+    runs.
+
+    Example:
+        >>> isinstance(glfw_display_usable(), bool)
+        True
+    """
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return False
+    probe = "import sys; from mujoco.glfw import glfw; sys.exit(0 if glfw.init() else 1)"
+    try:
+        done = subprocess.run(  # reason: our own interpreter, a fixed script
+            [sys.executable, "-c", probe], capture_output=True, timeout=10.0, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return done.returncode == 0
 
 
 def should_idle_step(
@@ -5889,15 +5917,14 @@ class SimSensorBridge:
         if not self._viewer_enabled or handles is None:
             return
         model, data = handles
-        if sys.platform.startswith("linux") and not (
-            os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
-        ):
-            # Checked up front: with no display, MuJoCo's GLFW init fails inside C
-            # (``mju_error``) and ends the whole process before the ``except`` below
-            # can turn it into a warning.
+        if sys.platform.startswith("linux") and not glfw_display_usable():
+            # Checked up front: without a working display, MuJoCo's GLFW init fails
+            # inside C (``mju_error``) and ends the whole process before the ``except``
+            # below can turn it into a warning. A DISPLAY that points nowhere (the dev
+            # container's default, a stale ``ssh -X``) is as fatal as none (#700 item 7).
             self._node.get_logger().warning(
-                "SimSensorBridge: no DISPLAY / WAYLAND_DISPLAY; viewer skipped, "
-                "continuing headless."
+                "SimSensorBridge: no working display (GLFW cannot open one); viewer "
+                "skipped, continuing headless."
             )
             return
         try:

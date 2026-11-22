@@ -135,9 +135,6 @@ class HALBase:
         log.info("hal.disconnect", robot=self.description.name)
         self._connected = False
 
-    def _require_control_mode(self, action: Action, allowed: ControlMode) -> None:
-        require_control_mode(action, allowed, type(self).__name__)
-
     def _validate_action_dims(self, action: Action, joint_count: int) -> None:
         validate_action_dims(action, joint_count, self.description.name)
 
