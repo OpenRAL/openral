@@ -863,9 +863,9 @@ _Refreshes the `(LNN)` line citations in the `docs/methods/` inventory; `--check
 
 - `REPO_ROOT` (L40)
 - `METHODS_DIR: Path` (L41) — `REPO_ROOT / "docs" / "methods"`.
-- `refresh_file(md_path: Path, *, check: bool) -> tuple[int, list[str], dict[Path, set[str]]]` — Rewrite one inventory file's markers; returns the changed-marker count, the unresolved-entry descriptions, and the symbols each source file has an entry for. (L194)
-- `coverage_report(documented: dict[Path, set[str]]) -> list[str]` — Public symbols under `python/`, `packages/`, `tools/` (tests, `setup.py`, `conftest.py` excluded) with no inventory entry, one line per file. (L365)
-- `main(argv: list[str] | None = None) -> int` (L378) — CLI entry; `--check` / `--coverage` flags.
+- `refresh_file(md_path: Path, *, check: bool) -> tuple[int, list[str], dict[Path, set[str]]]` — Rewrite one inventory file's markers; returns the changed-marker count, the unresolved-entry descriptions, and the symbols each source file has an entry for. (L197)
+- `coverage_report(documented: dict[Path, set[str]]) -> list[str]` — Public symbols under `python/`, `packages/`, `tools/` (tests, `setup.py`, `conftest.py` excluded) with no inventory entry, one line per file. (L368)
+- `main(argv: list[str] | None = None) -> int` (L381) — CLI entry; `--check` / `--coverage` flags.
 
 ### `tools/build_robometer_nf4_checkpoint.py`
 _Builds the publishable pre-quantized Robometer-4B NF4 checkpoint: loads the upstream bf16 model, quantizes in place, and saves a self-contained directory the scorer can meta-load directly as 4-bit. Uploads to `OpenRAL/rskill-robometer_4b-any-general-nf4`._
