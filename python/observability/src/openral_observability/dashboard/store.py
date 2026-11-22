@@ -753,7 +753,7 @@ class TelemetryStore:
         """The last stop's detail when it landed within the window of ``now`` (lock held)."""
         failure = self._topics.get("safety_failure") or {}
         ts = failure.get("ts_unix")
-        if ts is None or abs(now - float(ts)) > _LATCH_EVIDENCE_WINDOW_S:
+        if ts is None or not _within_latch_window(float(ts), now):
             return None
         detail = failure.get("detail")
         return dict(detail) if isinstance(detail, dict) else None
@@ -858,7 +858,7 @@ class TelemetryStore:
                 status.get("latched") is True
                 and status.get("latch_detail") is None
                 and since is not None
-                and abs(now - since) <= _LATCH_EVIDENCE_WINDOW_S
+                and _within_latch_window(now, since)
             ):
                 status["latch_detail"] = entry["detail"]
             self._append_event(
@@ -1791,6 +1791,20 @@ _SAFETY_FAILURE_COALESCE_S = 5.0
 # A latch and the kernel FailureTrigger that caused it arrive on two topics; a trigger this
 # close (s, dashboard clock) to the latch's start, either side, is its stop detail.
 _LATCH_EVIDENCE_WINDOW_S = 2.0
+
+
+def _within_latch_window(stop_unix: float, latch_unix: float) -> bool:
+    """Whether a kernel stop at ``stop_unix`` is the cause of a latch at ``latch_unix``.
+
+    Either may come first (two topics); they belong together within
+    ``_LATCH_EVIDENCE_WINDOW_S`` on the dashboard clock.
+
+    Example:
+        >>> _within_latch_window(100.0, 101.5), _within_latch_window(103.0, 100.0)
+        (True, False)
+    """
+    return abs(stop_unix - latch_unix) <= _LATCH_EVIDENCE_WINDOW_S
+
 
 _PROTECTED_EVENT_KINDS = frozenset(
     {

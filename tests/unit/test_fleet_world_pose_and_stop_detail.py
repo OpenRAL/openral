@@ -22,6 +22,7 @@ from openral_core.geometry import homogeneous_from_quat_xyz, quat_xyzw_to_yaw
 from openral_core.scene_paths import SCENE_ROBOT_ENV
 from openral_observability.dashboard import TelemetryStore
 from openral_observability.dashboard.app import mission_view
+from openral_observability.dashboard.store import _within_latch_window
 
 from tests.unit.test_deploy_scene_robots import _aisle
 
@@ -160,18 +161,22 @@ def test_a_latched_collision_names_what_it_hit(stop_first: bool) -> None:
     assert mission_view(store.snapshot())["latch_detail"] is None
 
 
-def test_a_latch_without_a_stop_near_it_has_no_detail(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An operator E-STOP long after an old collision does not borrow its detail."""
-    clock = [1000.0]
-    monkeypatch.setattr(time, "time", lambda: clock[0])
+def test_a_latch_without_a_stop_has_no_detail() -> None:
+    """An operator E-STOP (no kernel stop) gets no detail."""
     store = TelemetryStore()
-    _stop(store)
-    clock[0] += 30.0
     _latch(store, True, reason=7)
     assert mission_view(store.snapshot())["latch_detail"] is None
-    clock[0] += 30.0
-    _stop(store, _COLLISION.replace("voxel_464002", "voxel_1"))  # far from the latch's start
-    assert mission_view(store.snapshot())["latch_detail"] is None
+
+
+@pytest.mark.parametrize(
+    ("stop", "latch", "same"),
+    [(100.0, 102.0, True), (102.0, 100.0, True), (100.0, 102.01, False), (130.0, 100.0, False)],
+)
+def test_a_stop_belongs_to_a_latch_within_two_seconds_either_side(
+    stop: float, latch: float, same: bool
+) -> None:
+    """An old collision's detail is not borrowed by a later latch, nor a later stop's."""
+    assert _within_latch_window(stop, latch) is same
 
 
 def test_other_stops_name_their_joint_and_carry_no_depth() -> None:
