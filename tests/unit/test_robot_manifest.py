@@ -81,11 +81,12 @@ def test_fixed_arm_manifest() -> None:
     skills = sorted(a for a in actions if a.startswith("skill:"))
     assert skills == [
         "skill:OpenRAL/rskill-molmoact2-multi-so101-nf4",
+        "skill:OpenRAL/rskill-nat_vla-so101-pretrained-bf16",
         "skill:OpenRAL/rskill-smolvla-so101-eraser_place-bf16",
         "skill:OpenRAL/rskill-smolvla-so101-leisaac_pick_orange-bf16",
     ]
-    assert actions[skills[1]].label == "smolvla-so101-eraser_place-bf16"
-    assert actions[skills[1]].args_schema == {"type": "object", "properties": {}}
+    assert actions[skills[2]].label == "smolvla-so101-eraser_place-bf16"
+    assert actions[skills[2]].args_schema == {"type": "object", "properties": {}}
 
 
 def test_mobile_manipulator_manifest() -> None:
