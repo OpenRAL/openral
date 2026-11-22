@@ -488,6 +488,12 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   // occupancy's 1 B/cell — this default reserves ~40 MB, 39 MB of it that
   // baseline. Sparse storage is the lever if that ever binds.
   this->declare_parameter<std::int64_t>("world_voxel_max_cells", 614125);
+  // Peer phase (ADR-0137): the other robots of the workcell on /openral/peer_voxels,
+  // checked with no exemption. Needs the world grid (same lattice cap and frame).
+  this->declare_parameter<bool>("peer_voxel_enabled", false);
+  this->declare_parameter<double>("peer_voxel_deadline_ms", kDefaultPeerVoxelDeadlineMs);
+  this->declare_parameter<double>("peer_voxel_data_age_budget_ms",
+                                  kDefaultPeerVoxelDataAgeBudgetMs);
 
   // Attached-payload phase — grasped objects carried on
   // /openral/world_state_fast (ADR-0092). Each object leaves world occupancy
@@ -1229,6 +1235,14 @@ SafetyKernelLifecycleNode::configure_from_params(const rclcpp_lifecycle::State& 
         "/openral/world_voxels", voxel_qos,
         std::bind(&SafetyKernelLifecycleNode::on_world_voxels, this, std::placeholders::_1));
   }
+  if (peer_voxel_enabled_) {
+    rclcpp::QoS peer_qos(rclcpp::KeepLast(1));
+    peer_qos.reliable();
+    peer_qos.durability_volatile();
+    peer_voxel_sub_ = this->create_subscription<openral_msgs::msg::OccupancyVoxels>(
+        "/openral/peer_voxels", peer_qos,
+        std::bind(&SafetyKernelLifecycleNode::on_peer_voxels, this, std::placeholders::_1));
+  }
   if (attached_collision_enabled_ || grasp_allowance_enabled_) {
     // WorldStateStamped is published RELIABLE+VOLATILE+KL=1 at 30 Hz; the kernel
     // consumes the bounded attached_objects array (grasped payloads) and the
@@ -1322,6 +1336,7 @@ SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) 
   candidate_sub_.reset();
   estop_sub_.reset();
   voxel_sub_.reset();
+  peer_voxel_sub_.reset();
   world_state_sub_.reset();
   joint_state_sub_.reset();
   external_torque_pub_.reset();
@@ -1654,6 +1669,39 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           return;
         }
       }
+      // Peer grid (ADR-0137): missing, malformed, late, stale or in another frame
+      // than the world grid is a refusal. Where the peers are is never assumed.
+      if (peer_voxel_enabled_) {
+        const bool fresh = peer_received_ && !peer_overflow_ &&
+                           (this->now() - peer_stamp_).seconds() <= peer_voxel_deadline_s_;
+        if (!fresh) {
+          if (peer_overflow_) {
+            unavailable("peer_voxel_overflow",
+                        openral_msgs::msg::SafetyStatus::DROP_VOXEL_OVERFLOW);
+          } else {
+            unavailable("peer_voxel_unavailable",
+                        openral_msgs::msg::SafetyStatus::DROP_VOXEL_UNAVAILABLE,
+                        "/openral/peer_voxels", input_age_ms(peer_received_, peer_stamp_),
+                        peer_voxel_deadline_s_ * 1e3);
+          }
+          return;
+        }
+        if (!peer_source_known_) {
+          unavailable("peer_voxel_stale", openral_msgs::msg::SafetyStatus::DROP_VOXEL_UNAVAILABLE);
+          return;
+        }
+        const double peer_age_ms = (this->now() - peer_source_stamp_).seconds() * 1e3;
+        span->SetAttribute("safety.peer_voxel_data_age_ms", peer_age_ms);
+        if (peer_age_ms > peer_voxel_data_age_budget_s_ * 1e3) {
+          unavailable("peer_voxel_stale", openral_msgs::msg::SafetyStatus::DROP_VOXEL_UNAVAILABLE,
+                      "/openral/peer_voxels", peer_age_ms, peer_voxel_data_age_budget_s_ * 1e3);
+          return;
+        }
+        if (peer_frame_id_ != voxel_frame_id_) {
+          unavailable("peer_voxel_frame", openral_msgs::msg::SafetyStatus::DROP_VOXEL_UNAVAILABLE);
+          return;
+        }
+      }
       if (attached_collision_enabled_) {
         // A grasped payload we cannot verify (never received, over-capacity /
         // unknown-link, or stale) is fail-closed: we do not know what the robot
@@ -1702,6 +1750,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           return attached_label(n.idx);
         case 'v':
           return std::string("voxel_") + std::to_string(n.idx);
+        case 'r':
+          return std::string("peer_voxel_") + std::to_string(n.idx);
         case 'p':
           return "place:" + place_declaration_target_ + "#" + std::to_string(n.idx);
         case 'f':
@@ -2327,6 +2377,30 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                          step);
             report("world", WsName{'a', force.object_index}, WsName{'f', 0}, step, fhit);
             return true;
+          }
+        }
+        // Peer phase (ADR-0137): the robot and anything it carries against the other
+        // robots' own geometry. `peer_grid_` carries no region and no provider, so no
+        // contact exemption applies: a peer cell trips wherever it is.
+        if (peer_voxel_enabled_) {
+          const auto hit = check_voxel_collision(collision_model_, collision_scratch_, peer_grid_,
+                                                 world_voxel_margin_m_ + extra_margin,
+                                                 collision_scale_proximity_m_);
+          note_slack(hit, world_voxel_margin_m_ + extra_margin);
+          if (hit.hit) {
+            report("world", WsName{'l', hit.link_a}, WsName{'r', hit.link_b}, step, hit);
+            return true;
+          }
+          if (attached_collision_enabled_ && attached_model_.n_objects > 0) {
+            const double amargin = attached_collision_margin_m_ + extra_margin;
+            const auto phit = check_attached_voxel_collision(collision_model_, attached_model_,
+                                                             collision_scratch_, peer_grid_,
+                                                             amargin, collision_scale_proximity_m_);
+            note_slack(phit, amargin);
+            if (phit.hit) {
+              report("world", WsName{'a', phit.link_a}, WsName{'r', phit.link_b}, step, phit);
+              return true;
+            }
           }
         }
         return false;
@@ -4180,6 +4254,37 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   voxel_occupancy_.assign(world_voxel_max_cells_, 0);
   voxel_grid_.occupancy = voxel_occupancy_.data();
 
+  // Peer grid (ADR-0137). Refused, never clamped, like the world grid's caps.
+  peer_voxel_enabled_ = this->get_parameter("peer_voxel_enabled").as_bool();
+  const double peer_deadline_ms = this->get_parameter("peer_voxel_deadline_ms").as_double();
+  const double peer_budget_ms = this->get_parameter("peer_voxel_data_age_budget_ms").as_double();
+  peer_voxel_deadline_s_ = peer_deadline_ms / 1000.0;
+  peer_voxel_data_age_budget_s_ = peer_budget_ms / 1000.0;
+  if (peer_voxel_enabled_) {
+    if (!world_voxel_enabled_) {
+      error = "peer_voxel_enabled needs world_voxel_enabled: the peer grid shares the world "
+              "grid's frame and cell cap";
+      return false;
+    }
+    if (!(peer_deadline_ms > 0.0 && peer_deadline_ms <= kMaxWorldVoxelDeadlineMs)) {
+      error = "peer_voxel_deadline_ms=" + std::to_string(peer_deadline_ms) + " is outside (0, " +
+              std::to_string(kMaxWorldVoxelDeadlineMs) + "]";
+      return false;
+    }
+    if (!(peer_budget_ms > 0.0 && peer_budget_ms <= kMaxWorldVoxelDataAgeBudgetMs)) {
+      error = "peer_voxel_data_age_budget_ms=" + std::to_string(peer_budget_ms) +
+              " is outside (0, " + std::to_string(kMaxWorldVoxelDataAgeBudgetMs) + "]";
+      return false;
+    }
+  }
+  peer_received_ = false;
+  peer_overflow_ = false;
+  peer_source_known_ = false;
+  peer_frame_id_.clear();
+  peer_grid_ = VoxelGrid{};
+  peer_occupancy_.assign(peer_voxel_enabled_ ? world_voxel_max_cells_ : 0, 0);
+  peer_grid_.occupancy = peer_occupancy_.data();
+
   // Attached-payload config (ADR-0092). Pre-size the fixed-capacity attached
   // model + label buffer once so the world-state callback fills in place and the
   // hot path never allocates.
@@ -4778,6 +4883,46 @@ void SafetyKernelLifecycleNode::on_world_voxels(
       msg->source_stamp.sec > 0 || (msg->source_stamp.sec == 0 && msg->source_stamp.nanosec != 0);
   if (voxel_source_known_) {
     voxel_source_stamp_ = rclcpp::Time(msg->source_stamp, this->get_clock()->get_clock_type());
+  }
+}
+
+void SafetyKernelLifecycleNode::on_peer_voxels(
+    const openral_msgs::msg::OccupancyVoxels::SharedPtr msg) {
+  if (msg == nullptr) {
+    return;
+  }
+  // The world grid's shape checks, unchanged: a malformed grid is refused, never
+  // read as free space.
+  std::size_t cells = 0;
+  const bool shape_ok =
+      msg->size_x <= world_voxel_max_cells_ && msg->size_y <= world_voxel_max_cells_ &&
+      msg->size_z <= world_voxel_max_cells_ &&
+      !__builtin_mul_overflow(static_cast<std::size_t>(msg->size_x), msg->size_y, &cells) &&
+      !__builtin_mul_overflow(cells, msg->size_z, &cells);
+  peer_received_ = true;
+  peer_stamp_ = this->now();
+  if (!shape_ok || msg->occupancy.size() != cells || cells > peer_occupancy_.size() ||
+      !(std::isfinite(msg->resolution) && msg->resolution > 0.0) || !std::isfinite(msg->origin.x) ||
+      !std::isfinite(msg->origin.y) || !std::isfinite(msg->origin.z) ||
+      !is_unit_quaternion(msg->orientation)) {
+    peer_overflow_ = true;
+    return;
+  }
+  peer_overflow_ = false;
+  std::copy(msg->occupancy.begin(), msg->occupancy.end(), peer_occupancy_.begin());
+  peer_grid_.occupancy = peer_occupancy_.data();
+  peer_grid_.pose = transform_from_translation_quat(msg->origin.x, msg->origin.y, msg->origin.z,
+                                                    msg->orientation.x, msg->orientation.y,
+                                                    msg->orientation.z, msg->orientation.w);
+  peer_grid_.resolution = msg->resolution;
+  peer_grid_.sx = static_cast<int>(msg->size_x);
+  peer_grid_.sy = static_cast<int>(msg->size_y);
+  peer_grid_.sz = static_cast<int>(msg->size_z);
+  peer_frame_id_ = msg->header.frame_id;
+  peer_source_known_ =
+      msg->source_stamp.sec > 0 || (msg->source_stamp.sec == 0 && msg->source_stamp.nanosec != 0);
+  if (peer_source_known_) {
+    peer_source_stamp_ = rclcpp::Time(msg->source_stamp, this->get_clock()->get_clock_type());
   }
 }
 

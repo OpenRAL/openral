@@ -22,6 +22,7 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -4836,6 +4837,8 @@ public:
         "/openral/world_voxels", reliable);
     ws_pub_ = helper_->create_publisher<openral_msgs::msg::WorldStateStamped>(
         "/openral/world_state_fast", reliable);
+    peer_pub_ = helper_->create_publisher<openral_msgs::msg::OccupancyVoxels>(
+        "/openral/peer_voxels", reliable);
     safe_sub_ = helper_->create_subscription<openral_msgs::msg::ActionChunk>(
         "/openral/safe_action", chunk_qos,
         [this](const openral_msgs::msg::ActionChunk::SharedPtr msg) {
@@ -4906,6 +4909,11 @@ public:
     auto vox = voxels;
     vox.source_stamp = helper_->now();
     voxel_pub_->publish(vox);
+    if (peer_voxels) {
+      auto peer = *peer_voxels;
+      peer.source_stamp = helper_->now() - rclcpp::Duration::from_seconds(peer_age_s);
+      peer_pub_->publish(peer);
+    }
     sensor_msgs::msg::JointState js;
     js.name = js_names;
     js.position = {q};
@@ -5020,6 +5028,9 @@ public:
   /// out) in place of the `GraspBeat` one — the place-region tests drive the
   /// same rig with the declared-carry fixture.
   std::function<openral_msgs::msg::WorldStateStamped(std::int64_t)> state_fn;
+  /// ADR-0137: the peer grid published every beat (unset = none), its world this old.
+  std::optional<openral_msgs::msg::OccupancyVoxels> peer_voxels;
+  double peer_age_s{0.0};
 
 private:
   // The helper stamps the grid and the joint states on the kernel's clock: a `use_sim_time` rig
@@ -5039,6 +5050,7 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr js_pub_;
   rclcpp::Publisher<openral_msgs::msg::OccupancyVoxels>::SharedPtr voxel_pub_;
   rclcpp::Publisher<openral_msgs::msg::WorldStateStamped>::SharedPtr ws_pub_;
+  rclcpp::Publisher<openral_msgs::msg::OccupancyVoxels>::SharedPtr peer_pub_;
   rclcpp::Subscription<openral_msgs::msg::ActionChunk>::SharedPtr safe_sub_;
   rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diag_sub_;
   rclcpp::Subscription<openral_msgs::msg::FailureTrigger>::SharedPtr fail_sub_;
@@ -10429,4 +10441,105 @@ TEST_F(LifecycleKernelTest, AStaleAttachmentStreamRefusesEvenABaseTwist) {
   EXPECT_FALSE(rig.send_once(nullptr, kGraspClearQ, base_twist_chunk(0.1)));
   EXPECT_FALSE(rig.node->fault_latched()) << "a drop, not a latch";
   EXPECT_GE(logs.count("reason=attached_unavailable"), 1U) << logs.joined();
+}
+
+// ── Peer grid (ADR-0137, hazard Entry 103) ──────────────────────────────────
+//
+// The other robots of the workcell reach the kernel as a second grid,
+// /openral/peer_voxels. It is checked with no exemption, so a peer cell trips
+// even where a live grasp declaration exempts the very same octomap cell.
+
+namespace {
+
+std::vector<rclcpp::Parameter> peer_params() {
+  return with_param(grasp_params(), "peer_voxel_enabled", rclcpp::ParameterValue(true));
+}
+
+openral_msgs::msg::OccupancyVoxels empty_like(openral_msgs::msg::OccupancyVoxels vox) {
+  std::fill(vox.occupancy.begin(), vox.occupancy.end(), std::uint8_t{0});
+  return vox;
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, APeerGridNeedsTheWorldGridAndCappedLimits) {
+  GraspRig no_world("kernel_peer_no_world", with_param(peer_params(), "world_voxel_enabled",
+                                                       rclcpp::ParameterValue(false)));
+  EXPECT_FALSE(no_world.configure());
+  GraspRig late("kernel_peer_deadline_cap",
+                with_param(peer_params(), "peer_voxel_deadline_ms",
+                           rclcpp::ParameterValue(osk::kMaxWorldVoxelDeadlineMs + 1.0)));
+  EXPECT_FALSE(late.configure());
+  GraspRig old("kernel_peer_age_cap", with_param(peer_params(), "peer_voxel_data_age_budget_ms",
+                                                 rclcpp::ParameterValue(0.0)));
+  EXPECT_FALSE(old.configure());
+  GraspRig ok("kernel_peer_ok", peer_params());
+  EXPECT_TRUE(ok.configure());
+}
+
+TEST_F(LifecycleKernelTest, WithoutAPeerGridEveryChunkIsDroppedNotPassed) {
+  GraspRig rig("kernel_peer_missing", peer_params());
+  rig.voxels = empty_like(rig.voxels);
+  rig.start();
+  rig.warm(nullptr, kGraspClearQ, 200);
+  EXPECT_FALSE(rig.offer(nullptr, kGraspClearQ, 400))
+      << "no peer grid: where the peers are is unknown";
+  EXPECT_FALSE(rig.node->fault_latched()) << "a missing input drops; it does not latch";
+  EXPECT_GT(rig.node->chunks_dropped(), 0U);
+}
+
+TEST_F(LifecycleKernelTest, AStaleOrMisframedPeerGridIsDropped) {
+  GraspRig stale("kernel_peer_stale", peer_params());
+  stale.voxels = empty_like(stale.voxels);
+  stale.peer_voxels = stale.voxels;
+  stale.peer_age_s = 1.0;  // past the 300 ms default budget
+  stale.start();
+  stale.warm(nullptr, kGraspClearQ, 200);
+  EXPECT_FALSE(stale.offer(nullptr, kGraspClearQ, 400));
+  EXPECT_FALSE(stale.node->fault_latched());
+
+  GraspRig framed("kernel_peer_frame", peer_params());
+  framed.voxels = empty_like(framed.voxels);
+  framed.peer_voxels = framed.voxels;
+  framed.peer_voxels->header.frame_id = "map";
+  framed.start();
+  framed.warm(nullptr, kGraspClearQ, 200);
+  EXPECT_FALSE(framed.offer(nullptr, kGraspClearQ, 400)) << "a peer grid in another frame";
+  EXPECT_FALSE(framed.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, AFreshEmptyPeerGridPassesAClearChunk) {
+  GraspRig rig("kernel_peer_clear", peer_params());
+  rig.voxels = empty_like(rig.voxels);
+  rig.peer_voxels = rig.voxels;
+  rig.start();
+  rig.warm(nullptr, kGraspClearQ, 200);
+  EXPECT_TRUE(rig.offer(nullptr, kGraspClearQ));
+  EXPECT_FALSE(rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, AGraspExemptionNeverCoversAPeerCell) {
+  // Control: the octomap cell under the finger is exempted by the live grasp
+  // declaration, and an empty peer grid changes nothing.
+  {
+    GraspRig rig("kernel_peer_grasp_control", peer_params());
+    rig.peer_voxels = empty_like(rig.voxels);
+    rig.start();
+    GraspBeat b;
+    b.declaration_stamp_ns = rig.now_ns();
+    rig.warm(&b, 0.0, 300);
+    ASSERT_TRUE(rig.offer(&b, 0.0)) << "the grasp exemption covers the octomap cell";
+  }
+  // The same cell occupied by a peer: the same declaration exempts nothing.
+  GraspRig rig("kernel_peer_grasp", peer_params());
+  rig.peer_voxels = rig.voxels;
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 300);
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched()) << "a finger inside a peer stops, grasp or not";
+  rig.spin_for(200);  // the failure report
+  EXPECT_NE(rig.collision_evidence.find("peer_voxel_0"), std::string::npos)
+      << rig.collision_evidence;
 }

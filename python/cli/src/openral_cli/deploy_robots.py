@@ -26,7 +26,12 @@ from pathlib import Path
 
 from openral_core import DeployScene, RobotDescription
 from openral_core.exceptions import ROSConfigError
-from openral_core.scene_paths import SCENE_ROBOT_ENV, SCENE_ROBOT_MAP_FRAME_ENV
+from openral_core.scene_paths import (
+    SCENE_PEERS_ENV,
+    SCENE_ROBOT_ENV,
+    SCENE_ROBOT_MAP_FRAME_ENV,
+    format_scene_peers,
+)
 from openral_sim.backends.isaac_sim import shared_launch_id
 from openral_sim.policies.robots import resolve_robot_manifest
 from rich.console import Console
@@ -262,6 +267,18 @@ def robot_memory_dirs(root: str | None, names: list[str]) -> dict[str, Path]:
     return dirs
 
 
+def scene_peers(scene: DeployScene, slots: list[dict[str, int | str]]) -> dict[str, str]:
+    """Per robot, ``SCENE_PEERS_ENV``: every other robot's name, domain and manifest path."""
+    root = _repo_root_from(Path(__file__))
+    manifests = {
+        r.name: str(resolve_robot_manifest(r.robot_id, repo_root=root)) for r in scene.robots
+    }
+    entries = [(str(s["name"]), int(s["domain"]), manifests[str(s["name"])]) for s in slots]
+    return {
+        name: format_scene_peers([e for e in entries if e[0] != name]) for name, _, _ in entries
+    }
+
+
 def _map_frames(scene: DeployScene) -> dict[str, str]:
     """Each robot's ``RobotDescription.map_frame``: the frame its one-robot scene's goals are in."""
     root = _repo_root_from(Path(__file__))
@@ -288,6 +305,7 @@ def run_scene_robots(
     slots = robot_slots(scene)
     names = [str(s["name"]) for s in slots]
     map_frames = _map_frames(scene)
+    peers = scene_peers(scene, slots)
     memory_root = _option_value(argv, "--memory-dir") or scene.memory_dir
     if dry_run:
         for slot in slots:
@@ -295,6 +313,7 @@ def run_scene_robots(
             memory = Path(memory_root).expanduser() / name if memory_root else None
             shown = f"ROS_DOMAIN_ID={slot['domain']} {SCENE_ROBOT_ENV}={name} "
             shown += f"{SCENE_ROBOT_MAP_FRAME_ENV}={map_frames[name]} "
+            shown += f"{SCENE_PEERS_ENV}={shlex.quote(peers[name])} "
             shown += shlex.join(robot_argv(argv, config, slot, memory))
             _console.print(f"  robot {name}: {shown}", soft_wrap=True, markup=False)
         return 0
@@ -317,6 +336,7 @@ def run_scene_robots(
                 "ROS_DOMAIN_ID": str(slot["domain"]),
                 SCENE_ROBOT_ENV: name,
                 SCENE_ROBOT_MAP_FRAME_ENV: map_frames[name],
+                SCENE_PEERS_ENV: peers[name],
                 "OPENRAL_ISAAC_SHARED_DIR": str(run_dir),
                 "OPENRAL_ISAAC_SHARED_PORT": str(port),
                 # Each robot is its own openral.com robot (`openral_core.robot_ui.enrolment_path`).

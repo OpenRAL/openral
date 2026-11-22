@@ -486,6 +486,54 @@ def _octomap_frames(description: RobotDescription) -> tuple[str, str]:
     return (description.odom_frame if mobile else base_frame), base_frame
 
 
+def _peer_params(peers: list[tuple[str, int, str]]) -> dict[str, object]:
+    """``peer_voxels``' per-peer parameters (ADR-0137), under ``peer_<name>.``.
+
+    Each peer's collision model, lowered from its own manifest as its kernel's is.
+
+    A fixed arm is posed in its model's root link; a mobile base in its ``base_frame`` with
+    its planar base dofs held at zero, as its own kernel holds them.
+
+    Example:
+        >>> p = _peer_params([("b", 34, "robots/openarm/robot.yaml")])
+        >>> p["peer_names"], p["peer_domains"], p["peer_b.base_frame"]
+        (['b'], [34], 'openarm_base')
+    """
+    from openral_core import RobotDescription
+    from openral_safety.envelope_loader import collision_params_from_description
+
+    out: dict[str, object] = {
+        "peer_names": [n for n, _, _ in peers],
+        "peer_domains": [d for _, d, _ in peers],
+    }
+    for name, _, manifest in peers:
+        # ponytail: the manifest's capsules, never the MJCF lowering the peer's own kernel may
+        # prefer; those are hand-authored to contain the links. Lower the MJCF here too if a
+        # robot's manifest geometry ever under-covers its MJCF.
+        description = RobotDescription.from_yaml(manifest)
+        params = collision_params_from_description(description)
+        params["collision_joint_names"] = [j.name for j in description.joints]
+        params["collision_joint_aliases"] = [j.sim_joint_name or "" for j in description.joints]
+        base_dofs = _collision_base_dofs(description, params)
+        if base_dofs:
+            params["collision_base_dofs"] = base_dofs
+        names = cast("list[str]", params.get("collision_link_names", []))
+        frame = description.base_frame if base_dofs else (names[0] if names else "")
+        params["base_frame"] = frame
+        # Boxes, not their tight hulls (a box contains its hull); no pairs (a peer has no self).
+        skip = ("collision_allowed_pairs", "collision_box_hull", "collision_hull_")
+        out.update(
+            {
+                f"peer_{name}.{k}": v
+                for k, v in params.items()
+                if (k.startswith("collision_") or k == "base_frame")
+                and not k.startswith(skip)
+                and v != []  # launch_ros rejects an empty list
+            }
+        )
+    return out
+
+
 def _world_voxel_max_cells(radius_m: float, resolution_m: float) -> int:
     """Cells the published coverage ball of ``radius_m`` needs at ``resolution_m``.
 
@@ -3271,11 +3319,17 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     scene_unit: str | None = None
     scene_backend: str | None = None
     world_pose: Pose6D | None = None
+    # The scene's other robots (ADR-0137): name, ROS domain, manifest.
+    scene_peers: list[tuple[str, int, str]] = []
     if deploy_config:
         from openral_core import DeployScene
 
         _scene = DeployScene.from_yaml(deploy_config)
         world_pose = _scene_robot_world_pose(_scene)
+        if world_pose is not None:
+            from openral_core.scene_paths import SCENE_PEERS_ENV, parse_scene_peers
+
+            scene_peers = parse_scene_peers(os.environ.get(SCENE_PEERS_ENV))
         scene_sensors = list(_scene.sensors)
         scene_drivers = list(_scene.drivers)
         scene_unit = _scene.robot_unit
@@ -3694,6 +3748,20 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             # How old the world behind a grid may be at check time (Entry 034).
             "world_voxel_data_age_budget_ms": rig.world_voxel_data_age_budget_s * 1000.0,
         }
+        if scene_peers:
+            # ADR-0137: the other robots, from their own geometry, checked with no exemption.
+            # The kernel's defaults bound the grid's age (200 ms receipt, 300 ms data);
+            # `peer_voxels` sweeps each peer over that same 300 ms.
+            kernel_params["peer_voxel_enabled"] = True
+    if scene_peers and not kernel_params.get("peer_voxel_enabled"):
+        from openral_core.exceptions import ROSConfigError
+
+        raise ROSConfigError(
+            "this robot shares its scene with other robots "
+            f"({', '.join(n for n, _, _ in scene_peers)}) but its kernel has no world-voxel "
+            "check, so it could not check its moves against them (ADR-0137). Enable the octomap "
+            "leg and its kernel check for every robot of a several-robot scene."
+        )
 
     kernel_params = {**kernel_params, **_collision_scale_params()}
     # ADR-0121: a provider takes over the moved in-tree rules (never both at once).
@@ -5270,6 +5338,31 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             output="screen",
         )
         extra_nodes.extend([*self_filter_nodes, octomap_server, octomap_bridge])
+        if scene_peers:
+            assert coverage is not None  # reason: computed whenever enable_octomap
+            extra_nodes.append(
+                Node(
+                    package="openral_octomap_bridge",
+                    executable="peer_voxels",
+                    name="openral_peer_voxels",
+                    namespace="",
+                    parameters=[
+                        {
+                            "base_frame": octomap_base_frame,
+                            "world_frame": world_pose.frame_id if world_pose else "world",
+                            "resolution": _octomap_resolution(hal_mode),
+                            "coverage_radius_m": coverage.radius,
+                            "coverage_center_x": coverage.centre[0],
+                            "coverage_center_y": coverage.centre[1],
+                            "coverage_center_z": coverage.centre[2],
+                            "use_sim_time": use_sim_time,
+                            **_peer_params(scene_peers),
+                        }
+                    ],
+                    additional_env=otel_env,
+                    output="screen",
+                )
+            )
 
     if enable_object_detector or locator_specs:
         # The perception leg runs when EITHER the continuous detector is on OR an on-demand

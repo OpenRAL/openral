@@ -273,8 +273,25 @@ def test_a_dry_run_prints_each_robots_command_and_starts_nothing(
     out = capsys.readouterr().out
     assert "OPENRAL_SCENE_ROBOT=south" in out and "OPENRAL_SCENE_ROBOT=north" in out
     assert "OPENRAL_SCENE_ROBOT_MAP_FRAME=map" in out
+    assert "OPENRAL_SCENE_PEERS=north=34=" in out and "OPENRAL_SCENE_PEERS=south=30=" in out
     assert str(tmp_path / "north") in out
     assert list(tmp_path.iterdir()) == []  # nothing written, nothing started
+
+
+def test_each_robot_is_told_every_other_robot_and_never_itself() -> None:
+    """ADR-0137: each robot's peer producer reads the others' domains, from their manifests."""
+    from openral_cli.deploy_robots import robot_slots, scene_peers
+    from openral_core.scene_paths import parse_scene_peers
+
+    robots = [
+        SceneRobot(name=n, robot_id="openamrobot_v2", base_pose=_at(i, 0))
+        for i, n in enumerate("abc")
+    ]
+    scene = DeployScene.model_validate({**_aisle(), "robots": robots})
+    peers = {n: parse_scene_peers(v) for n, v in scene_peers(scene, robot_slots(scene)).items()}
+    assert [(n, d) for n, d, _ in peers["a"]] == [("b", 34), ("c", 38)]
+    assert [(n, d) for n, d, _ in peers["c"]] == [("a", 30), ("b", 34)]
+    assert all(Path(m).name == "robot.yaml" and Path(m).is_file() for _, _, m in peers["b"])
 
 
 def test_a_shared_scene_attachment_names_its_robot(monkeypatch: pytest.MonkeyPatch) -> None:
