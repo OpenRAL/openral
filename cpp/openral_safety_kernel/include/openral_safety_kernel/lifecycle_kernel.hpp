@@ -565,6 +565,10 @@ private:
   // like the world grid. It stays default-constructed apart from its lattice and
   // cells: no place, grasp or workspace region and no provider, ever.
   VoxelGrid peer_grid_;
+  /// `collision_model_` without the primitives of links no chunk moves (fixed to the
+  /// root or moved only by base dofs): what the peer check checks. Same links, so it
+  /// is posed by the same FK scratch.
+  CollisionModel peer_check_model_;
   std::vector<std::uint8_t> peer_occupancy_;
   bool peer_voxel_enabled_{false};
   double peer_voxel_deadline_s_{kDefaultPeerVoxelDeadlineMs / 1000.0};

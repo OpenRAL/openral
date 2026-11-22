@@ -1100,6 +1100,48 @@ SafetyKernelLifecycleNode::configure_from_params(const rclcpp_lifecycle::State& 
       }
     }
   }
+  // Peer phase (ADR-0137): the robot as the peer check sees it, without the links no
+  // chunk moves (fixed to the root or moved only by base dofs, which FK holds at zero).
+  // A peer against those is base clearance, Nav2's (hazard HZ-0137-14), and a peer
+  // reaching into them is refused by the peer's own kernel: refusing this robot's arm
+  // for it would stop a motion that is not moving toward anything.
+  peer_check_model_ = collision_model_;
+  {
+    std::vector<std::uint8_t> moves(collision_model_.n_links, 0);
+    for (std::size_t l = 0; l < collision_model_.n_links; ++l) {
+      const int dof = collision_model_.dof_index[l];
+      const bool own =
+          dof >= 0 && std::find(collision_base_dofs_.begin(), collision_base_dofs_.end(), dof) ==
+                          collision_base_dofs_.end();
+      const int parent = collision_model_.parent[l];
+      moves[l] = own || (parent >= 0 && moves[static_cast<std::size_t>(parent)] != 0) ? 1 : 0;
+    }
+    const auto moving = [&](int link) {
+      return link >= 0 && static_cast<std::size_t>(link) < moves.size() &&
+             moves[static_cast<std::size_t>(link)] != 0;
+    };
+    CollisionModel& m = peer_check_model_;
+    m.capsule_link.clear();
+    m.capsules.clear();
+    m.box_link.clear();
+    m.boxes.clear();
+    m.box_hull.clear();
+    for (std::size_t i = 0; i < collision_model_.capsules.size(); ++i) {
+      if (moving(collision_model_.capsule_link[i])) {
+        m.capsule_link.push_back(collision_model_.capsule_link[i]);
+        m.capsules.push_back(collision_model_.capsules[i]);
+      }
+    }
+    for (std::size_t i = 0; i < collision_model_.boxes.size(); ++i) {
+      if (moving(collision_model_.box_link[i])) {
+        m.box_link.push_back(collision_model_.box_link[i]);
+        m.boxes.push_back(collision_model_.boxes[i]);
+        if (!collision_model_.box_hull.empty()) {
+          m.box_hull.push_back(collision_model_.box_hull[i]);
+        }
+      }
+    }
+  }
   station_anchor_.assign(collision_base_dofs_.size(), 0.0);
   station_anchor_set_ = false;
   station_allowance_live_ = false;
@@ -2383,7 +2425,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         // robots' own geometry. `peer_grid_` carries no region and no provider, so no
         // contact exemption applies: a peer cell trips wherever it is.
         if (peer_voxel_enabled_) {
-          const auto hit = check_voxel_collision(collision_model_, collision_scratch_, peer_grid_,
+          const auto hit = check_voxel_collision(peer_check_model_, collision_scratch_, peer_grid_,
                                                  world_voxel_margin_m_ + extra_margin,
                                                  collision_scale_proximity_m_);
           note_slack(hit, world_voxel_margin_m_ + extra_margin);

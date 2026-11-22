@@ -10543,3 +10543,17 @@ TEST_F(LifecycleKernelTest, AGraspExemptionNeverCoversAPeerCell) {
   EXPECT_NE(rig.collision_evidence.find("peer_voxel_0"), std::string::npos)
       << rig.collision_evidence;
 }
+
+TEST_F(LifecycleKernelTest, APeerAgainstALinkNoChunkMovesDoesNotStopTheArm) {
+  // The finger's only joint is a base dof here, which FK holds at zero: no chunk moves
+  // it. A peer touching it is base clearance (Nav2's), not this arm moving into it.
+  GraspRig rig("kernel_peer_base_link",
+               with_param(peer_params(), "collision_base_dofs",
+                          rclcpp::ParameterValue(std::vector<std::int64_t>{0})));
+  rig.peer_voxels = rig.voxels;
+  rig.voxels = empty_like(rig.voxels);
+  rig.start();
+  rig.warm(nullptr, 0.0, 200);
+  EXPECT_TRUE(rig.offer(nullptr, 0.0));
+  EXPECT_FALSE(rig.node->fault_latched());
+}
