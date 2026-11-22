@@ -58,6 +58,12 @@ def test_policy_state_topic_is_advertised_on_the_first_policy_state_frame() -> N
 
         node._proprio.set(_frame((0.5,) * 61))
         node._publish_policy_state()
+        # The node's own graph cache learns of its new publisher asynchronously (the
+        # rmw graph listener): count_publishers read 0 right after advertising once in
+        # CI (master docker-build, 2026-11-22). Wait for it, bounded.
+        deadline = time.monotonic() + 5.0
+        while node.count_publishers(_TOPIC) != 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
         assert node.count_publishers(_TOPIC) == 1
 
         # The first sample can go out before discovery matches the peer; the next
