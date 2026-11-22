@@ -101,6 +101,7 @@ class _NATVLAAdapter:
     _camera_keys: tuple[str, ...]
     _image_keys: tuple[str, ...]
     _state_dim: int
+    _flip_180: bool = False
     _last_input_frame: NDArray[np.uint8] | None = None
 
     def last_input_frame(self) -> NDArray[np.uint8] | None:
@@ -119,9 +120,10 @@ class _NATVLAAdapter:
                 raise ROSCapabilityMismatch(
                     f"nat_vla needs camera slot {slot!r}; scene provides {sorted(images)}"
                 )
-            batch[key] = image_to_chw_tensor(frame, torch=torch, device=self.device)
+            tensor = image_to_chw_tensor(frame, torch=torch, device=self.device)
+            batch[key] = torch.flip(tensor, dims=[1, 2]) if self._flip_180 else tensor
             if slot == self._camera_keys[0]:
-                self._last_input_frame = to_input_frame(frame)
+                self._last_input_frame = to_input_frame(frame, flip_180=self._flip_180)
         state = observation.get("state")
         if state is None:
             raise ROSConfigError("nat_vla requires a proprio `state` observation.")
@@ -135,6 +137,10 @@ class _NATVLAAdapter:
         return to_numpy_action(self._postprocessor(run_inference(self._policy, prepared)))
 
     def close(self) -> None:
+        # The streamed chunk keeps generating in a background thread after
+        # select_action returns; reset() joins it so the release frees the model.
+        if self._policy is not None:
+            self._policy.reset()
         release_torch_modules(
             self,
             "_policy",
@@ -190,7 +196,8 @@ def _build_nat_vla(env_cfg: Any) -> _NATVLAAdapter:
 
     scene_cameras = getattr(env_cfg.scene, "cameras", None)
     cam_keys = resolve_camera_keys(manifest, extra, scene_cameras=scene_cameras)
-    image_keys = checkpoint_image_keys(resolve_image_preprocessing(manifest, extra), cam_keys)
+    image_prep = resolve_image_preprocessing(manifest, extra)
+    image_keys = checkpoint_image_keys(image_prep, cam_keys)
     height = int(getattr(env_cfg.scene, "observation_height", 480))
     width = int(getattr(env_cfg.scene, "observation_width", 640))
 
@@ -241,4 +248,5 @@ def _build_nat_vla(env_cfg: Any) -> _NATVLAAdapter:
         _camera_keys=cam_keys,
         _image_keys=image_keys,
         _state_dim=state_dim,
+        _flip_180=image_prep.flip_180,
     )

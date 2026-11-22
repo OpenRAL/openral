@@ -36,6 +36,12 @@ def _unavailable() -> str:
             allow_patterns=["model.safetensors", "vlm/*"],
             local_files_only=True,
         )
+        snapshot_download(
+            "ahad-j/nat-tokenizer-h32-l4-c6400",
+            revision="daee61dc36d74129d7bf3e823871d3e8b3c5fa85",
+            allow_patterns=["config.json", "model.safetensors"],
+            local_files_only=True,
+        )
         hf_hub_download(
             "makermods/eraser_place_unblurry_real",
             "meta/stats.json",
@@ -43,7 +49,7 @@ def _unavailable() -> str:
             local_files_only=True,
         )
     except Exception:  # reason: any cache miss is the skip, not a failure
-        return "ahad-j/nat-vla-450m or its SO-101 dataset stats are not in the local HF cache"
+        return "nat-vla-450m, its NAT tokenizer or SO-101 stats are not in the HF cache"
     return ""
 
 
