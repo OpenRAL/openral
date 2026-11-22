@@ -319,7 +319,17 @@ def _provision_robotwin_venv() -> Path:
     _patch_robotwin_checkout(root)
     assets = root / "assets" / "objects" / "objaverse" / "list.json"
     if not assets.is_file():
-        run_cmd("robotwin-assets", ["bash", _download_assets_script(root)], cwd=root)
+        # Upstream's script calls bare `python` to run assets/_download.py, which
+        # needs the sidecar venv's huggingface_hub: put that venv first on PATH, or
+        # a host without a `python` (python3 only) fails with exit 127 and one
+        # with a system `python` lacks the hub client.
+        path = f"{py.parent}{os.pathsep}{os.environ.get('PATH', '')}"
+        run_cmd(
+            "robotwin-assets",
+            ["bash", _download_assets_script(root)],
+            cwd=root,
+            env={**os.environ, "PATH": path},
+        )
     return py
 
 
