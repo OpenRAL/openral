@@ -1,6 +1,6 @@
 # gym-aloha AlohaTransferCube-v0 — ALOHA bimanual fixed.
 # Run: openral benchmark scene --config scenes/benchmark/aloha_transfer_cube.yaml \
-#                              --rskill rskill://rskills/act-aloha
+#                              --rskill rskills/act-aloha
 # Setup: just sync --all-packages --group sim
 # Note: set MUJOCO_GL=egl (osmesa fails on dm_control GLFW conflict).
 

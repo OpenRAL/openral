@@ -1,6 +1,6 @@
 # Diffusion Policy PushT — 2-D pymunk pusher, no arm.
 # Run: openral benchmark scene --config scenes/benchmark/pusht.yaml \
-#                              --rskill rskill://rskills/diffusion-pusht
+#                              --rskill rskills/diffusion-pusht
 
 robot_id: pusht_2d
 

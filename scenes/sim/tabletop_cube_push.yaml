@@ -1,7 +1,7 @@
 # Free-axis tabletop cube-push scene (NOT gym PushT — this is a 3-D robot arm task).
 # The robot is a flag: swap with --robot franka_panda (retune backend_options for reach).
 # Run: openral sim run --config scenes/sim/tabletop_cube_push.yaml \
-#                      --rskill rskill://rskills/<your-skill>
+#                      --rskill rskills/<your-skill>
 
 robot_id: so101_follower          # the flag — any arm with a `sim.mjcf_uri` works
 

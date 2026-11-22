@@ -1,6 +1,6 @@
 # gym-aloha AlohaInsertion-v0 — ALOHA bimanual fixed.
 # Run: openral benchmark scene --config scenes/benchmark/aloha_insertion.yaml \
-#                              --rskill rskill://rskills/act-aloha-insertion
+#                              --rskill rskills/act-aloha-insertion
 # Note: set MUJOCO_GL=egl.
 
 robot_id: aloha_bimanual

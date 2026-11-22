@@ -1,7 +1,7 @@
 # RoboCasa NavigateKitchen — PandaMobile robot.
 # Not an officially benchmarked scene.
 # Run: openral sim run --config scenes/sim/robocasa_panda_mobile_kitchen.yaml \
-#                      --rskill rskill://rskills/<navigation-rskill>
+#                      --rskill rskills/<navigation-rskill>
 # Setup: just sync --all-packages --group robocasa
 
 scene:

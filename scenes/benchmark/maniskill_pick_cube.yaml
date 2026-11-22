@@ -1,6 +1,6 @@
 # ManiSkill3 PickCube-v1 — Panda arm, SAPIEN backend (mujoco enum slot reused).
 # Run: openral benchmark scene --config scenes/benchmark/maniskill_pick_cube.yaml \
-#                              --rskill rskill://rskills/<maniskill-rskill>
+#                              --rskill rskills/<maniskill-rskill>
 # Setup: just sync --all-packages --group maniskill3
 
 robot_id: franka_panda

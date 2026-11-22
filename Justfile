@@ -583,15 +583,15 @@ _ensure-libero-config:
 # config carries the scene/task/robot tuple while the rSkill manifest
 # carries the policy + action contract.
 sim-libero *args: _strip-hf-libero-egg _ensure-libero-config
-    MUJOCO_GL=egl uv run --all-packages --group libero openral sim run --config scenes/sim/libero_spatial.yaml --rskill rskill://rskills/smolvla-libero --save-video example_videos {{args}}
+    MUJOCO_GL=egl uv run --all-packages --group libero openral sim run --config scenes/sim/libero_spatial.yaml --rskill rskills/smolvla-libero --save-video example_videos {{args}}
 
 # LIBERO sim eval with xVLA / Florence-2 (SimScene tier — smoke demo, not a paper-comparable benchmark).
 sim-xvla-libero *args: _strip-hf-libero-egg _ensure-libero-config
-    MUJOCO_GL=egl uv run --all-packages --group libero openral sim run --config scenes/sim/libero_spatial.yaml --rskill rskill://rskills/xvla-libero --save-video example_videos {{args}}
+    MUJOCO_GL=egl uv run --all-packages --group libero openral sim run --config scenes/sim/libero_spatial.yaml --rskill rskills/xvla-libero --save-video example_videos {{args}}
 
 # LIBERO sim eval with π0.5 (SimScene tier; requires ≥8 GB VRAM; weights are non-commercial).
 sim-pi05-libero *args: _strip-hf-libero-egg _ensure-libero-config
-    MUJOCO_GL=egl uv run --all-packages --group libero openral sim run --config scenes/sim/libero_spatial.yaml --rskill rskill://rskills/pi05-libero-int8 --save-video example_videos {{args}}
+    MUJOCO_GL=egl uv run --all-packages --group libero openral sim run --config scenes/sim/libero_spatial.yaml --rskill rskills/pi05-libero-int8 --save-video example_videos {{args}}
 
 # MetaWorld push-v2 with SmolVLA — 1-episode demo via the BenchmarkScene tier
 # (no SimScene sibling for MetaWorld today). `--no-update-manifest` keeps the
@@ -602,41 +602,41 @@ sim-pi05-libero *args: _strip-hf-libero-egg _ensure-libero-config
 # Requires the metaworld benchmark package to be installed once:
 #   uv run pip install metaworld==3.0.0 --no-deps
 sim-metaworld *args:
-    MUJOCO_GL=egl uv run --all-packages --group metaworld openral benchmark scene --config scenes/benchmark/metaworld_push.yaml --rskill rskill://rskills/smolvla-metaworld --no-update-manifest --n-episodes 1 --save-dir example_videos {{args}}
+    MUJOCO_GL=egl uv run --all-packages --group metaworld openral benchmark scene --config scenes/benchmark/metaworld_push.yaml --rskill rskills/smolvla-metaworld --no-update-manifest --n-episodes 1 --save-dir example_videos {{args}}
 
 # gym-aloha bimanual cube-transfer with ACT — BenchmarkScene tier demo (1 episode).
 # Uses EGL (not osmesa) for the same reason as sim-metaworld: osmesa fails with
 # "Default framebuffer is not complete, error 0x0" on the aloha MJCF render context.
 sim-act-aloha *args:
-    MUJOCO_GL=egl uv run --all-packages --group sim openral benchmark scene --config scenes/benchmark/aloha_transfer_cube.yaml --rskill rskill://rskills/act-aloha --no-update-manifest --n-episodes 1 --save-dir example_videos {{args}}
+    MUJOCO_GL=egl uv run --all-packages --group sim openral benchmark scene --config scenes/benchmark/aloha_transfer_cube.yaml --rskill rskills/act-aloha --no-update-manifest --n-episodes 1 --save-dir example_videos {{args}}
 
 # gym-pusht with Diffusion Policy (pymunk 2-D rigid body) — BenchmarkScene tier demo (1 episode).
 sim-diffusion-pusht *args:
-    uv run --all-packages --group sim openral benchmark scene --config scenes/benchmark/pusht.yaml --rskill rskill://rskills/diffusion-pusht --no-update-manifest --n-episodes 1 --save-dir example_videos {{args}}
+    uv run --all-packages --group sim openral benchmark scene --config scenes/benchmark/pusht.yaml --rskill rskills/diffusion-pusht --no-update-manifest --n-episodes 1 --save-dir example_videos {{args}}
 
 # ManiSkill3 PickCube-v1 — 1-episode plumbing rollout against the adapter
-# (no MS3-specific rSkill ships in-tree yet; pass --rskill rskill://rskills/<id>
+# (no MS3-specific rSkill ships in-tree yet; pass --rskill rskills/<id>
 # via {{args}} to swap in your own). Uses the BenchmarkScene tier so the
 # scene/task/seed plumbing matches what tests/sim covers end-to-end.
 sim-maniskill3 *args:
-    uv run --all-packages --group maniskill3 openral benchmark scene --config scenes/benchmark/maniskill_pick_cube.yaml --rskill rskill://rskills/smolvla-maniskill-franka --no-update-manifest --n-episodes 1 --save-dir example_videos {{args}}
+    uv run --all-packages --group maniskill3 openral benchmark scene --config scenes/benchmark/maniskill_pick_cube.yaml --rskill rskills/smolvla-maniskill-franka --no-update-manifest --n-episodes 1 --save-dir example_videos {{args}}
 
 # SimplerEnv WidowX carrot-on-plate — BenchmarkScene tier demo (1 episode).
 # Pairs with the rldx1-ft-simpler-widowx-nf4 rSkill (heavy out-of-process
 # sidecar; bootstraps lazily on first run).
 sim-simpler-widowx *args:
-    uv run --all-packages --group simpler-env openral benchmark scene --config scenes/benchmark/widowx_carrot_on_plate.yaml --rskill rskill://rskills/rldx1-ft-simpler-widowx-nf4 --no-update-manifest --n-episodes 1 --save-dir example_videos {{args}}
+    uv run --all-packages --group simpler-env openral benchmark scene --config scenes/benchmark/widowx_carrot_on_plate.yaml --rskill rskills/rldx1-ft-simpler-widowx-nf4 --no-update-manifest --n-episodes 1 --save-dir example_videos {{args}}
 
 # Custom example — ACT (insertion checkpoint) x gym-aloha AlohaInsertion-v0.
 # BenchmarkScene tier demo (1 episode); pairs with the rskills/act-aloha-insertion
 # rSkill. See scenes/benchmark/aloha_insertion.yaml for the canonical eval shape.
 sim-custom *args:
-    MUJOCO_GL=egl uv run --all-packages --group sim openral benchmark scene --config scenes/benchmark/aloha_insertion.yaml --rskill rskill://rskills/act-aloha-insertion --no-update-manifest --n-episodes 1 --save-dir example_videos {{args}}
+    MUJOCO_GL=egl uv run --all-packages --group sim openral benchmark scene --config scenes/benchmark/aloha_insertion.yaml --rskill rskills/act-aloha-insertion --no-update-manifest --n-episodes 1 --save-dir example_videos {{args}}
 
 # LIBERO sim eval with ACT (SimScene tier — per-policy comparison against
 # smolvla/xvla/pi05 on the same suite).
 sim-act-libero *args: _strip-hf-libero-egg _ensure-libero-config
-    MUJOCO_GL=egl uv run --all-packages --group libero openral sim run --config scenes/sim/libero_spatial.yaml --rskill rskill://rskills/act-libero --save-video example_videos {{args}}
+    MUJOCO_GL=egl uv run --all-packages --group libero openral sim run --config scenes/sim/libero_spatial.yaml --rskill rskills/act-libero --save-video example_videos {{args}}
 
 # Full end-to-end audit of every YAML under scenes/.
 # 1 episode per config, real GPU rollout (CLAUDE.md §1.11–§1.12), JSON report
