@@ -710,8 +710,16 @@ class TelemetryStore:
                 the age and an operator can tell a live latch from a dead
                 publisher's leftover durable value (hazard-log HZ-0096-1).
         """
+        now = time.time()
         with self._lock:
-            was_latched = (self._topics.get("safety_status") or {}).get("latched") is True
+            prev = self._topics.get("safety_status") or {}
+            was_latched = prev.get("latched") is True
+            if not latched:
+                since, stop = None, None
+            elif was_latched:
+                since, stop = prev.get("latched_since_unix"), prev.get("latch_detail")
+            else:
+                since, stop = now, self._failure_detail_near(now)
             self._topics["safety_status"] = {
                 "latched": bool(latched),
                 "drop_reason": int(drop_reason),
@@ -722,7 +730,12 @@ class TelemetryStore:
                 "stamp_unix": float(stamp_unix),
                 # When the dashboard received it, on the same clock the rest of
                 # the snapshot uses — the publisher's stamp can be sim-time.
-                "ts_unix": time.time(),
+                "ts_unix": now,
+                # When this latch began (dashboard clock), and the stop that caused it
+                # (``_stop_detail`` of the kernel's FailureTrigger within
+                # ``_LATCH_EVIDENCE_WINDOW_S`` of it); both ``None`` while not latched.
+                "latched_since_unix": since,
+                "latch_detail": stop,
             }
             # The kernel's latch drives the UI's e-stop flag: a latch sets it, and a
             # release made anywhere (another screen, `ros2 service call
@@ -733,6 +746,38 @@ class TelemetryStore:
                 self._topics["safety"]["estopped"] = True
             elif was_latched:
                 self._topics["safety"]["estopped"] = False
+            payload = self._snapshot_locked()
+        self._publish(payload)
+
+    def _failure_detail_near(self, now: float) -> dict[str, Any] | None:
+        """The last stop's detail when it landed within the window of ``now`` (lock held)."""
+        failure = self._topics.get("safety_failure") or {}
+        ts = failure.get("ts_unix")
+        if ts is None or abs(now - float(ts)) > _LATCH_EVIDENCE_WINDOW_S:
+            return None
+        detail = failure.get("detail")
+        return dict(detail) if isinstance(detail, dict) else None
+
+    def set_world_pose(self, x: float, y: float, yaw: float) -> None:
+        """Record where this robot's map sits in its scene's shared ``world`` (openral-pro#99).
+
+        Set once at start for a robot of a scene with several robots (``DeployScene.robots``):
+        its map starts at its ``base_pose``. Lands in ``topics.world_pose`` and in
+        ``/api/mission`` as ``world_pose``; a one-robot deploy never sets it.
+
+        Example:
+            >>> store = TelemetryStore()
+            >>> store.set_world_pose(0.0, 2.0, -1.5708)
+            >>> store.snapshot()["topics"]["world_pose"]
+            {'x': 0.0, 'y': 2.0, 'yaw': -1.5708, 'frame': 'world'}
+        """
+        with self._lock:
+            self._topics["world_pose"] = {
+                "x": float(x),
+                "y": float(y),
+                "yaw": float(yaw),
+                "frame": "world",
+            }
             payload = self._snapshot_locked()
         self._publish(payload)
 
@@ -791,6 +836,7 @@ class TelemetryStore:
         entry = {
             "kind": kind,
             "severity": severity,
+            "detail": _stop_detail(evidence_json),
             "rskill_id": rskill_id,
             "trace_id": trace_id,
             "stamp_unix": float(stamp_unix),
@@ -804,6 +850,17 @@ class TelemetryStore:
             # marker without its row.
             self._safety_failure_run = (key, mono)
             self._topics["safety_failure"] = entry
+            # The kernel publishes the trigger and the latch on two topics: either may land
+            # first. A latch already recorded without its stop takes this one if it is near.
+            status = self._topics["safety_status"]
+            since = status.get("latched_since_unix")
+            if (
+                status.get("latched") is True
+                and status.get("latch_detail") is None
+                and since is not None
+                and abs(now - since) <= _LATCH_EVIDENCE_WINDOW_S
+            ):
+                status["latch_detail"] = entry["detail"]
             self._append_event(
                 TelemetryEvent(
                     ts_unix=now,
@@ -1731,6 +1788,9 @@ _WARN_EVENTS = frozenset(
 _SAFETY_FAILURE_EVENT = "safety.failure"
 # A repeat of the last stop within this many seconds of its previous repeat folds into it.
 _SAFETY_FAILURE_COALESCE_S = 5.0
+# A latch and the kernel FailureTrigger that caused it arrive on two topics; a trigger this
+# close (s, dashboard clock) to the latch's start, either side, is its stop detail.
+_LATCH_EVIDENCE_WINDOW_S = 2.0
 
 _PROTECTED_EVENT_KINDS = frozenset(
     {
@@ -1910,6 +1970,44 @@ def _collision_text(ev: CollisionEvidence) -> list[str]:
         )
     )
     return parts
+
+
+def _stop_detail(evidence_json: str) -> dict[str, Any] | None:
+    """``{kind, link, other, depth_m}`` of one kernel stop: ``/api/mission``'s ``latch_detail``.
+
+    A collision names the robot link (or the ``attached:<id>`` carried object) and what it
+    touched; ``depth_m`` is how far into it (``0.0`` when the pair still had clearance,
+    ``None`` when no distance was evaluated). Another kind names the joint or end effector
+    it reports, if any, with an empty ``other`` and no depth. ``None`` when the evidence
+    does not decode.
+
+    Example:
+        >>> ev = (
+        ...     '{"kind": "collision", "collision_kind": "world", "link_a": "attached:trk:2", '
+        ...     '"link_b_or_object": "voxel_464002", "horizon_step": -1, '
+        ...     '"min_distance_m": -0.0145}'
+        ... )
+        >>> _stop_detail(ev)
+        {'kind': 'collision', 'link': 'attached:trk:2', 'other': 'voxel_464002', 'depth_m': 0.0145}
+        >>> _stop_detail('{"kind": "force", "joint_or_ee": "j2", "measured_n": 9, "limit_n": 5}')
+        {'kind': 'force', 'link': 'j2', 'other': '', 'depth_m': None}
+        >>> _stop_detail("not json") is None
+        True
+    """
+    try:
+        ev = _FAILURE_EVIDENCE.validate_json(evidence_json)
+    except ValidationError:
+        return None
+    if isinstance(ev, CollisionEvidence):
+        d = ev.min_distance_m
+        return {
+            "kind": "collision",
+            "link": ev.link_a,
+            "other": ev.link_b_or_object,
+            "depth_m": None if d == _DISTANCE_NOT_EVALUATED else max(0.0, -d),
+        }
+    link = getattr(ev, "joint_or_ee", None) or getattr(ev, "ee_name", None) or ""
+    return {"kind": str(ev.kind), "link": str(link), "other": "", "depth_m": None}
 
 
 def _safety_failure_text(kind_label: str, evidence_json: str, rskill_id: str) -> str:

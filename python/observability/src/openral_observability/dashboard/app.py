@@ -1185,13 +1185,17 @@ def mission_view(snapshot: dict[str, Any]) -> dict[str, Any]:
 
     ``GET /api/mission`` and ``/api/mission/stream`` (#659): the mission (its goal, the
     correlation id of the prompt that started it, each task's status), the reasoner's last
-    tick, whether it waits on its operator, and whether the robot is stopped. ``/api/state``
+    tick, whether it waits on its operator, whether the robot is stopped and by what stop
+    (``latch_detail``), and, for a robot of a scene with several robots, where its map sits
+    in the scene's ``world`` (``world_pose``). ``/api/state``
     carries the same facts among camera thumbnails, events and metrics.
 
     Example:
         >>> v = mission_view({"topics": {"safety_status": {"latched": True}}})
-        >>> v["mission"], v["stopped"], v["latched"], v["estopped"]
-        (None, True, True, False)
+        >>> v["mission"], v["stopped"], v["latched"], v["estopped"], v["latch_detail"]
+        (None, True, True, False, None)
+        >>> "world_pose" in v
+        False
     """
     topics = snapshot.get("topics") or {}
     reasoner = topics.get("reasoner") or {}
@@ -1215,7 +1219,7 @@ def mission_view(snapshot: dict[str, Any]) -> dict[str, Any]:
         isinstance(v, dict) and v.get("estopped") for v in (topics.get("hal_estop") or {}).values()
     )
     latched = status.get("latched") is True
-    return {
+    view: dict[str, Any] = {
         "mission": mission,
         "reasoner": {
             k: reasoner.get(k)
@@ -1232,7 +1236,17 @@ def mission_view(snapshot: dict[str, Any]) -> dict[str, Any]:
         "estopped": estopped,
         "latched": latched,
         "latch_reason": status.get("drop_reason_label") if latched else None,
+        # What the latching stop hit (``store._stop_detail``): ``{kind, link, other,
+        # depth_m}``, so a person can judge a reset. ``None`` while not latched, or when no
+        # kernel stop came with the latch (an operator E-STOP).
+        "latch_detail": status.get("latch_detail") if latched else None,
     }
+    # A robot of a scene with several robots (openral-pro#99): where its map sits in the
+    # scene's shared ``world``, ``{x, y, yaw, frame: "world"}``. Absent for one robot.
+    world_pose = topics.get("world_pose")
+    if world_pose:
+        view["world_pose"] = world_pose
+    return view
 
 
 def _without_images(snapshot: dict[str, Any]) -> dict[str, Any]:
