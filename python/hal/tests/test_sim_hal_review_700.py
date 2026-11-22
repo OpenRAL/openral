@@ -17,13 +17,14 @@ from openral_core.exceptions import ROSConfigError, ROSEStopRequested
 
 def _franka() -> object:
     pytest.importorskip("mujoco")
+    from _twin_assets import skip_if_unavailable
     from openral_hal.franka_panda import FrankaPandaHAL
 
     hal = FrankaPandaHAL(gravity_enabled=False)
     try:
         hal.connect()
-    except ROSConfigError as exc:
-        pytest.skip(f"cannot build native MuJoCo arm: {exc}")
+    except ROSConfigError as exc:  # only an unavailable asset skips; a broken twin fails
+        skip_if_unavailable(exc, "franka_panda twin")
     return hal
 
 

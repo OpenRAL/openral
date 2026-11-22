@@ -1270,3 +1270,19 @@ def test_a_pd_twin_stop_holds_through_its_pd_target_not_ctrl(
     hal.stop_stale_motion()
     np.testing.assert_allclose(twin._pd_targets, twin._driven_qpos())
     np.testing.assert_array_equal(twin.data.ctrl[twin._pd_act], ctrl_before)
+
+
+def test_a_gr00t_stop_holds_the_arms_through_their_goal(connect_twin: ConnectTwin) -> None:
+    """``ctrl`` is torque recomputed from ``_arm_targets``: the hold moves that goal to the
+    present arm pose and stops the walk command (#700 item 1)."""
+    from openral_hal._g1_gr00t_wbc import S0_JOINT_COUNT
+
+    hal = connect_twin(_TWINS["g1_gr00t"])
+    twin = hal._twin
+    twin._arm_targets = twin._arm_targets + 0.3  # a pre-stop goal the arms are driving to
+    twin._s0_command = (0.4, 0.0, 0.0)
+    hal.stop_stale_motion()
+    start = 7 + S0_JOINT_COUNT
+    present = twin.data.qpos[start : start + len(twin._arm_targets)]
+    np.testing.assert_allclose(twin._arm_targets, present)
+    assert twin._s0_command == (0.0, 0.0, 0.0)

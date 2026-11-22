@@ -2966,6 +2966,12 @@ if _ROS2_AVAILABLE:
                 response.success = False  # type: ignore[attr-defined]  # reason: rosidl srv response is untyped
                 response.failure_reason = "HAL not connected"  # type: ignore[attr-defined]
                 return response
+            if self._estopped:
+                # The node's latch, not only the HAL's own: a sim HAL is latch-only here,
+                # and a teleport is motion (#700 item 9).
+                response.success = False  # type: ignore[attr-defined]  # reason: rosidl srv response is untyped
+                response.failure_reason = "ROSEStopRequested: e-stop latched; reset it first"  # type: ignore[attr-defined]
+                return response
             try:
                 self._hal.reset_to_pose(pose)  # type: ignore[attr-defined]  # reason: presence guaranteed by on_configure_post_hal reflection
             except ROSConfigError as exc:

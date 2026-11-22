@@ -682,6 +682,21 @@ class _G1Gr00tTwin(_FreeBaseTwin):
         self._arm_targets = np.asarray(pose[S0_JOINT_COUNT:], dtype=np.float64).copy()
         self._reset_state()
 
+    def hold_present_pose(self) -> None:
+        """The arms hold where they are, the legs and waist stay the policy's (#700 item 1).
+
+        ``ctrl`` is torque here, recomputed every physics step from ``_arm_targets``:
+        the base hook's qpos-into-ctrl write would be a torque glitch and then lost, so
+        the arm goal itself becomes the present pose, and the velocity command stops.
+        """
+        data = self.data
+        if data is None:
+            return
+        n = len(self._arm_targets)
+        start = 7 + S0_JOINT_COUNT  # after the free base's 7 qpos and the policy's joints
+        self._arm_targets = np.asarray(data.qpos[start : start + n], dtype=np.float64).copy()
+        self._s0_command = (0.0, 0.0, 0.0)
+
     # ── Reads ────────────────────────────────────────────────────────────────
 
     def read_base_twist(self) -> tuple[float, float, float, float, float, float]:
