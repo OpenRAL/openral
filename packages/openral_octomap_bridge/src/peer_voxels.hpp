@@ -77,6 +77,14 @@ public:
                    "NOTHING");
       return;
     }
+    for (std::size_t i = 0; i < names.size(); ++i) {
+      if (std::find(names.begin(), names.begin() + static_cast<std::ptrdiff_t>(i), names[i]) !=
+          names.begin() + static_cast<std::ptrdiff_t>(i)) {
+        RCLCPP_ERROR(get_logger(), "peer_voxels: peer %s is named twice: publishing NOTHING",
+                     names[i].c_str());
+        return;  // before any reader starts
+      }
+    }
     grid_ = empty_peer_grid(centre_, radius_, resolution_);
     for (std::size_t i = 0; i < names.size(); ++i) {
       auto peer = std::make_unique<Peer>();
@@ -127,14 +135,16 @@ private:
   };
 
   static void stop(Peer& peer) {
+    // The context first: it ends `spin()` even if a `cancel()` came before the reader
+    // thread entered it.
+    if (peer.context) {
+      peer.context->shutdown("peer_voxels exit");
+    }
     if (peer.executor) {
       peer.executor->cancel();
     }
     if (peer.spin.joinable()) {
       peer.spin.join();
-    }
-    if (peer.context) {
-      peer.context->shutdown("peer_voxels exit");
     }
   }
 
@@ -209,6 +219,9 @@ private:
   }
 
   static void on_joints(Peer& peer, const sensor_msgs::msg::JointState& msg) {
+    if (msg.header.stamp.sec < 0) {
+      return;  // not a time (rclcpp::Time throws on it); a later valid sample counts
+    }
     const std::int64_t stamp_ns = (msg.header.stamp.sec != 0 || msg.header.stamp.nanosec != 0)
                                       ? rclcpp::Time(msg.header.stamp, RCL_ROS_TIME).nanoseconds()
                                       : peer.node->now().nanoseconds();

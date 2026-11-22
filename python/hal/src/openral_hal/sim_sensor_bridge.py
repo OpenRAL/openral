@@ -2920,6 +2920,8 @@ class SimSensorBridge:
         # stepper timer. Created in setup ONLY when the HAL exposes ``idle_step``
         # AND has live MuJoCo handles (both sim gates); never against a real HAL.
         self._idle_timer: Any = None
+        # ADR-0137: an e-stop hold that failed during this latch is not retried until it clears.
+        self._estop_hold_failed: bool = False
         self._viewer: Any = None
         self._viewer_timer: Any = None
         self._scan_pub: Any = None
@@ -3634,6 +3636,28 @@ class SimSensorBridge:
             f"(idle_hold={self._idle_hold_ns / 1e6:.0f} ms) — keeps cameras live when idle."
         )
 
+    def _step_estop_hold(self) -> None:
+        """One e-stop hold tick (ADR-0137); a failure freezes the robot until the latch clears.
+
+        Contained like the idle stepper's errors, but recoverable: one warning, then no
+        retry (no per-tick warning loop) until ``/openral/estop_cleared``, after which
+        idle stepping resumes and a later latch tries the hold again.
+        """
+        step_estop_hold = getattr(self._hal, "step_estop_hold", None)
+        if not callable(step_estop_hold) or self._estop_hold_failed:
+            return
+        try:
+            stepped = bool(step_estop_hold())
+        except Exception as exc:  # reason: contain a per-tick crash-loop; warn once, freeze
+            self._estop_hold_failed = True
+            self._node.get_logger().warning(
+                f"SimSensorBridge: e-stop hold step failed: {exc}; this robot freezes until "
+                "the e-stop is cleared"
+            )
+            return
+        if stepped and self._on_step is not None:
+            self._on_step()  # the proprio snapshot, so /joint_states follows the step
+
     def _idle_step_tick(self) -> None:
         """Advance the sim one HOLD tick when no recent real action has arrived.
 
@@ -3660,21 +3684,13 @@ class SimSensorBridge:
         # HAL is not torn down (reads and cameras keep serving the frozen state); a real
         # HAL never gets this timer. Same latch read as ``MobileBaseBridge``.
         # The exception: one robot of a shared world (ADR-0137), which the other robots
-        # keep stepping. Its HAL steps a stop instead (``SimAttachedHAL.step_estop_hold``:
-        # the arm held where it was measured), so its joint states stay current.
+        # keep stepping. Its HAL steps a hold instead (``SimAttachedHAL.step_estop_hold``:
+        # every joint target kept, the base stopped), so its joint states stay current.
         if getattr(self._node, "_estopped", False):
-            step_estop_hold = getattr(self._hal, "step_estop_hold", None)
-            if callable(step_estop_hold):
-                try:
-                    stepped = bool(step_estop_hold())
-                except Exception as exc:  # reason: contain a per-tick crash-loop, as below
-                    self._node.get_logger().warning(
-                        f"SimSensorBridge: e-stop hold step failed: {exc}; freezing instead"
-                    )
-                    stepped = False
-                if stepped and self._on_step is not None:
-                    self._on_step()  # the proprio snapshot, so /joint_states follows the step
+            self._step_estop_hold()
             return
+        # Out of the latch: a hold that failed during it may be tried at the next one.
+        self._estop_hold_failed = False
         idle_step = getattr(self._hal, "idle_step", None)
         if not callable(idle_step):
             return

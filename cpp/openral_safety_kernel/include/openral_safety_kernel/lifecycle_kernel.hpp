@@ -566,7 +566,8 @@ private:
   // cells: no place, grasp or workspace region and no provider, ever.
   VoxelGrid peer_grid_;
   /// Per link of `collision_model_`: 1 for a link no chunk moves (fixed to the root or
-  /// moved only by base dofs), which the peer check skips (`VoxelGrid::unchecked_links`).
+  /// moved only by base dofs), which the peer check skips (`check_voxel_collision`'s
+  /// `unchecked_links`).
   std::vector<std::uint8_t> peer_unchecked_links_;
   std::vector<std::uint8_t> peer_occupancy_;
   bool peer_voxel_enabled_{false};

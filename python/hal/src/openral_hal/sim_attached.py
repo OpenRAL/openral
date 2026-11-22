@@ -1742,9 +1742,9 @@ class SimAttachedHAL:
         """While latched, one robot of a shared world steps its backend's stop (ADR-0137).
 
         The other robots keep stepping its world, so freezing only its observation would
-        leave its arm driving to its last targets, unreported, and its ``/joint_states``
-        stale for every peer. ``estop_hold_action`` holds the arm where it was measured;
-        ``False`` (freeze) when the backend offers none, as for a world of its own.
+        leave its ``/joint_states`` stale for every peer while its world moves on.
+        ``estop_hold_action`` keeps every joint target and stops the base; ``False``
+        (freeze) when the backend offers none, as for a world of its own.
         """
         hold_getter = getattr(self._env, "estop_hold_action", None)
         hold = hold_getter(self._last_obs) if callable(hold_getter) else None

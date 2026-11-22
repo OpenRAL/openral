@@ -1699,8 +1699,11 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
                                  "safety.voxel_stale data_age_ms=%.0f budget_ms=%.0f", data_age_ms,
                                  world_voxel_data_age_budget_s_ * 1e3);
-            unavailable("voxel_stale", openral_msgs::msg::SafetyStatus::DROP_VOXEL_UNAVAILABLE,
-                        "/openral/world_voxels", data_age_ms, world_voxel_data_age_budget_s_ * 1e3);
+            // The magnitude the gate used; the direction in the reason (the span keeps the sign).
+            unavailable(data_age_ms < 0.0 ? "voxel_from_future" : "voxel_stale",
+                        openral_msgs::msg::SafetyStatus::DROP_VOXEL_UNAVAILABLE,
+                        "/openral/world_voxels", std::abs(data_age_ms),
+                        world_voxel_data_age_budget_s_ * 1e3);
             return;
           }
         } else {
@@ -1739,8 +1742,11 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         // Both ways: a grid stamped further ahead than the budget comes from a clock that
         // disagrees with this one, and would otherwise never age (Entry 103, HZ-0137-11).
         if (std::abs(peer_age_ms) > peer_voxel_data_age_budget_s_ * 1e3) {
-          unavailable("peer_voxel_stale", openral_msgs::msg::SafetyStatus::DROP_VOXEL_UNAVAILABLE,
-                      "/openral/peer_voxels", peer_age_ms, peer_voxel_data_age_budget_s_ * 1e3);
+          // The magnitude the gate used; the direction in the reason (the span keeps the sign).
+          unavailable(peer_age_ms < 0.0 ? "peer_voxel_from_future" : "peer_voxel_stale",
+                      openral_msgs::msg::SafetyStatus::DROP_VOXEL_UNAVAILABLE,
+                      "/openral/peer_voxels", std::abs(peer_age_ms),
+                      peer_voxel_data_age_budget_s_ * 1e3);
           return;
         }
         if (peer_frame_id_ != voxel_frame_id_) {
@@ -2429,9 +2435,10 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         // robots' own geometry. `peer_grid_` carries no region and no provider, so no
         // contact exemption applies: a peer cell trips wherever it is.
         if (peer_voxel_enabled_) {
-          const auto hit = check_voxel_collision(collision_model_, collision_scratch_, peer_grid_,
-                                                 world_voxel_margin_m_ + extra_margin,
-                                                 collision_scale_proximity_m_);
+          const auto hit = check_voxel_collision(
+              collision_model_, collision_scratch_, peer_grid_,
+              world_voxel_margin_m_ + extra_margin, collision_scale_proximity_m_,
+              peer_unchecked_links_.empty() ? nullptr : peer_unchecked_links_.data());
           note_slack(hit, world_voxel_margin_m_ + extra_margin);
           if (hit.hit) {
             report("world", WsName{'l', hit.link_a}, WsName{'r', hit.link_b}, step, hit);
@@ -4936,8 +4943,6 @@ void SafetyKernelLifecycleNode::on_peer_voxels(
   peer_grid_.sx = static_cast<int>(msg->size_x);
   peer_grid_.sy = static_cast<int>(msg->size_y);
   peer_grid_.sz = static_cast<int>(msg->size_z);
-  peer_grid_.unchecked_links =
-      peer_unchecked_links_.empty() ? nullptr : peer_unchecked_links_.data();
   peer_frame_id_ = msg->header.frame_id;
   peer_source_known_ =
       msg->source_stamp.sec > 0 || (msg->source_stamp.sec == 0 && msg->source_stamp.nanosec != 0);

@@ -527,37 +527,25 @@ class _IsaacSimSidecar(SidecarSimRollout):
         return pack_isaac_action(action, self.layout, prev, carry_twist=carry_twist)
 
     def estop_hold_action(self, obs: dict[str, Any] | None) -> NDArray[np.float32] | None:
-        """While this robot's e-stop is latched: its stop, in a shared world only; else ``None``.
+        """While this robot's e-stop is latched: its hold, in a shared world only; else ``None``.
 
         One robot of a shared sidecar (openral-pro#99) does not freeze the world when it
-        stops stepping: the other robots step it, so its joints keep driving to their last
-        targets, unreported, and its ``/joint_states`` stamps freeze, which every peer's
-        ``peer_voxels`` refuses as stale (ADR-0137). Stepped with this instead, every arm
-        joint is held at its last measured position (a stop where it is, not the rest of
-        the last move), each gripper keeps its target (a held carton stays held) and the
-        base is stopped; its observation then stays current. ``None`` (freeze: nothing
-        steps the world but this robot) for a sidecar of its own, before a first
-        observation, or when the observation does not name every manifest joint.
+        stops stepping: the other robots step it, so its joint states would stop while its
+        world moves on, and every peer's ``peer_voxels`` would refuse them as stale
+        (ADR-0137). Stepped with the idle hold instead (every joint target kept, which is
+        one control tick from where the arm already is; the base stopped), its observation
+        stays current. Nothing is written to the targets, so carried objects stay carried.
+        ``None`` (freeze: nothing steps the world but this robot) for a sidecar of its own.
+        ``obs`` is unused; the hook takes it so a backend can hold from measured state.
 
         Example:
-            >>> rollout.estop_hold_action({"joint_positions": [0.1, 0.02]})  # doctest: +SKIP
-            array([0.1, nan], dtype=float32)
+            >>> rollout.estop_hold_action(None)  # doctest: +SKIP
+            array([nan, nan, ..., 0., 0., 0.], dtype=float32)
         """
-        if not self._client.robot or self.layout is None or obs is None:
+        del obs
+        if not self._client.robot:
             return None
-        measured = obs.get("joint_positions")
-        if measured is None:
-            return None
-        positions = np.asarray(measured, dtype=np.float32).reshape(-1)
-        if positions.shape[0] != len(self.layout.joints) or not np.all(np.isfinite(positions)):
-            return None
-        at = dict(zip(self.layout.joints, positions.tolist(), strict=True))
-        roles = dict(zip(self.layout.joints, self.layout.roles, strict=True))
-        out = self.idle_action()
-        for i, name in enumerate(self.layout.slots):
-            if roles[name] == "arm":
-                out[i] = at[name]
-        return out
+        return self.idle_action()
 
     def idle_action(self) -> NDArray[np.float32]:
         """HOLD every joint target (NaN) and stop the base — never "drive to 0 rad"."""

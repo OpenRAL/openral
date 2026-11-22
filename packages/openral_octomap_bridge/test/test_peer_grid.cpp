@@ -216,3 +216,20 @@ TEST(PeerJoints, JointsMeasuredAtDifferentTimesArePosedAtOneInstant) {
   EXPECT_NEAR(q[0], 0.3, 1e-9) << "0.3 s on from its own stamp";
   EXPECT_NEAR(q[1], 0.5, 1e-9);
 }
+
+TEST(PeerJoints, AnOlderSampleNeverReplacesANewerOne) {
+  ob::PeerJoints j(1);
+  j.update({0}, {0.5}, {0.0}, 2'000'000'000);
+  j.update({0}, {0.1}, {0.0}, 1'000'000'000);  // delivered late (best-effort QoS)
+  EXPECT_DOUBLE_EQ(j.q()[0], 0.5);
+  EXPECT_EQ(j.oldest_ns({0}), 2'000'000'000);
+}
+
+TEST(PeerGrid, AFastJointNoLinkUsesDoesNotWithholdTheGrid) {
+  // The arm model uses dof 0 only; dof 1 (say a fan) spins at 100 rad/s.
+  const auto model = arm();
+  std::vector<ob::PayloadPrimitive> prims;
+  EXPECT_TRUE(ob::peer_swept_primitives(model, {0.0, 0.0}, {0.0, 100.0}, {},
+                                        tf2::Transform::getIdentity(), {},
+                                        tf2::Transform::getIdentity(), {}, 0.3, prims));
+}

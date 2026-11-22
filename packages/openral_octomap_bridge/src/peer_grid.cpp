@@ -94,6 +94,9 @@ void PeerJoints::update(const std::vector<int>& dof, const std::vector<double>& 
       continue;
     }
     const std::size_t k = static_cast<std::size_t>(d);
+    if (stamp_ns <= stamp_ns_[k]) {
+      continue;  // best-effort delivery: an older sample never replaces a newer one
+    }
     if (i < velocity.size() && std::isfinite(velocity[i])) {
       dq_[k] = velocity[i];
     } else if (stamp_ns_[k] != 0 && stamp_ns - stamp_ns_[k] >= kMinDifferenceNs) {
@@ -182,8 +185,12 @@ bool peer_swept_primitives(const SelfModel& model, const std::vector<double>& q,
     usable = usable && std::isfinite(v);
     steps = std::max(steps, v);
   };
-  for (std::size_t i = 0; i < q.size() && i < dq.size(); ++i) {
-    if (std::find(base_dofs.begin(), base_dofs.end(), i) == base_dofs.end()) {
+  // Only joints that move a collision link count: a fast auxiliary joint the peer's
+  // geometry never uses must not withhold its grid.
+  for (const int d : model.dof_index) {
+    const auto i = static_cast<std::size_t>(d);
+    if (d >= 0 && i < dq.size() &&
+        std::find(base_dofs.begin(), base_dofs.end(), i) == base_dofs.end()) {
       need(std::abs(dq[i]) * h / kPeerJointStepRad);
     }
   }

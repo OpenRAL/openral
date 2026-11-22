@@ -34,6 +34,7 @@ SCENE_ROBOT_MAP_FRAME_ENV = "OPENRAL_SCENE_ROBOT_MAP_FRAME"
 #: (``format_scene_peers``). Each robot's graph runs a peer producer on it, whose grid its
 #: safety kernel checks with no exemption (ADR-0137).
 SCENE_PEERS_ENV = "OPENRAL_SCENE_PEERS"
+_PEER_FIELDS = 3  # name, ROS domain, manifest path
 
 
 def format_scene_peers(peers: list[tuple[str, int, str]]) -> str:
@@ -55,15 +56,26 @@ def parse_scene_peers(value: str | None) -> list[tuple[str, int, str]]:
     Example:
         >>> parse_scene_peers(format_scene_peers([("b", 34, "/srv/openral;lab/robot.yaml")]))
         [('b', 34, '/srv/openral;lab/robot.yaml')]
+        >>> parse_scene_peers("{}")
+        Traceback (most recent call last):
+        ValueError: OPENRAL_SCENE_PEERS is not a list of [name, domain, manifest]: '{}'
     """
     if not value:
         return []
+    bad = ValueError(f"{SCENE_PEERS_ENV} is not a list of [name, domain, manifest]: {value!r}")
     try:
-        return [(str(n), int(d), str(m)) for n, d, m in json.loads(value)]
-    except (TypeError, ValueError) as exc:  # a bad JSON value, or an entry not of three
-        raise ValueError(
-            f"{SCENE_PEERS_ENV} is not a list of [name, domain, manifest]: {value!r}"
-        ) from exc
+        raw = json.loads(value)
+    except ValueError as exc:
+        raise bad from exc
+    entries = raw if isinstance(raw, list) else None
+    if entries is None or not all(isinstance(e, list) and len(e) == _PEER_FIELDS for e in entries):
+        raise bad
+    out: list[tuple[str, int, str]] = []
+    for name, domain, manifest in entries:
+        if not (isinstance(name, str) and isinstance(domain, int) and isinstance(manifest, str)):
+            raise bad
+        out.append((name, domain, manifest))
+    return out
 
 
 _T = TypeVar("_T")

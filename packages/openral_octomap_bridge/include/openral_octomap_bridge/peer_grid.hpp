@@ -62,7 +62,9 @@ public:
 
   /// One message: `dof[i]` is the dof of its i-th entry (-1 = not this robot's).
   /// `velocity` is empty or parallel to `position`. A dof without a finite measured
-  /// velocity gets the change since its own previous sample, over at least 1 ms.
+  /// velocity gets the change since its own previous sample, over at least 1 ms. A
+  /// sample no newer than a dof's stored one is ignored for that dof (best-effort QoS
+  /// can deliver out of order).
   void update(const std::vector<int>& dof, const std::vector<double>& position,
               const std::vector<double>& velocity, std::int64_t stamp_ns);
 
