@@ -162,6 +162,16 @@ def test_a_scaled_quaternion_start_is_refused() -> None:
         )
 
 
+def test_a_non_finite_start_is_refused() -> None:
+    """A NaN norm slips past an ``abs(norm - 1) > tol`` test: finiteness is checked first."""
+    with pytest.raises(ValidationError, match="not finite"):
+        SceneRobot(
+            name="a",
+            robot_id="openamrobot_v2",
+            base_pose=Pose6D(xyz=(0, 0, 0), quat_xyzw=(0, 0, float("nan"), 1), frame_id="world"),
+        )
+
+
 def test_an_attachment_naming_no_robot_of_the_scene_is_refused() -> None:
     """A misspelt robot would match no robot's attachment filter: the tote would ride nothing."""
     tote = {"prim": "Tote", "link": "lift_carriage_link", "robot": "sotuh"}

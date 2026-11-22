@@ -13674,6 +13674,8 @@ class SceneRobot(BaseModel):
             )
         # Unit length, as a NavGoal's: the planar-start check reads the raw components, and a
         # scaled quaternion would pass it yet normalize to a tilt.
+        if not all(math.isfinite(v) for v in (*self.base_pose.xyz, *self.base_pose.quat_xyzw)):
+            raise ValueError(f"robot {self.name!r}: base_pose is not finite.")
         if abs(math.sqrt(sum(v * v for v in self.base_pose.quat_xyzw)) - 1.0) > _UNIT_QUAT_TOL:
             raise ValueError(f"robot {self.name!r}: base_pose.quat_xyzw is not a unit quaternion.")
         return self
