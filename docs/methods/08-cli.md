@@ -196,10 +196,12 @@ The manifest-derived front-matter is emitted uniformly so every published repo, 
 
 _`openral deploy sim` of a scene with several robots (`DeployScene.robots`, openral-pro#99): one Isaac sidecar, one graph per robot._
 
-- `robot_slots(scene) -> list[dict]` (L68) — Each robot's name, ROS domain (`30 + 4 i`, clear of the reserved test domains), dashboard (`4330 + i`) and Foxglove (`8830 + i`) port; at most five robots.
-- `robot_argv(argv, config, slot) -> list[str]` (L100) — One robot's `openral deploy sim` command line: the operator's, without `--config` / `--dashboard-port` / `--foxglove-port`, plus its own.
-- `shared_sidecar_argv(entries, scene_id) -> list[str]` (L144) — The one sidecar's command line from every robot's entry: the first robot's launch without `--robot`, plus `--objects-json`, `--robots` and `--launch-id`.
-- `run_scene_robots(scene, config, argv) -> int` (L293) — Starts each robot's graph (`$OPENRAL_SCENE_ROBOT`, `$OPENRAL_ISAAC_SHARED_DIR` / `_PORT`, its own `ROS_DOMAIN_ID` and `OPENRAL_ROBOT_ENROLMENT`), waits for every robot's sidecar entry, starts the `--robots` sidecar, and ends everything when one ends or on Ctrl-C.
+- `robot_slots(scene) -> list[dict]` (L63) — Each robot's name, ROS domain (`30 + 4 i`, clear of the reserved test domains), dashboard (`4330 + i`) and Foxglove (`8830 + i`) port; at most five robots.
+- `robot_argv(argv, config, slot) -> list[str]` (L95) — One robot's `openral deploy sim` command line: the operator's, without `--config` / `--dashboard-port` / `--foxglove-port`, plus its own.
+- `shared_sidecar_argv(entries, scene_id) -> list[str]` (L139) — The one sidecar's command line from every robot's entry: the first robot's launch without `--robot`, plus `--objects-json`, `--robots` and `--launch-id`.
+- `robot_memory_dirs(root, names) -> dict[str, Path]` (L233) — Each robot's own memory bundle, `<root>/<name>`, created; none without a `root`; `ROSConfigError` when `root` is not an existing directory.
+- `wait_for_entries(run_dir, names, children, timeout_s=600) -> list[dict]` (L360) — Every robot's sidecar entry, in scene order, once its HAL has written it; `ROSConfigError` when a robot's graph ended first or an entry is still missing after `timeout_s`.
+- `run_scene_robots(scene, config, argv) -> int` (L276) — Starts each robot's graph (`$OPENRAL_SCENE_ROBOT`, `$OPENRAL_ISAAC_SHARED_DIR` / `_PORT`, its own `ROS_DOMAIN_ID` and `OPENRAL_ROBOT_ENROLMENT`), waits for every robot's sidecar entry, starts the `--robots` sidecar, and ends everything when one ends or on Ctrl-C.
 
 ### `python/cli/src/openral_cli/deploy_sim.py`
 _`openral deploy sim` — boot the full ROS graph against a digital-twin HAL via `ros2 launch openral_rskill_ros deploy_e2e.launch.py` (one generic launch, no `--rskill`)._
