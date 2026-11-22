@@ -239,8 +239,9 @@ vla = [
     # source of truth for what each policy imports: `pi` (transformers, scipy),
     # `smolvla` (transformers, num2words, accelerate), `xvla` (transformers),
     # `molmoact2` (transformers, peft, scipy), `timm-dep` (OpenVLA's
-    # trust_remote_code prismatic backbone).
-    "lerobot[pi,smolvla,xvla,molmoact2,timm-dep]",
+    # trust_remote_code prismatic backbone), `cosmos3` (transformers, diffusers:
+    # the Cosmos 3 action policy's Wan2.2 VAE and UniPC sampler).
+    "lerobot[pi,smolvla,xvla,molmoact2,timm-dep,cosmos3]",
     "transformers>=5.22.0,<5.23.0",  # reason: restates lerobot 0.7's `transformers-dep` pin so a lerobot upgrade cannot move it silently. transformers 5.6+ flattened SigLIP (`vision_tower.vision_model.*` -> `vision_tower.*`); lerobot renames old checkpoint keys in a load_state_dict pre-hook, which the pi05 bf16 fast loader applies explicitly (openral#723). Verified on an RTX 5090: pi05 / GR00T N1.7 / xVLA / MolmoAct2 / LingBot-VLA 2.0 load and succeed on LIBERO / RoboTwin.
 ]
 clip = [

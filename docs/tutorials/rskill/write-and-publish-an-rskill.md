@@ -42,7 +42,7 @@ openral rskill new pi05-pick-cube
 Valid `--family` values: `act | smolvla | pi05 | xvla | diffusion`.
 `--license` is any `RSkillLicensePosture` value: `apache-2.0 | mit | bsd |
 permissive_research | nvidia_non_commercial | nvidia_open_model |
-rlwrld_non_commercial | cc-by-nc-sa-4.0 | flux_non_commercial | lfm1.0 | proprietary |
+rlwrld_non_commercial | cc-by-nc-sa-4.0 | flux_non_commercial | lfm1.0 | openmdw-1.1 | proprietary |
 unknown`. `--embodiment-tag` must be a
 tag some `robots/*/robot.yaml` declares, or `any` / `custom` / `multi`
 (e.g. `so100_follower`, `franka_panda`, `aloha`). This writes `rskills/pi05-pick-cube/{rskill.yaml,README.md,eval/}`.

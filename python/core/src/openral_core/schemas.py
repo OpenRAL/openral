@@ -7444,6 +7444,9 @@ class RSkillLicensePosture(str, Enum):
     # organizations under $10M annual revenue. Treated as not commercial-allowed (the
     # loader needs OPENRAL_ALLOW_NONCOMMERCIAL=1 for a commercial deploy, and logs it).
     LFM_OPEN_1_0 = "lfm1.0"
+    # OpenMDW 1.1 (Linux Foundation; NVIDIA Cosmos 3 weights): commercial and
+    # non-commercial use permitted, keep the license and NOTICE when redistributing.
+    OPENMDW_1_1 = "openmdw-1.1"
     PROPRIETARY = "proprietary"  # Helix, Skild, Gemini Robotics
     UNKNOWN = "unknown"
 
@@ -9219,7 +9222,7 @@ Membership is checked against the policy registry ``openral_sim.POLICIES``
 in-tree manifest). In-tree families: ``smolvla``, ``pi05``, ``xvla``, ``xr1``,
 ``act``, ``diffusion``, ``rldx``, ``molmoact2``, ``gr00t``, ``diffuser_actor``,
 ``openvla``, ``lingbot_vla2``, ``lingbot_vla_v2``, ``lingbot_vla``, ``lingbot_va_a1``,
-``internvla_n1``.
+``cosmos3``, ``internvla_n1``.
 
 Used by the eval / runner adapters to dispatch to the right
 ``openral_sim.backends.<family>`` policy adapter without
@@ -9249,6 +9252,12 @@ linux-aarch64 wheel; adapter: ``openral_sim.policies.lingbot_vla2``).
 lerobot>=0.7's vendored ``LingbotVLAV2Policy`` (no Triton-MoE / transformers 4.57
 pins), for LeRobot-format checkpoints that ship their ``policy_{pre,post}processor``
 pipeline (adapter: ``openral_sim.policies.lingbot_vla_v2``).
+
+``cosmos3`` (NVIDIA Cosmos 3 Edge / Nano world action model, OpenMDW-1.1 weights)
+runs **in-process** through lerobot>=0.7's ``Cosmos3Policy`` as an action policy — the
+video it predicts alongside the action chunk is discarded. LeRobot-format LIBERO
+checkpoints only (adapter: ``openral_sim.policies.cosmos3``). Distinct from the
+``cosmos3-edge`` S2 reasoner, which serves the base model's text tower.
 
 ``lingbot_vla`` (Robbyant LingBot-VLA 1.0, 4B Qwen2.5-VL-3B backbone + a *dense*
 Qwen2 flow-matching action expert; paper "A Pragmatic VLA Foundation Model",
@@ -9336,6 +9345,8 @@ _LICENSES_ALLOWING_COMMERCIAL: frozenset[RSkillLicensePosture] = frozenset(
         # NVIDIA Open Model License (GR00T N1.7+) permits commercial use,
         # unlike the OneWay Noncommercial License on N1 / N1.5 / N1.6.
         RSkillLicensePosture.NVIDIA_OPEN_MODEL,
+        # OpenMDW 1.1 (NVIDIA Cosmos 3) permits commercial use.
+        RSkillLicensePosture.OPENMDW_1_1,
     }
 )
 
@@ -11141,6 +11152,7 @@ CANONICAL_MODEL_TOKENS: frozenset[str] = frozenset(
         "lingbot_vla",  # family lingbot_vla
         "lingbot_vla2",  # family lingbot_vla2
         "lingbot_vla_v2",  # family lingbot_vla_v2 (lerobot in-process port)
+        "cosmos3",  # family cosmos3 (NVIDIA Cosmos 3 action policy, lerobot in-process)
         "nat_vla",  # family nat_vla (NaT VLA, LFM2-VL + NAT action tokens)
         "lingbot_va_a1",  # family lingbot_va_a1
         "internvla_n1",  # family internvla_n1 (InternVLA-N1 / DualVLN)

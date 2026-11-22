@@ -1,0 +1,128 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §3 rSkill packaging)
+# Wraps: lerobot/Cosmos3-Edge-Policy-LIBERO — NVIDIA Cosmos 3 Edge (Nemotron 3 Dense VL
+#        Mixture-of-Transformers backbone + Wan2.2 VAE) fine-tuned by the lerobot team on the four LIBERO
+#        suites (lerobot/LIBERO-Cosmos3), EMA weights at optimizer update 4000.
+#        Weights: OpenMDW 1.1 (commercial use OK; keep LICENSE + NOTICE on redistribution).
+# Paper: arXiv 2606.02800 (Cosmos 3).
+#
+# Runs IN-PROCESS through lerobot>=0.7's Cosmos3Policy (openral_sim.policies.cosmos3) as
+# an action policy: the model denoises a 16-step action chunk together with the future
+# video of the scene; the video is discarded. Not the `cosmos3-edge` S2 reasoner.
+#
+# Contract (checkpoint config.json + policy_preprocessor.json): two 256x256 RGB views,
+# observation.images.image (third person) and image2 (wrist), rotated 180 degrees as the
+# LIBERO dataset holds them; the 8-D LIBERO state is declared but unused (use_state:
+# false). 10-D action [dpos(3), rot6d(6), gripper], decoded by lerobot's
+# Cosmos3LiberoActionProcessorStep into the 7-D LIBERO OSC delta command. Each 16-step
+# chunk is executed in full, as in the model card's evaluation.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-cosmos3-franka_panda-libero-bf16"
+version: "0.1.0"
+license: "openmdw-1.1"
+role: "s1"
+kind: "vla"
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "cosmos3"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+embodiment_tags:
+  - "franka_panda"
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 256
+    min_height: 256
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 256
+    min_height: 256
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+  - kind: "gripper_position"
+    control_mode_semantics:
+      mode: "absolute"
+      gripper_convention: "normalized_close_symmetric"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  # Stored bf16 (4 fp32 timestep-embedding tensors); config.json says float32 only so
+  # fine-tuning keeps fp32 master weights. The model card evaluates in bf16.
+  dtype: "bf16"
+  backend: "pytorch"
+# Measured peak on an RTX 5090 (bf16, LIBERO MuJoCo EGL renderer included): 14.1 GiB.
+min_vram_gb:
+  bf16: 14.1
+weights_uri: "hf://lerobot/Cosmos3-Edge-Policy-LIBERO@9d4de4350e416c12babc9a42db01ab0c5df9f82f"
+
+# ── Preprocessing ──────────────────────────────────────────────────────────
+# The checkpoint's lerobot PolicyProcessorPipeline. The tokenizer step carries the
+# tokenizer/ directory that a per-file fetch of these two JSONs would miss, so the adapter
+# loads the pipeline from the pinned checkpoint snapshot (same commit), validating every
+# step first.
+processors:
+  preprocessor_uri: "hf://lerobot/Cosmos3-Edge-Policy-LIBERO@9d4de4350e416c12babc9a42db01ab0c5df9f82f/policy_preprocessor.json"
+  postprocessor_uri: "hf://lerobot/Cosmos3-Edge-Policy-LIBERO@9d4de4350e416c12babc9a42db01ab0c5df9f82f/policy_postprocessor.json"
+image_preprocessing:
+  flip_180: true
+  input_template: "observation.images.{cam}"
+  aliases:
+    camera1: "image"
+    camera2: "image2"
+state_contract:
+  # Same franka_panda LIBERO 8-D task-space contract as xvla-libero / smolvla-libero.
+  layout: "libero_eef8d"
+  dim: 8
+  bindings:
+    eef_frame: "panda_hand_tcp"
+    world_frame: "world"
+    gripper_qpos_joints:
+      - "panda_gripper"
+
+# ── Execution semantics ────────────────────────────────────────────────────
+chunk_size: 16
+n_action_steps: 16
+latency_budget:
+  # RTX 5090, bf16: 50 ms mean step over 16-step replay (one UniPC-30 chunk ≈ 0.8 s).
+  per_chunk_ms: 1500.0
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+paper_url: "https://arxiv.org/abs/2606.02800"
+source_repo: "hf://nvidia/Cosmos3-Edge"
+dataset_uri: "hf://lerobot/LIBERO-Cosmos3"
+
+description: >
+  NVIDIA Cosmos 3 Edge world action model fine-tuned on all four LIBERO suites, run
+  in-process through lerobot's Cosmos3Policy as an action policy. From the task
+  instruction and the third-person + wrist views it samples (UniPC, 30 steps) a 16-step
+  chunk of end-effector deltas for the Franka Panda together with the future video,
+  which is discarded. Model card: 97.95 % average over LIBERO Spatial / Object / Goal /
+  10 (MuJoCo 2.3.7). bf16.
+
+evaluated_tasks: ["libero_spatial", "libero_object", "libero_goal", "libero_10"]
+
+actions:
+  - "pick"
+  - "place"
+  - "open"
+  - "close"
+  - "push"
+objects:
+  - "bowl"
+  - "plate"
+  - "drawer"
+  - "object"
+  - "stove"
+scenes:
+  - "tabletop"
+  - "kitchen"
+
+action_contract:
+  cartesian_delta_scale: [0.05, 0.05, 0.05, 0.5, 0.5, 0.5]
+  dim: 7
+  representation: "delta_ee_6d_plus_gripper"
