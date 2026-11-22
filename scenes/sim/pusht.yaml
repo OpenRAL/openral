@@ -1,7 +1,7 @@
 # Diffusion Policy PushT — single-rollout SimScene for `openral sim run`.
 # Benchmark protocol lives in scenes/benchmark/pusht.yaml.
 # Run: openral sim run --config scenes/sim/pusht.yaml \
-#                      --rskill rskill://rskills/diffusion-pusht
+#                      --rskill rskills/diffusion-pusht
 
 scene:
   id: pusht

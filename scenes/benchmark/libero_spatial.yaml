@@ -2,7 +2,7 @@
 # Run with any LIBERO-compatible rSkill:
 #
 #   openral benchmark scene --config scenes/benchmark/libero_spatial.yaml \
-#                           --rskill rskill://rskills/smolvla-libero
+#                           --rskill rskills/smolvla-libero
 #
 # Setup: CC=/usr/bin/gcc just sync --all-packages --group libero
 

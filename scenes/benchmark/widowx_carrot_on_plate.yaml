@@ -1,6 +1,6 @@
 # SimplerEnv WidowX — carrot-on-plate task, SAPIEN/ManiSkill3 backend.
 # Run: openral benchmark scene --config scenes/benchmark/widowx_carrot_on_plate.yaml \
-#                              --rskill rskill://rskills/rldx1-ft-simpler-widowx-nf4
+#                              --rskill rskills/rldx1-ft-simpler-widowx-nf4
 # Setup: just sync --all-packages --group simpler-env
 
 robot_id: widowx
