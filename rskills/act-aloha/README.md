@@ -99,7 +99,7 @@ just bootstrap && just sync --group sim
 just sim-act-aloha
 # which runs:
 #     openral benchmark scene --config scenes/benchmark/aloha_transfer_cube.yaml \
-#       --rskill rskill://rskills/act-aloha --no-update-manifest --n-episodes 1 --save-dir example_videos
+#       --rskill rskills/act-aloha --no-write-eval --n-episodes 1 --save-dir example_videos
 
 # Full 50-episode protocol (eval/aloha_transfer_cube.json):
 openral benchmark run --suite aloha --rskill act-aloha

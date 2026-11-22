@@ -50,7 +50,7 @@ the multi-cam convention), is the rSkill's `image_preprocessing` rename
 just sim-diffusion-pusht
 # which runs:
 #     openral benchmark scene --config scenes/benchmark/pusht.yaml \
-#         --rskill rskill://rskills/diffusion-pusht --no-update-manifest --n-episodes 1 --save-dir example_videos
+#         --rskill rskills/diffusion-pusht --no-write-eval --n-episodes 1 --save-dir example_videos
 ```
 
 CPU-only; no GPU required.
