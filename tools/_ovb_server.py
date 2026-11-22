@@ -34,7 +34,7 @@ import msgpack
 import torch
 import zmq
 from diffusers import Flux2KleinPipeline, Flux2Transformer2DModel
-from huggingface_hub import snapshot_download
+from huggingface_hub import constants, snapshot_download
 from PIL import Image
 
 _SHA = re.compile(r"[0-9a-f]{40}")
@@ -64,10 +64,18 @@ def _load(model: str, subfolder: str, base: str, offload: str) -> Flux2KleinPipe
     """
     ovb_repo, ovb_rev = _split_ref(model)
     base_repo, base_rev = _split_ref(base)
+    # huggingface_hub 1.33+ (not 1.13) lists the repo tree for a sha pin unless
+    # local_files_only, so offline it raised on a cache without a tree listing (#720).
+    offline = constants.HF_HUB_OFFLINE
     ovb_dir = snapshot_download(
-        ovb_repo, revision=ovb_rev, allow_patterns=[f"{subfolder.rstrip('/')}/*"]
+        ovb_repo,
+        revision=ovb_rev,
+        allow_patterns=[f"{subfolder.rstrip('/')}/*"],
+        local_files_only=offline,
     )
-    base_dir = snapshot_download(base_repo, revision=base_rev, allow_patterns=_BASE_PATTERNS)
+    base_dir = snapshot_download(
+        base_repo, revision=base_rev, allow_patterns=_BASE_PATTERNS, local_files_only=offline
+    )
     transformer = Flux2Transformer2DModel.from_pretrained(
         str(Path(ovb_dir) / subfolder), torch_dtype=torch.bfloat16
     )

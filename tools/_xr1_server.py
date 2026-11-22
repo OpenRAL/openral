@@ -56,12 +56,15 @@ def _local_snapshot(model: str) -> str:
     repo_id, revision = _split_model_ref(model)
     if Path(repo_id).exists():
         return repo_id
-    from huggingface_hub import snapshot_download
+    from huggingface_hub import constants, snapshot_download
 
     return snapshot_download(
         repo_id,
         revision=revision,
         allow_patterns=["*.json", "*.py", "*.jinja", "*.txt", "*.safetensors", "tokenizer*"],
+        # huggingface_hub 1.33+ (not 1.13) lists the repo tree for a sha pin unless
+        # local_files_only, so offline it raised on a cache without a tree listing.
+        local_files_only=constants.HF_HUB_OFFLINE,
     )
 
 

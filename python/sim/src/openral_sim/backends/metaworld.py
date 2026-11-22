@@ -1,4 +1,4 @@
-"""MetaWorld scene adapter — wraps ``lerobot.envs.metaworld.MetaworldEnv``.
+"""MetaWorld scene adapter — wraps ``lerobot.sim.integrations.metaworld.MetaworldEnv``.
 
 Wiring matches ``scenes/benchmark/metaworld_push.yaml``:
 1× RGB camera at 480×480 → resized to ``scene.observation_height/width``,
@@ -137,21 +137,21 @@ class _MetaworldSim:
     gripper_convention="normalized_close_symmetric",
 )
 def _build_metaworld_scene(env_cfg: SimEnvironment) -> _MetaworldSim:
-    """Lazily import ``lerobot.envs.metaworld`` and build a ``_MetaworldSim``."""
+    """Lazily import ``lerobot.sim.integrations.metaworld`` and build a ``_MetaworldSim``."""
     from openral_sim._deps import ensure_backend_deps
 
     ensure_backend_deps("metaworld")
 
     try:
-        from lerobot.envs.metaworld import (
+        from lerobot.sim.integrations.metaworld import (
             MetaworldEnv,  # reason: heavy import deferred until used
         )
     except ImportError as exc:  # pragma: no cover - tested via runtime error path
         # ensure_backend_deps re-probes after running its plan; this
         # branch is only reached when the install ran but
-        # lerobot.envs.metaworld / metaworld still refuse to import.
+        # lerobot.sim.integrations.metaworld / metaworld still refuse to import.
         raise ROSConfigError(
-            "MetaWorld backend installed but `lerobot.envs.metaworld` still "
+            "MetaWorld backend installed but `lerobot.sim.integrations.metaworld` still "
             "refuses to import. Inspect the auto-install output above and "
             "re-run: uv sync --all-packages --group metaworld --inexact && "
             "uv pip install metaworld==3.0.0 --no-deps"

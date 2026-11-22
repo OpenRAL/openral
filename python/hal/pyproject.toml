@@ -11,13 +11,17 @@ dependencies = [
     "openral-sensors==0.4.0", # reason: catalog-backed *_with_sensors() factories materialise SensorSpec/Bundle on canonical RobotDescriptions
     # x-release-please-end
     # reason: lerobot types.py module + the SO-100/SO-101 real servo bus. The
-    # `feetech` extra pulls feetech-servo-sdk (scservo_sdk) + deepdiff, which
-    # lerobot's FeetechMotorsBus lazy-requires at connect(); without it,
+    # `feetech` extra pulls rustypot, which lerobot's SerialMotorsBus requires
+    # at construction (lerobot>=0.7; it replaced scservo_sdk); without it,
     # `openral deploy run` on real SO-100/101 hardware raises ImportError inside
     # the HAL's on_configure. The extra is small pure-Python, and the `so100`
     # optional-extra is never activated by `just sync` (nothing pulls
     # openral-hal[so100]), so the feetech deps belong in the base. Min 3.12+.
-    "lerobot[feetech]>=0.6.1",
+    "lerobot[feetech]>=0.7.0",
+    # reason: FeetechTorqueWatcher (feetech_torque_watcher.py) writes Torque_Enable=0
+    # through scservo_sdk from a separate process after the HAL dies (#545). lerobot>=0.7
+    # moved its bus to rustypot and no longer pulls this in, so it is declared directly.
+    "feetech-servo-sdk>=1.0.0",
     "structlog>=24.0", # reason: structured logging per CLAUDE.md §2
     # torchcodec (pulled transitively via lerobot) ships per-torch-minor ABI
     # builds: 0.9.x↔torch2.9, 0.10.x↔torch2.10. The dev workspace locks torch
@@ -34,10 +38,10 @@ dependencies = [
 
 [project.optional-dependencies]
 so100 = [
-    # SO-100/SO-101 servo bus. feetech-servo-sdk + deepdiff are already in the
-    # base deps above (real hardware needs them at connect()); kept here so the
+    # SO-100/SO-101 servo bus. lerobot[feetech] (rustypot) + feetech-servo-sdk are
+    # already in the base deps above (real hardware needs them at connect()); kept here so the
     # extra stays a self-documenting opt-in surface.
-    "lerobot[feetech]>=0.6.1",
+    "lerobot[feetech]>=0.7.0",
 ]
 arm-sim = [
     "mujoco>=3.8.0",  # reason: MuJoCo physics engine for the HAL sim adapters; 3.8 made mjsJoint.damping a coefficient array (openamrobot_v2 twin)

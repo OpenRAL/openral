@@ -282,8 +282,8 @@ def _has_simpler_env() -> bool:
 
 
 def _has_libero() -> bool:
-    """LIBERO requires lerobot.envs.libero + a compatible robosuite (==1.4 series)."""
-    if not _has_module("lerobot.envs.libero"):
+    """LIBERO requires lerobot.sim.integrations.libero + a compatible robosuite (==1.4 series)."""
+    if not _has_module("lerobot.sim.integrations.libero"):
         return False
     if not _has_module("robosuite"):
         return False
@@ -312,14 +312,14 @@ def _has_aloha() -> bool:
 
 
 def _has_metaworld() -> bool:
-    """MetaWorld needs both ``lerobot.envs.metaworld`` and the ``metaworld`` package.
+    """MetaWorld needs both ``lerobot.sim.integrations.metaworld`` and the ``metaworld`` package.
 
     ``metaworld==3.0.0`` ships as a separate ``--no-deps`` pip install (its
     transitive deps conflict with the workspace lock), so we probe both so a
     partial install — group synced but the ``pip install metaworld`` step
     skipped — re-triggers the plan.
     """
-    return _has_module("lerobot.envs.metaworld") and _has_module("metaworld")
+    return _has_module("lerobot.sim.integrations.metaworld") and _has_module("metaworld")
 
 
 def _has_openarm_robosuite() -> bool:
@@ -358,14 +358,14 @@ def _has_vlabench() -> bool:
     site-packages stub for it (``_vlabench_stub_rrt_step``), and a stray
     ``uv sync`` can evict that stub, so probing it re-triggers the plan to
     rewrite it — same self-healing rationale as the robosuite editable-shadow
-    cleanup. ``lerobot.envs.configs`` carries ``VLABenchEnv`` (the native 0.6.0
-    env config the backend drives).
+    cleanup. ``lerobot.sim.integrations.vlabench`` carries ``VLABenchEnv`` (the
+    native env the backend drives).
     """
     return (
         _has_module("VLABench")
         and _has_module("mujoco")
         and _has_module("dm_control")
-        and _has_module("lerobot.envs.configs")
+        and _has_module("lerobot.sim.integrations.vlabench")
         and _has_module("rrt_algorithms")
     )
 
@@ -1665,7 +1665,7 @@ def _metaworld_plan() -> BackendInstallPlan:
                 description=(
                     "uv pip install metaworld==3.0.0 --no-deps "
                     "(transitive deps conflict with the workspace lock — "
-                    "the lerobot.envs.metaworld wrapper only needs the "
+                    "the lerobot.sim.integrations.metaworld wrapper only needs the "
                     "task suite itself)"
                 ),
                 argv=[uv, "pip", "install", "metaworld==3.0.0", "--no-deps"],
@@ -1997,7 +1997,7 @@ def _assert_no_live_dependency_swap(plan: BackendInstallPlan) -> None:
                   is not a MujocoXML instance.
 
     Flushing ``sys.modules`` (already done post-install) cannot repair this:
-    dependents imported earlier (``libero``, ``lerobot.envs``, any constructed
+    dependents imported earlier (``libero``, ``lerobot.sim.integrations``, any constructed
     env object) keep hard references to classes from the old tree.
 
     Reaching this function means the probe already failed (the installed

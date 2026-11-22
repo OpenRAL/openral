@@ -1,15 +1,15 @@
-"""Serial-boundary fake of lerobot's ``FeetechMotorsBus`` for the SO-100/SO-101 e-stop.
+"""Serial-boundary fake of lerobot's ``SerialMotorsBus`` for the SO-100/SO-101 e-stop.
 
 CLAUDE.md §1.11 boundary double: the SO-100/SO-101 follower's servos sit
 behind a USB-serial Feetech bus no CI box has. This fake stands in for the
 bus object lerobot's ``SOFollower`` exposes as ``robot.bus`` — the register
 I/O surface ``SO100FollowerHAL.estop`` drives (``write`` / ``read`` of
-``Torque_Enable``, ``port_handler`` release, ``ping`` at connect). It keeps
+``Torque_Enable``, ``ping`` at connect). It keeps
 real per-servo register state and records every transaction, so tests assert
 on what reached each servo rather than on mock bookkeeping.
 
-Failure injection mirrors what the real bus raises (lerobot 0.6.1
-``MotorsBus._write`` / ``_read``): ``ConnectionError`` when a servo sends no
+Failure injection mirrors what the real bus raises (lerobot 0.7 rustypot-backed
+``SerialMotorsBus.write`` / ``read``): ``ConnectionError`` when a servo sends no
 status packet (dark servo, unplugged cable), and a register that silently keeps
 its value (``stuck_torque``) for the read-back check.
 """
@@ -30,18 +30,6 @@ SO_FOLLOWER_MOTORS: tuple[str, ...] = (
 
 
 @dataclass
-class FakePortHandler:
-    """The two ``scservo_sdk.PortHandler`` members lerobot's stop path touches."""
-
-    is_using: bool = False
-    cleared: int = 0
-
-    def clearPort(self) -> None:  # noqa: N802  # reason: mirrors scservo_sdk's camelCase API
-        """Flush the serial buffers (counted)."""
-        self.cleared += 1
-
-
-@dataclass
 class FakeFeetechBus:
     """Per-servo ``Torque_Enable`` register state behind a fake serial port.
 
@@ -57,7 +45,8 @@ class FakeFeetechBus:
     dark: frozenset[str] = frozenset()
     stuck_torque: frozenset[str] = frozenset()
     unreadable: frozenset[str] = frozenset()
-    port_handler: FakePortHandler = field(default_factory=FakePortHandler)
+    #: lerobot ``SerialMotorsBus.default_baudrate`` (the rate the torque watcher opens at).
+    default_baudrate: int = 1_000_000
     torque: dict[str, int] = field(default_factory=lambda: dict.fromkeys(SO_FOLLOWER_MOTORS, 1))
     writes: list[tuple[str, str, int]] = field(default_factory=list)
     reads: list[tuple[str, str]] = field(default_factory=list)
@@ -92,8 +81,6 @@ class FakeFeetechBus:
     ) -> None:
         """Write one register; raises ``ConnectionError`` for a dark servo."""
         del normalize, num_retry
-        if self.port_handler.is_using:
-            raise ConnectionError(f"[TxRxResult] Port is in use! ({motor})")
         if motor in self.dark:
             raise ConnectionError(f"[TxRxResult] There is no status packet! ({motor})")
         self.writes.append((data_name, motor, int(value)))

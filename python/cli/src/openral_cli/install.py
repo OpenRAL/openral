@@ -50,11 +50,11 @@ from rich.table import Table
 _GROUPS: Final[dict[str, list[str]]] = {
     "vla": [
         "lerobot[pi,smolvla,xvla,molmoact2,timm-dep]",
-        "transformers>=5.4.0,<5.6.0",
+        "transformers>=5.22.0,<5.23.0",
     ],
     "sim": [
         "lerobot[pi,smolvla,xvla,molmoact2,timm-dep]",  # the `vla` group (include-group)
-        "transformers>=5.4.0,<5.6.0",
+        "transformers>=5.22.0,<5.23.0",
         "gym-aloha>=0.1.3",
         "gym-pusht>=0.1.6",
         "gymnasium[mujoco]>=1.3.0",
@@ -65,19 +65,19 @@ _GROUPS: Final[dict[str, list[str]]] = {
     ],
     "libero": [
         "lerobot[pi,smolvla,xvla,molmoact2,timm-dep]",  # the `vla` group (include-group)
-        "transformers>=5.4.0,<5.6.0",
+        "transformers>=5.22.0,<5.23.0",
         "lerobot[libero]",
     ],
     "metaworld": [
         "lerobot[pi,smolvla,xvla,molmoact2,timm-dep]",  # the `vla` group (include-group)
-        "transformers>=5.4.0,<5.6.0",
+        "transformers>=5.22.0,<5.23.0",
         "lerobot",
         "gymnasium[mujoco]>=1.3.0",
         "mujoco>=3.8.0",
     ],
     "maniskill3": [
         "lerobot[pi,smolvla,xvla,molmoact2,timm-dep]",  # the `vla` group (include-group)
-        "transformers>=5.4.0,<5.6.0",
+        "transformers>=5.22.0,<5.23.0",
         "mani-skill>=3.0.0b9",
         "gymnasium>=1.0.0",
         "lerobot",
@@ -88,7 +88,7 @@ _GROUPS: Final[dict[str, list[str]]] = {
     ],
     "robocasa": [
         "lerobot[pi,smolvla,xvla,molmoact2,timm-dep]",  # the `vla` group (include-group)
-        "transformers>=5.4.0,<5.6.0",
+        "transformers>=5.22.0,<5.23.0",
         "robosuite>=1.5.2",
         "h5py>=3.10",
         "robosuite-models>=1.0.0",
