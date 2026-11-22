@@ -241,7 +241,7 @@ vla = [
     # `molmoact2` (transformers, peft, scipy), `timm-dep` (OpenVLA's
     # trust_remote_code prismatic backbone).
     "lerobot[pi,smolvla,xvla,molmoact2,timm-dep]",
-    "transformers>=5.22.0,<5.23.0",  # reason: restates lerobot's `transformers-dep` ceiling so a lerobot upgrade cannot lift it silently. Above 5.6 the PaliGemma attention path changes and pi05's vision-tower keys are renamed; `PI05Policy.from_pretrained` *warns rather than raises*, so the policy loads with a randomly-initialized vision tower and emits confident, meaningless action chunks. Verified on a Jetson AGX Thor: 5.5.4 loads all 813 keys clean.
+    "transformers>=5.22.0,<5.23.0",  # reason: restates lerobot 0.7's `transformers-dep` pin so a lerobot upgrade cannot move it silently. transformers 5.6+ flattened SigLIP (`vision_tower.vision_model.*` -> `vision_tower.*`); lerobot renames old checkpoint keys in a load_state_dict pre-hook, which the pi05 bf16 fast loader applies explicitly (openral#723). Verified on an RTX 5090: pi05 / GR00T N1.7 / xVLA / MolmoAct2 / LingBot-VLA 2.0 load and succeed on LIBERO / RoboTwin.
 ]
 clip = [
     # Open-vocabulary object matching via OpenCLIP ViT-B/32 (MIT
