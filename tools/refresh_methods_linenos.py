@@ -186,6 +186,9 @@ def _resolve_inline_path(rel: str, base_dir: Path | None) -> Path | None:
         candidate
         for candidate in REPO_ROOT.rglob(Path(rel).name)
         if not skip & set(candidate.relative_to(REPO_ROOT).parts)
+        # Any extra venv (`.venv-libero`, `UV_PROJECT_ENVIRONMENT=...`) holds site-packages
+        # modules whose basenames collide with repo modules (`resolver.py`).
+        and not any(part.startswith(".venv") for part in candidate.relative_to(REPO_ROOT).parts)
         and candidate.parts[-len(suffix) :] == suffix
     ]
     return hits[0] if len(hits) == 1 else None
