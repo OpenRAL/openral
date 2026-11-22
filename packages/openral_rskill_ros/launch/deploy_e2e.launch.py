@@ -3750,7 +3750,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         }
         if scene_peers:
             # ADR-0137: the other robots, from their own geometry, checked with no exemption.
-            # The kernel's defaults bound the grid's age (200 ms receipt, 300 ms data);
+            # The kernel's defaults bound the grid's age (300 ms receipt, 300 ms data);
             # `peer_voxels` sweeps each peer over that same 300 ms.
             kernel_params["peer_voxel_enabled"] = True
     if scene_peers and not kernel_params.get("peer_voxel_enabled"):

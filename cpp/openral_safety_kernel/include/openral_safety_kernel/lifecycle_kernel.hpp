@@ -62,7 +62,7 @@ inline constexpr double kMaxWorldVoxelDataAgeBudgetMs = 3000.0;
 /// producer sweeps each peer along its measured velocity over at least the data-age
 /// budget, so a peer can not have left its cells before they are refused as stale.
 /// Configure caps both at the world grid's caps.
-inline constexpr double kDefaultPeerVoxelDeadlineMs = 200.0;
+inline constexpr double kDefaultPeerVoxelDeadlineMs = 300.0;
 inline constexpr double kDefaultPeerVoxelDataAgeBudgetMs = 300.0;
 inline constexpr double kDefaultWorldVoxelDataAgeBudgetMs = 1500.0;
 
