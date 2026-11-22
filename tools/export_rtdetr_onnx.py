@@ -10,7 +10,8 @@ Usage (isolated ephemeral env — does NOT mutate the project venv; do not
 venv). `--isolated --no-project` is required so the project venv's torchvision
 (built against a different torch) does not shadow the overlay and break the
 `RTDetrForObjectDetection` import; `onnx`+`onnxscript` are needed by the
-torch >=2.7 exporter; `transformers<5` pins the stable RTDetr forward signature:
+torch >=2.7 exporter. Under transformers>=5.22 the export recomputes the position
+embedding in float32 (`_sincos_in_output_dtype`) so ONNX Runtime can load it:
     uv run --isolated --no-project \
         --with "transformers>=4.45,<5" --with "torch>=2.2" --with torchvision \
         --with onnx --with onnxscript \
@@ -27,7 +28,43 @@ import torch
 from transformers import RTDetrForObjectDetection
 
 
+def _sincos_in_output_dtype(
+    height: int,
+    width: int,
+    embed_dim: int = 256,
+    temperature: float = 10000.0,
+    cls_token: bool = False,
+    device: torch.device | None = None,
+    dtype: torch.dtype = torch.float32,
+) -> torch.Tensor:
+    """transformers' ``build_2d_sinusoidal_position_embedding``, computed in ``dtype``.
+
+    transformers 5.22 computes RT-DETR's 2-D sin-cos position embedding in float64
+    (5.5 used the model dtype). The exported graph then holds float64 ``Cos`` nodes,
+    which ONNX Runtime's CPU provider has no kernel for ("Could not find an
+    implementation for Cos(7)"), so the model would not load. Same formula and layout
+    (``[sin_h | cos_h | sin_w | cos_w]``, row-major), float32 arithmetic.
+    """
+    pos_dim = embed_dim // 4
+    omega = 1.0 / temperature ** (torch.arange(pos_dim, dtype=dtype, device=device) / pos_dim)
+    grid_h, grid_w = torch.meshgrid(
+        torch.arange(height, dtype=dtype, device=device),
+        torch.arange(width, dtype=dtype, device=device),
+        indexing="ij",
+    )
+    emb_h = grid_h.flatten().outer(omega)
+    emb_w = grid_w.flatten().outer(omega)
+    pos = torch.cat([emb_h.sin(), emb_h.cos(), emb_w.sin(), emb_w.cos()], dim=1)
+    if cls_token:
+        pos = torch.cat([torch.zeros(1, embed_dim, dtype=dtype, device=device), pos], dim=0)
+    return pos
+
+
 def export(out_path: Path, model_id: str = "PekingU/rtdetr_r18vd_coco_o365") -> None:
+    from transformers.models.rt_detr import modeling_rt_detr
+
+    if hasattr(modeling_rt_detr, "build_2d_sinusoidal_position_embedding"):  # transformers>=5.22
+        modeling_rt_detr.build_2d_sinusoidal_position_embedding = _sincos_in_output_dtype
     # transformers ships no type stubs, so from_pretrained() returns Any;
     # bind it to a typed handle so .eval() is a typed nn.Module call.
     model: torch.nn.Module = RTDetrForObjectDetection.from_pretrained(model_id)
