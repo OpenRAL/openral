@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import sys
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -937,3 +938,20 @@ def test_a_composed_robot_stays_observable_through_its_parts_stop() -> None:
     composed.description = hal.description
     state = composed.read_state_estopped()
     assert list(state.name) == [j.name for j in hal.description.joints]
+
+
+def test_a_missing_bus_driver_is_a_typed_config_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """lerobot>=0.7's bus raises a plain ImportError for a missing rustypot; the HAL types it."""
+    pytest.importorskip("lerobot.robots.so_follower")
+    from lerobot.utils import import_utils
+
+    # What `find_spec` sees for an uninstalled package; and forget lerobot's cached answer.
+    monkeypatch.setitem(sys.modules, "rustypot", None)
+    monkeypatch.setattr(import_utils, "_require_package_cache", {})
+    hal = SO100FollowerHAL(
+        port=str(tmp_path / "ttyACM0"), id="bench", calibration_dir=str(tmp_path)
+    )
+    with pytest.raises(ROSConfigError, match="rustypot"):
+        hal.connect()

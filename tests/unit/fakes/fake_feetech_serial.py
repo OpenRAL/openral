@@ -57,6 +57,18 @@ class FakeFeetechSerial:
         with self._lock:
             return self.registers[sid][TORQUE_ENABLE_ADDR]
 
+    def release_exclusive(self) -> None:
+        """Clear a ``TIOCEXCL`` another process set on the device (``TIOCNXCL``).
+
+        A real tty drops its exclusive flag when its last holder closes it (the
+        kernel frees the tty); this pty never fully closes while the double holds
+        its own slave end, so a test stands in for that release here.
+        """
+        import fcntl
+        import termios
+
+        fcntl.ioctl(self._slave, termios.TIOCNXCL)
+
     def close(self) -> None:
         """Close both pty ends (the responder thread then exits)."""
         for fd in (self._slave, self._master):

@@ -346,12 +346,12 @@ _SO100FollowerHAL — wraps lerobot's SO-100 follower arm USB driver._
 ### `python/hal/src/openral_hal/feetech_torque_watcher.py`
 _Out-of-process torque-off for a Feetech servo bus when the HAL process dies (issue #545, hazard-log Entry 081). Stdlib + `scservo_sdk` + `structlog` only; spawned by file path with `python -P` so it never pays the `openral_hal` import._
 
-- `cut_torque(port: str, servo_ids: Sequence[int], baudrate: int) -> dict[int, str]` (L77) — Open `port` (up to `_OPEN_RETRIES` tries), write `Torque_Enable=0` (register 40, protocol 0) to every id with `_TORQUE_RETRIES` tries each and read it back; per id `torque_off` / `torque_on` / `torque_unknown: <why>`, every id attempted. Raises `OSError` if the port never opens.
-- `main(argv=None) -> int` (L150) — Watcher entry point: `--port --baudrate --ids --parent-pid`. Ignores SIGINT/SIGHUP, prints `armed`, then waits on the parent's `pidfd` (0.1 s `getppid()` poll without one) and on stdin: `q` → exit 0 without touching the bus; parent death or EOF without `q` → `cut_torque`, log `hal.torque_watcher.torque_off` / `..._unproven` / `..._port_unavailable`, exit 0 / 1 / 2.
-- `class FeetechTorqueWatcher` (L197) — Handle on a running watcher (`proc`).
-  - `spawn(port, servo_ids, baudrate, *, armed_timeout_s=10.0) -> FeetechTorqueWatcher` [@classmethod] (L209) — Start the watcher in its own session for the calling process and wait for `armed`; `RuntimeError` (watcher killed) otherwise.
-  - **(property)** `alive -> bool` — `True` while the watcher process has not exited (non-blocking `poll`). (L250)
-  - `stop(*, clean: bool, timeout_s=5.0) -> int | None` (L254) — `clean=True` sends `q` (caller proved torque off); `clean=False` closes the pipe so the watcher cuts torque itself. Returns the exit code, `None` if it had to be killed.
+- `cut_torque(port: str, servo_ids: Sequence[int], baudrate: int, *, open_retries: int = _OPEN_RETRIES) -> dict[int, str]` (L86) — Open `port` (up to `open_retries` tries), write `Torque_Enable=0` (register 40, protocol 0) to every id with `_TORQUE_RETRIES` tries each and read it back; per id `torque_off` / `torque_on` / `torque_unknown: <why>`, every id attempted. Raises `OSError` if the port never opens.
+- `main(argv=None) -> int` (L182) — Watcher entry point: `--port --baudrate --ids --parent-pid`. Ignores SIGINT/SIGHUP, prints `armed`, then waits on the parent's `pidfd` (0.1 s `getppid()` poll without one) and on stdin: `q` → exit 0 without touching the bus; parent death or EOF without `q` → `cut_torque` (on EOF from a HAL still alive whose port will not open — lerobot>=0.7's rustypot bus holds the tty exclusively — `_kill_parent` SIGKILLs the HAL, logs `hal.torque_watcher.killing_hal_holding_port`, and the reopen gets the `_KILL_WAIT_S` budget), log `hal.torque_watcher.torque_off` / `..._unproven` / `..._port_unavailable`, exit 0 / 1 / 2.
+- `class FeetechTorqueWatcher` (L239) — Handle on a running watcher (`proc`).
+  - `spawn(port, servo_ids, baudrate, *, armed_timeout_s=10.0) -> FeetechTorqueWatcher` [@classmethod] (L251) — Start the watcher in its own session for the calling process and wait for `armed`; `RuntimeError` (watcher killed) otherwise.
+  - **(property)** `alive -> bool` — `True` while the watcher process has not exited (non-blocking `poll`). (L292)
+  - `stop(*, clean: bool, timeout_s=5.0) -> int | None` (L296) — `clean=True` sends `q` (caller proved torque off); `clean=False` closes the pipe so the watcher cuts torque itself. Returns the exit code, `None` if it had to be killed.
 
 ### `python/hal/src/openral_hal/galaxea_a1.py`
 _Real-only Galaxea A1 HAL. OpenRAL stays ROS 2 / Python 3.12; the operator's
