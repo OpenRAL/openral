@@ -80,6 +80,18 @@ class _NoKitScene:
     def sim_time_ns(self) -> int:
         return self._sim_time_ns
 
+    def robot(self, name: str) -> _NoKitScene:
+        """The scene's one robot, ``""`` (``IsaacSceneBase.robot``)."""
+        if name:
+            raise KeyError(f"no robot {name!r} in this scene; robots: ['']")
+        return self
+
+    def step_many(
+        self, requests: dict[str, tuple[npt.NDArray[np.float64], str]]
+    ) -> dict[str, dict[str, Any]]:
+        """``IsaacSceneBase.step_many`` for the one robot: one ``step``."""
+        return {name: self.step(action, frames) for name, (action, frames) in requests.items()}
+
 
 def main(argv: list[str]) -> int:
     args = _parse_args(argv)

@@ -76,6 +76,7 @@ import math
 import os
 import re
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -109,6 +110,12 @@ _log = structlog.get_logger(__name__)
 
 _ISAAC_SCENE_ID = "isaac_sim"
 _AUTO_SPAWN_ENV = "OPENRAL_ISAAC_AUTO_SPAWN"
+#: Set by ``openral deploy sim`` for each robot graph of a scene with several robots
+#: (openral-pro#99): the run directory where each robot leaves its sidecar entry
+#: (``<robot>.json``, ``<robot>.spec.json``), and the port of the one sidecar the parent
+#: starts from them. The robot is ``$OPENRAL_SCENE_ROBOT``. Unset: one robot, as before.
+SHARED_SIDECAR_DIR_ENV = "OPENRAL_ISAAC_SHARED_DIR"
+SHARED_SIDECAR_PORT_ENV = "OPENRAL_ISAAC_SHARED_PORT"
 _SIDECAR_PYTHON_ENV = "OPENRAL_ISAAC_SIDECAR_PYTHON"
 _SIDECAR_SCRIPT_ENV = "OPENRAL_ISAAC_SIDECAR_SCRIPT"
 _AUTO_PROVISION_ENV = "OPENRAL_ISAAC_AUTO_PROVISION"
@@ -398,6 +405,8 @@ class _IsaacSimSidecar(SidecarSimRollout):
     layout: IsaacActionLayout | None = None
     # One-shot frame mode for the next ``step`` (``set_frames_next_step``).
     _frames_next: str = "render"
+    # One-shot: the next ``step`` is the HAL's hold step (``set_idle_next_step``).
+    _idle_next: bool = False
     # The wrapped frame entries (``images`` / ``image_time_ns`` / ``depth_frames``) of the
     # last reply that carried frames, reused as the same objects by a ``frames="none"``
     # step (its reply carries none): consumers tell a new frame from a reused one by
@@ -420,6 +429,11 @@ class _IsaacSimSidecar(SidecarSimRollout):
         sidecar code: the ``launch_id`` in its ping) adopts it and skips Kit's boot; a
         run without ``keep_alive`` ends it when it closes. Logged either way.
         """
+        if self._client.robot:
+            # One robot of a shared sidecar (openral-pro#99): its `close` would end the
+            # world for every robot. `openral deploy sim` owns the sidecar and ends it.
+            self._client.close()
+            return
         if not self.keep_alive:
             super().close()
             return
@@ -461,9 +475,19 @@ class _IsaacSimSidecar(SidecarSimRollout):
         reply = self._client.call("refresh_frames")
         return self._wrap_obs(self._client.require(reply, "observation"))
 
+    def set_idle_next_step(self) -> None:
+        """Mark the NEXT ``step`` as a hold step: the sidecar's lockstep never waits on it.
+
+        One-shot, like ``set_frames_next_step``. A robot sending hold steps is not
+        commanding, so the other robots of a shared sidecar never wait for it
+        (``tools/isaac_sidecar.py`` ``_Lockstep``); with one robot it changes nothing.
+        """
+        self._idle_next = True
+
     def _step_options(self) -> dict[str, Any]:
         frames, self._frames_next = self._frames_next, "render"
-        return {} if frames == "render" else {"frames": frames}
+        idle, self._idle_next = self._idle_next, False
+        return ({} if frames == "render" else {"frames": frames}) | ({"idle": True} if idle else {})
 
     def _after_reset_reply(self, reply: dict[str, Any]) -> None:
         """Replace nominal ping cadence with the observed Isaac clock cadence."""
@@ -998,6 +1022,10 @@ class IsaacLinkAttachment(BaseModel):
     prim: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*(/[A-Za-z_][A-Za-z0-9_]*)*$")
     link: str = Field(min_length=1)
     carries: list[str] = Field(default_factory=list)
+    #: In a scene of several robots (``DeployScene.robots``), the robot that carries it
+    #: (each robot its own tote): required there, as two robots cannot carry one prim.
+    #: ``None``: the robot's, in a one-robot scene.
+    robot: str | None = None
 
 
 class IsaacDomeLight(BaseModel):
@@ -2372,6 +2400,8 @@ def _build_robot_spec(
         "ros_package_paths": _ros_package_paths(urdf_path),
         "base_frame": desc.base_frame,
         "root_to_base": _root_to_base(desc).tolist(),
+        # The base's Nav2 footprint (base_frame xy): the sidecar's robot-vs-robot overlap check.
+        "footprint_polygon": [list(v) for v in desc.footprint_polygon or []] or None,
         # The arm is always pinned to its (possibly moving) root: a fixed arm is
         # pinned to the world; a mobile base teleports that pinned root each step
         # (kinematic base). Either way fix_base=True keeps the arm from falling.
@@ -2921,7 +2951,7 @@ def _environment_spec(opts: IsaacSimOptions) -> dict[str, Any]:
          'link_box_colliders', 'physx_scene', 'rtx_settings', 'stage_objects',
          'strip_xform_colliders']
     """
-    return opts.model_dump(
+    spec = opts.model_dump(
         mode="json",
         include={
             "stage_objects",
@@ -2935,6 +2965,9 @@ def _environment_spec(opts: IsaacSimOptions) -> dict[str, Any]:
             "rtx_settings",
         },
     )
+    for attachment in spec["link_attachments"]:
+        attachment.pop("robot", None)  # which robot carries it is decided here, not by the sidecar
+    return spec
 
 
 # ponytail: a flat ratio cap; LeIsaac's kitchen zip expands 1.5x, a zip bomb 1000x+.
@@ -3143,7 +3176,7 @@ def _placement(
     robot_unit_io=True,
     options_model=IsaacSimOptions,
 )
-def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
+def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:  # noqa: PLR0915  # reason: one linear sidecar launch, one robot or a shared one
     """Build an Isaac Lab scene behind the out-of-process sidecar.
 
     Lazy-imports pyzmq/msgpack (the openral-side wire) via the ``isaac_client``
@@ -3176,6 +3209,8 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
     port = opts.port or _scene_default_port(env_cfg.task.id, robot_id, layout, world)
     headless = opts.headless
     auto_spawn = os.environ.get(_AUTO_SPAWN_ENV, "1") != "0"
+    shared_dir = os.environ.get(SHARED_SIDECAR_DIR_ENV)
+    shared_robot, port, opts = _shared_sidecar_setup(opts) if shared_dir else ("", port, opts)
 
     sidecar_python = _sidecar_python()
     launch_argv = [
@@ -3248,6 +3283,25 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
     robot_spec_hash = hashlib.sha256(robot_spec_bytes).hexdigest()
     if environment_usd is not None:
         launch_argv += ["--environment-usd", environment_usd]
+    if shared_dir:
+        # One robot of a shared sidecar: leave this robot's entry for `openral deploy sim`,
+        # which starts the one sidecar once every robot has, and connect to it below.
+        return _join_shared_sidecar(
+            env_cfg,
+            opts,
+            launch_argv,
+            Path(shared_dir),
+            shared_robot,
+            robot_spec_bytes,
+            spawn=[float(v) for v in spawn_args],
+            environment_usd=environment_usd,
+            objects_json=objects_json,
+            desc=desc,
+            robot_spec_path=robot_spec_path,
+            host=host,
+            port=port,
+            timeout_ms=timeout_ms,
+        )
     if env_cfg.base_pose is not None:
         # Fixed-point, never repr(): argparse reads "-1e-05" as an option flag
         # (Python <= 3.13), so a tiny negative coordinate or yaw broke the boot.
@@ -3310,6 +3364,134 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         layout=IsaacActionLayout.from_description(desc),
         keep_alive=opts.keep_alive,
         rendered_intrinsics=rendered_intrinsics,
+    )
+
+
+def _shared_sidecar_setup(opts: IsaacSimOptions) -> tuple[str, int, IsaacSimOptions]:
+    """A shared run's robot, the shared sidecar's port, and ``opts`` with only its own totes."""
+    from openral_core.scene_paths import SCENE_ROBOT_ENV
+
+    robot = os.environ.get(SCENE_ROBOT_ENV, "")
+    if not robot or not os.environ.get(SHARED_SIDECAR_PORT_ENV):
+        raise ROSConfigError(
+            f"${SHARED_SIDECAR_DIR_ENV} needs ${SCENE_ROBOT_ENV} and "
+            f"${SHARED_SIDECAR_PORT_ENV}; `openral deploy sim` sets all three."
+        )
+    # Each robot carries only its own tote: one prim on two robots' links would be posed by both.
+    unassigned = [a.prim for a in opts.link_attachments if a.robot is None]
+    if unassigned:
+        raise ROSConfigError(
+            f"link_attachments {unassigned} name no robot: in a scene with several robots, "
+            "each attachment names the robot that carries it (`robot:`)."
+        )
+    mine = [a for a in opts.link_attachments if a.robot == robot]
+    return (
+        robot,
+        int(os.environ[SHARED_SIDECAR_PORT_ENV]),
+        opts.model_copy(update={"link_attachments": mine}),
+    )
+
+
+def shared_launch_id(shared_dir: Path) -> str:
+    """The launch id of the shared sidecar of the run whose directory is ``shared_dir``.
+
+    ``openral deploy sim`` starts the sidecar with it (``deploy_robots.shared_sidecar_argv``)
+    and each robot graph requires it in ``ping``: the run directory is unique per run, so a
+    sidecar of another run on the port is refused even when it serves the same robots.
+
+    Example:
+        >>> shared_launch_id(Path("/tmp/openral-robots-aisle-x1y2"))
+        'shared-openral-robots-aisle-x1y2'
+    """
+    return f"shared-{shared_dir.name}"
+
+
+#: How long a robot graph waits for `openral deploy sim` to start the shared sidecar: every
+#: robot's graph must reach this point, then Kit boots.
+_SHARED_BOOT_TIMEOUT_S = 900.0
+
+
+def _join_shared_sidecar(
+    env_cfg: SimEnvironment,
+    opts: IsaacSimOptions,
+    launch_argv: list[str],
+    shared_dir: Path,
+    robot: str,
+    robot_spec_bytes: bytes,
+    *,
+    spawn: list[float],
+    environment_usd: str | None,
+    objects_json: str,
+    desc: RobotDescription,
+    robot_spec_path: str,
+    host: str,
+    port: int,
+    timeout_ms: int,
+) -> _IsaacSimSidecar:
+    """Leave ``robot``'s sidecar entry in ``shared_dir`` and connect to the shared sidecar.
+
+    The entry (``<robot>.json``: the launch arguments, spawn, environment and objects;
+    ``<robot>.spec.json``: its robot spec) is what ``openral deploy sim`` builds the one
+    ``--robots`` sidecar from (``openral_cli.deploy_robots``). Written atomically: the
+    parent starts the sidecar as soon as every robot's entry is there. The client then
+    waits for that sidecar and checks it serves this robot with this robot's spec.
+    """
+    spec_path = shared_dir / f"{robot}.spec.json"
+    spec_path.write_bytes(robot_spec_bytes)
+    with contextlib.suppress(OSError):
+        os.unlink(robot_spec_path)
+    entry = {
+        "name": robot,
+        "robot_spec": str(spec_path),
+        "spawn_pose": spawn,
+        "launch_argv": launch_argv,
+        "environment_usd": environment_usd,
+        "objects_json": objects_json,
+    }
+    tmp = shared_dir / f".{robot}.json.tmp"
+    tmp.write_text(json.dumps(entry), encoding="utf-8")
+    tmp.replace(shared_dir / f"{robot}.json")
+    client = SidecarClient(
+        name="isaac",
+        host=host,
+        port=port,
+        timeout_ms=timeout_ms,
+        boot_timeout_s=opts.boot_timeout_s,
+        launch_argv=launch_argv,
+        auto_spawn=False,
+        robot=robot,
+    )
+    deadline = time.monotonic() + _SHARED_BOOT_TIMEOUT_S
+    while True:
+        try:
+            client.connect()
+            break
+        except ROSConfigError:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(2.0)
+    spec_hash = hashlib.sha256(robot_spec_bytes).hexdigest()
+    ping = client.call("ping")
+    if ping.get("launch_id") != shared_launch_id(shared_dir):
+        client.close()
+        raise ROSConfigError(
+            f"the Isaac sidecar on port {port} is not this run's shared sidecar (launch id "
+            f"{ping.get('launch_id')!r}, expected {shared_launch_id(shared_dir)!r})."
+        )
+    served = {r.get("name"): r for r in ping.get("robots") or []}
+    if served.get(robot, {}).get("robot_spec_hash") != spec_hash:
+        client.close()
+        raise ROSConfigError(
+            f"the shared Isaac sidecar on port {port} does not serve robot {robot!r} with "
+            f"this robot's spec (it serves {sorted(served)}): another scene's sidecar?"
+        )
+    return _IsaacSimSidecar(
+        scene=env_cfg.scene,
+        task=env_cfg.task,
+        _client=client,
+        layout=IsaacActionLayout.from_description(desc),
+        keep_alive=False,
+        rendered_intrinsics=_rendered_rgb_intrinsics(json.loads(robot_spec_bytes)),
     )
 
 

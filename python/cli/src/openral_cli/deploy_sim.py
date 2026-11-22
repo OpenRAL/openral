@@ -1235,6 +1235,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     robot_override: str | None,
     dashboard_port: int,
     reset_to_pose_service: str | None,
+    dry_run: bool = False,
     approach_skill_id: str | None = None,
     dataset_out: str | None = None,
     dataset_repo_id: str | None = None,
@@ -1282,7 +1283,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     ``rskill_auto_install`` installs the robot's openral.com rSkill list right after
     the account settings apply (``openral_cli.rskill_install.auto_install_rskills``);
     ``deploy run`` / ``deploy sim`` pass it unless ``--no-rskill-install`` or
-    ``--dry-run``.
+    ``--dry-run``. ``dry_run`` matters only for a scene with several robots, which runs
+    from here (``deploy_robots.run_scene_robots``): it prints each robot's command line
+    instead of starting them.
     """
     from openral_core import (  # reason: defer schema import
         ROBOT_UNIT_ENV,
@@ -1317,6 +1320,21 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     deploy_scene = DeployScene.from_yaml(str(config)) if config is not None else None
     if runtime_overrides:
         deploy_scene = _with_runtime_overrides(deploy_scene, runtime_overrides)
+    if deploy_scene is not None and deploy_scene.robots:
+        # A scene of several robots (openral-pro#99): one Isaac world, a graph per robot.
+        # Each graph's own `deploy sim` reads its robot's one-robot view of the scene
+        # ($OPENRAL_SCENE_ROBOT), so it never comes back here.
+        if hal_mode != "sim":
+            raise ROSConfigError(
+                f"{config}: lists several robots; `deploy run` drives one robot per graph "
+                "on its own host: not yet (openral-pro#99)."
+            )
+        from openral_cli.deploy_robots import (
+            run_scene_robots,  # reason: several-robot scenes only
+        )
+
+        assert config is not None  # reason: deploy_scene came from it
+        raise typer.Exit(code=run_scene_robots(deploy_scene, config, sys.argv[1:], dry_run=dry_run))
     scene_robot_id = deploy_scene.robot_id if deploy_scene is not None else None
     robot_id = (
         _load_scene_robot_id(config, robot_override, sim=hal_mode == "sim")
@@ -2063,27 +2081,6 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         argv_template.append(f"object_detector_manifest:={resolved_object_detector_manifest}")
     if object_detector_query:
         argv_template.append(f"object_detector_query:={object_detector_query}")
-    # A robot of a shared MuJoCo world (`openral deploy world` binds its HAL with these
-    # two keys): the launch also feeds its kernel the peers (openral_hal.peer_voxels).
-    if hal_params.get("shared_world"):
-        if hal_mode != "sim":
-            raise ROSConfigError(
-                "--hal shared_world is a simulation binding (`openral deploy world`); a real "
-                "deploy cannot join a shared MuJoCo world."
-            )
-        if not hal_params.get("shared_world_robot"):
-            raise ROSConfigError(
-                "--hal shared_world needs --hal shared_world_robot (the robot's name in it); "
-                "`openral deploy world` passes both."
-            )
-        if enable_octomap:
-            # Refused by the launch too; said here first, with the remedy.
-            raise ROSConfigError(
-                "a shared-world robot runs with its octomap leg off (the other robots are "
-                "its kernel's world grid): pass `-- --no-enable-octomap` to `deploy world`."
-            )
-        argv_template.append(f"shared_world:={hal_params['shared_world']}")
-        argv_template.append(f"shared_world_robot:={hal_params['shared_world_robot']}")
     # resolve the reward-monitor manifest from the VLA pairing when
     # the operator did not pin one. ``deploy sim`` does not preselect a VLA, so the
     # default is derived from the capability-matched VLA palette's
@@ -2188,6 +2185,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
                 f"grounding_required:={str(rt.grounding_required).lower()}",
             ]
         )
+    if rt is not None and rt.release_rskill_after_goal:
+        argv_template.append("release_rskill_after_goal:=true")
     # EXPERIMENT (pro#51): forwarded whatever the tracking mode, so the launch refuses it with
     # tracking off instead of the flag being dropped silently.
     if rt is not None and rt.instance_cells:
@@ -2873,8 +2872,6 @@ _ORPHAN_GRAPH_NEEDLES: tuple[str | tuple[str, ...], ...] = (
     "openral_reasoner_ros/reasoner_node.py",
     "openral_prompt_router/prompt_router_node.py",
     "openral_safety_kernel/safety_kernel_node",
-    # A shared world's peer grid: a leftover would feed the next run's kernel on this domain.
-    "openral_hal.peer_voxels",
     # A surviving recorder would stamp the next run's records with this run's identity.
     "openral_compliance/recorder_node.py",
     "openral dashboard",
@@ -4439,6 +4436,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
             foxglove_port=foxglove_port,
             initial_task_prompt=initial_task,
             rskill_auto_install=rskill_install and not dry_run,
+            dry_run=dry_run,
         )
     except ROSConfigError as exc:
         _console.print(f"[red]config error:[/red] {exc}")

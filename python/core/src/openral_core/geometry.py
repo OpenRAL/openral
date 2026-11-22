@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -34,6 +34,7 @@ from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
 from openral_core.schemas import (
     AttachedCollisionObject,
+    DeployScene,
     JointType,
     PlaceRegion,
     Pose6D,
@@ -50,9 +51,11 @@ __all__ = [
     "is_gravity_aligned",
     "look_at_quat_wxyz",
     "quat_xyzw_to_yaw",
+    "raw_scene_for_robot",
     "rebase_box",
     "rebase_pose",
     "rotation_to_quat_wxyz",
+    "scene_for_robot",
     "yaw_to_quat_wxyz",
     "yaw_to_quat_xyzw",
 ]
@@ -525,3 +528,113 @@ def base_prismatic(description: RobotDescription) -> tuple[bool, ...]:
     """
     kinds = {j.name: j.joint_type for j in description.joints}
     return tuple(kinds[name] is JointType.PRISMATIC for name in description.base_joints or ())
+
+
+def scene_for_robot(scene: DeployScene, name: str, *, map_frame: str = "map") -> DeployScene:
+    """Robot ``name``'s own one-robot scene, from a scene with several (``DeployScene.robots``).
+
+    Its ``robot_id``, ``base_pose`` and ``robot_unit`` are the entry's. Its map starts at its
+    ``base_pose``, so every ``nav_goals`` pose and ``place_zones`` region, declared in the shared
+    ``world`` frame, is re-expressed in ``map_frame`` (``RobotDescription.map_frame``): the
+    frames the one-robot deploy already reads. Everything else is the scene's, shared.
+
+    Raises:
+        ROSConfigError: The scene has no robot ``name``, or a zone does not re-express
+            (``rebase_box``: tilted).
+
+    Example:
+        >>> from openral_core import NavGoal, SceneRobot, SceneSpec
+        >>> at = lambda x, y, yaw: Pose6D(
+        ...     xyz=(x, y, 0.0), quat_xyzw=yaw_to_quat_xyzw(yaw), frame_id="world"
+        ... )
+        >>> scene = DeployScene(
+        ...     scene=SceneSpec(id="aisle", backend="isaacsim"),
+        ...     robots=[
+        ...         SceneRobot(
+        ...             name="south", robot_id="openamrobot_v2", base_pose=at(0.0, -1.0, 0.0)
+        ...         ),
+        ...         SceneRobot(  # at y = 2, facing south (-y)
+        ...             name="north",
+        ...             robot_id="openamrobot_v2",
+        ...             base_pose=at(0.0, 2.0, -math.pi / 2),
+        ...         ),
+        ...     ],
+        ...     nav_goals=[NavGoal(name="s5", pose=at(0.0, 1.0, 0.0))],
+        ... )
+        >>> north = scene_for_robot(scene, "north")
+        >>> north.robot_id, north.robots
+        ('openamrobot_v2', [])
+        >>> goal = north.nav_goals[0].pose  # 1 m straight ahead of it
+        >>> goal.frame_id, [round(v, 3) + 0.0 for v in goal.xyz]
+        ('map', [1.0, 0.0, 0.0])
+    """
+    robot = next((r for r in scene.robots if r.name == name), None)
+    if robot is None:
+        raise ROSConfigError(f"scene {scene.scene.id!r} has no robot {name!r}.")
+    start = robot.base_pose
+    world_from_map = homogeneous_from_quat_xyz(start.xyz, start.quat_xyzw)
+    map_from_world = np.linalg.inv(world_from_map).astype(np.float64)
+    goals = [
+        g.model_copy(update={"pose": rebase_pose(g.pose, map_from_world, map_frame)})
+        for g in scene.nav_goals
+    ]
+    zones = [
+        z.model_copy(update={"region": rebase_box(z.region, map_from_world, map_frame)})
+        for z in scene.place_zones
+    ]
+    return scene.model_copy(
+        update={
+            "robots": [],
+            "robot_id": robot.robot_id,
+            "base_pose": start,
+            "robot_unit": robot.robot_unit,
+            "nav_goals": goals,
+            "place_zones": zones,
+        }
+    )
+
+
+def raw_scene_for_robot(
+    raw: dict[str, Any], name: str, *, map_frame: str = "map"
+) -> dict[str, Any]:
+    """``scene_for_robot`` on a scene YAML's raw mapping, before any loader validates it.
+
+    For the loaders that read a scene as something other than a ``DeployScene`` (the HAL
+    reads it as a ``SimScene``): only ``robots`` and the robot's fields, the nav goals and
+    the place zones change; everything else in ``raw`` is passed on untouched. A mapping
+    with no ``robots`` is returned as is.
+
+    Example:
+        >>> pose = {"xyz": [0, 1, 0], "quat_xyzw": [0, 0, 0, 1], "frame_id": "world"}
+        >>> raw = {
+        ...     "scene": {"id": "aisle", "backend": "isaacsim"},
+        ...     "robots": [
+        ...         {"name": "a", "robot_id": "openamrobot_v2", "base_pose": pose},
+        ...         {
+        ...             "name": "b",
+        ...             "robot_id": "openamrobot_v2",
+        ...             "base_pose": {**pose, "xyz": [0, 2, 0]},
+        ...         },
+        ...     ],
+        ...     "nav_goals": [{"name": "s5", "pose": {**pose, "xyz": [1, 2, 0]}}],
+        ... }
+        >>> view = raw_scene_for_robot(raw, "b")
+        >>> view["robot_id"], "robots" in view, view["nav_goals"][0]["pose"]["xyz"]
+        ('openamrobot_v2', False, [1.0, 0.0, 0.0])
+    """
+    if not raw.get("robots"):
+        return raw
+    scene = DeployScene.model_validate(raw)  # the whole several-robot scene is checked first
+    one = scene_for_robot(scene, name, map_frame=map_frame)
+    out = {k: v for k, v in raw.items() if k != "robots"}
+    out["robot_id"] = one.robot_id
+    out["base_pose"] = one.base_pose.model_dump(mode="json") if one.base_pose else None
+    if one.robot_unit is not None:
+        out["robot_unit"] = one.robot_unit
+    if raw.get("nav_goals"):
+        out["nav_goals"] = [g.model_dump(mode="json", exclude_defaults=True) for g in one.nav_goals]
+    if raw.get("place_zones"):
+        out["place_zones"] = [
+            z.model_dump(mode="json", exclude_defaults=True) for z in one.place_zones
+        ]
+    return out

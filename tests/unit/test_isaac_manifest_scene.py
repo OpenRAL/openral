@@ -1574,3 +1574,58 @@ def test_a_tote_away_from_its_parents_origin_still_contains_its_cartons(
     assert lo == pytest.approx([-0.14, -0.20, -0.07]) and hi == pytest.approx([0.14, 0.20, 0.07])
     carton_in_tote = [0.044, 0.094, 0.0]  # the stock carton, in the tote's frame
     assert all(a <= c <= b for a, c, b in zip(lo, carton_in_tote, hi, strict=True))
+
+
+# ── several robots in one stage (openral-pro#99) ──────────────────────────────
+
+
+def _amr_scene(mod: Any, name: str, spawn: tuple[float, float, float, float]) -> Any:
+    desc = RobotDescription.from_yaml(str(_repo_root() / "robots/openamrobot_v2/robot.yaml"))
+    return mod.IsaacManifestScene(
+        robot_spec=_build_robot_spec(desc, "openamrobot_v2"),
+        name=name,
+        spawn_pose=spawn,
+        obs_height=8,
+        obs_width=8,
+        instruction="",
+        success_key="is_success",
+        max_steps=10,
+    )
+
+
+def test_two_amr_bases_overlap_only_when_their_footprints_meet(_manifest_scene_mod: object) -> None:
+    """Two AMRs face each other; a base is teleported, so only this check sees a crash."""
+    mod: Any = _manifest_scene_mod
+    south = _amr_scene(mod, "south", (0.0, 0.0, 0.0, 0.0))
+    north = _amr_scene(mod, "north", (2.0, 0.0, 0.0, np.pi))  # 2 m ahead, facing south
+    assert south._spec["footprint_polygon"][0] == [0.415, 0.19]  # the manifest's Nav2 octagon
+    south._peers = north._peers = {"south": south, "north": north}
+    assert south.footprint_overlaps() == []
+    # Each drives 0.55 m toward the other: 0.9 m apart, front edges 0.415 m out -> 7 cm gap.
+    south._base_pose = north._base_pose = [0.55, 0.0, 0.0]
+    assert south.footprint_overlaps() == []
+    south._base_pose = north._base_pose = [0.6, 0.0, 0.0]  # 0.8 m apart: the fronts meet
+    assert south.footprint_overlaps() == north.footprint_overlaps() == [["north", "south"]]
+    north._base_pose = [0.6, 0.7, 0.0]  # north sidesteps (its +y is world -y): clear again
+    assert south.footprint_overlaps() == []
+
+
+def test_a_scene_of_several_robots_needs_distinct_names(_manifest_scene_mod: object) -> None:
+    """Refused before any Isaac import: no Kit is needed to see it."""
+    mod: Any = _manifest_scene_mod
+    a, b = _amr_scene(mod, "a", (0.0,) * 4), _amr_scene(mod, "a", (1.0, 0.0, 0.0, 0.0))
+    with pytest.raises(ValueError, match="its own name"):
+        mod.IsaacManifestScene.build_all([a, b])
+    with pytest.raises(ValueError, match="its own name"):
+        mod.IsaacManifestScene.build_all([a, _amr_scene(mod, "", (1.0, 0.0, 0.0, 0.0))])
+
+
+def test_only_the_world_owner_jitters_the_shared_objects(_manifest_scene_mod: object) -> None:
+    """A second robot shares the owner's object registries; a reset jitters them once."""
+    mod: Any = _manifest_scene_mod
+    owner = _amr_scene(mod, "south", (0.0,) * 4)
+    rider = _amr_scene(mod, "north", (2.0, 0.0, 0.0, 0.0))
+    owner._objects.append({"name": "box", "xyz": [0.0, 0.0, 0.0], "pose_noise": {"xy_m": 0.1}})
+    rider._share_world(owner)
+    assert rider._objects is owner._objects and rider._object_prims is owner._object_prims
+    rider._jitter_objects(np.random.default_rng(0))  # no-op: would need the owner's prims

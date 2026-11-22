@@ -18699,6 +18699,11 @@
               "title": "Instance Cells",
               "type": "boolean"
             },
+            "release_rskill_after_goal": {
+              "default": false,
+              "title": "Release Rskill After Goal",
+              "type": "boolean"
+            },
             "grounding_wait_s": {
               "anyOf": [
                 {
@@ -19666,6 +19671,44 @@
           "title": "SceneComposition",
           "type": "object"
         },
+        "SceneRobot": {
+          "additionalProperties": false,
+          "description": "One robot of a scene that runs several (``DeployScene.robots``, openral-pro#99).\n\nAttributes:\n    name: Names the robot in the scene, its graph and its fleet entry: lowercase letters\n        and digits, a letter first.\n    robot_id: Its manifest (``robots/<robot_id>/robot.yaml``); several entries may share one.\n    base_pose: Where it starts, in the scene's shared ``world`` frame. Its map starts here,\n        so in a scene with ``nav_goals`` it is on the ground plane (z 0, yaw only).\n    robot_unit: As ``DeployScene.robot_unit``, for this robot.\n\nExample:\n    >>> SceneRobot(\n    ...     name=\"south\",\n    ...     robot_id=\"openamrobot_v2\",\n    ...     base_pose=Pose6D(xyz=(0.4, -1.1, 0.0), quat_xyzw=(0, 0, 0, 1), frame_id=\"world\"),\n    ... ).name\n    'south'",
+          "properties": {
+            "name": {
+              "pattern": "^[a-z][a-z0-9]{0,23}$",
+              "title": "Name",
+              "type": "string"
+            },
+            "robot_id": {
+              "minLength": 1,
+              "title": "Robot Id",
+              "type": "string"
+            },
+            "base_pose": {
+              "$ref": "#/$defs/Pose6D"
+            },
+            "robot_unit": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Robot Unit"
+            }
+          },
+          "required": [
+            "name",
+            "robot_id",
+            "base_pose"
+          ],
+          "title": "SceneRobot",
+          "type": "object"
+        },
         "SceneSpec": {
           "additionalProperties": false,
           "description": "A physics scene declaration \u2014 the WORLD the robot acts in.\n\nA scene is a deterministic, reproducible MuJoCo / MJX / etc. world: assets,\nlighting, cameras, fixed objects.  Tasks (``TaskSpec``) are evaluated\nINSIDE a scene; multiple tasks can share one scene (e.g. ``libero_spatial``\nhas 10 tasks per suite).\n\nAttributes:\n    id: Stable scene identifier used by the eval registry, e.g.\n        ``\"libero_spatial\"``, ``\"metaworld_mt50\"``, ``\"so100_tabletop\"``.\n    backend: Physics backend used to instantiate the scene.\n    assets_uri: Optional URI pointing at scene assets.  When ``None``,\n        the registered adapter resolves assets internally (LIBERO /\n        MetaWorld pull theirs from their own packages).  Read by the\n        ``isaac_sim`` scene as its environment USD (a local path, an\n        ``http(s)://`` / ``omniverse://`` URL, or ``isaac:<path>`` under\n        the installed Isaac Sim asset root); other adapters ignore it.\n    observation_height: Default render height in pixels for camera obs.\n    observation_width: Default render width in pixels for camera obs.\n    cameras: List of camera names the scene exposes.  Adapters use this\n        both to render and to map sensors to VLA feature keys.\n    backend_options: Backend-specific overrides\n        (e.g. ``{\"render_modes\": [\"rgb_array\"]}``).  Opaque to the core\n        schema: each sim backend owns the model that validates it,\n        declared via ``SCENES.register(..., options_model=...)`` and run\n        at load time by ``SCENES.validate_options``.\n\nExample:\n    >>> s = SceneSpec(id=\"libero_spatial\", backend=PhysicsBackend.MUJOCO)\n    >>> s.observation_width\n    256",
@@ -20565,6 +20608,13 @@
             }
           ],
           "default": null
+        },
+        "robots": {
+          "items": {
+            "$ref": "#/$defs/SceneRobot"
+          },
+          "title": "Robots",
+          "type": "array"
         },
         "seed": {
           "default": 0,
@@ -21521,6 +21571,11 @@
               "title": "Instance Cells",
               "type": "boolean"
             },
+            "release_rskill_after_goal": {
+              "default": false,
+              "title": "Release Rskill After Goal",
+              "type": "boolean"
+            },
             "grounding_wait_s": {
               "anyOf": [
                 {
@@ -22488,6 +22543,44 @@
           "title": "SceneComposition",
           "type": "object"
         },
+        "SceneRobot": {
+          "additionalProperties": false,
+          "description": "One robot of a scene that runs several (``DeployScene.robots``, openral-pro#99).\n\nAttributes:\n    name: Names the robot in the scene, its graph and its fleet entry: lowercase letters\n        and digits, a letter first.\n    robot_id: Its manifest (``robots/<robot_id>/robot.yaml``); several entries may share one.\n    base_pose: Where it starts, in the scene's shared ``world`` frame. Its map starts here,\n        so in a scene with ``nav_goals`` it is on the ground plane (z 0, yaw only).\n    robot_unit: As ``DeployScene.robot_unit``, for this robot.\n\nExample:\n    >>> SceneRobot(\n    ...     name=\"south\",\n    ...     robot_id=\"openamrobot_v2\",\n    ...     base_pose=Pose6D(xyz=(0.4, -1.1, 0.0), quat_xyzw=(0, 0, 0, 1), frame_id=\"world\"),\n    ... ).name\n    'south'",
+          "properties": {
+            "name": {
+              "pattern": "^[a-z][a-z0-9]{0,23}$",
+              "title": "Name",
+              "type": "string"
+            },
+            "robot_id": {
+              "minLength": 1,
+              "title": "Robot Id",
+              "type": "string"
+            },
+            "base_pose": {
+              "$ref": "#/$defs/Pose6D"
+            },
+            "robot_unit": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Robot Unit"
+            }
+          },
+          "required": [
+            "name",
+            "robot_id",
+            "base_pose"
+          ],
+          "title": "SceneRobot",
+          "type": "object"
+        },
         "SceneSpec": {
           "additionalProperties": false,
           "description": "A physics scene declaration \u2014 the WORLD the robot acts in.\n\nA scene is a deterministic, reproducible MuJoCo / MJX / etc. world: assets,\nlighting, cameras, fixed objects.  Tasks (``TaskSpec``) are evaluated\nINSIDE a scene; multiple tasks can share one scene (e.g. ``libero_spatial``\nhas 10 tasks per suite).\n\nAttributes:\n    id: Stable scene identifier used by the eval registry, e.g.\n        ``\"libero_spatial\"``, ``\"metaworld_mt50\"``, ``\"so100_tabletop\"``.\n    backend: Physics backend used to instantiate the scene.\n    assets_uri: Optional URI pointing at scene assets.  When ``None``,\n        the registered adapter resolves assets internally (LIBERO /\n        MetaWorld pull theirs from their own packages).  Read by the\n        ``isaac_sim`` scene as its environment USD (a local path, an\n        ``http(s)://`` / ``omniverse://`` URL, or ``isaac:<path>`` under\n        the installed Isaac Sim asset root); other adapters ignore it.\n    observation_height: Default render height in pixels for camera obs.\n    observation_width: Default render width in pixels for camera obs.\n    cameras: List of camera names the scene exposes.  Adapters use this\n        both to render and to map sensors to VLA feature keys.\n    backend_options: Backend-specific overrides\n        (e.g. ``{\"render_modes\": [\"rgb_array\"]}``).  Opaque to the core\n        schema: each sim backend owns the model that validates it,\n        declared via ``SCENES.register(..., options_model=...)`` and run\n        at load time by ``SCENES.validate_options``.\n\nExample:\n    >>> s = SceneSpec(id=\"libero_spatial\", backend=PhysicsBackend.MUJOCO)\n    >>> s.observation_width\n    256",
@@ -23442,6 +23535,13 @@
             }
           ],
           "default": null
+        },
+        "robots": {
+          "items": {
+            "$ref": "#/$defs/SceneRobot"
+          },
+          "title": "Robots",
+          "type": "array"
         },
         "seed": {
           "default": 0,
@@ -24482,6 +24582,11 @@
               "title": "Instance Cells",
               "type": "boolean"
             },
+            "release_rskill_after_goal": {
+              "default": false,
+              "title": "Release Rskill After Goal",
+              "type": "boolean"
+            },
             "grounding_wait_s": {
               "anyOf": [
                 {
@@ -25449,6 +25554,44 @@
           "title": "SceneComposition",
           "type": "object"
         },
+        "SceneRobot": {
+          "additionalProperties": false,
+          "description": "One robot of a scene that runs several (``DeployScene.robots``, openral-pro#99).\n\nAttributes:\n    name: Names the robot in the scene, its graph and its fleet entry: lowercase letters\n        and digits, a letter first.\n    robot_id: Its manifest (``robots/<robot_id>/robot.yaml``); several entries may share one.\n    base_pose: Where it starts, in the scene's shared ``world`` frame. Its map starts here,\n        so in a scene with ``nav_goals`` it is on the ground plane (z 0, yaw only).\n    robot_unit: As ``DeployScene.robot_unit``, for this robot.\n\nExample:\n    >>> SceneRobot(\n    ...     name=\"south\",\n    ...     robot_id=\"openamrobot_v2\",\n    ...     base_pose=Pose6D(xyz=(0.4, -1.1, 0.0), quat_xyzw=(0, 0, 0, 1), frame_id=\"world\"),\n    ... ).name\n    'south'",
+          "properties": {
+            "name": {
+              "pattern": "^[a-z][a-z0-9]{0,23}$",
+              "title": "Name",
+              "type": "string"
+            },
+            "robot_id": {
+              "minLength": 1,
+              "title": "Robot Id",
+              "type": "string"
+            },
+            "base_pose": {
+              "$ref": "#/$defs/Pose6D"
+            },
+            "robot_unit": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Robot Unit"
+            }
+          },
+          "required": [
+            "name",
+            "robot_id",
+            "base_pose"
+          ],
+          "title": "SceneRobot",
+          "type": "object"
+        },
         "SceneSpec": {
           "additionalProperties": false,
           "description": "A physics scene declaration \u2014 the WORLD the robot acts in.\n\nA scene is a deterministic, reproducible MuJoCo / MJX / etc. world: assets,\nlighting, cameras, fixed objects.  Tasks (``TaskSpec``) are evaluated\nINSIDE a scene; multiple tasks can share one scene (e.g. ``libero_spatial``\nhas 10 tasks per suite).\n\nAttributes:\n    id: Stable scene identifier used by the eval registry, e.g.\n        ``\"libero_spatial\"``, ``\"metaworld_mt50\"``, ``\"so100_tabletop\"``.\n    backend: Physics backend used to instantiate the scene.\n    assets_uri: Optional URI pointing at scene assets.  When ``None``,\n        the registered adapter resolves assets internally (LIBERO /\n        MetaWorld pull theirs from their own packages).  Read by the\n        ``isaac_sim`` scene as its environment USD (a local path, an\n        ``http(s)://`` / ``omniverse://`` URL, or ``isaac:<path>`` under\n        the installed Isaac Sim asset root); other adapters ignore it.\n    observation_height: Default render height in pixels for camera obs.\n    observation_width: Default render width in pixels for camera obs.\n    cameras: List of camera names the scene exposes.  Adapters use this\n        both to render and to map sensors to VLA feature keys.\n    backend_options: Backend-specific overrides\n        (e.g. ``{\"render_modes\": [\"rgb_array\"]}``).  Opaque to the core\n        schema: each sim backend owns the model that validates it,\n        declared via ``SCENES.register(..., options_model=...)`` and run\n        at load time by ``SCENES.validate_options``.\n\nExample:\n    >>> s = SceneSpec(id=\"libero_spatial\", backend=PhysicsBackend.MUJOCO)\n    >>> s.observation_width\n    256",
@@ -26403,6 +26546,13 @@
             }
           ],
           "default": null
+        },
+        "robots": {
+          "items": {
+            "$ref": "#/$defs/SceneRobot"
+          },
+          "title": "Robots",
+          "type": "array"
         },
         "seed": {
           "title": "Seed",

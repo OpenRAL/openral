@@ -54,7 +54,13 @@ Robot-spec contract (built by ``openral_sim.backends.isaac_sim._build_robot_spec
       "collision_approximation": {link_regex: token},  # PhysX mesh approximation per link
       "link_box_colliders": {link: {"xyz", "half_extents"}},  # replace a link's colliders
       "rtx_settings": {carb_path: value},  # raw render settings, applied last
+      "footprint_polygon": [[x, y]] | null,  # base footprint (base_frame), robot overlap check
     }
+
+Several robots share one stage (``IsaacManifestScene.build_all``, openral-pro#99): one scene
+object per robot, the first owning the world (its spec's environment, lights, physics and
+render settings, and the objects all share). A named robot sits at ``/World/robots/<name>``;
+the one robot of a single-robot scene keeps its ``/<robot_id>`` prim.
 """
 
 from __future__ import annotations
@@ -67,7 +73,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-from _isaac_scene_base import IsaacSceneBase, physics_dt_for
+from _isaac_scene_base import (
+    IsaacSceneBase,
+    add_overview_camera,
+    finish_overview_camera,
+    physics_dt_for,
+)
 from numpy.typing import NDArray
 
 # Joint drive gains applied when the Isaac >= 6 URDF importer converts the robot
@@ -613,15 +624,39 @@ def _rect_corners(
 
 
 def _rects_overlap(a: NDArray[np.float64], b: NDArray[np.float64], margin: float) -> bool:
-    """Separating-axis test of two convex quads ``(4, 2)``; ``margin`` (m) counts as contact."""
+    """Separating-axis test of two polygons ``(n, 2)``; ``margin`` (m) counts as contact.
+
+    Exact for convex polygons. A concave one is tested as its convex hull (its projections
+    are the hull's, and an axis from a notch edge separates only truly disjoint shapes), so
+    a shape in its notch counts as an overlap: over-reported, never missed.
+    """
     for quad in (a, b):
-        for i in range(4):
-            edge = quad[(i + 1) % 4] - quad[i]
+        for i in range(len(quad)):
+            edge = quad[(i + 1) % len(quad)] - quad[i]
             axis = np.array([-edge[1], edge[0]]) / np.hypot(*edge)
             pa, pb = a @ axis, b @ axis
             if pa.max() + margin <= pb.min() or pb.max() + margin <= pa.min():
                 return False
     return True
+
+
+def overlapping_footprints(footprints: Mapping[str, NDArray[np.float64]]) -> list[list[str]]:
+    """The pairs of robots whose world-frame base footprints (``(n, 2)``) overlap.
+
+    A concave ``footprint_polygon`` is checked as its convex hull (``_rects_overlap``).
+
+    Example:
+        >>> square = np.array([[0.5, 0.5], [-0.5, 0.5], [-0.5, -0.5], [0.5, -0.5]])
+        >>> overlapping_footprints({"b": square + (0.9, 0.0), "a": square, "c": square + (3, 0)})
+        [['a', 'b']]
+    """
+    names = sorted(footprints)
+    return [
+        [a, b]
+        for i, a in enumerate(names)
+        for b in names[i + 1 :]
+        if _rects_overlap(footprints[a], footprints[b], 0.0)
+    ]
 
 
 def sample_object_poses(
@@ -1106,6 +1141,12 @@ def apply_finger_friction(
     displaced: list[str] = []
     for link in sorted(links):
         link_prim = stage.GetPrimAtPath(link)
+        # Each robot's finger colliders are its own, not instance proxies of a prototype:
+        # with two robots of one model in the world, the second robot's left fingers
+        # shared the first robot's collider prototypes and touched nothing (openral-pro#99,
+        # q5090 2026-11-21: zero contacts over a 60 s restock, the policy closing through
+        # the carton; built first, the same robot gripped it).
+        _deinstance(link_prim)
         pads.append(link_prim)
         pads.extend(p for p in Usd.PrimRange(link_prim) if p.IsInstance())
         displaced.extend(
@@ -2006,6 +2047,9 @@ class IsaacManifestScene(IsaacSceneBase):
             dtype=np.float32,
         )
         self._objects: list[dict[str, Any]] = list(objects or [])
+        # False for a second robot in another robot's world (``build_all``): the owner
+        # places, jitters and registers the shared objects.
+        self._owns_world = True
         # Per object: footprint (cx, cy, hx, hy) in its yawed frame, and the default
         # (position, wxyz) its prim was registered with -- the pose_noise anchor.
         self._object_footprints: dict[str, tuple[float, float, float, float]] = {}
@@ -2046,6 +2090,9 @@ class IsaacManifestScene(IsaacSceneBase):
         self._robot_body_paths: list[str] = []
         self._body_positions: dict[str, NDArray[np.float64]] = {}
         self._prev_body_positions: dict[str, NDArray[np.float64]] = {}
+        # The world's sim time (ns) at each of those two samples (``_body_speed``).
+        self._body_time_ns: int | None = None
+        self._prev_body_time_ns: int | None = None
         # (prim path, 4x4 pose in the root frame at import) of the root rigid body.
         self._root_body: tuple[str, NDArray[np.float64]] = ("", np.eye(4))
         # Isaac >= 6: the importer pins the base with a fixed joint whose body0 is
@@ -2154,24 +2201,9 @@ class IsaacManifestScene(IsaacSceneBase):
 
     # ── build ────────────────────────────────────────────────────────────────
 
-    def build(self) -> None:
-        """Import the manifest robot's URDF and stand up cameras + the world."""
-        import isaacsim.core.utils.numpy.rotations as rot_utils
-        import omni.kit.commands
+    def _create_world(self) -> None:
+        """The World, its physics scene, the environment (or a ground plane) and the lights."""
         from isaacsim.core.api import World
-        from isaacsim.core.api.robots import Robot
-        from isaacsim.core.utils.types import ArticulationAction
-        from isaacsim.sensors.camera import Camera
-
-        self._ArticulationAction = ArticulationAction
-
-        # Isaac >= 6 converts the URDF to a USD file first — its importer opens
-        # its own stage, so this must run before World() owns a fresh one.
-        robot_usd = self._convert_urdf()
-        if robot_usd is not None:
-            from isaacsim.core.utils.stage import create_new_stage
-
-            create_new_stage()
 
         # NOTE: no device="cuda:0" — forcing GPU PhysX hangs the first warmup for
         # minutes on an 8 GB laptop GPU (per the PoC notes). Default device
@@ -2188,6 +2220,89 @@ class IsaacManifestScene(IsaacSceneBase):
             self._world.scene.add_default_ground_plane()
         self._add_dome_light()
 
+    def build(self) -> None:
+        """Import the manifest robot's URDF and stand up cameras + the world."""
+        self.build_all([self])
+
+    @staticmethod
+    def build_all(scenes: Sequence[IsaacManifestScene]) -> None:
+        """Stand up one world holding the robot of every scene in ``scenes`` (openral-pro#99).
+
+        The first scene owns the world: its spec's physics, environment, lights and render
+        settings, and the scene objects every robot shares (the others are handed the same
+        object registries, ``_share_world``). Each robot keeps its own prim, articulation,
+        cameras, odometry, action layout and link attachments. With one scene the build is
+        the one-robot build, step for step.
+
+        Raises:
+            ValueError: duplicate or missing robot names, or robots whose control periods
+                differ (one world step is one control period of every robot).
+        """
+        # ponytail: the world-level spec keys (physx_scene, dome_light, strip_xform_colliders,
+        # stage_objects, rtx_settings) are read from the first robot's spec only; the others'
+        # are ignored. Move them to a scene-level argument if two robot specs ever disagree.
+        owner = scenes[0]
+        peers: dict[str, IsaacSceneBase] = {s.name: s for s in scenes}
+        if len(peers) != len(scenes) or (len(scenes) > 1 and "" in peers):
+            raise ValueError(
+                f"each robot of a scene of several needs its own name, got {[s.name for s in scenes]}"
+            )
+        # Isaac >= 6 converts the URDF to a USD file first — its importer opens
+        # its own stage, so this must run before World() owns a fresh one.
+        usds = [s._convert_urdf() for s in scenes]
+        if usds[0] is not None:
+            from isaacsim.core.utils.stage import create_new_stage
+
+            create_new_stage()
+        owner._create_world()
+        for s, usd in zip(scenes, usds, strict=True):
+            s._peers = peers
+            if s is not owner:
+                s._share_world(owner)
+            s._add_robot(usd)
+        # On the bare bring-up stage a lidar robot gets a few static obstacles so
+        # /scan, slam, and Nav2 have real geometry to map + avoid (a bare ground
+        # plane returns no hits). An environment USD brings its own geometry.
+        if any(s._lidar is not None for s in scenes) and not owner._environment_usd:
+            owner._add_obstacles()
+        owner._add_objects()
+        owner._add_stage_objects()
+        for s in scenes:
+            s._add_robot_rig()
+        add_overview_camera()
+        owner._world.reset()
+        # Opening/importing a stage can restore renderer defaults. Apply the
+        # requested settings after those operations and before the first image.
+        _configure_rendering(owner._spec)
+        for s in scenes:
+            s._finish_robot()
+        finish_overview_camera()
+        ticks = {s.name: s.sim_dt_per_tick_s for s in scenes}
+        if len(set(ticks.values())) > 1:
+            raise ValueError(f"robots sharing a world must step at one control period: {ticks}")
+
+    def _share_world(self, owner: IsaacManifestScene) -> None:
+        """Make this robot's scene a second robot in ``owner``'s world: one World, one set of objects."""
+        self._world = owner._world
+        self._owns_world = False
+        self._objects = owner._objects
+        self._object_prims = owner._object_prims
+        self._object_footprints = owner._object_footprints
+        self._object_nominal = owner._object_nominal
+        self._carried_xforms = owner._carried_xforms
+
+    def _robots(self) -> list[IsaacManifestScene]:
+        """Every robot sharing this world (``_peers``), this one included."""
+        return [p for p in self._peers.values() if isinstance(p, IsaacManifestScene)]
+
+    def _add_robot(self, robot_usd: str | None) -> None:
+        """Import this robot into the world and register its articulation."""
+        import isaacsim.core.utils.numpy.rotations as rot_utils
+        import omni.kit.commands
+        from isaacsim.core.api.robots import Robot
+        from isaacsim.core.utils.types import ArticulationAction
+
+        self._ArticulationAction = ArticulationAction
         self._euler_to_quat = rot_utils.euler_angles_to_quats
 
         prim_path = (
@@ -2319,19 +2434,16 @@ class IsaacManifestScene(IsaacSceneBase):
         self._robot = self._world.scene.add(
             Robot(
                 prim_path=prim_path,
-                name="robot",
+                name=f"robot_{self.name}" if self.name else "robot",
                 position=np.array([wx, wy, wz]),
                 orientation=_yaw_quat(wyaw),
             )
         )
 
-        # On the bare bring-up stage a lidar robot gets a few static obstacles so
-        # /scan, slam, and Nav2 have real geometry to map + avoid (a bare ground
-        # plane returns no hits). An environment USD brings its own geometry.
-        if self._lidar is not None and not self._environment_usd:
-            self._add_obstacles()
-        self._add_objects()
-        self._add_stage_objects()
+    def _add_robot_rig(self) -> None:
+        """This robot's link attachments, cameras and contact reports (before the world resets)."""
+        from isaacsim.sensors.camera import Camera
+
         self._add_link_attachments()
 
         # One Camera per planned sensor. A bare deploy scene with no RGB sensor
@@ -2348,18 +2460,19 @@ class IsaacManifestScene(IsaacSceneBase):
                 },
             )
         for meta in self._cam_meta:
+            # A camera on no link sits under /World, named for its robot in a scene of several.
             parent = self._mount_parent(meta["mount"])[0] if meta.get("mount") else "/World"
+            stem = f"cam_{self.name}_" if self.name and not meta.get("mount") else "cam_"
             cam = Camera(
-                prim_path=f"{parent}/cam_{meta['name']}",
+                prim_path=f"{parent}/{stem}{meta['name']}",
                 resolution=camera_resolution(meta, self.obs_width, self.obs_height),
             )
             self._cameras[meta["name"]] = cam
 
         self._enable_contact_reports()
-        self._world.reset()
-        # Opening/importing a stage can restore renderer defaults. Apply the
-        # requested settings after those operations and before the first image.
-        _configure_rendering(self._spec)
+
+    def _finish_robot(self) -> None:
+        """Once the world has reset: cameras, placement, DOF map, time base and lidar."""
         for meta in self._cam_meta:
             cam = self._cameras[meta["name"]]
             cam.initialize()
@@ -3002,9 +3115,17 @@ class IsaacManifestScene(IsaacSceneBase):
         from isaacsim.core.utils.stage import add_reference_to_stage, get_current_stage
         from pxr import PhysxSchema, Usd, UsdPhysics
 
-        prim_path = "/" + re.sub(r"\W", "_", str(self._spec.get("robot_id", "robot")))
-        add_reference_to_stage(usd_path=robot_usd, prim_path=prim_path)
         stage = get_current_stage()
+        if self.name:
+            # A scene of several robots: each under /World/robots/<name>. One robot keeps
+            # its root-level prim, so an existing scene's paths do not change.
+            from pxr import UsdGeom
+
+            UsdGeom.Xform.Define(stage, "/World/robots")
+            prim_path = f"/World/robots/{self.name}"
+        else:
+            prim_path = "/" + re.sub(r"\W", "_", str(self._spec.get("robot_id", "robot")))
+        add_reference_to_stage(usd_path=robot_usd, prim_path=prim_path)
         variants = stage.GetPrimAtPath(prim_path).GetVariantSets()
         if "Physics" in variants.GetNames():
             variants.GetVariantSet("Physics").SetVariantSelection("physx")
@@ -3278,6 +3399,10 @@ class IsaacManifestScene(IsaacSceneBase):
 
     def _import_urdf(self, commands: Any) -> str:
         """Isaac < 6: run the command-based URDF importer; return the prim path."""
+        if self.name:
+            # ponytail: the < 6 importer picks the prim path itself; several robots need
+            # Isaac >= 6 (`_reference_robot`). Pass a prim path to the command if ever needed.
+            raise RuntimeError("a scene of several robots needs Isaac Sim >= 6 (URDFImporter)")
         urdf_path = str(self._spec["urdf_path"])
         _status, import_config = commands.execute("URDFCreateImportConfig")
         # Keep the kinematic tree faithful to the manifest: do NOT merge fixed
@@ -3489,11 +3614,12 @@ class IsaacManifestScene(IsaacSceneBase):
         # A reset teleports the robot: no finite-difference link speed across it.
         self._body_positions = {}
         self._prev_body_positions = {}
+        self._body_time_ns = self._prev_body_time_ns = None
         self._jitter_objects(rng)
 
     def _jitter_objects(self, rng: np.random.Generator) -> None:
         """Redraw every ``pose_noise`` object's default pose; ``world.reset()`` then applies it."""
-        if not any(o.get("pose_noise") for o in self._objects):
+        if not any(o.get("pose_noise") for o in self._objects) or not self._owns_world:
             return
         foot = [self._object_footprints[str(o["name"])] for o in self._objects]
         for obj, (x, y, yaw, status) in zip(
@@ -3589,7 +3715,8 @@ class IsaacManifestScene(IsaacSceneBase):
                 self._ArticulationAction(joint_positions=self._target)
             )
             for _ in range(self._HOLD_SETTLE_STEPS):
-                self._compensate_gravity()
+                for robot in self._robots():  # the world steps for every robot sharing it
+                    robot._compensate_gravity()
                 self._world.step(render=False)
         print(
             "[isaac_manifest_scene] hold target raised by up to "
@@ -3773,7 +3900,12 @@ class IsaacManifestScene(IsaacSceneBase):
         settle_s = float(ps["settle_s"])
         turn_rate = math.radians(float(ps.get("rest_turn_deg_s", math.inf)))
         grades = []
-        held = self._robot_touched_paths() if ps.get("require_released") else set()
+        # Every robot's touch: a peer still holding the object has not released it either.
+        held = (
+            set().union(*(r._robot_touched_paths() for r in self._robots()))
+            if ps.get("require_released")
+            else set()
+        )
         for placement in map(self._placement_now, ps["placements"]):
             name = str(placement["object"])
             pos_raw, quat_raw = self._object_prims[name].get_world_pose()
@@ -3812,9 +3944,9 @@ class IsaacManifestScene(IsaacSceneBase):
         if name not in self._object_prims:
             raise KeyError(f"no scene object {name!r}; objects: {sorted(self._object_prims)}")
         prim = self._object_prims[name]
-        # A carried object leaves its attachment: else the next base move puts it back in
-        # the tote (`_set_attachment` re-poses every held record).
-        for att in self._attachments:
+        # A carried object leaves its attachment, whichever robot carries it: else the next
+        # base move puts it back in the tote (`_set_attachment` re-poses every held record).
+        for att in (a for robot in self._robots() for a in robot._attachments):
             if att.held.pop(name, None) is not None:
                 self._set_kinematic(name, False)
         _pos, quat = prim.get_world_pose()
@@ -3908,40 +4040,45 @@ class IsaacManifestScene(IsaacSceneBase):
         """Record every robot rigid body's world position for this step (finite-difference speed).
 
         Read through PhysX (``get_rigidbody_transformation``), which serves articulation
-        links too; the previous step's sample is kept so ``_body_speed`` is the link's
-        mean speed over the last control period.
+        links too; the previous sample is kept, with the world's sim time at each, so
+        ``_body_speed`` is the link's mean speed between them: one control period, or more
+        when other robots advanced the shared world without this one.
         """
         from omni.physx import get_physx_interface
 
         physx = get_physx_interface()
         self._prev_body_positions = self._body_positions
+        self._prev_body_time_ns, self._body_time_ns = self._body_time_ns, self.sim_time_ns()
         self._body_positions = {
             path: np.asarray(physx.get_rigidbody_transformation(path)["position"], dtype=float)
             for path in self._robot_body_paths
         }
 
     def _body_speed(self, collider: str) -> float | None:
-        """Mean world speed (m/s) over the last control period of the robot body owning ``collider``.
+        """Mean world speed (m/s) since the previous sample of the robot body owning ``collider``.
 
         The body is the deepest captured robot rigid-body path that prefixes the
-        collider path. ``None`` when no robot body owns it, on the first step after a
-        reset (no previous sample), or without a control period.
+        collider path. The interval is the sim time between the two samples, else one
+        control period. ``None`` when no robot body owns it, on the first step after a
+        reset (no previous sample), or without either interval.
         """
         owner = max(
             (b for b in self._robot_body_paths if collider == b or collider.startswith(b + "/")),
             key=len,
             default=None,
         )
-        tick = self.sim_dt_per_tick_s
-        if owner is None or not tick or owner not in self._prev_body_positions:
+        now, then = self._body_time_ns, self._prev_body_time_ns
+        elapsed = (now - then) * 1e-9 if now is not None and then is not None else None
+        interval = elapsed if elapsed is not None and elapsed > 0.0 else self.sim_dt_per_tick_s
+        if owner is None or not interval or owner not in self._prev_body_positions:
             return None
         delta = self._body_positions[owner] - self._prev_body_positions[owner]
-        return float(np.linalg.norm(delta) / tick)
+        return float(np.linalg.norm(delta) / interval)
 
     def static_collider_boxes(self) -> dict[str, Any]:
         """Every fixture collider of the stage in the manifest ``base_frame``: a box or a mesh.
 
-        A fixture collider carries ``UsdPhysics.CollisionAPI`` and is neither under the
+        A fixture collider carries ``UsdPhysics.CollisionAPI`` and is neither under any
         robot nor a moving declared task object (``backend_options.objects``: the camera's
         to see; a ``dynamic: false`` one such as the DROID stand is a fixture). It is
         ``dynamic: true`` when an enabled, non-kinematic rigid body sits on
@@ -3964,7 +4101,7 @@ class IsaacManifestScene(IsaacSceneBase):
             Usd.TimeCode.Default(), ["default", "render", "proxy", "guide"], useExtentsHint=False
         )
         base_from_world = np.linalg.inv(self._world_from_base())
-        root = self._robot_prim.rstrip("/")
+        roots = [r._robot_prim.rstrip("/") for r in self._robots()]
 
         def moves(prim: Any) -> bool:
             while prim and prim.IsValid() and str(prim.GetPath()) != "/":
@@ -3981,7 +4118,7 @@ class IsaacManifestScene(IsaacSceneBase):
         boxes = []
         for prim in stage.Traverse():
             path = str(prim.GetPath())
-            if path == root or path.startswith(root + "/"):
+            if any(path == root or path.startswith(root + "/") for root in roots):
                 continue
             if not prim.HasAPI(UsdPhysics.CollisionAPI):
                 continue
@@ -4038,11 +4175,36 @@ class IsaacManifestScene(IsaacSceneBase):
             boxes.append(entry)
         return {"frame": "base_frame", "boxes": boxes}
 
+    def _world_footprint(self) -> NDArray[np.float64] | None:
+        """This robot's base footprint (spec ``footprint_polygon``) in world xy, or ``None``.
+
+        At the commanded pose (spawn ∘ odom): the base is teleported there every step, so
+        for a kinematic base it is where PhysX holds it too.
+        """
+        poly = self._spec.get("footprint_polygon")
+        if not poly:
+            return None
+        wx, wy, wz, wyaw = self._world_pose()
+        world_from_base = pose_matrix((wx, wy, wz), _yaw_quat(wyaw)) @ self._root_to_base
+        pts = np.asarray(poly, dtype=np.float64)
+        return np.asarray(pts @ world_from_base[:2, :2].T + world_from_base[:2, 3])
+
+    def footprint_overlaps(self) -> list[list[str]]:
+        """Pairs of robots of this world whose base footprints overlap now (sim ground truth).
+
+        The bases are teleported, so PhysX never pushes two of them apart: this is the
+        only report of one robot driving into another. A robot whose spec has no
+        ``footprint_polygon`` is not checked. Never a robot's observation.
+        """
+        feet = {r.name: f for r in self._robots() if (f := r._world_footprint()) is not None}
+        return overlapping_footprints(feet)
+
     def scene_mesh(self, limit_bytes: int) -> dict[str, Any]:
         """The stage's static part as GLB bytes in the odometry frame, for the console (platform#133).
 
-        ``scene_glb.static_scene_glb`` walks ``/World`` minus the robot, ``/World/objects/**``,
-        every declared object and every ``link_attachments`` prim, in the odometry frame:
+        ``scene_glb.static_scene_glb`` walks ``/World`` minus every robot sharing the world (each
+        is drawn from its own URDF), ``/World/objects/**``, every declared object and every
+        robot's ``link_attachments`` prims, in this robot's odometry frame:
         it starts at the spawned ``base_frame`` (``_base_pose`` is the base's pose in it), so
         a fixed arm's export is in ``base_frame``. NVIDIA's asset root (no reachability probe)
         is passed so a stage whose exported prims come from it is refused (licence).
@@ -4056,10 +4218,13 @@ class IsaacManifestScene(IsaacSceneBase):
         x, y, yaw = (float(v) for v in self._base_pose)
         odom_from_base = pose_matrix((x, y, 0.0), _yaw_quat(yaw))
         odom_from_world = odom_from_base @ np.linalg.inv(self._world_from_base())
-        skip = [self._robot_prim.rstrip("/"), "/World/objects"]
+        robots = self._robots()
+        skip = [r._robot_prim.rstrip("/") for r in robots] + ["/World/objects"]
         skip += [str(p.prim_path).rstrip("/") for p in self._object_prims.values()]
         skip += [
-            f"/World/environment/{a['prim']}" for a in self._spec.get("link_attachments") or []
+            f"/World/environment/{a['prim']}"
+            for r in robots
+            for a in r._spec.get("link_attachments") or []
         ]
         out = static_scene_glb(
             get_current_stage(), odom_from_world, skip, self._nvidia_asset_root(), limit_bytes

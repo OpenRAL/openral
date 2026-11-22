@@ -308,8 +308,6 @@ class MujocoTwinRollout:
     def _load_model(self, mj: Any) -> mujoco.MjModel:  # noqa: ANN401  # reason: the mujoco module
         """The ``MjModel`` ``load`` runs on: the MJCF with the manifest's cameras rigged in.
 
-        A seam: ``shared_world._SharedWorldTwin`` compiles its view of a shared world.
-
         Raises:
             ROSConfigError: The MJCF cannot be read or loaded.
         """

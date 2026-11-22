@@ -244,6 +244,9 @@ class SidecarClient:
     #: launch guard that reaps a dead deploy's descendants (``openral_cli._launch_guard``)
     #: leaves it for the next run to adopt.
     keep_alive: bool = False
+    #: This client's robot in a sidecar serving several (openral-pro#99), sent as every
+    #: request's ``robot`` field; ``""`` (every sidecar before #99) sends none.
+    robot: str = ""
     _ctx: Any = None
     _socket: Any = None
     _child: subprocess.Popen[bytes] | None = field(default=None)
@@ -351,7 +354,8 @@ class SidecarClient:
         import msgpack  # type: ignore[import-not-found,import-untyped,unused-ignore]  # reason: opt-in sidecar group
         import zmq  # type: ignore[import-not-found,import-untyped,unused-ignore]  # reason: opt-in sidecar group
 
-        msg = {"endpoint": endpoint, "data": data or {}}
+        payload = {**(data or {}), "robot": self.robot} if self.robot else (data or {})
+        msg = {"endpoint": endpoint, "data": payload}
         self._socket.send(msgpack.packb(msg, default=encode_ndarray, use_bin_type=True))
         try:
             raw = self._socket.recv()

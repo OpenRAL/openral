@@ -81,6 +81,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--rskill-id", required=True)
     parser.add_argument("--prompt", required=True)
     parser.add_argument(
+        "--revision",
+        default="",
+        help="Hub revision (commit sha or tag) of the rSkill; a full sha is served from the "
+        "local cache without the Hub (a private rSkill on a host with no access to it). "
+        "Applies to a Hub rSkill only: the runner resolves an in-tree id from its search "
+        "paths first, whatever the revision.",
+    )
+    parser.add_argument(
         "--server-timeout-s",
         type=float,
         default=120.0,
@@ -118,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
 
     goal = ExecuteRskill.Goal()
     goal.rskill_id = args.rskill_id
+    goal.revision = args.revision
     goal.prompt = args.prompt
     goal.deadline_s = args.deadline_s
     send_future = client.send_goal_async(goal, feedback_callback=on_feedback)

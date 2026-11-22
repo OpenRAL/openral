@@ -1404,6 +1404,12 @@ class SimAttachedHAL:
             ROSError: ``env.step`` raised a typed error (it propagates as raised).
             ROSRuntimeError: ``env.step`` raised anything else.
         """
+        if source == "idle_step":
+            # A hold step: in a shared sidecar the other robots never wait for it
+            # (openral-pro#99); a backend without the hook steps as before.
+            mark_idle = getattr(self._env, "set_idle_next_step", None)
+            if callable(mark_idle):
+                mark_idle()
         self._step_boundary(lambda: self._env.step(env_action), source)
         return True
 

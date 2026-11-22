@@ -13468,6 +13468,14 @@ class DeployRuntime(BaseModel):
     identity through contact, a slip or a drop (``ObjectTracker.apply_instance_cells``). Needs
     ``object_tracking`` not ``off`` (the launch refuses it otherwise). Backward-compatible
     addition."""
+    release_rskill_after_goal: bool = False
+    """Unload the skill runner's policy from the GPU when each goal ends, instead of keeping
+    it resident for the next goal. For several robots sharing one GPU (openral-pro#99): a
+    robot's idle policy must not starve another robot's. The next goal pays the cold load
+    inside the deadman watchdog's first-chunk window (120 s in the deploy launch; goal to
+    first chunk measured 26-28 s for the restock pi0.5 on an RTX 5090). A policy whose cold
+    load exceeds that window is e-stopped at its next goal: leave this off for it.
+    Backward-compatible addition."""
     grounding_wait_s: float | None = Field(default=None, gt=0.0)
     """How long (source time) a goal waits for every query to reach CONFIRMED before the
     tracker logs ``grounding_incomplete``. Required whenever ``object_tracking`` is not
@@ -13626,6 +13634,53 @@ class DeployRuntime(BaseModel):
         return self
 
 
+#: The frame several robots of one scene share (``DeployScene.robots``): the stage's own.
+SHARED_SCENE_FRAME = "world"
+
+
+class SceneRobot(BaseModel):
+    """One robot of a scene that runs several (``DeployScene.robots``, openral-pro#99).
+
+    Attributes:
+        name: Names the robot in the scene, its graph and its fleet entry: lowercase letters
+            and digits, a letter first.
+        robot_id: Its manifest (``robots/<robot_id>/robot.yaml``); several entries may share one.
+        base_pose: Where it starts, in the scene's shared ``world`` frame. Its map starts here,
+            so in a scene with ``nav_goals`` it is on the ground plane (z 0, yaw only).
+        robot_unit: As ``DeployScene.robot_unit``, for this robot.
+
+    Example:
+        >>> SceneRobot(
+        ...     name="south",
+        ...     robot_id="openamrobot_v2",
+        ...     base_pose=Pose6D(xyz=(0.4, -1.1, 0.0), quat_xyzw=(0, 0, 0, 1), frame_id="world"),
+        ... ).name
+        'south'
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9]{0,23}$")]
+    robot_id: str = Field(min_length=1)
+    base_pose: Pose6D
+    robot_unit: str | None = None
+
+    @model_validator(mode="after")
+    def _starts_in_the_shared_frame(self) -> Self:
+        if self.base_pose.frame_id != SHARED_SCENE_FRAME:
+            raise ValueError(
+                f"robot {self.name!r}: base_pose.frame_id must be {SHARED_SCENE_FRAME!r} "
+                f"(got {self.base_pose.frame_id!r})."
+            )
+        # Unit length, as a NavGoal's: the planar-start check reads the raw components, and a
+        # scaled quaternion would pass it yet normalize to a tilt.
+        if not all(math.isfinite(v) for v in (*self.base_pose.xyz, *self.base_pose.quat_xyzw)):
+            raise ValueError(f"robot {self.name!r}: base_pose is not finite.")
+        if abs(math.sqrt(sum(v * v for v in self.base_pose.quat_xyzw)) - 1.0) > _UNIT_QUAT_TOL:
+            raise ValueError(f"robot {self.name!r}: base_pose.quat_xyzw is not a unit quaternion.")
+        return self
+
+
 class DeployScene(BaseModel):
     """Unified deploy/workcell scene for ``openral deploy sim`` and ``deploy run``.
 
@@ -13655,6 +13710,12 @@ class DeployScene(BaseModel):
     derived from simulator poses."""
     robot_id: str | None = None
     base_pose: Pose6D | None = None
+    robots: list[SceneRobot] = Field(default_factory=list)
+    """Several robots in this one scene (openral-pro#99), instead of ``robot_id`` /
+    ``base_pose`` / ``robot_unit``. Empty (every scene before #99): one robot, as those fields say.
+    With robots, every ``nav_goals`` pose and ``place_zones`` region is in the shared ``world``
+    frame; ``scene_for_robot`` gives each robot its own one-robot scene, with them re-expressed in
+    its map."""
     seed: int = 0
     """Simulator reset seed for ``deploy sim``. Ignored by ``deploy run``.
     Defaults to 0, preserving the pre-field deploy-sim episode."""
@@ -13819,10 +13880,63 @@ class DeployScene(BaseModel):
         dupes = repeated_nav_goal_names(self.nav_goals)
         if dupes:
             raise ValueError(f"nav_goals names/aliases must be unique; repeated: {dupes}.")
+        if self.robots:
+            self._check_robots()
         # A blank prompt would name every goal sent without one (a wrapped move).
         if any(not prompt.strip() for prompt in self.success_conditions):
             raise ValueError("success_conditions keys are task prompts; a blank one is refused.")
         return self
+
+    def _check_robots(self) -> None:
+        """A several-robot scene: two or more, unique names, no one-robot fields, shared frames."""
+        if len(self.robots) < 2:  # noqa: PLR2004  # reason: "several" is two or more
+            raise ValueError("robots: list two or more robots, or use robot_id for one.")
+        dupes = _repeated(r.name for r in self.robots)
+        if dupes:
+            raise ValueError(f"robots: names must be unique; repeated: {dupes}.")
+        single = [
+            f for f in ("robot_id", "base_pose", "robot_unit") if getattr(self, f) is not None
+        ]
+        if single:
+            raise ValueError(f"robots: names its robots; drop {single} (one-robot fields).")
+        # One map per robot: a pose in "map" would mean a different place for each of them.
+        off = [g.name for g in self.nav_goals if g.pose.frame_id != SHARED_SCENE_FRAME] + [
+            z.name for z in self.place_zones if z.region.frame_id != SHARED_SCENE_FRAME
+        ]
+        if off:
+            raise ValueError(
+                f"robots: nav_goals and place_zones are in the shared {SHARED_SCENE_FRAME!r} "
+                f"frame in a scene with several robots; not: {off}."
+            )
+        # Each robot's map starts at its base_pose: a raised or tilted start would put every
+        # goal re-expressed in that map off the ground plane (a goal is planar).
+        tilted = [
+            r.name
+            for r in self.robots
+            if max(abs(r.base_pose.xyz[2]), *(abs(v) for v in r.base_pose.quat_xyzw[:2]))
+            > _PLANAR_TOL
+        ]
+        # A link attachment names a robot of this scene: a misspelt one would match no robot's
+        # filter (`_shared_sidecar_setup`), and its tote would ride nothing, silently.
+        names = {r.name for r in self.robots}
+        attachments = self.scene.backend_options.get("link_attachments")
+        unknown = sorted(
+            {
+                str(a["robot"])
+                for a in (attachments if isinstance(attachments, list) else [])
+                if isinstance(a, dict) and a.get("robot") is not None and a["robot"] not in names
+            }
+        )
+        if unknown:
+            raise ValueError(
+                f"robots: link_attachments name robots this scene does not list: {unknown} "
+                f"(robots: {sorted(names)})."
+            )
+        if self.nav_goals and tilted:
+            raise ValueError(
+                f"robots: with nav_goals, each robot starts on the ground plane (base_pose "
+                f"z = 0, yaw only); not: {tilted}."
+            )
 
     @model_validator(mode="before")
     @classmethod
@@ -13940,6 +14054,12 @@ class SimScene(DeployScene):
     metadata: dict[str, object] | BenchmarkMetadata = Field(default_factory=dict)
 
     @model_validator(mode="after")
+    def _one_robot(self) -> SimScene:
+        if self.robots:
+            raise ValueError("robots: `openral sim run` runs one robot; use robot_id.")
+        return self
+
+    @model_validator(mode="after")
     def _task_scene_id_matches(self) -> SimScene:
         if self.task.scene_id != self.scene.id:
             raise ValueError(
@@ -13975,105 +14095,6 @@ class BenchmarkScene(SimScene):
                 "Set it to the paper's canonical step budget."
             )
         return self
-
-
-# ─── Shared world: several robots in one MuJoCo world (issue #666) ───────────
-
-_FiniteFloat = Annotated[float, Field(allow_inf_nan=False)]
-
-
-class SharedWorldRobot(BaseModel):
-    """One robot of a ``SharedWorldScene``: a whole deploy graph in its own ROS domain.
-
-    Attributes:
-        name: The robot's name in the world (lowercase letters and digits); it
-            prefixes the robot's MJCF elements in every other robot's view.
-        scene: The robot's ``DeployScene`` YAML, relative to the world file. It
-            must build a bare MuJoCo twin (no ``composition``, unregistered
-            ``scene.id``); several robots may share one file.
-        base_xyz: Where the robot's MJCF origin sits in the world, metres.
-        base_yaw_deg: Its rotation about world +Z, degrees. Planar only, so
-            gravity is the same in every robot's base frame.
-        ros_domain_id: The ``ROS_DOMAIN_ID`` its graph runs on.
-        dashboard_port: Its dashboard port.
-        foxglove_port: Its Foxglove bridge port.
-
-    Example:
-        >>> SharedWorldRobot(
-        ...     name="a",
-        ...     scene="../deploy/so101_shared_table.yaml",
-        ...     ros_domain_id=36,
-        ...     dashboard_port=4336,
-        ...     foxglove_port=8836,
-        ... ).base_yaw_deg
-        0.0
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    name: str = Field(pattern=r"^[a-z][a-z0-9]*$")
-    scene: str
-    base_xyz: tuple[_FiniteFloat, _FiniteFloat, _FiniteFloat] = (0.0, 0.0, 0.0)
-    base_yaw_deg: _FiniteFloat = 0.0
-    ros_domain_id: int = Field(ge=1, le=232)
-    dashboard_port: int = Field(ge=1024, le=65535)
-    foxglove_port: int = Field(ge=1024, le=65535)
-
-
-class SharedWorldScene(BaseModel):
-    """Several robots in ONE MuJoCo world, for ``openral deploy world`` (issue #666).
-
-    One physics process owns the world; each robot keeps its own unmodified
-    deploy graph on its own ROS domain, attached to that world. Sim only.
-
-    Attributes:
-        id: World id (used in logs and the run directory name).
-        arena_mjcf: The shared arena (table, objects, lights) as an MJCF file,
-            relative to the world file. Its frame is the world frame.
-        robots: The robots, at least two.
-        barrier_timeout_s: Wall seconds a commanding robot waits for another
-            commanding robot's step before the world advances without it (the
-            late robot's last targets are held and the timeout is logged). At
-            most 7 s: the waiting robot's HAL is blocked meanwhile, and its
-            graph's own action deadlines are 8 s.
-
-    Example:
-        >>> world = SharedWorldScene.from_yaml("scenes/worlds/so101_handover_table.yaml")
-        >>> len(world.robots), world.robots[1].base_yaw_deg
-        (2, 180.0)
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
-    arena_mjcf: str
-    robots: list[SharedWorldRobot] = Field(min_length=2)
-    barrier_timeout_s: float = Field(default=5.0, gt=0.0, le=7.0)
-
-    @model_validator(mode="after")
-    def _robots_do_not_collide(self) -> Self:
-        names = [r.name for r in self.robots]
-        if len(set(names)) != len(names):
-            raise ValueError(f"robot names must be unique, got {names}")
-        if {"robot0", "gripper0", "mobilebase0"} & set(names):
-            # `<name>_` prefixes the robot's bodies in its peers' models, and these are the
-            # robosuite body prefixes the sim bridge's render heuristics key on.
-            raise ValueError(f"robot names must not be robosuite body prefixes, got {names}")
-        ports = [p for r in self.robots for p in (r.dashboard_port, r.foxglove_port)]
-        if len(set(ports)) != len(ports):
-            raise ValueError(f"dashboard / foxglove ports must all differ, got {ports}")
-        domains = sorted(r.ros_domain_id for r in self.robots)
-        if any(b - a <= 1 for a, b in itertools.pairwise(domains)):
-            # The deploy profile keeps a graph inside its own domain's ports (#664), but a
-            # graph with a wider discovery range (an older OpenRAL, an operator profile)
-            # reaches one domain over: two apart, as the occupied-graph refusal advises.
-            raise ValueError(f"ros_domain_id values must be at least 2 apart, got {domains}")
-        return self
-
-    @classmethod
-    def from_yaml(cls, path: str) -> Self:
-        """Load and validate a shared-world YAML from disk."""
-        return _load_yaml_model(cls, path)
 
 
 # ─── Standalone protocol descriptor (eval suites are bare lists now) ─────────
