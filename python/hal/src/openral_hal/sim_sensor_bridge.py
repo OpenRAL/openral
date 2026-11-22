@@ -3659,7 +3659,11 @@ class SimSensorBridge:
         # stepping physics — the twin tracking its last ctrl, the clock running on. The
         # HAL is not torn down (reads and cameras keep serving the frozen state); a real
         # HAL never gets this timer. Same latch read as ``MobileBaseBridge``.
-        if getattr(self._node, "_estopped", False):
+        # The exception: one robot of a shared world (ADR-0137), which the other robots
+        # keep stepping; its HAL steps a stop instead (``SimAttachedHAL.steps_while_estopped``).
+        if getattr(self._node, "_estopped", False) and not getattr(
+            self._hal, "steps_while_estopped", False
+        ):
             return
         idle_step = getattr(self._hal, "idle_step", None)
         if not callable(idle_step):

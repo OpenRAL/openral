@@ -1726,6 +1726,41 @@ class SimAttachedHAL:
         """
         return _spec_id(getattr(self._env, "task", None))
 
+    @property
+    def steps_while_estopped(self) -> bool:
+        """Whether this HAL keeps stepping a stop while its e-stop is latched.
+
+        Only where the world does not freeze with it: one robot of a shared world, whose
+        backend offers an ``estop_hold_action`` for its last observation (ADR-0137).
+        """
+        if not self._estop_latched:  # only the HAL's own latch steps a stop, never a HOLD
+            return False
+        hold_getter = getattr(self._env, "estop_hold_action", None)
+        return callable(hold_getter) and hold_getter(self._last_obs) is not None
+
+    def _step_estop_hold(self) -> bool:
+        """While latched, one robot of a shared world steps its backend's stop (ADR-0137).
+
+        The other robots keep stepping its world, so freezing only its observation would
+        leave its arm driving to its last targets, unreported, and its ``/joint_states``
+        stale for every peer. ``estop_hold_action`` holds the arm where it was measured;
+        ``False`` (freeze) when the backend offers none, as for a world of its own.
+        """
+        hold_getter = getattr(self._env, "estop_hold_action", None)
+        hold = hold_getter(self._last_obs) if callable(hold_getter) else None
+        if hold is None or self._env_action_dim is None:
+            return False
+        hold = np.asarray(hold, dtype=np.float32).reshape(-1)
+        if hold.shape != (self._env_action_dim,):
+            raise ROSRuntimeError(
+                f"{type(self).__name__}.idle_step: backend estop_hold_action width "
+                f"{hold.shape[0]} != env_action_dim {self._env_action_dim}."
+            )
+        stepped = self._step_and_cache(hold, source="idle_step")
+        if stepped:
+            self._last_body_twist = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        return stepped
+
     def idle_step(self, wall_dt_s: float | None = None) -> bool:
         """Advance the wrapped sim one tick with a zero/HOLD action when idle (``_idle_step``).
 
@@ -1788,8 +1823,9 @@ class SimAttachedHAL:
             return False
         if self._estop_latched:
             # An estopped HAL freezes — honoring the estop contract is correct;
-            # the frozen scene is the intended, safe behaviour here.
-            return False
+            # the frozen scene is the intended, safe behaviour here. Except where
+            # the world does not freeze with it (ADR-0137, ``_step_estop_hold``).
+            return self._step_estop_hold()
         if self._env_action_dim is None:
             return False
         staged = self._stager.staged
