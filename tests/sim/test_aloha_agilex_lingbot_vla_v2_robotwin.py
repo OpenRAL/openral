@@ -49,10 +49,13 @@ def _unavailable() -> str:
         return "lerobot>=0.7 / torch are not installed"
 
     if not torch.cuda.is_available():
-        return "LingBot-VLA 2.0 bf16 needs a CUDA GPU"
+        return "LingBot-VLA 2.0 bf16 requires a CUDA GPU"
     total = torch.cuda.get_device_properties(0).total_memory / 2**30
     if total < _MIN_VRAM_GIB:
-        return f"LingBot-VLA 2.0 bf16 needs a >= {_MIN_VRAM_GIB} GiB GPU (have {total:.1f})"
+        return (
+            f"LingBot-VLA 2.0 bf16 requires a CUDA GPU with >= {_MIN_VRAM_GIB} GiB "
+            f"(have {total:.1f})"
+        )
     from huggingface_hub import snapshot_download
 
     try:
