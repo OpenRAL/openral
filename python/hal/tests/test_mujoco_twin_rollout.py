@@ -1027,12 +1027,14 @@ def test_an_empty_action_group_is_refused(rollout: Callable[[str], MujocoTwinRol
 
 
 def test_a_non_finite_twist_interval_is_refused(robot_description: Describe) -> None:
-    """``body_twist_dt_s=nan`` passed both comparisons and put NaN into the base pose."""
-    hal = OpenAMRobotV2MujocoHAL(
-        description=robot_description("openamrobot_v2"), body_twist_dt_s=float("nan")
-    )
-    expect_refusal(hal.connect, "body_twist_dt_s=nan", "openamrobot_v2 twin")
-    assert hal._connected is False
+    """``body_twist_dt_s=nan`` passed both comparisons and put NaN into the base pose.
+
+    Refused at construction (#700 item 12), before any twin is loaded.
+    """
+    with pytest.raises(ROSConfigError, match="body_twist_dt_s must be > 0"):
+        OpenAMRobotV2MujocoHAL(
+            description=robot_description("openamrobot_v2"), body_twist_dt_s=float("nan")
+        )
 
 
 def test_a_twist_on_a_baseless_twin_leaves_the_arm_targets(connect_twin: ConnectTwin) -> None:
