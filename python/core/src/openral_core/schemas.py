@@ -13672,6 +13672,10 @@ class SceneRobot(BaseModel):
                 f"robot {self.name!r}: base_pose.frame_id must be {SHARED_SCENE_FRAME!r} "
                 f"(got {self.base_pose.frame_id!r})."
             )
+        # Unit length, as a NavGoal's: the planar-start check reads the raw components, and a
+        # scaled quaternion would pass it yet normalize to a tilt.
+        if abs(math.sqrt(sum(v * v for v in self.base_pose.quat_xyzw)) - 1.0) > _UNIT_QUAT_TOL:
+            raise ValueError(f"robot {self.name!r}: base_pose.quat_xyzw is not a unit quaternion.")
         return self
 
 
@@ -13910,6 +13914,22 @@ class DeployScene(BaseModel):
             if max(abs(r.base_pose.xyz[2]), *(abs(v) for v in r.base_pose.quat_xyzw[:2]))
             > _PLANAR_TOL
         ]
+        # A link attachment names a robot of this scene: a misspelt one would match no robot's
+        # filter (`_shared_sidecar_setup`), and its tote would ride nothing, silently.
+        names = {r.name for r in self.robots}
+        attachments = self.scene.backend_options.get("link_attachments")
+        unknown = sorted(
+            {
+                str(a["robot"])
+                for a in (attachments if isinstance(attachments, list) else [])
+                if isinstance(a, dict) and a.get("robot") is not None and a["robot"] not in names
+            }
+        )
+        if unknown:
+            raise ValueError(
+                f"robots: link_attachments name robots this scene does not list: {unknown} "
+                f"(robots: {sorted(names)})."
+            )
         if self.nav_goals and tilted:
             raise ValueError(
                 f"robots: with nav_goals, each robot starts on the ground plane (base_pose "

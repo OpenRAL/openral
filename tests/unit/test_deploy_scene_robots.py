@@ -152,6 +152,26 @@ def test_a_robot_with_nav_goals_starts_on_the_ground_plane() -> None:
     DeployScene.model_validate(_aisle(robots=[raised, robots[1]], nav_goals=[]))
 
 
+def test_a_scaled_quaternion_start_is_refused() -> None:
+    """(1e-6, 0, 0, 1e-6) passes a raw-component planar test yet normalizes to a 90 deg roll."""
+    with pytest.raises(ValidationError, match="not a unit quaternion"):
+        SceneRobot(
+            name="a",
+            robot_id="openamrobot_v2",
+            base_pose=Pose6D(xyz=(0, 0, 0), quat_xyzw=(1e-6, 0, 0, 1e-6), frame_id="world"),
+        )
+
+
+def test_an_attachment_naming_no_robot_of_the_scene_is_refused() -> None:
+    """A misspelt robot would match no robot's attachment filter: the tote would ride nothing."""
+    tote = {"prim": "Tote", "link": "lift_carriage_link", "robot": "sotuh"}
+    scene = {"id": "aisle", "backend": "isaacsim", "backend_options": {"link_attachments": [tote]}}
+    with pytest.raises(ValidationError, match=r"do(es)? not list: \['sotuh'\]"):
+        DeployScene.model_validate(_aisle(scene=scene))
+    tote["robot"] = "south"
+    DeployScene.model_validate(_aisle(scene=scene))
+
+
 def test_a_robot_graph_reads_its_scene_in_its_own_map_frame(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
