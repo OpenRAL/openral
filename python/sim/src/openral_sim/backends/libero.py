@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import structlog
 from numpy.typing import NDArray
-from openral_core.exceptions import ROSConfigError
+from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 
 from openral_sim.policies.act import _load_manifest_for_spec
 from openral_sim.registry import SCENES
@@ -49,6 +49,67 @@ if TYPE_CHECKING:
 
 _LIBERO_SUITES = ("libero_spatial", "libero_object", "libero_goal", "libero_10")
 _DEPLOY_NOOP_TASK = "_hal_deploy_noop"
+LIBERO_STATE_DIM = 8
+"""Width of the canonical LIBERO state ``eef_pos(3) | axis-angle(3) | gripper_qpos(2)``."""
+
+
+def require_libero_scene(env_cfg: Any, adapter_name: str) -> None:
+    """Refuse a sim scene that is not a LIBERO suite, before a LIBERO-only policy loads.
+
+    The deploy / rSkill-runner path builds its policy from a scene stub that carries
+    only ``cameras`` (no ``id``): there is no LIBERO env to check, and the 8-D state
+    comes from the manifest's ``libero_eef8d`` state adapter, so a missing id passes.
+
+    Args:
+        env_cfg: The policy factory input (``SimEnvironment`` or the runtime stub).
+        adapter_name: Policy family, for the message.
+
+    Raises:
+        ROSCapabilityMismatch: The scene has an id that is not a LIBERO suite.
+
+    Example:
+        >>> from types import SimpleNamespace
+        >>> require_libero_scene(SimpleNamespace(scene=SimpleNamespace(id="libero_goal")), "xvla")
+    """
+    scene_id = getattr(getattr(env_cfg, "scene", None), "id", None)
+    if scene_id is not None and scene_id not in _LIBERO_SUITES:
+        raise ROSCapabilityMismatch(
+            f"{adapter_name} is a LIBERO-only checkpoint: scene {scene_id!r} is not one of "
+            f"{_LIBERO_SUITES}."
+        )
+
+
+def libero_canonical_state(observation: Any, adapter_name: str) -> NDArray[np.float32]:
+    """The 8-D canonical LIBERO state from ``observation["state"]``, width-checked.
+
+    Args:
+        observation: The per-step observation mapping.
+        adapter_name: Policy family, for the message.
+
+    Returns:
+        The state as a flat float32 vector.
+
+    Raises:
+        ROSCapabilityMismatch: No state, or not 8-D.
+
+    Example:
+        >>> libero_canonical_state({"state": [0.0] * 8}, "xvla").shape
+        (8,)
+    """
+    raw = observation.get("state")
+    if raw is None:
+        raise ROSCapabilityMismatch(
+            f"{adapter_name} needs the 8-D canonical LIBERO state as observation['state']; "
+            "the scene provides none."
+        )
+    state = np.asarray(raw, dtype=np.float32).reshape(-1)
+    if state.shape[0] != LIBERO_STATE_DIM:
+        raise ROSCapabilityMismatch(
+            f"{adapter_name} is a LIBERO-only checkpoint: it needs the 8-D canonical LIBERO "
+            "state eef_pos(3) | axis-angle(3) | gripper_qpos(2) as observation['state']; "
+            f"got {state.shape[0]}-D — use a LIBERO scene (e.g. libero_spatial)."
+        )
+    return state
 
 
 def _resolve_control_mode(env_cfg: SimEnvironment) -> str:

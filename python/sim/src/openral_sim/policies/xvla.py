@@ -54,8 +54,6 @@ from openral_sim.policies._policy_loading import load_manifest_for_spec
 from openral_sim.policies._processors import resolve_processor_dir
 from openral_sim.registry import POLICIES
 
-_LIBERO_STATE_DIM = 8
-
 if TYPE_CHECKING:
     from openral_core import VLASpec
 
@@ -158,19 +156,9 @@ class _XVLAAdapter:
         zero ``empty_camera_0``; and the scene's 8-D canonical state.
         """
         torch = self._torch
-        raw_state = observation.get("state")
-        if raw_state is None:
-            raise ROSCapabilityMismatch(
-                "xVLA needs the 8-D canonical LIBERO state as observation['state']; "
-                "the scene provides none."
-            )
-        state = np.asarray(raw_state, dtype=np.float32).reshape(-1)
-        if state.shape[0] != _LIBERO_STATE_DIM:
-            raise ROSCapabilityMismatch(
-                "xVLA is a LIBERO-only checkpoint: it needs the 8-D canonical LIBERO state "
-                "eef_pos(3) | axis-angle(3) | gripper_qpos(2) as observation['state']; "
-                f"got {state.shape[0]}-D — use a LIBERO scene (e.g. libero_spatial)."
-            )
+        from openral_sim.backends.libero import libero_canonical_state
+
+        state = libero_canonical_state(observation, "xVLA")
         images = observation.get("images", {})
         h, w = self._empty_camera_size
         batch: dict[str, Any] = {"task": instruction or observation.get("task", "")}
@@ -207,13 +195,9 @@ def _build_xvla(env_cfg: Any) -> _XVLAAdapter:
     # The 8-D state xVLA reads is eef_pos | axis-angle | gripper_qpos, which only the
     # LIBERO scenes produce; another scene's 8-D state (e.g. 7 joints + gripper)
     # would pass the per-step shape check and be misread, so refuse it before loading.
-    from openral_sim.backends.libero import _LIBERO_SUITES
+    from openral_sim.backends.libero import require_libero_scene
 
-    if env_cfg.scene.id not in _LIBERO_SUITES:
-        raise ROSCapabilityMismatch(
-            f"xVLA is a LIBERO-only checkpoint: scene {env_cfg.scene.id!r} is not one of "
-            f"{_LIBERO_SUITES}."
-        )
+    require_libero_scene(env_cfg, "xVLA")
 
     try:
         import torch
