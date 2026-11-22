@@ -1,12 +1,36 @@
 ---
+language:
+- en
 license: apache-2.0
-library_name: lerobot
 pipeline_tag: robotics
 tags:
-- openral
+- OpenRAL
 - rskill
 - lingbot_vla_v2
+- vision-language-action
+- aloha_agilex
+- rskill-kind:vla
+- rskill-role:s1
+- embodiment:aloha_agilex
+- rskill-license:apache-2.0
+- openral
 - robotwin
+base_model:
+- robbyant/lingbot-vla-v2-6b-robotwin
+base_model_relation: finetune
+inference: false
+openral:
+  description: LingBot-VLA 2.0 (6.38 B, Qwen3-VL-4B backbone + sparse-MoE flow-matching
+    action expert), RoboTwin 2.0 post-train, run in-process through lerobot's vendored
+    policy. Predicts 50-step chunks (25-step replay) of a 14-DoF dual-arm joint command
+    for the AgileX Cobot Magic from three RGB views (head + per-wrist) and a language
+    instruction. bf16, needs a ≥16 GB GPU.
+  model_family: lingbot_vla_v2
+  min_vram_gb: 12.8
+  latency_ms: 1500.0
+  runtime: pytorch
+  dtype: bf16
+library_name: lerobot
 ---
 
 # rskill-lingbot_vla_v2-aloha_agilex-robotwin-bf16
