@@ -17,6 +17,7 @@ def _register_policies() -> None:
     # Order matters only for error-message friendliness.
     from openral_sim.policies import (
         act,
+        cosmos3,
         diffusion,
         gr00t,
         internvla_n1,
