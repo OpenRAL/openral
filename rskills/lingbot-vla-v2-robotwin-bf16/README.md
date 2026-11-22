@@ -2,11 +2,13 @@
 language:
 - en
 license: apache-2.0
+library_name: lerobot
 pipeline_tag: robotics
 tags:
 - OpenRAL
 - rskill
 - lingbot_vla_v2
+- lerobot
 - vision-language-action
 - aloha_agilex
 - rskill-kind:vla
@@ -30,7 +32,6 @@ openral:
   latency_ms: 1500.0
   runtime: pytorch
   dtype: bf16
-library_name: lerobot
 ---
 
 # rskill-lingbot_vla_v2-aloha_agilex-robotwin-bf16

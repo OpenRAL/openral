@@ -3,11 +3,13 @@ language:
 - en
 license: other
 license_name: lfm1.0
+library_name: lerobot
 pipeline_tag: robotics
 tags:
 - OpenRAL
 - rskill
 - nat_vla
+- lerobot
 - vision-language-action
 - so101_follower
 - rskill-kind:vla
