@@ -1634,6 +1634,10 @@ class EndEffectorSpec(BaseModel):
             ``command_convention``'s unit. Defaults to the convention's own
             range for the normalized conventions; REQUIRED for the physical
             ones (``raw_joint_rad``, ``width_meters``).
+        parent_link: The link the end effector hangs from (its gripper joints'
+            ``parent_link``). Lets a sim twin route a ``GRIPPER_POSITION`` addressed
+            by this end effector's name to the gripper joint on that link. ``None``
+            = undeclared.
 
     Example:
         >>> ee = EndEffectorSpec(
@@ -1661,6 +1665,7 @@ class EndEffectorSpec(BaseModel):
     actuated: bool = True
     command_convention: GripperConvention | None = None
     command_range: tuple[float, float] | None = None
+    parent_link: str | None = None
 
     @model_validator(mode="after")
     def _check_command_encoding(self) -> EndEffectorSpec:

@@ -167,10 +167,11 @@ def test_attachment_evidence_arms_one_hand_per_arm(
         }
 
 
+@pytest.mark.parametrize("ee_name", ["left_gripper", "left_gripper_finger_joint1"])
 def test_a_named_gripper_action_drives_only_that_hand(
-    connected: tuple[RobotDescription, MujocoArmHAL],
+    connected: tuple[RobotDescription, MujocoArmHAL], ee_name: str
 ) -> None:
-    """A lone ``GRIPPER_POSITION`` naming a gripper joint closes that hand only."""
+    """A lone ``GRIPPER_POSITION`` by end effector or gripper joint closes that hand only."""
     desc, hal = connected
     open_row = [*_TORSO, *_LEFT_ARM, 1.0, 0.0, *_RIGHT_ARM, 1.0, 0.0]
     _send_for(
@@ -182,7 +183,7 @@ def test_a_named_gripper_action_drives_only_that_hand(
     close_left = Action(
         control_mode=ControlMode.GRIPPER_POSITION,
         gripper=[0.0],
-        ee_name="left_gripper_finger_joint1",
+        ee_name=ee_name,
     )
     _send_for(hal, close_left, _SETTLE_SIM_S)
     after = dict(zip(hal.read_state().name, hal.read_state().position, strict=True))

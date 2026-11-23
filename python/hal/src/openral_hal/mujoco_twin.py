@@ -879,8 +879,9 @@ class MujocoTwinRollout:
         An end-effector gripper by ``ee_name`` (or the only one). A joint gripper only
         for a lone action: in a slot group ``compose_slot_group`` already places a
         gripper slot by the joint its ``ee_name`` names. A lone action's ``ee_name``
-        names its gripper joint (the slot-group rule), or, with exactly one joint
-        gripper, any end effector (or none).
+        names its gripper joint (the slot-group rule) or a declared end effector (the
+        name the safety kernel bounds it by), which drives the one gripper joint on
+        its ``parent_link``; with exactly one joint gripper, any end effector (or none).
 
         Raises:
             ROSConfigError: The action names no gripper of this twin.
@@ -899,8 +900,14 @@ class MujocoTwinRollout:
         if not lone:
             return None
         gripper = self.grippers_by_joint.get(name or "")
-        ee_names = {ee.name for ee in self.description.end_effectors}
-        if gripper is None and len(self.grippers_by_joint) == 1 and name in {None, *ee_names}:
+        ee = next((e for e in self.description.end_effectors if e.name == name), None)
+        if gripper is None and ee is not None and ee.parent_link is not None:
+            # A declared end effector (the name the safety kernel bounds a gripper command
+            # by) drives the gripper joint hanging from its parent link, when exactly one does.
+            parents = {j.name: j.parent_link for j in self.description.joints}
+            on_link = [g for j, g in self.grippers_by_joint.items() if parents[j] == ee.parent_link]
+            gripper = on_link[0] if len(on_link) == 1 else None
+        if gripper is None and len(self.grippers_by_joint) == 1 and (name is None or ee):
             gripper = next(iter(self.grippers_by_joint.values()))
         if gripper is None or gripper.write_mode is not GripperWriteMode.NORMALISED:
             raise ROSConfigError(
