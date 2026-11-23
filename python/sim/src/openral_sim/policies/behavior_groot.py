@@ -28,6 +28,7 @@ from openral_sim.sidecar import SidecarClient
 if TYPE_CHECKING:
     from openral_core import RSkillManifest, VLASpec
 
+    from openral_sim.policy import PolicyAdapter
     from openral_sim.rollout import Observation
 
 _SIDECAR_PYTHON_ENV = "OPENRAL_BEHAVIOR_GROOT_SIDECAR_PYTHON"
@@ -210,8 +211,20 @@ def build_behavior_groot_policy(
     env_cfg: _EnvCfg,
     manifest: RSkillManifest,
     extra: dict[str, object],
-) -> _BehaviorGrootAdapter:
-    """Build the official B1K GR00T adapter behind its Python 3.10 sidecar."""
+) -> PolicyAdapter:
+    """Build the official B1K GR00T adapter.
+
+    Runs behind its Python 3.10 sidecar by default; ``extra["runtime"] ==
+    "inprocess"`` (or ``OPENRAL_BEHAVIOR_GROOT_RUNTIME=inprocess``) loads the same
+    checkpoint on lerobot's ``groot`` instead (``behavior_groot_inprocess``).
+    """
+    from openral_sim.policies import behavior_groot_inprocess
+
+    if behavior_groot_inprocess.wants_inprocess(extra):
+        return behavior_groot_inprocess.build_behavior_groot_inprocess_policy(
+            env_cfg, manifest, extra, _checkpoint_path(manifest)
+        )
+
     from openral_sim._deps import ensure_backend_deps
 
     ensure_backend_deps("behavior_groot_client")

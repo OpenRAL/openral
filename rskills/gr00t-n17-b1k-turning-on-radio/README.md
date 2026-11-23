@@ -76,6 +76,20 @@ whole-model NF4 quantization of large linears, and replacing the Qwen3-VL
 `lm_head` with `Identity` (the wrapper consumes only hidden states, so the
 full-vocab logits projection is dead weight).
 
+### In-process runtime (opt-in)
+
+`runtime: inprocess` in the scene's `vla.extra` (or
+`OPENRAL_BEHAVIOR_GROOT_RUNTIME=inprocess`) loads the same checkpoint on
+lerobot 0.7's `GrootPolicy` in the OpenRAL venv (`just sync --group gr00t`), with
+no Python 3.10 sidecar. lerobot reads the checkpoint's processor config
+(relative torso/arm actions, percentile statistics). OpenRAL's
+`behavior_groot_inprocess` reproduces the rest of `B1KPolicyWrapper`: the 61-D →
+25-D state split, the 224x224 letterbox, and the `temporal_ensemble` control
+mode, which is the only mode it supports. The in-process runtime matches the
+sidecar's weights tensor for tensor, and its actions agree within 0.010 under
+identical noise (see `docs/reference/vla_compatibility.md` §6). It loads fp32
+by default; NF4 goes through OpenRAL Pro.
+
 ### Observation -> action contract
 
 | Direction | Key | Shape | Notes |
