@@ -2419,10 +2419,17 @@ class SimDescription(BaseModel):
             initial pose on the first ``mj_step``.  Required by the
             OpenArm v2 MJCF (its position actuators with per-class PD
             gains will drive ``qpos`` to ``ctrl == 0`` otherwise).
+        planar_base_joints: ``(x, y, yaw)`` names of MJCF joints that carry a wheeled
+            base the twin places kinematically per ``BODY_TWIST``
+            (``mujoco_twin._PlanarBaseTwin``). They are not manifest joints (the
+            robot's manifest declares no ``base_joints``). ``None`` (default): the
+            twin has no such base. Refused together with ``floating_base``.
 
     Example:
         >>> SimDescription(floating_base=True).floating_base
         True
+        >>> SimDescription(planar_base_joints=("base_x", "base_y", "base_yaw")).floating_base
+        False
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -2435,6 +2442,13 @@ class SimDescription(BaseModel):
     settle_steps_default: int | None = Field(default=None, ge=1)
     keyframe_index: int | None = None
     seed_ctrl_from_qpos: bool = False
+    planar_base_joints: tuple[str, str, str] | None = None
+
+    @model_validator(mode="after")
+    def _planar_base_is_not_floating(self) -> SimDescription:
+        if self.planar_base_joints is not None and self.floating_base:
+            raise ValueError("sim.planar_base_joints and sim.floating_base are exclusive.")
+        return self
 
 
 class TopCameraDefaults(BaseModel):

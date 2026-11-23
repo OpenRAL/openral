@@ -17,8 +17,8 @@ writes one derived copy into ``$OPENRAL_CACHE_DIR/behavior_r1pro`` with:
 Nothing is vendored: the dataset revision pins the content.
 
 ``ensure_r1pro_mjcf`` builds the deploy-sim MuJoCo twin from that URDF (cached
-under ``$OPENRAL_CACHE_DIR/behavior_r1pro/mjcf/<sha>/``, keyed on the URDF and
-this module's source):
+under ``$OPENRAL_CACHE_DIR/behavior_r1pro/<rev12>/mjcf/<sha>/``, keyed on the URDF,
+this module's source and the mujoco version):
 
 * **Collision geometry.** The URDF ships none, so every visual mesh is also a
   collision geom. MuJoCo collides a mesh as its convex hull, so each link is
@@ -94,8 +94,10 @@ def ensure_r1pro_urdf() -> Path:
             (``.__cause__`` carries the hub error).
     """
     out = _derived_path()
-    if out.is_file():
-        return out
+    if out.is_file() and all(
+        Path(f).is_file() for f in _FILENAME.findall(out.read_text(encoding="utf-8"))
+    ):
+        return out  # a cleaned Hugging Face cache (meshes gone) re-downloads below
     try:
         from huggingface_hub import snapshot_download  # noqa: PLC0415  # reason: optional dep
     except ImportError as exc:
@@ -122,6 +124,7 @@ def ensure_r1pro_urdf() -> Path:
     return out
 
 
+_SWERVE_JOINTS = 6  # three steer + three wheel joints
 _SWERVE = re.compile(
     r'(<joint name="(?:steer|wheel)_motor_joint\d" type=)"(?:revolute|continuous)"'
 )
@@ -152,7 +155,9 @@ def _actuated() -> list[str]:
 def _build(urdf_xml: str) -> str:
     import mujoco  # noqa: PLC0415  # reason: optional sim-only dep
 
-    xml = _SWERVE.sub(r'\1"fixed"', urdf_xml)
+    xml, swerve = _SWERVE.subn(r'\1"fixed"', urdf_xml)
+    if swerve != _SWERVE_JOINTS:  # else every later qpos shifts and the manifest map lies
+        raise ValueError(f"expected {_SWERVE_JOINTS} swerve joints to fix, found {swerve}")
     compiler = (
         '<mujoco><compiler discardvisual="false" fusestatic="false" '
         'strippath="false" angle="radian"/></mujoco>'
@@ -229,21 +234,33 @@ def ensure_r1pro_mjcf() -> Path:
     """Return the cached R1 Pro MuJoCo twin MJCF, building it on first use.
 
     Raises:
-        ROSConfigError: The URDF cannot be fetched (``ensure_r1pro_urdf``), or
-            ``mujoco`` is missing or rejects the model.
+        ROSConfigError: The URDF cannot be fetched (``ensure_r1pro_urdf``),
+            ``mujoco`` is missing or rejects the model, the URDF's swerve layout
+            changed, or the cache cannot be written.
     """
     urdf_xml = ensure_r1pro_urdf().read_text(encoding="utf-8")
-    key = hashlib.sha256(Path(__file__).read_bytes() + urdf_xml.encode()).hexdigest()[:16]
-    out = _derived_path().parent / "mjcf" / key / "r1pro.xml"
+    try:
+        import mujoco  # noqa: PLC0415  # reason: optional sim-only dep
+    except ImportError as exc:
+        raise ROSConfigError(f"behavior:r1pro MJCF needs mujoco: {exc}") from exc
+    # The writer's mujoco version is in the key: another venv's mujoco may not parse it.
+    material = Path(__file__).read_bytes() + urdf_xml.encode() + mujoco.__version__.encode()
+    out = _derived_path().parent / "mjcf" / hashlib.sha256(material).hexdigest()[:16] / "r1pro.xml"
     if out.is_file():
         return out
     try:
         xml = _build(urdf_xml)
-    except (ImportError, ValueError) as exc:  # mujoco missing, or its spec/compile errors
+    except ValueError as exc:  # mujoco's spec/compile errors, or a URDF layout change
         raise ROSConfigError(f"behavior:r1pro MJCF build failed: {exc}") from exc
-    out.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=out.parent, prefix=".r1pro.", suffix=".tmp")
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(xml)
-    os.replace(tmp, out)
+    tmp: str | None = None
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=out.parent, prefix=".r1pro.", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(xml)
+        os.replace(tmp, out)
+    except OSError as exc:
+        if tmp is not None:
+            Path(tmp).unlink(missing_ok=True)
+        raise ROSConfigError(f"behavior:r1pro MJCF cache write failed: {exc}") from exc
     return out

@@ -447,3 +447,16 @@ def test_the_manifest_carries_the_instance_id() -> None:
     assert (manifest.robot_id, manifest.instance_id) == ("so101_follower", "57fcd495c9")
     wire = json.loads(manifest.model_dump_json(by_alias=True))
     assert wire["instance_id"] == "57fcd495c9"
+
+
+def test_sim_planar_base_joints_are_refused_with_a_floating_base() -> None:
+    """A twin's base is either a free joint or MJCF planar joints, never both."""
+    from openral_core.schemas import SimDescription
+
+    r1pro = RobotDescription.from_yaml(
+        str(Path(__file__).resolve().parents[2] / "robots" / "r1pro" / "robot.yaml")
+    )
+    assert r1pro.sim is not None
+    assert r1pro.sim.planar_base_joints == ("base_x", "base_y", "base_yaw")
+    with pytest.raises(ValueError, match="exclusive"):
+        SimDescription(floating_base=True, planar_base_joints=("base_x", "base_y", "base_yaw"))

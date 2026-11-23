@@ -17,8 +17,9 @@ MuJoCo twin built from that URDF (`ensure_r1pro_mjcf`):
   conservative envelope per link, never smaller than the part. Hulls collide
   with the world, not with each other (self-collision is the safety kernel's).
 - **Base.** The swerve steer/wheel joints are fixed; planar `base_x` / `base_y` /
-  `base_yaw` joints (qpos 0..2, not manifest joints) carry the base, placed
-  kinematically by `BODY_TWIST` (holonomic, one control period per command).
+  `base_yaw` joints (qpos 0..2, not manifest joints; named by `sim.planar_base_joints`)
+  carry the base, placed kinematically by `BODY_TWIST` (holonomic, one control
+  period per command).
 - **Actuators.** 20 position actuators: torso, both arms, and each hand's
   `finger_joint1` (forcerange = the URDF effort limit; gains are a stiff loop,
   not motor data). `finger_joint2` follows `finger_joint1` through an MJCF

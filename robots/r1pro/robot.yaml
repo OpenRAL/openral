@@ -337,11 +337,13 @@ sensors:
 sdk_kind: "open"
 
 # The MuJoCo twin (openral_hal._behavior_r1pro_assets). qpos 0..2 are the planar base
-# joints, which are not manifest joints: BODY_TWIST moves them (_PlanarBaseTwin). Each
+# joints (planar_base_joints), which are not manifest joints: BODY_TWIST moves them
+# (_PlanarBaseTwin). Each
 # hand's finger_joint2 follows finger_joint1 through an MJCF equality and has no
 # actuator; the gripper actuator drives finger_joint1 over its 0-0.05 m slide
 # (0 closed), read as the two fingers' summed opening over 0.1 m.
 sim:
+  planar_base_joints: ["base_x", "base_y", "base_yaw"]
   joint_qpos_addr:
     torso_joint1: 3
     torso_joint2: 4

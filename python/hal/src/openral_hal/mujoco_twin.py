@@ -1149,36 +1149,39 @@ class _FreeBaseTwin(MujocoTwinRollout):
 class _PlanarBaseTwin(MujocoTwinRollout):
     """A wheeled base the twin places kinematically on MJCF planar joints.
 
-    The MJCF carries ``base_x`` / ``base_y`` slides and a ``base_yaw`` hinge that are
-    not manifest joints (the manifest has no ``base_joints``; the base is driven only by
-    ``BODY_TWIST``). Their pose is written into qpos, velocity zeroed, before every
-    physics step (actions and idle slices alike), so the arms' reaction forces never
-    push the base. A ``BODY_TWIST`` slides that pose by one ``body_twist_dt_s`` of
-    ``(vx, vy, wz)`` (``integrate_planar_twist``: a holonomic base). ``MujocoArmHAL
-    .from_description`` picks it for a fixed-base-addressed manifest that supports
-    ``BODY_TWIST`` (the R1 Pro).
+    The MJCF joints named by ``description.sim.planar_base_joints`` (``x`` / ``y``
+    slides, ``yaw`` hinge) are not manifest joints: the base is driven only by
+    ``BODY_TWIST``. Their pose is written into qpos, velocity zeroed, before every
+    physics step (actions and idle slices alike) and again after the last one, so the
+    arms' reaction forces never push the base and every read (renders, scene export)
+    sees the pinned pose. A ``BODY_TWIST`` slides that pose by one ``body_twist_dt_s``
+    of ``(vx, vy, wz)`` (``integrate_planar_twist``: a holonomic base).
+    ``MujocoArmHAL.from_description`` picks it when ``sim.planar_base_joints`` is set
+    (the R1 Pro).
     """
 
-    BASE_JOINTS: ClassVar[tuple[str, str, str]] = ("base_x", "base_y", "base_yaw")
     _base_qpos: list[int]
     _base_qvel: list[int]
     _base: tuple[float, float, float]
 
     def _on_load(self) -> None:
-        """Find the three base joints in the MJCF; the pose starts at their qpos.
+        """Find the base joints in the MJCF; the pose starts at their qpos.
 
         Raises:
-            ROSConfigError: The MJCF lacks one of ``BASE_JOINTS``.
+            ROSConfigError: The manifest names no ``sim.planar_base_joints``, or the
+                MJCF lacks one of them.
         """
         import mujoco as mj  # reason: optional sim-only dep
 
         super()._on_load()
         model, data = self._require_loaded("load")
-        ids = [mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, n) for n in self.BASE_JOINTS]
-        if min(ids) < 0:
+        sim = self.description.sim
+        names = sim.planar_base_joints if sim is not None else None
+        ids = [mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, n) for n in names or ()]
+        if not ids or min(ids) < 0:
             raise ROSConfigError(
-                f"{self.backend}: robot '{self.description.name}' supports BODY_TWIST but "
-                f"its MJCF lacks the planar base joints {self.BASE_JOINTS}."
+                f"{self.backend}: robot '{self.description.name}' has no MJCF planar base "
+                f"joints (sim.planar_base_joints={names})."
             )
         self._base_qpos = [int(model.jnt_qposadr[i]) for i in ids]
         self._base_qvel = [int(model.jnt_dofadr[i]) for i in ids]
@@ -1199,13 +1202,29 @@ class _PlanarBaseTwin(MujocoTwinRollout):
         x, y, yaw, _ = integrate_planar_twist((*self._base, 0.0), vx, vy, wz, self.body_twist_dt_s)
         self._base = (x, y, yaw)
 
-    def _per_step(self) -> None:
-        """Write the base pose into its joints, then the next block's hook."""
+    def _pin_base(self) -> None:
         assert self.data is not None
         for qpos, qvel, value in zip(self._base_qpos, self._base_qvel, self._base, strict=True):
             self.data.qpos[qpos] = value
             self.data.qvel[qvel] = 0.0
+
+    def _per_step(self) -> None:
+        """Write the base pose into its joints, then the next block's hook."""
+        self._pin_base()
         super()._per_step()
+
+    def advance(self, steps: int) -> None:
+        """``MujocoTwinRollout.advance``, then the base re-pinned.
+
+        The last ``mj_step`` integrates the base joints freely under the arms' reaction
+        forces; re-pinning after it (and ``mj_forward``: body, geom and camera poses)
+        keeps renders and scene reads on the pinned base.
+        """
+        import mujoco as mj  # reason: optional sim-only dep
+
+        super().advance(steps)
+        self._pin_base()
+        mj.mj_forward(self.model, self.data)
 
 
 class _SoftwarePDTwin(MujocoTwinRollout):

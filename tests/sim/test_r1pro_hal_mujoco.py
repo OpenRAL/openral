@@ -80,7 +80,8 @@ def test_tracks_torso_arms_and_grippers(
     assert [j.name for j in desc.joints] == list(hal.read_state().name)
     action = Action(control_mode=ControlMode.JOINT_POSITION, joint_targets=[target], horizon=1)
     _send_for(hal, action, _SETTLE_SIM_S)
-    got = dict(zip(hal.read_state().name, hal.read_state().position, strict=True))
+    state = hal.read_state()
+    got = dict(zip(state.name, state.position, strict=True))
     for joint, commanded in zip(desc.joints, target, strict=True):
         # The mirrored finger reads its slide in metres.
         want = 0.05 * gripper if joint.name.endswith("finger_joint2") else commanded
@@ -154,3 +155,18 @@ def test_attachment_evidence_refuses_the_two_handed_robot(
     desc, hal = connected
     with pytest.raises(ROSConfigError, match="needs one gripper parent link"):
         SimAttachmentEvidenceTracker(hal._model, desc)
+
+
+def test_mjcf_without_the_named_base_joints_is_refused(
+    connected: tuple[RobotDescription, MujocoArmHAL], tmp_path: Path
+) -> None:
+    """``sim.planar_base_joints`` naming joints the MJCF lacks fails ``connect``, typed."""
+    desc, _hal = connected
+    assert desc.assets.mjcf is not None
+    mjcf = resolve_asset(desc.assets.mjcf, "mjcf")
+    assert mjcf is not None
+    renamed = tmp_path / "r1pro_no_base.xml"
+    renamed.write_text(Path(mjcf).read_text().replace('name="base_yaw"', 'name="base_turn"'))
+    hal = MujocoArmHAL.from_description(desc, mjcf_path_override=str(renamed))
+    with pytest.raises(ROSConfigError, match="no MJCF planar base joints"):
+        hal.connect()

@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Unpack
 import structlog
 from openral_core.assets import AssetRefError, resolve_asset
 from openral_core.exceptions import ROSConfigError, ROSEStopRequested, ROSRuntimeError
-from openral_core.schemas import ControlMode, RobotDescription
+from openral_core.schemas import RobotDescription
 
 from openral_hal.mujoco_twin import MujocoTwinRollout, TwinKwargs, _PlanarBaseTwin
 from openral_hal.sim_attached import SimAttachedHAL
@@ -407,8 +407,7 @@ class MujocoArmHAL(SimAttachedHAL):
         joint→qpos/qvel/actuator mappings are 1:1 with ``description.joints``
         order, offset by 7/6 if ``description.sim.floating_base`` is True
         (humanoids); explicit per-joint overrides in ``description.sim`` win. A
-        manifest that supports ``BODY_TWIST`` without a floating base runs on
-        ``_PlanarBaseTwin`` (its MJCF's ``base_x`` / ``base_y`` / ``base_yaw``).
+        manifest with ``sim.planar_base_joints`` runs on ``_PlanarBaseTwin``.
 
         Args:
             description: A ``RobotDescription`` whose ``sim`` field is
@@ -443,13 +442,10 @@ class MujocoArmHAL(SimAttachedHAL):
             staleness_limit_s=staleness_limit_s,
             mjcf_path_override=mjcf_path_override,
         )
-        # A fixed-base-addressed manifest that takes BODY_TWIST drives a wheeled base the
-        # MJCF carries on planar joints (the R1 Pro); every other robot gets the plain twin.
+        # A manifest that names MJCF planar base joints (sim.planar_base_joints, the R1
+        # Pro) drives that base by BODY_TWIST; every other robot gets the plain twin.
         assert description.sim is not None  # _sim_kwargs_for refused a missing block
-        planar = (
-            ControlMode.BODY_TWIST in description.capabilities.supported_control_modes
-            and not description.sim.floating_base
-        )
+        planar = description.sim.planar_base_joints is not None
         return cls(description, twin=_PlanarBaseTwin if planar else MujocoTwinRollout, **kwargs)
 
     def _init_from_description(
