@@ -58,7 +58,9 @@ joints:
     parent_link: "left_link2"
     child_link: "left_link3"
     axis_xyz: [0.0, 1.0, 0.0]
-    position_limits: [-2.967, 0.0]
+    # Elbow unfolds toward +q on RoboTwin's ARX5 URDF (`lerobot/robotwin_unified`
+    # state mean +0.81 rad); PiPER's [-2.967, 0] magnitude with that sign.
+    position_limits: [0.0, 2.967]
     velocity_limit: 3.0
     effort_limit: 30.0
     actuator_kind: "servo"
@@ -129,7 +131,9 @@ joints:
     parent_link: "right_link2"
     child_link: "right_link3"
     axis_xyz: [0.0, 1.0, 0.0]
-    position_limits: [-2.967, 0.0]
+    # Elbow unfolds toward +q on RoboTwin's ARX5 URDF (`lerobot/robotwin_unified`
+    # state mean +0.81 rad); PiPER's [-2.967, 0] magnitude with that sign.
+    position_limits: [0.0, 2.967]
     velocity_limit: 3.0
     effort_limit: 30.0
     actuator_kind: "servo"
