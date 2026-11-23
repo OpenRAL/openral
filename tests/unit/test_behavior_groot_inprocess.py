@@ -89,6 +89,12 @@ def test_inprocess_routing_refuses_before_loading(
         _build({"runtime": "inprocess"})
 
     monkeypatch.setenv(behavior_groot._CHECKPOINT_ENV, str(tmp_path))
+    # The manifest's NF4 plan asks for nf4_min_params=1M; Pro's GR00T quantizer
+    # packs only >=4M, so the in-process path refuses rather than diverge
+    # (without Pro installed, the NF4 plan is refused one gate earlier).
+    monkeypatch.delenv(QUANTIZATION_DTYPE_ENV, raising=False)
+    with pytest.raises(ROSConfigError, match=r"nf4_min_params=1000000|OpenRAL Pro"):
+        _build({"runtime": "inprocess"})
     # bf16 has no in-process load path (unquantized GrootPolicy runs fp32).
     monkeypatch.setenv(QUANTIZATION_DTYPE_ENV, "bf16")
     with pytest.raises(ROSConfigError, match="cannot load dtype 'bf16'"):

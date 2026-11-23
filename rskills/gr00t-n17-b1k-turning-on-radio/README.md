@@ -87,10 +87,11 @@ no Python 3.10 sidecar. lerobot reads the checkpoint's processor config
 25-D state split, the 224x224 letterbox, and the `temporal_ensemble` control
 mode, which is the only mode it supports. The in-process runtime matches the
 sidecar's weights tensor for tensor, and its actions agree within 0.010 under
-identical noise (see `docs/reference/vla_compatibility.md` §6). Precision
-follows the manifest, so it loads NF4 through OpenRAL Pro by default; set
-`OPENRAL_QUANTIZATION_DTYPE=fp32` for the open fp32 path (~12 GB VRAM). bf16 is
-not supported in-process.
+identical noise (see `docs/reference/vla_compatibility.md` §6). Run it with
+`OPENRAL_QUANTIZATION_DTYPE=fp32`, the open fp32 path (~12 GB VRAM). In-process
+NF4 refuses this manifest: its `nf4_min_params: 1000000` asks for smaller
+Linears packed than Pro's GR00T quantizer packs (4M and up), so use the sidecar
+for NF4. bf16 is not supported in-process.
 
 ### Observation -> action contract
 

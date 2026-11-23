@@ -20,8 +20,10 @@ here, to the line (fork ``wensi-ai/Isaac-GR00T@ace36d9``):
 The output is the same 23-D wire action the sidecar returns, so the scene side
 is unchanged.
 
-Precision follows the manifest like every family (``int4`` → NF4, OpenRAL Pro);
-``OPENRAL_QUANTIZATION_DTYPE=fp32`` (or ``none``) loads the open fp32 path.
+Precision follows the manifest like every family (``int4`` → NF4, OpenRAL Pro),
+but an ``nf4_min_params`` other than Pro's 4M is refused before loading (Pro's
+GR00T quantizer has no threshold knob); ``OPENRAL_QUANTIZATION_DTYPE=fp32`` (or
+``none``) loads the open fp32 path.
 bf16 is refused, as for the ``gr00t`` family: an unquantized ``GrootPolicy``
 load casts every param to fp32.
 """
@@ -250,13 +252,15 @@ def build_behavior_groot_inprocess_policy(
     require_supported_dtype(plan, frozenset({"nf4", "fp32", "none"}), "gr00t_b1k (inprocess)")
     quantize_scope = str(plan.extra.get("quantize_scope", "model")).lower()
     requested_min = plan.extra.get("nf4_min_params")
-    if plan.quantize and requested_min is not None and requested_min != _PRO_NF4_MIN_PARAMS:
-        # ponytail: Pro's quantize_groot_nf4 has no min-params knob; add one if
-        # the in-process NF4 run needs to match the sidecar's packing.
-        _log.warning(
-            "behavior_groot.inprocess.nf4_min_params_ignored",
-            requested=requested_min,
-            used=_PRO_NF4_MIN_PARAMS,
+    if plan.quantize and requested_min is not None and int(requested_min) != _PRO_NF4_MIN_PARAMS:
+        # Pro's quantize_groot_nf4 has no min-params knob, so it cannot pack the
+        # plan the manifest asks for; refuse before loading rather than run a
+        # different quantization than the sidecar.
+        raise ROSConfigError(
+            f"The in-process BEHAVIOR GR00T runtime packs NF4 Linears of at least "
+            f"{_PRO_NF4_MIN_PARAMS:,} params only; the manifest asks for nf4_min_params="
+            f"{requested_min}. Use OPENRAL_QUANTIZATION_DTYPE=fp32, or runtime: sidecar "
+            f"for NF4."
         )
 
     install_hint = "just sync --all-packages --group gr00t"
