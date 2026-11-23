@@ -10,7 +10,8 @@ Constructs LeRobot's native ``robotwin`` gym env (``lerobot-eval
     ping  -> {"ok", "action_dim", "task", "env": "robotwin"}
     reset/step -> {"observation", ["reward","terminated","truncated","info",]"sim_time_ns"}
     render -> {"frame": uint8 HWC|None}   close -> {"ok"}
-    observation = {"images": {"head_camera",...}, "state": 14-D float32, "task": str}
+    observation = {"images": {"head_camera",...}, "state": 14-D float32, "task": str,
+                   "joint_positions"/"joint_velocities": measured 14-D (see _measured_joint_state)}
 
 RoboTwin/SAPIEN/LeRobot import lazily inside ``main`` so `--help` doesn't
 need the heavy venv.
@@ -247,6 +248,51 @@ def _install_curobo_planner_fallback() -> None:
 _ENV_CAMERA_NAMES = ("head_camera", "left_camera", "right_camera")
 
 
+def _arm_measured(
+    entity: Any, arm_joints: Sequence[Any], gripper: Sequence[Any], scale: Sequence[float]
+) -> tuple[list[float], list[float]]:
+    """One arm's measured (qpos, qvel): its joints, then the gripper normalised to [0, 1].
+
+    The gripper is RoboTwin's own encoding (``Robot.get_normal_real_gripper_val``:
+    ``(q - scale[0]) / (scale[1] - scale[0])``, 0 = closed, 1 = open) on the measured
+    base finger joint, where upstream reads the drive target.
+    """
+    qpos = np.asarray(entity.get_qpos(), dtype=np.float64).reshape(-1)
+    qvel = np.asarray(entity.get_qvel(), dtype=np.float64).reshape(-1)
+    active = list(entity.get_active_joints())
+    idx = [active.index(j) for j in arm_joints]
+    g = active.index(gripper[0][0])
+    span = float(scale[1]) - float(scale[0])
+    pos = [float(qpos[i]) for i in idx]
+    pos.append(float(np.clip((qpos[g] - float(scale[0])) / span, 0.0, 1.0)))
+    vel = [float(qvel[i]) for i in idx]
+    vel.append(float(qvel[g]) / span)
+    return pos, vel
+
+
+def _measured_joint_state(task: Any) -> tuple[list[float], list[float]] | None:
+    """Measured dual-arm joint state ``[left arm, left gripper, right arm, right gripper]``.
+
+    ``agent_pos`` (RoboTwin's ``joint_action.vector``) is the joints' drive *targets*
+    and the commanded gripper value (``Robot.get_left_arm_jointState``), and LeRobot
+    zero-fills it when absent, so it never feeds ``/joint_states``. This reads the
+    articulation's qpos/qvel, as ``Robot.get_left_arm_real_jointState`` does. None when
+    the task has no robot yet (before the first reset) or no gripper.
+    """
+    robot = getattr(task, "robot", None)
+    if robot is None or any(
+        not g or g[0][0] is None for g in (robot.left_gripper, robot.right_gripper)
+    ):
+        return None
+    lp, lv = _arm_measured(
+        robot.left_entity, robot.left_arm_joints, robot.left_gripper, robot.left_gripper_scale
+    )
+    rp, rv = _arm_measured(
+        robot.right_entity, robot.right_arm_joints, robot.right_gripper, robot.right_gripper_scale
+    )
+    return lp + rp, lv + rv
+
+
 class _RoboTwinEnv:
     """Thin wrapper over LeRobot's ``robotwin`` gym env in the eval-layer shape.
 
@@ -343,7 +389,11 @@ class _RoboTwinEnv:
             if agent_pos is not None
             else np.zeros((self._action_dim,), dtype=np.float32)
         )
-        return {"images": images, "state": state, "task": self._instruction}
+        out: dict[str, Any] = {"images": images, "state": state, "task": self._instruction}
+        measured = _measured_joint_state(getattr(self._env, "_env", None))
+        if measured is not None:
+            out["joint_positions"], out["joint_velocities"] = measured
+        return out
 
     def _resize_frame(self, frame: npt.NDArray[np.uint8]) -> npt.NDArray[np.uint8]:
         if frame.shape[:2] == (self._obs_height, self._obs_width):

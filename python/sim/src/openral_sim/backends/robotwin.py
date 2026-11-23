@@ -175,7 +175,8 @@ class _RoboTwinSimSidecar(SidecarSimRollout):
 
     Observations come back from the sidecar already in the eval-layer shape
     (``images`` dict of HWC uint8 keyed by the RoboTwin camera names, ``state`` 1-D
-    float32 of the 14 joint positions, ``task`` str); we re-wrap into a plain dict
+    float32 of the 14 joint drive targets the policy reads, the measured 14-D
+    ``joint_positions`` / ``joint_velocities``, ``task`` str); we re-wrap into a plain dict
     and cache the last RGB frame for ``render``.
 
     Fields, ``reset``/``step``/``sim_time_ns``/``render``/``close`` live on
@@ -210,6 +211,11 @@ class _RoboTwinSimSidecar(SidecarSimRollout):
             "state": state,
             "task": raw.get("task", self.task.instruction),
         }
+        # Measured joint state (manifest order), for `openral deploy sim`'s
+        # SimAttachedHAL.read_state; ``state`` is the policy input (drive targets).
+        for key in ("joint_positions", "joint_velocities"):
+            if raw.get(key) is not None:
+                obs[key] = np.asarray(raw[key], dtype=np.float32).reshape(-1)
         return obs
 
 

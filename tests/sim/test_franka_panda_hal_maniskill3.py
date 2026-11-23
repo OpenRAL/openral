@@ -1,0 +1,108 @@
+"""Sim test: ``SimAttachedHAL.read_state`` publishes ManiSkill3's measured Panda joints.
+
+The ManiSkill3 rollout used to return only ``state`` (qpos + qvel, unnamed), so a
+scene-attached ``openral deploy sim`` on ``franka_panda`` published an all-zero
+``/joint_states``. It now emits ``joint_names`` / ``joint_positions`` /
+``joint_velocities`` off the live ManiSkill articulation, ``panda_finger_joint1`` as
+the manifest's normalised ``panda_gripper``.
+
+What is asserted, on the real ManiSkill3 PickCube env and the real ``franka_panda``
+manifest:
+
+* every manifest joint is reported, by name, equal to the articulation's own qpos;
+* the gripper is ``panda_finger_joint1`` normalised over the articulation's limits, in
+  ``[0, 1]``;
+* after a step the state still matches the articulation (it is re-read per obs).
+
+Skips when ``mani_skill`` is missing or SAPIEN has no Vulkan device.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pytest
+
+_REPO = Path(__file__).resolve().parents[2]
+_MISSING = tuple(m for m in ("mani_skill", "gymnasium") if importlib.util.find_spec(m) is None)
+
+pytestmark = [
+    pytest.mark.sim,
+    pytest.mark.skipif(
+        bool(_MISSING),
+        reason="ManiSkill3 sim test requires "
+        + ", ".join(_MISSING)
+        + " (just sync --group maniskill3)",
+    ),
+]
+
+
+@pytest.fixture(scope="module")
+def hal() -> Iterator[Any]:
+    import openral_sim.backends  # noqa: F401 — registers the scene factory
+    from openral_core import RobotDescription, SimEnvironment, SimScene, VLASpec
+    from openral_hal.sim_attached import SimAttachedHAL
+    from openral_sim.registry import SCENES
+
+    scene_env = SimScene.from_yaml(str(_REPO / "scenes" / "benchmark" / "maniskill_pick_cube.yaml"))
+    env_cfg = SimEnvironment(
+        robot_id="franka_panda",
+        scene=scene_env.scene,
+        task=scene_env.task,
+        vla=VLASpec(id="zero", weights_uri="stub"),
+        seed=0,
+        n_episodes=1,
+    )
+    try:
+        rollout = SCENES.get("maniskill3")(env_cfg)
+    except RuntimeError as exc:
+        if "vk::" in str(exc) or "vulkan" in str(exc).lower():
+            pytest.skip(f"SAPIEN rendering needs a working Vulkan driver: {exc}")
+        raise
+    desc = RobotDescription.from_yaml(str(_REPO / "robots" / "franka_panda" / "robot.yaml"))
+    sim_hal = SimAttachedHAL(rollout, desc)
+    sim_hal.connect()
+    yield sim_hal
+    sim_hal.disconnect()
+    rollout.close()
+
+
+def _articulation(hal: Any) -> dict[str, tuple[float, float, float]]:
+    """``{joint: (qpos, lower, upper)}`` read straight off the ManiSkill robot."""
+    robot = hal.env._env.unwrapped.agent.robot
+    names = [j.name for j in robot.get_active_joints()]
+    qpos = robot.get_qpos().cpu().numpy().reshape(-1)
+    lim = robot.get_qlimits().cpu().numpy().reshape(-1, 2)
+    return {n: (float(qpos[i]), float(lim[i, 0]), float(lim[i, 1])) for i, n in enumerate(names)}
+
+
+def _assert_matches_articulation(hal: Any) -> None:
+    state = hal.read_state()
+    art = _articulation(hal)
+    assert state.name == [j.name for j in hal.description.joints]
+    for name, value in zip(state.name, state.position, strict=True):
+        if name == "panda_gripper":
+            q, lo, hi = art["panda_finger_joint1"]
+            expected = (q - lo) / (hi - lo)
+            assert 0.0 <= value <= 1.0
+        else:
+            expected = art[name][0]
+        assert value == pytest.approx(expected, abs=1e-5), name
+    assert len(state.velocity) == len(state.name)
+    print(
+        f"/joint_states: {dict(zip(state.name, np.round(state.position, 4).tolist(), strict=True))}"
+    )
+
+
+def test_read_state_is_the_articulation_at_reset(hal: Any) -> None:
+    _assert_matches_articulation(hal)
+
+
+def test_read_state_tracks_the_articulation_after_steps(hal: Any) -> None:
+    for _ in range(5):
+        assert hal.idle_step() is True
+    _assert_matches_articulation(hal)
