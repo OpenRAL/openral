@@ -14,7 +14,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
-import numpy.typing as npt
 import pytest
 from openral_core import (
     Action,
@@ -28,6 +27,7 @@ from openral_core import (
     SensorReaderConfig,
     VLASpec,
 )
+from openral_core.kinematics import transform_from_xyz_rpy
 from openral_hal.galaxea_a1 import (
     GALAXEA_A1_DESCRIPTION,
     GalaxeaA1HAL,
@@ -181,26 +181,12 @@ def test_manifest_and_hal_pin_official_a1_joint_transforms() -> None:
         assert len(got) == len(expected)
         for (xyz, rpy, axis), (want_xyz, want_rpy, want_axis) in zip(got, expected, strict=True):
             assert np.allclose(xyz, want_xyz, atol=1e-6)
-            assert np.allclose(_rpy_matrix(rpy), _rpy_matrix(want_rpy), atol=1e-4)
+            assert np.allclose(
+                transform_from_xyz_rpy(xyz, rpy)[:3, :3],
+                transform_from_xyz_rpy(want_xyz, want_rpy)[:3, :3],
+                atol=1e-4,
+            )
             assert axis == want_axis
-
-
-def _rpy_matrix(rpy: tuple[float, float, float]) -> npt.NDArray[np.float64]:
-    """URDF fixed-axis roll-pitch-yaw as a rotation matrix (Rz @ Ry @ Rx)."""
-    roll, pitch, yaw = rpy
-    cr, sr, cp, sp, cy, sy = (
-        np.cos(roll),
-        np.sin(roll),
-        np.cos(pitch),
-        np.sin(pitch),
-        np.cos(yaw),
-        np.sin(yaw),
-    )
-    rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]], dtype=np.float64)
-    ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]], dtype=np.float64)
-    rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]], dtype=np.float64)
-    out: npt.NDArray[np.float64] = rz @ ry @ rx
-    return out
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.20", "sidecar.example", "::1"])
