@@ -74,6 +74,7 @@ _MANIFEST_DRIVEN_ROBOTS = [
     "makermods_metal",  # mimic finger at qpos 6; gripper pinned to qpos 7 (makermods: scheme)
     "makermods_metal_station",  # bimanual: 2 x makermods_metal, explicit actuator_index
     "widowx",  # mirrored fingers via MJCF equality; starts at the `home` keyframe (#740)
+    "galaxea_a1",  # end-effector gripper (no manifest joint), galaxea: derived MJCF (#740)
 ]
 
 

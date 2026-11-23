@@ -11,16 +11,33 @@ Upstream names its meshes ``package://mobiman/urdf/A1/meshes/<file>`` (a
 package of Galaxea's own workspace that is not published), so the URDF
 returned is a derived copy beside the original with those refs rewritten to
 ``../meshes/<file>``, relative to itself.
+
+``ensure_a1_mjcf()`` derives the MuJoCo twin's model from that URDF (issue #740).
+Upstream models the two fingers as ``fixed`` joints ``gripper1_axis`` /
+``gripper2_axis``, yet each still declares ``<axis xyz="0 0 1">`` and
+``<limit lower="0" upper="0.03">``: the vendor's own finger slide, 0-30 mm per
+finger (+q opens). The derive step turns both into those prismatic joints,
+drives ``gripper1_axis`` with a ``<position>`` actuator and couples
+``gripper2_axis`` to it with an ``<equality>``, and adds one ``<position>``
+actuator per arm joint clamped at the URDF effort. The URDF has no actuator
+model, so the gains are OpenRAL's sim-only choice and say nothing about the
+real A1 joint loop. The real HAL's 0-104 mm ``gripper_stroke_*_mm`` defaults are
+a different figure (the sidecar's normalised stroke): the twin only ever
+exchanges the normalised ``[0, 1]`` value, as the real HAL does.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
+import xml.etree.ElementTree as ET
 from pathlib import Path
+
+from openral_core.exceptions import ROSConfigError
 
 from openral_hal._pinned_files import fetch_pinned_file
 
-__all__ = ["GALAXEA_DESCRIPTIONS_SHA", "ensure_a1_urdf"]
+__all__ = ["GALAXEA_DESCRIPTIONS_SHA", "ensure_a1_mjcf", "ensure_a1_urdf"]
 
 #: ``userguide-galaxea/robot_descriptions`` ``galaxea/main`` on 2026-11-12.
 GALAXEA_DESCRIPTIONS_SHA: str = "72008ea950a4c9258387d30821a7d8d8a2b588ca"
@@ -69,3 +86,139 @@ def ensure_a1_urdf() -> Path:
         tmp.write_text(xml, encoding="utf-8")
         os.replace(tmp, derived)
     return derived
+
+
+# The derived MJCF is keyed by this module's source (every derive constant
+# lives here), so an edit invalidates a stale cache without a hand-bumped version.
+_DERIVE_KEY: str = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
+_ARM_JOINTS: tuple[str, ...] = tuple(f"arm_joint{i}" for i in range(1, 7))
+_DRIVEN_FINGER = "gripper1_axis"
+_MIMIC_FINGER = "gripper2_axis"
+# Sim-only position-servo gains (kp, kv). Joints 1-3 carry the 40/40/27 N·m
+# motors of the URDF, the wrist the 7 N·m ones; the finger is a slide in metres.
+_KP_KV: dict[str, tuple[float, float]] = {
+    "arm_joint1": (150.0, 6.0),
+    "arm_joint2": (800.0, 30.0),
+    "arm_joint3": (600.0, 20.0),
+    "arm_joint4": (100.0, 3.0),
+    "arm_joint5": (80.0, 2.5),
+    "arm_joint6": (20.0, 0.8),
+    _DRIVEN_FINGER: (1000.0, 20.0),
+}
+# The finger meshes' convex hulls overlap at the closed position (0 m) by
+# construction, and ``base_link`` is welded to the world (MuJoCo's parent/child
+# filter does not cover it).
+_CONTACT_EXCLUDES: tuple[tuple[str, str], ...] = (
+    ("gripper1", "gripper2"),
+    ("base_link", "arm_seg1"),
+)
+_JOINT_DAMPING = 0.5
+_JOINT_ARMATURE = 0.02
+
+
+def _derive_mjcf(urdf: Path) -> str:
+    """Compile the A1 URDF with sliding fingers and add actuators + finger equality.
+
+    Raises:
+        ROSConfigError: ``mujoco`` is missing, or the pinned URDF lost a joint,
+            range or effort limit this step needs.
+    """
+    try:
+        import mujoco  # noqa: PLC0415 — sim-only optional dep, lazy
+    except ImportError as exc:
+        raise ROSConfigError(
+            f"Deriving the Galaxea A1 MJCF needs the `mujoco` package "
+            f"({type(exc).__name__}: {exc}); install the sim extras."
+        ) from exc
+    root = ET.parse(urdf).getroot()
+    urdf_joints = {str(j.get("name")): j for j in root.iter("joint")}
+    efforts: dict[str, float] = {}
+    for name in (*_ARM_JOINTS, _DRIVEN_FINGER, _MIMIC_FINGER):
+        joint = urdf_joints.get(name)
+        limit = None if joint is None else joint.find("limit")
+        if joint is None or limit is None or limit.get("effort") is None:
+            raise ROSConfigError(f"Galaxea A1 URDF: joint {name!r} or its <limit> is missing.")
+        efforts[name] = float(str(limit.get("effort")))
+        if name in (_DRIVEN_FINGER, _MIMIC_FINGER):
+            joint.set("type", "prismatic")  # the vendor's declared axis + limit
+    meshdir = urdf.parent.parent / "meshes"
+    ext = ET.SubElement(root, "mujoco")
+    ET.SubElement(
+        ext,
+        "compiler",
+        {
+            "meshdir": str(meshdir),
+            "strippath": "true",
+            "fusestatic": "false",
+            "discardvisual": "true",
+            "balanceinertia": "true",
+        },
+    )
+    try:
+        spec = mujoco.MjSpec.from_string(ET.tostring(root, encoding="unicode"))
+        spec.compile()
+        mjcf = ET.fromstring(spec.to_xml())
+    except (ValueError, ET.ParseError) as exc:
+        raise ROSConfigError(f"Deriving the Galaxea A1 MJCF failed: {exc}") from exc
+    mjcf.set("model", "galaxea_a1")
+    compiler = mjcf.find("compiler")
+    if compiler is None:
+        compiler = ET.Element("compiler")
+        mjcf.insert(0, compiler)
+    compiler.set("meshdir", str(meshdir))
+    compiler.set("angle", "radian")
+    mj_joints = {str(j.get("name")): j for j in mjcf.iter("joint")}
+    for joint in mj_joints.values():
+        joint.set("damping", f"{_JOINT_DAMPING}")
+        joint.set("armature", f"{_JOINT_ARMATURE}")
+    for old in mjcf.findall("actuator") + mjcf.findall("equality") + mjcf.findall("contact"):
+        mjcf.remove(old)
+    contact = ET.SubElement(mjcf, "contact")
+    for body1, body2 in _CONTACT_EXCLUDES:
+        ET.SubElement(contact, "exclude", {"body1": body1, "body2": body2})
+    actuator = ET.SubElement(mjcf, "actuator")
+    for name in (*_ARM_JOINTS, _DRIVEN_FINGER):
+        kp, kv = _KP_KV[name]
+        lo, hi = str(mj_joints[name].get("range")).split()
+        force = efforts[name]
+        ET.SubElement(
+            actuator,
+            "position",
+            {
+                "name": "gripper" if name == _DRIVEN_FINGER else name,
+                "joint": name,
+                "kp": f"{kp}",
+                "kv": f"{kv}",
+                "ctrlrange": f"{lo} {hi}",
+                "forcerange": f"{-force} {force}",
+            },
+        )
+    equality = ET.SubElement(mjcf, "equality")
+    ET.SubElement(
+        equality,
+        "joint",
+        {
+            "name": "finger_mimic",
+            "joint1": _MIMIC_FINGER,
+            "joint2": _DRIVEN_FINGER,
+            "polycoef": "0 1 0 0 0",
+        },
+    )
+    ET.indent(mjcf)
+    return ET.tostring(mjcf, encoding="unicode")
+
+
+def ensure_a1_mjcf() -> Path:
+    """Return the A1 twin MJCF (6 arm + 2 finger joints, 7 actuators), deriving it if needed.
+
+    Raises:
+        ROSConfigError: The pinned fetch fails or ``mujoco`` is not installed.
+    """
+    urdf = ensure_a1_urdf()
+    path = urdf.parent.parent / f"derived-{_DERIVE_KEY}" / "a1.xml"
+    if not path.is_file():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(_derive_mjcf(urdf), encoding="utf-8")
+        os.replace(tmp, path)
+    return path

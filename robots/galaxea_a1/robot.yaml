@@ -13,10 +13,14 @@ base_frame: base_link
 # That same URDF, which Galaxea publishes without a license in
 # userguide-galaxea/robot_descriptions: fetched at a pinned commit with per-file
 # SHA-256 on first use, never vendored (openral_hal._galaxea_a1_assets).
+# `mjcf` is the MuJoCo twin derived from it (ensure_a1_mjcf): the vendor's
+# 0-30 mm finger slides made prismatic, position actuators added (#740).
 assets:
   urdf:
     ref: "galaxea:a1"
+  mjcf: "galaxea:a1"
 
+# `sim_joint_name` is the joint's name in the twin's MJCF (the same as the URDF's).
 joints:
   - name: arm_joint1
     joint_type: revolute
@@ -29,6 +33,7 @@ joints:
     velocity_limit: 20.944
     effort_limit: 40.0
     actuator_kind: bldc
+    sim_joint_name: arm_joint1
   - name: arm_joint2
     joint_type: revolute
     parent_link: arm_seg1
@@ -40,6 +45,7 @@ joints:
     velocity_limit: 20.944
     effort_limit: 40.0
     actuator_kind: bldc
+    sim_joint_name: arm_joint2
   - name: arm_joint3
     joint_type: revolute
     parent_link: arm_seg2
@@ -51,6 +57,7 @@ joints:
     velocity_limit: 7.5398
     effort_limit: 27.0
     actuator_kind: bldc
+    sim_joint_name: arm_joint3
   - name: arm_joint4
     joint_type: revolute
     parent_link: arm_seg3
@@ -62,6 +69,7 @@ joints:
     velocity_limit: 25.133
     effort_limit: 7.0
     actuator_kind: bldc
+    sim_joint_name: arm_joint4
   - name: arm_joint5
     joint_type: revolute
     parent_link: arm_seg4
@@ -73,6 +81,7 @@ joints:
     velocity_limit: 25.133
     effort_limit: 7.0
     actuator_kind: bldc
+    sim_joint_name: arm_joint5
   - name: arm_joint6
     joint_type: revolute
     parent_link: arm_seg5
@@ -84,6 +93,7 @@ joints:
     velocity_limit: 25.133
     effort_limit: 7.0
     actuator_kind: bldc
+    sim_joint_name: arm_joint6
 
 end_effectors:
   - name: gripper
@@ -113,6 +123,12 @@ sensors:
       output_width: 480
       output_height: 480
       crop: "x=103,y=0,width=480,height=480"
+    # MuJoCo twin only (deploy sim): a world-fixed third-person view of the
+    # workspace in front of the arm. The real D455 pose is not published; this is
+    # a sim choice, not its extrinsic.
+    sim_placement:
+      pos: [0.9, 0.0, 0.55]
+      target: [0.3, 0.0, 0.1]
     # Real-hardware binding: reads the A1 Runtime's public paired-frame bridge; it never opens
     # the RealSense itself (`just camera-web` stays its sole owner).
     deploy_binding:
@@ -141,6 +157,13 @@ sensors:
     metadata:
       output_width: 640
       output_height: 480
+    # MuJoCo twin only: on `arm_seg6` (the fingers extend along its +z, 0-79 mm,
+    # opening along y), offset along x clear of the fingers and looking past them.
+    # The real D405 mount offset is not published; a sim choice.
+    sim_placement:
+      parent_body: arm_seg6
+      pos: [0.06, 0.0, 0.0]
+      target: [0.0, 0.0, 0.2]
     # Real-hardware binding: reads the A1 Runtime's public paired-frame bridge; it never opens
     # the RealSense itself (`just camera-web` stays its sole owner).
     deploy_binding:
@@ -216,6 +239,25 @@ hal:
       gripper_ignored_error_mask: 8
       gripper_stroke_min_mm: 0.0
       gripper_stroke_max_mm: 104.0
+
+# MuJoCo twin (`openral deploy sim`, scenes/deploy/galaxea_a1_twin.yaml) on the
+# derived `galaxea:a1` MJCF. qpos 0-5 / actuators 0-5 are the arm in manifest
+# order; actuator 6 (`gripper`) drives `gripper1_axis` (qpos 6, 0-0.03 m, +q
+# opens) and an MJCF equality couples `gripper2_axis` (qpos 7) to it. The gripper
+# is an end effector, not a manifest joint, exactly as on the real HAL: the twin
+# publishes the six arm joints, takes the gripper as GRIPPER_POSITION
+# (Action.gripper[0], normalised [0, 1], 1 = open, refused outside it) and
+# reports it in health as `gripper_position_normalized`. The twin starts at
+# qpos 0 (folded, fingers closed — inside every joint range).
+sim:
+  grippers:
+    - end_effector: gripper
+      ctrl_range: [0.0, 0.03]
+      qpos_addrs: [6, 7]
+      qpos_scale: 0.06
+      read_mode: sum_over_scale
+      write_mode: normalised
+      actuator_index: 6
 
 onboard_compute:
   driver_repo: https://github.com/userguide-galaxea/A1_SDK

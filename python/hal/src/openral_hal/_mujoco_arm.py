@@ -40,6 +40,7 @@ from openral_core.exceptions import ROSConfigError, ROSEStopRequested, ROSRuntim
 from openral_core.schemas import RobotDescription
 
 from openral_hal.mujoco_twin import MujocoTwinRollout, TwinKwargs
+from openral_hal.protocol import HALHealthReport
 from openral_hal.sim_attached import SimAttachedHAL
 
 if TYPE_CHECKING:
@@ -284,6 +285,23 @@ class MujocoArmHAL(SimAttachedHAL):
             "hal.reset_to_pose",
             robot=self.description.name,
             n_joints=len(self._twin.joint_names),
+        )
+
+    def health(self) -> HALHealthReport:
+        """The diagnostics heartbeat's fields: each end-effector gripper's position.
+
+        ``<end_effector>_position_normalized`` per ``sim.grippers[]`` entry with no
+        manifest joint — the key a real HAL reporting such a gripper uses (the Galaxea
+        A1's ``gripper_position_normalized``). No I/O: reads the in-process ``MjData``.
+        A twin without one reports what the lifecycle node reports for a HAL with no
+        ``health``.
+        """
+        return HALHealthReport(
+            message="hal ready",
+            fields={
+                f"{name}_position_normalized": f"{value:.6f}"
+                for name, value in self._twin.end_effector_gripper_positions().items()
+            },
         )
 
     # ── Safety ─────────────────────────────────────────────────────────────────

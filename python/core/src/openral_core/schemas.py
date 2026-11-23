@@ -2235,10 +2235,21 @@ class GripperWriteMode(str, Enum):
 class SimGripperDescription(BaseModel):
     """Gripper wiring inside a MuJoCo MJCF.
 
+    Exactly one of ``joint`` and ``end_effector`` is set. A ``joint`` gripper is a
+    manifest joint: commanded inside ``JOINT_POSITION`` rows and published in the
+    joint state. An ``end_effector`` gripper is not a manifest joint (the real HAL
+    of the Galaxea A1 publishes six arm joints and takes the gripper only as a
+    ``GRIPPER_POSITION`` action): the twin takes it as ``GRIPPER_POSITION``
+    (``Action.gripper[0]``, ``NORMALISED``) and reports it in ``health`` as
+    ``<end_effector>_position_normalized``, never in the joint state.
+
     Attributes:
         joint: Name of the gripper joint as it appears in
             ``RobotDescription.joints`` (the public, lerobot-style name —
-            not the menagerie MJCF name).
+            not the menagerie MJCF name). ``None`` for an end-effector gripper.
+        end_effector: Name of a ``RobotDescription.end_effectors`` entry the
+            gripper realises when it has no manifest joint; requires an explicit
+            ``actuator_index``.
         ctrl_range: ``(low, high)`` raw control range for the gripper
             actuator.  In ``NORMALISED`` write mode, ``low`` ↔ closed
             (Action.gripper = 0), ``high`` ↔ open (Action.gripper = 1).  In
@@ -2269,7 +2280,8 @@ class SimGripperDescription(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    joint: str
+    joint: str | None = None
+    end_effector: str | None = None
     ctrl_range: tuple[float, float]
     qpos_addrs: tuple[int, ...]
     qpos_scale: float
@@ -2277,6 +2289,20 @@ class SimGripperDescription(BaseModel):
     write_mode: GripperWriteMode = GripperWriteMode.NORMALISED
     actuator_index: int | None = None
     mirror_actuator_index: int | None = None
+
+    @model_validator(mode="after")
+    def _one_target(self) -> SimGripperDescription:
+        """A gripper is a manifest joint or an end effector, never both or neither."""
+        if (self.joint is None) == (self.end_effector is None):
+            raise ValueError("sim.grippers[]: set exactly one of `joint` and `end_effector`.")
+        if self.end_effector is not None and (
+            self.actuator_index is None or self.write_mode is not GripperWriteMode.NORMALISED
+        ):
+            raise ValueError(
+                f"sim.grippers[].end_effector={self.end_effector!r} needs an explicit "
+                "actuator_index and write_mode: normalised (Action.gripper is [0, 1])."
+            )
+        return self
 
 
 # The single description-asset ref grammar. The schema validator
@@ -4075,21 +4101,27 @@ class RobotDescription(BaseModel):
 
     @model_validator(mode="after")
     def _validate_sim_against_joints(self) -> RobotDescription:
-        """Ensure every ``sim.grippers[*].joint`` is also in ``joints``."""
+        """Ensure every ``sim.grippers[*]`` names a manifest joint or end effector, once."""
         if self.sim is None:
             return self
         joint_names = {j.name for j in self.joints}
+        ee_names = {e.name for e in self.end_effectors}
         for gripper in self.sim.grippers:
-            if gripper.joint not in joint_names:
+            if gripper.joint is not None and gripper.joint not in joint_names:
                 raise ValueError(
                     f"sim.grippers[].joint={gripper.joint!r} is not present "
                     f"in joints (have: {sorted(joint_names)})"
                 )
-        # Duplicate-joint guard — a gripper can't be listed twice (would
+            if gripper.end_effector is not None and gripper.end_effector not in ee_names:
+                raise ValueError(
+                    f"sim.grippers[].end_effector={gripper.end_effector!r} is not present "
+                    f"in end_effectors (have: {sorted(ee_names)})"
+                )
+        # Duplicate guard — a gripper can't be listed twice (would
         # double-apply the write in send_action).
-        gripper_joints = [g.joint for g in self.sim.grippers]
-        if len(gripper_joints) != len(set(gripper_joints)):
-            raise ValueError(f"sim.grippers contains duplicate joint names: {gripper_joints}")
+        targets = [g.joint or g.end_effector for g in self.sim.grippers]
+        if len(targets) != len(set(targets)):
+            raise ValueError(f"sim.grippers contains duplicate joint names: {targets}")
         return self
 
     @classmethod
