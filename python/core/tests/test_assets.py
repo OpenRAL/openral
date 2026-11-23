@@ -165,3 +165,26 @@ def test_robotwin_aloha_agilex_urdf_meshes_resolve_beside_it() -> None:
     meshes = re.findall(r'filename="([^"]+)"', xml)
     assert meshes
     assert all((path.parent / m).is_file() for m in meshes)
+
+
+def test_robosuite_is_mjcf_only() -> None:
+    """``robosuite:`` composes an MJCF; a URDF request fails before robosuite is touched."""
+    with pytest.raises(AssetRefError, match="is an mjcf"):
+        resolve_asset("robosuite:PandaOmron", "urdf")
+
+
+def test_robosuite_panda_omron_has_the_manifest_sim_joints() -> None:
+    """The composed PandaOmron carries every ``sim_joint_name`` panda_mobile declares."""
+    mujoco = pytest.importorskip("mujoco")
+    from openral_core import RobotDescription
+
+    try:
+        path = resolve_asset("robosuite:PandaOmron", "mjcf")
+    except AssetRefError as exc:
+        pytest.skip(f"robosuite >= 1.5 not installed: {exc}")
+    assert path is not None
+    model = mujoco.MjModel.from_xml_path(str(path))
+    joints = {model.joint(i).name for i in range(model.njnt)}
+    manifest = Path(__file__).resolve().parents[3] / "robots" / "panda_mobile" / "robot.yaml"
+    declared = {j.sim_joint_name for j in RobotDescription.from_yaml(str(manifest)).joints}
+    assert declared - {None} <= joints

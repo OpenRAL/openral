@@ -203,6 +203,11 @@ _UNCOVERED_TWIN_BODIES: dict[str, str] = {
     # are not in the kernel's model. Pre-existing; needs the MJCF finger sweep
     # the OpenArm uses, on a URDF-lowered robot.
     "franka_panda": "panda_finger_pair (the fingers) carries no primitive",
+    # Same gap on RoboCasa's PandaOmron twin (robosuite:PandaOmron, #726), where
+    # the manifest also excludes the fingers on purpose (the gripper is the
+    # intended-contact part; see robots/panda_mobile/robot.yaml collision_geometry).
+    "panda_mobile": "panda_finger_pair (the fingers) carries no primitive",
+    "panda_mobile_vslam": "panda_finger_pair (the fingers) carries no primitive",
     # Unitree's H2.urdf (unitree_ros @ 41dec58c) has <visual> but no <collision>
     # on 11 links — hip_pitch, ankle_roll, waist_yaw/roll, wrist_roll/pitch,
     # head_pitch — so the URDF lowering emits no primitive for them while the

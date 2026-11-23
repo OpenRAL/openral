@@ -22,6 +22,9 @@ Grammar (``resolve_asset(ref, kind)``):
 * ``robotwin:aloha_agilex`` — the URDF RoboTwin 2.0 loads for its aloha-agilex
   embodiment and its meshes, range-read out of the MIT ``embodiments.zip``
   (Hugging Face dataset) at a pinned revision with per-file SHA-256 (URDF only).
+* ``robosuite:<robot>`` — a robosuite (>= 1.5, MIT) robot with its default base
+  and grippers, composed into one MJCF as robosuite does at runtime
+  (``panda_mobile`` is ``PandaOmron``) (MJCF only).
 * ``behavior:r1pro`` — the BEHAVIOR-1K Galaxea R1 Pro URDF (MIT Hugging Face
   dataset at a pinned revision), with absolute mesh paths and the collision
   meshes upstream does not ship dropped (URDF only).
@@ -117,7 +120,7 @@ def resolve_asset(ref: str, kind: AssetKind, *, manifest_dir: Path | None = None
         f"unrecognized asset ref {ref!r}; expected one of: rd:<module>, "
         f"file:<relpath>, gym_aloha:<scene>, openarm:<variant>, "
         f"unitree:<model>, makermods:<variant>, galaxea:<model>, robotwin:<model>, "
-        f"behavior:<model>, {_ROS2_DYNAMIC}"
+        f"robosuite:<robot>, behavior:<model>, {_ROS2_DYNAMIC}"
     )
 
 
@@ -479,6 +482,28 @@ def _resolve_robotwin(model: str, kind: AssetKind) -> Path:
         raise AssetRefError(f"robotwin:{model} ({kind}): {exc}") from exc
 
 
+def _resolve_robosuite(robot: str, kind: AssetKind) -> Path:
+    """Resolve ``robosuite:<robot>`` to that robosuite robot composed into one MJCF.
+
+    Every failure (wrong kind, robosuite < 1.5 or absent, unknown robot) is an
+    ``AssetRefError``: robosuite is an optional sim dependency, not a download.
+    """
+    from openral_core.exceptions import ROSConfigError
+
+    if kind != "mjcf":
+        raise AssetRefError(f"robosuite:{robot} is an mjcf, not a {kind}")
+    try:
+        from openral_hal._robosuite_assets import compose_robot_mjcf
+    except ImportError as exc:
+        raise AssetRefError(
+            f"robosuite:{robot} needs openral_hal ({type(exc).__name__}: {exc})"
+        ) from exc
+    try:
+        return compose_robot_mjcf(robot)
+    except ROSConfigError as exc:
+        raise AssetRefError(str(exc)) from exc
+
+
 def _resolve_behavior(model: str, kind: AssetKind) -> Path:
     """Resolve ``behavior:r1pro`` to the derived BEHAVIOR-1K R1 Pro URDF.
 
@@ -514,5 +539,6 @@ _SCHEME_RESOLVERS: tuple[tuple[str, Callable[[str, AssetKind], Path]], ...] = (
     ("makermods:", _resolve_makermods),
     ("galaxea:", _resolve_galaxea),
     ("robotwin:", _resolve_robotwin),
+    ("robosuite:", _resolve_robosuite),
     ("behavior:", _resolve_behavior),
 )
