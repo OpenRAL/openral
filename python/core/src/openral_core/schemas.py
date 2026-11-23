@@ -2292,6 +2292,7 @@ _ASSET_SCHEMES = (
     "makermods:",
     "galaxea:",
     "robotwin:",
+    "robosuite:",
     "behavior:",
 )
 _ROS2_DYNAMIC = "ros2://robot_description"

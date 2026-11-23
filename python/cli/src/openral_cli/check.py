@@ -77,6 +77,7 @@ _REMOTE_ASSET_PREFIXES = (
     "makermods:",
     "galaxea:",
     "robotwin:",
+    "robosuite:",
     "behavior:",
 )
 

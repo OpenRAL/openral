@@ -2474,16 +2474,22 @@ def _mjcf_camera_mounts(
     ``axes: usd`` — with the MJCF's vertical ``fovy`` at the sensor's raster aspect,
     as the MuJoCo twin renders it; a sensor in ``calibrated`` (measured intrinsics: the
     manifest's ``intrinsics_calibrated``, a unit overlay's or the scene's) keeps its
-    measured field of view instead. Empty without an MJCF.
+    measured field of view instead. Empty without an MJCF, or when it does not resolve
+    on this host (logged).
     """
     if not desc.assets.mjcf:
         return {}
     import mujoco  # type: ignore[import-not-found,import-untyped,unused-ignore]  # reason: optional sim dep
-    from openral_core.assets import resolve_asset
+    from openral_core.assets import AssetRefError, resolve_asset
 
-    model = mujoco.MjModel.from_xml_path(
-        str(resolve_asset(desc.assets.mjcf, "mjcf", manifest_dir=manifest_dir))
-    )
+    try:
+        mjcf = resolve_asset(desc.assets.mjcf, "mjcf", manifest_dir=manifest_dir)
+    except AssetRefError as exc:
+        # An MJCF behind an optional sim dep (panda_mobile's `robosuite:` needs
+        # robosuite >= 1.5) places no camera here; the other mount sources still do.
+        _log.warning("isaac.mjcf_camera_mounts.unresolved", mjcf=desc.assets.mjcf, error=str(exc))
+        return {}
+    model = mujoco.MjModel.from_xml_path(str(mjcf))
     out: dict[str, IsaacCameraMount] = {}
     for s in desc.sensors:
         cam = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, s.sim_camera_name or s.name)

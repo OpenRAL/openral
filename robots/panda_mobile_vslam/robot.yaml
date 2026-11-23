@@ -54,6 +54,10 @@ assets:
     root_frame: "panda_link0"
     base_to_root_xyz_rpy: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
   srdf: "file:panda_mobile_vslam.srdf"
+  # The whole robot, base included: RoboCasa's PandaOmron, composed by
+  # robosuite >= 1.5 (openral_hal._robosuite_assets). The urdf above is the arm
+  # alone; nothing here drives the sim, which robosuite builds itself.
+  mjcf: "robosuite:PandaOmron"
 
 # Per the Nav2 generic mobile-base properties convention — declare which joints constitute the planar mobile base.
 # The generic ray-cast helper in

@@ -162,6 +162,7 @@ def test_manifest_has_sim_block(description: RobotDescription) -> None:
             "makermods:",
             "galaxea:",
             "robotwin:",
+            "robosuite:",
             "behavior:",
             "file:",
         )
