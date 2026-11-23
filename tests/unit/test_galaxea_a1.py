@@ -609,20 +609,20 @@ def test_sidecar_gripper_requires_active_relay() -> None:
     assert gripper_publisher.messages[0].gripper_stroke == 52.0
 
 
-def test_deploy_sim_of_real_only_robot_raises_typed_errors() -> None:
-    """`deploy sim` of the hardware-only A1 fails with typed errors, never a bare TypeError.
+def test_deploy_sim_builds_the_twin_and_refuses_the_real_cell_as_a_scene() -> None:
+    """`deploy sim` of the A1 builds its MuJoCo twin (#740); the real cell is no sim scene.
 
     Regression: an unknown sim scene id used to crash formatting its own error
-    message with ``TypeError: '_Registry' object is not iterable``.
+    message with ``TypeError: '_Registry' object is not iterable``; it is a typed
+    ``ROSConfigError``.
     """
-    from openral_core.exceptions import ROSCapabilityMismatch
+    from openral_hal._mujoco_arm import MujocoArmHAL
     from openral_hal.resolver import build_hal
 
     repo_root = Path(__file__).resolve().parents[2]
     robot_yaml = repo_root / "robots" / "galaxea_a1" / "robot.yaml"
     description = RobotDescription.from_yaml(str(robot_yaml))
-    with pytest.raises(ROSCapabilityMismatch, match="real-hardware-only"):
-        build_hal(description, mode="sim")
+    assert isinstance(build_hal(description, mode="sim"), MujocoArmHAL)  # MJCF loads at connect
     with pytest.raises(ROSConfigError, match="not registered"):
         build_hal(
             description,

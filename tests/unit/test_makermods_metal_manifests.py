@@ -126,6 +126,7 @@ def test_station_sim_gripper_equals_single_arm(
     assert arm.sim is not None and station.sim is not None
     (single,) = arm.sim.grippers
     by_joint = {g.joint: g for g in station.sim.grippers}
+    assert single.joint is not None
     got = by_joint[prefix + single.joint]
     arm_index = _PREFIXES.index(prefix)
     qpos_per_arm = 8  # joint1..6, mimic finger joint7, driven finger joint8

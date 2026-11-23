@@ -76,6 +76,7 @@ _MANIFEST_DRIVEN_ROBOTS = [
     "widowx",  # mirrored fingers via MJCF equality; starts at the `home` keyframe (#740)
     "aloha_agilex",  # bimanual: URDF-derived MJCF, joint8 mirrors joint7 (robotwin:, #740)
     "r1pro",  # planar base off the manifest (qpos 0..2), finger_joint2 by equality (#740)
+    "galaxea_a1",  # end-effector gripper (no manifest joint), galaxea: derived MJCF (#740)
 ]
 
 

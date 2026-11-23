@@ -146,6 +146,7 @@ _DEPLOY_STEMS: list[str] = [
     "so101_box",
     "widowx_twin",
     "aloha_agilex_twin",
+    "galaxea_a1_twin",
 ]
 
 

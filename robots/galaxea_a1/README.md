@@ -1,6 +1,6 @@
 # `galaxea_a1` — Hardware bring-up runbook
 
-Real-only Galaxea A1 manifest (`robot.yaml`) and operator runbook. OpenRAL
+Galaxea A1 manifest (`robot.yaml`) and operator runbook. OpenRAL
 stays ROS 2 / Python 3.12; the operator's official ROS 1 Noetic SDK runs out
 of process behind a literal IPv4-loopback JSON-lines sidecar
 (`python/hal/src/openral_hal/galaxea_a1.py::GalaxeaA1HAL`,
@@ -14,6 +14,28 @@ transcribed from and its STL meshes, which Galaxea publishes without a license i
 [`userguide-galaxea/robot_descriptions`](https://github.com/userguide-galaxea/robot_descriptions).
 They are fetched at a pinned commit with per-file SHA-256 on first use, never
 vendored (`openral_hal._galaxea_a1_assets`).
+
+## MuJoCo twin (`openral deploy sim`)
+
+`assets.mjcf` is also `galaxea:a1`: an MJCF derived from that URDF
+(`ensure_a1_mjcf`). Upstream declares the fingers `fixed` but gives each its
+own axis and a 0-30 mm `<limit>`; the twin makes them those prismatic slides,
+one driven and one coupled by an equality, and adds position actuators (sim-only
+gains). The twin keeps the real HAL's contract exactly: `/joint_states` carries
+the six arm joints only, the gripper is commanded as `GRIPPER_POSITION`
+(`Action.gripper[0]` in `[0, 1]`, 1 = open, refused outside it) and reported in
+the diagnostics as `gripper_position_normalized` (`sim.grippers[].end_effector`).
+The `front` / `wrist` cameras render from their `sim_placement`s, which are sim
+choices, not the RealSense extrinsics.
+
+```bash
+openral deploy sim --config scenes/deploy/galaxea_a1_twin.yaml
+```
+
+Still to confirm on the bench: whether the A1's normalised gripper position maps
+to the same 0-60 mm finger opening as the URDF's two 0-30 mm slides (the HAL's
+`gripper_stroke_max_mm` default is 104 mm), and that 1 is open on the real G2
+gripper as in the twin.
 
 ## Galaxea A1 hardware bring-up
 

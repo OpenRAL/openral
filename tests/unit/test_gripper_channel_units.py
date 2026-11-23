@@ -41,7 +41,9 @@ def test_normalised_gripper_declares_normalised_position_limits(manifest_path: P
     offenders: list[str] = []
     checked = 0
     for gripper in sim.grippers:
-        if gripper.write_mode is not GripperWriteMode.NORMALISED:
+        # An end-effector gripper has no joint channel to clamp: the twin itself refuses
+        # a fraction outside [0, 1] (``_split_end_effector_grippers``).
+        if gripper.write_mode is not GripperWriteMode.NORMALISED or gripper.joint is None:
             continue
         joint = by_name.get(gripper.joint)
         assert joint is not None, (
@@ -53,7 +55,7 @@ def test_normalised_gripper_declares_normalised_position_limits(manifest_path: P
             offenders.append(f"{joint.name}={joint.position_limits}")
 
     if checked == 0:
-        pytest.skip(f"{manifest_path.parent.name} declares no normalised sim gripper")
+        pytest.skip(f"{manifest_path.parent.name} declares no normalised joint sim gripper")
     assert not offenders, (
         f"{manifest_path}: a `normalised` gripper's channel carries a [0, 1] jaw "
         f"fraction, so its `position_limits` must be [0.0, 1.0] — the safety "

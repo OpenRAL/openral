@@ -5107,11 +5107,31 @@
         },
         "SimGripperDescription": {
           "additionalProperties": false,
-          "description": "Gripper wiring inside a MuJoCo MJCF.\n\nAttributes:\n    joint: Name of the gripper joint as it appears in\n        ``RobotDescription.joints`` (the public, lerobot-style name \u2014\n        not the menagerie MJCF name).\n    ctrl_range: ``(low, high)`` raw control range for the gripper\n        actuator.  In ``NORMALISED`` write mode, ``low`` \u2194 closed\n        (Action.gripper = 0), ``high`` \u2194 open (Action.gripper = 1).  In\n        ``PASSTHROUGH`` write mode this is informational \u2014 MuJoCo clips\n        on its own.\n    qpos_addrs: ``qpos`` indices used to compute the reported gripper\n        position.  When the gripper has multiple finger joints (Franka),\n        list every finger's qpos index.\n    qpos_scale: Span used to normalise the summed/raw gripper qpos to\n        ``[0, 1]``.  For Franka with two fingers each in ``[0, 0.04]`` m,\n        ``qpos_scale = 0.08``.  Ignored by ``AFFINE_LOW_HIGH`` and\n        ``PASSTHROUGH`` read modes but kept for symmetry with the\n        base-class invariant.\n    read_mode: How to report the qpos \u2014 see ``GripperReadMode``.\n    write_mode: How to map an Action's gripper value to ``ctrl`` \u2014 see\n        ``GripperWriteMode``.\n    actuator_index: Explicit MJCF actuator index that receives the\n        (mapped) gripper command.  When omitted, defaults to the\n        position of ``joint`` in ``RobotDescription.joints``\n        (i.e. the 1:1 mapping derived by ``SimDescription`` for arm\n        joints).\n    mirror_actuator_index: Optional second actuator that receives the\n        **negation** of the (mapped) gripper command.  Models the\n        Aloha parallel jaws where one motor drives ``+x`` and the\n        other ``-x`` to keep the fingers symmetric.  ``None`` for\n        single-actuator grippers.",
+          "description": "Gripper wiring inside a MuJoCo MJCF.\n\nExactly one of ``joint`` and ``end_effector`` is set. A ``joint`` gripper is a\nmanifest joint: commanded inside ``JOINT_POSITION`` rows and published in the\njoint state. An ``end_effector`` gripper is not a manifest joint (the real HAL\nof the Galaxea A1 publishes six arm joints and takes the gripper only as a\n``GRIPPER_POSITION`` action): the twin takes it as ``GRIPPER_POSITION``\n(``Action.gripper[0]``, ``NORMALISED``) and reports it in ``health`` as\n``<end_effector>_position_normalized``, never in the joint state.\n\nAttributes:\n    joint: Name of the gripper joint as it appears in\n        ``RobotDescription.joints`` (the public, lerobot-style name \u2014\n        not the menagerie MJCF name). ``None`` for an end-effector gripper.\n    end_effector: Name of a ``RobotDescription.end_effectors`` entry the\n        gripper realises when it has no manifest joint; requires an explicit\n        ``actuator_index``.\n    ctrl_range: ``(low, high)`` raw control range for the gripper\n        actuator.  In ``NORMALISED`` write mode, ``low`` \u2194 closed\n        (Action.gripper = 0), ``high`` \u2194 open (Action.gripper = 1).  In\n        ``PASSTHROUGH`` write mode this is informational \u2014 MuJoCo clips\n        on its own.\n    qpos_addrs: ``qpos`` indices used to compute the reported gripper\n        position.  When the gripper has multiple finger joints (Franka),\n        list every finger's qpos index.\n    qpos_scale: Span used to normalise the summed/raw gripper qpos to\n        ``[0, 1]``.  For Franka with two fingers each in ``[0, 0.04]`` m,\n        ``qpos_scale = 0.08``.  Ignored by ``AFFINE_LOW_HIGH`` and\n        ``PASSTHROUGH`` read modes but kept for symmetry with the\n        base-class invariant.\n    read_mode: How to report the qpos \u2014 see ``GripperReadMode``.\n    write_mode: How to map an Action's gripper value to ``ctrl`` \u2014 see\n        ``GripperWriteMode``.\n    actuator_index: Explicit MJCF actuator index that receives the\n        (mapped) gripper command.  When omitted, defaults to the\n        position of ``joint`` in ``RobotDescription.joints``\n        (i.e. the 1:1 mapping derived by ``SimDescription`` for arm\n        joints).\n    mirror_actuator_index: Optional second actuator that receives the\n        **negation** of the (mapped) gripper command.  Models the\n        Aloha parallel jaws where one motor drives ``+x`` and the\n        other ``-x`` to keep the fingers symmetric.  ``None`` for\n        single-actuator grippers.",
           "properties": {
             "joint": {
-              "title": "Joint",
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Joint"
+            },
+            "end_effector": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "End Effector"
             },
             "ctrl_range": {
               "maxItems": 2,
@@ -5172,7 +5192,6 @@
             }
           },
           "required": [
-            "joint",
             "ctrl_range",
             "qpos_addrs",
             "qpos_scale"

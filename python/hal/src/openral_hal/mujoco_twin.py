@@ -144,7 +144,9 @@ class MujocoTwinRollout:
         joint_qpos_addr: ``joint_name -> qpos index``.
         actuator_index: ``joint_name -> ctrl column``.
         joint_qvel_addr: ``joint_name -> qvel index``; defaults to ``joint_qpos_addr``.
-        grippers: ``SimGripperDescription`` entries, each on a ``description.joints`` joint.
+        grippers: ``SimGripperDescription`` entries, each on a ``description.joints`` joint
+            or (``end_effector``) on a manifest end effector with no joint, commanded by
+            ``GRIPPER_POSITION`` (``_split_end_effector_grippers``).
         keyframe_index: Keyframe ``load`` resets the data to, when set.
         seed_ctrl_from_qpos: Seed each position actuator's ctrl from its joint's qpos.
         settle_steps: Pinned physics steps per ``step``; ``None`` derives one control
@@ -198,9 +200,16 @@ class MujocoTwinRollout:
             dict(joint_qvel_addr) if joint_qvel_addr is not None else dict(joint_qpos_addr)
         )
         self.actuator_index = dict(kwargs["actuator_index"])
-        self.grippers_by_joint: dict[str, SimGripperDescription] = {g.joint: g for g in grippers}
-        if len(self.grippers_by_joint) != len(list(grippers)):
-            duplicates = [g.joint for g in grippers]
+        self.grippers_by_joint: dict[str, SimGripperDescription] = {
+            g.joint: g for g in grippers if g.joint is not None
+        }
+        # Grippers with no manifest joint, by end-effector name: commanded only by
+        # GRIPPER_POSITION, read only through ``end_effector_gripper_positions``.
+        self.grippers_by_end_effector: dict[str, SimGripperDescription] = {
+            g.end_effector: g for g in grippers if g.end_effector is not None
+        }
+        if len(self.grippers_by_joint) + len(self.grippers_by_end_effector) != len(list(grippers)):
+            duplicates = [g.joint or g.end_effector for g in grippers]
             raise ROSConfigError(f"grippers contains duplicate joint names: {duplicates}")
         joint_name_set = {j.name for j in description.joints}
         for g_joint in self.grippers_by_joint:
@@ -399,18 +408,29 @@ class MujocoTwinRollout:
     def step_action_group(self, actions: list[Action]) -> TwinStepResult:
         """Apply one command for one control period: a slot group, or one ungrouped action.
 
-        ``_compose`` validates the command and turns it into a full-dof target row and/or
-        a planar twist; the row goes into ``ctrl`` (``_apply_targets``), the twist drives
-        the base (``_drive_base``), and ONE ``advance`` runs the period, so a tick that
-        carries joint and twist slots moves both inside the same control period.
+        End-effector gripper slots (``GRIPPER_POSITION`` on a gripper with no manifest
+        joint) are split off first (``_split_end_effector_grippers``); ``_compose``
+        validates the rest and turns it into a full-dof target row and/or a planar twist;
+        the row goes into ``ctrl`` (``_apply_targets``), the twist drives the base
+        (``_drive_base``), the gripper slots into their actuators, and ONE ``advance``
+        runs the period, so a tick that carries joint and twist slots moves both inside
+        the same control period.
 
         Raises:
             ROSConfigError: An unsupported control mode, a malformed or unplaceable
                 command (``_compose``).
         """
-        targets, twist, applied = self._compose(actions)
+        ee_targets, actions = self._split_end_effector_grippers(actions)
+        targets: list[float] | None = None
+        twist: tuple[float, float, float] | None = None
+        if actions or not ee_targets:
+            targets, twist, applied = self._compose(actions)
+        else:
+            applied = ee_targets[0][2]
         assert self.model is not None and self.data is not None
         self._command(targets, twist)
+        for gripper, command, _action in ee_targets:  # validated, written after any refusal
+            self._write_gripper_ctrl(gripper, command)
         applied = self._record_applied(applied, twist)
         self.advance(self._action_steps(twist))
         return TwinStepResult(info={"applied_action": applied})
@@ -775,18 +795,27 @@ class MujocoTwinRollout:
         """
         assert self.data is not None
         for joint_name, gripper in self.grippers_by_joint.items():
-            command = float(targets[self.joint_names.index(joint_name)])
-            raw = _gripper_command_to_raw(gripper, command)
-            primary_idx = self._gripper_actuator_index(gripper, joint_name)
-            if primary_idx is None:
-                raise ROSConfigError(
-                    f"Gripper {joint_name!r} has no actuator index — set "
-                    "sim.grippers[].actuator_index or include the joint in "
-                    "sim.actuator_index."
-                )
-            self.data.ctrl[primary_idx] = raw
-            if gripper.mirror_actuator_index is not None:
-                self.data.ctrl[gripper.mirror_actuator_index] = -raw
+            self._write_gripper_ctrl(gripper, float(targets[self.joint_names.index(joint_name)]))
+
+    def _write_gripper_ctrl(self, gripper: SimGripperDescription, command: float) -> None:
+        """One gripper's public command into its actuator's ``ctrl`` (and its mirror's).
+
+        Raises:
+            ROSConfigError: The gripper has no actuator index.
+        """
+        assert self.data is not None
+        raw = _gripper_command_to_raw(gripper, command)
+        name = gripper.joint or gripper.end_effector or ""
+        primary_idx = self._gripper_actuator_index(gripper, name)
+        if primary_idx is None:
+            raise ROSConfigError(
+                f"Gripper {name!r} has no actuator index — set "
+                "sim.grippers[].actuator_index or include the joint in "
+                "sim.actuator_index."
+            )
+        self.data.ctrl[primary_idx] = raw
+        if gripper.mirror_actuator_index is not None:
+            self.data.ctrl[gripper.mirror_actuator_index] = -raw
 
     # ── Commands (per-robot hooks; a subclass overrides what its robot does) ──
 
@@ -818,6 +847,56 @@ class MujocoTwinRollout:
         self._validate(command)
         assert command.joint_targets is not None
         return list(command.joint_targets[-1]), twist, command
+
+    def _split_end_effector_grippers(
+        self, actions: list[Action]
+    ) -> tuple[list[tuple[SimGripperDescription, float, Action]], list[Action]]:
+        """The command's end-effector gripper slots and its other slots.
+
+        A ``GRIPPER_POSITION`` slot drives the end-effector gripper named by its
+        ``ee_name`` (or the only one) with ``gripper[0]``, normalised ``[0, 1]`` and
+        refused outside it, as the real HAL of such a robot refuses it. A twin without
+        end-effector grippers passes every slot through unchanged.
+
+        Raises:
+            ROSConfigError: An unsupported mode, an empty or out-of-range ``gripper``,
+                or an ``ee_name`` that names no end-effector gripper.
+        """
+        if not self.grippers_by_end_effector:
+            return [], actions
+        out: list[tuple[SimGripperDescription, float, Action]] = []
+        rest: list[Action] = []
+        for action in actions:
+            if action.control_mode is not ControlMode.GRIPPER_POSITION:
+                rest.append(action)
+                continue
+            require_supported_control_mode(self.description, action)
+            if not action.gripper:
+                raise ROSConfigError(f"{self.backend}: GRIPPER_POSITION needs action.gripper.")
+            command = float(action.gripper[0])
+            if not math.isfinite(command) or not 0.0 <= command <= 1.0:
+                raise ROSConfigError(
+                    f"{self.backend}: gripper target {command} is not finite within [0, 1]."
+                )
+            name = action.ee_name
+            if name is None and len(self.grippers_by_end_effector) == 1:
+                name = next(iter(self.grippers_by_end_effector))
+            gripper = self.grippers_by_end_effector.get(name or "")
+            if gripper is None:
+                raise ROSConfigError(
+                    f"{self.backend}: GRIPPER_POSITION ee_name={action.ee_name!r} names no "
+                    f"end-effector gripper (have: {sorted(self.grippers_by_end_effector)})."
+                )
+            out.append((gripper, command, action))
+        return out, rest
+
+    def end_effector_gripper_positions(self) -> dict[str, float]:
+        """Each end-effector gripper's normalised position (``read_mode``); ``{}`` unloaded."""
+        if self.data is None:
+            return {}
+        return {
+            name: self._read_gripper_value(g) for name, g in self.grippers_by_end_effector.items()
+        }
 
     def _split_twist(
         self, actions: list[Action]

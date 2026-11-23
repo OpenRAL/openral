@@ -18,7 +18,8 @@ Grammar (``resolve_asset(ref, kind)``):
   a pinned clone of the unlicensed upstream description (nothing vendored).
 * ``galaxea:a1`` — the Galaxea A1 URDF + meshes from Galaxea's unlicensed
   public description repo at a pinned commit with per-file SHA-256 (nothing
-  vendored), its ``package://mobiman`` mesh refs made relative (URDF only).
+  vendored), its ``package://mobiman`` mesh refs made relative; the ``mjcf``
+  kind is the twin model derived from it (sliding fingers, position actuators).
 * ``robotwin:aloha_agilex`` — the URDF RoboTwin 2.0 loads for its aloha-agilex
   embodiment and its meshes, range-read out of the MIT ``embodiments.zip``
   (Hugging Face dataset) at a pinned revision with per-file SHA-256; as an
@@ -432,24 +433,24 @@ def _resolve_makermods(variant: str, kind: AssetKind) -> Path:
 
 
 def _resolve_galaxea(model: str, kind: AssetKind) -> Path:
-    """Resolve ``galaxea:a1`` to the pinned Galaxea A1 URDF.
+    """Resolve ``galaxea:a1`` to the pinned Galaxea A1 URDF, or the MJCF derived from it.
 
     A failed download is an ``AssetFetchError``; a digest mismatch, an unknown
     model or kind, or a missing ``openral_hal`` is an ``AssetRefError``.
     """
     from openral_core.exceptions import ROSConfigError
 
-    if model != "a1" or kind != "urdf":
-        raise AssetRefError(f"galaxea:{model} ({kind}): only galaxea:a1 as a urdf exists")
+    if model != "a1" or kind not in ("urdf", "mjcf"):
+        raise AssetRefError(f"galaxea:{model} ({kind}): only galaxea:a1 as a urdf or mjcf exists")
     try:
-        from openral_hal._galaxea_a1_assets import ensure_a1_urdf
+        from openral_hal._galaxea_a1_assets import ensure_a1_mjcf, ensure_a1_urdf
         from openral_hal._pinned_files import is_download_failure
     except ImportError as exc:
         raise AssetRefError(
             f"galaxea:{model} needs openral_hal ({type(exc).__name__}: {exc})"
         ) from exc
     try:
-        return ensure_a1_urdf()
+        return ensure_a1_urdf() if kind == "urdf" else ensure_a1_mjcf()
     except ROSConfigError as exc:
         if is_download_failure(exc):
             raise AssetFetchError(f"galaxea:{model} ({kind}): {exc}") from exc
