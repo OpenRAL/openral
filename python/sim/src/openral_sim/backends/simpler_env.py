@@ -42,12 +42,14 @@ from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
 
 from openral_sim.backends.maniskill3 import (
+    AgentGripper,
     _extract_rgb,
     _extract_state,
     _sapien_sim_time_ns,
     _step_info,
     _unbatch,
     _unbatch_obs,
+    agent_joint_state,
 )
 from openral_sim.registry import SCENES
 from openral_sim.rollout import StepResult
@@ -266,6 +268,11 @@ def _resolve_gripper_qpos(flat: Any) -> float:
     return float(arr[-1]) if arr.size else 0.0
 
 
+# WidowX fingers: the actuated ``left_finger`` slide is the manifest's normalised
+# ``gripper``; ``right_finger`` mirrors it and is not a manifest joint.
+_WIDOWX_GRIPPER = AgentGripper(joint="left_finger", mimic="right_finger", name="gripper")
+
+
 @dataclass
 class _SimplerEnvSim:
     """Thin ``SimRollout`` wrapper around a SimplerEnv-via-MS3 gym env."""
@@ -352,12 +359,16 @@ class _SimplerEnvSim:
         if image is None:
             image = np.zeros((h, w, 3), dtype=np.uint8)
         cam0 = self.scene.cameras[0] if self.scene.cameras else "camera1"
-        return {
+        out: Observation = {
             "images": {cam0: image},
             "state": state,
             "task": self.task.instruction,
             "raw": flat,
         }
+        joints = agent_joint_state(self._env, _WIDOWX_GRIPPER)
+        if joints is not None:
+            out["joint_names"], out["joint_positions"], out["joint_velocities"] = joints
+        return out
 
 
 @SCENES.register(

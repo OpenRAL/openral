@@ -148,12 +148,17 @@ class _PushTSim:
             else np.zeros(2, dtype=np.float32)
         )
 
-        return {
+        out: Observation = {
             "images": images,
             "state": state,
             "task": self.task.instruction,
             "raw": obs,
         }
+        if agent_pos is not None:
+            # The tip is the pusht_2d manifest's (tip_x, tip_y), same canvas pixels:
+            # SimAttachedHAL.read_state publishes it as the measured joint state.
+            out["joint_positions"] = np.asarray(agent_pos, dtype=np.float32).reshape(-1)
+        return out
 
 
 def _build_pusht_scene(env_cfg: SimEnvironment) -> _PushTSim:

@@ -5,7 +5,9 @@ sidecar). A `SimRollout` with no `mujoco_handles` must still drive
 `openral deploy sim`:
 
 * `read_state()` sources real joint angles from `obs["joint_positions"]` (in
-  description-joint order), not all-zeros, when the backend provides them;
+  description-joint order, or keyed by `obs["joint_names"]`) and refuses with a
+  typed `ROSRuntimeError` when the backend provides none for some joint — never a
+  fabricated all-zero pose the safety kernel would read as measured;
 * `idle_step()` steps the env (no MuJoCo-handle gate) so cameras stay live.
 
 Exercised against a tiny fake `SimRollout` at the env boundary (the legitimate
@@ -21,6 +23,7 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 from openral_core import Action, ControlMode, RobotDescription, SceneSpec, TaskSpec
+from openral_core.exceptions import ROSRuntimeError
 from openral_hal.sim_attached import SimAttachedHAL
 from openral_sim.rollout import StepResult
 
@@ -47,7 +50,9 @@ class _FakeSim:
         joint_positions: list[float] | None,
         joint_velocities: list[float] | None = None,
         joint_efforts: list[float] | None = None,
+        joint_names: list[str] | None = None,
     ) -> None:
+        self._jn = joint_names
         self._jp = joint_positions
         self._jv = joint_velocities
         self._je = joint_efforts
@@ -61,6 +66,8 @@ class _FakeSim:
             obs["joint_velocities"] = np.asarray(self._jv, dtype=np.float32)
         if self._je is not None:
             obs["joint_efforts"] = np.asarray(self._je, dtype=np.float32)
+        if self._jn is not None:
+            obs["joint_names"] = list(self._jn)
         return obs
 
     def reset(self, seed: int | None = None) -> dict[str, Any]:
@@ -125,14 +132,14 @@ def test_read_state_uses_obs_joint_velocities() -> None:
         hal.disconnect()
 
 
-def test_read_state_velocity_zeros_without_joint_velocities() -> None:
+def test_read_state_velocity_empty_without_joint_velocities() -> None:
+    """Unmeasured velocity → none published, never a zero that reads as at rest."""
     description = _franka_description()
     n = len(description.joints)
     hal = SimAttachedHAL(_FakeSim([0.1] * n), description)  # positions only
     hal.connect()
     try:
-        state = hal.read_state()
-        assert all(v == 0.0 for v in state.velocity)
+        assert hal.read_state().velocity == []
     finally:
         hal.disconnect()
 
@@ -172,14 +179,14 @@ def test_read_state_effort_empty_without_joint_efforts() -> None:
         hal.disconnect()
 
 
-def test_read_state_falls_back_to_zeros_without_joint_positions() -> None:
+def test_read_state_refuses_without_joint_positions() -> None:
+    """No measured positions → a typed refusal, never a fabricated all-zero pose."""
     description = _franka_description()
     hal = SimAttachedHAL(_FakeSim(None), description)
     hal.connect()
     try:
-        state = hal.read_state()
-        assert state.name == [j.name for j in description.joints]
-        assert all(p == 0.0 for p in state.position)
+        with pytest.raises(ROSRuntimeError, match="no measured joint positions"):
+            hal.read_state()
     finally:
         hal.disconnect()
 
@@ -198,15 +205,48 @@ def test_idle_step_steps_without_mujoco_handles() -> None:
 
 
 @pytest.mark.parametrize("jp_len", [6, 10])
-def test_read_state_tolerates_length_mismatch(jp_len: int) -> None:
-    # A backend whose joint_positions vector is shorter/longer than the manifest
-    # must still yield a description-shaped JointState (pad / truncate).
+def test_read_state_refuses_length_mismatch(jp_len: int) -> None:
+    """An unnamed vector that is not one value per joint cannot be placed: refuse.
+
+    Padding a short vector fabricates rows; truncating a long one guesses which rows
+    belong to which joint. Both used to publish as measured.
+    """
     description = _franka_description()
     hal = SimAttachedHAL(_FakeSim([0.5] * jp_len), description)
     hal.connect()
     try:
+        with pytest.raises(ROSRuntimeError, match="no measured joint positions"):
+            hal.read_state()
+    finally:
+        hal.disconnect()
+
+
+def test_read_state_maps_named_joints_onto_the_description() -> None:
+    """``joint_names`` keys the vectors: reordered, with extra backend joints ignored."""
+    description = _franka_description()
+    names = [j.name for j in description.joints]
+    reported = ["extra_backend_joint", *reversed(names)]
+    jp = [9.0, *(0.1 * i for i in reversed(range(len(names))))]
+    jv = [9.0, *(0.01 * i for i in reversed(range(len(names))))]
+    hal = SimAttachedHAL(_FakeSim(jp, jv, joint_names=reported), description)
+    hal.connect()
+    try:
         state = hal.read_state()
-        assert len(state.position) == len(description.joints)
+        assert state.name == names
+        np.testing.assert_allclose(state.position, [0.1 * i for i in range(len(names))], atol=1e-5)
+        np.testing.assert_allclose(state.velocity, [0.01 * i for i in range(len(names))], atol=1e-5)
+    finally:
+        hal.disconnect()
+
+
+def test_read_state_refuses_a_description_joint_the_backend_does_not_name() -> None:
+    description = _franka_description()
+    names = [j.name for j in description.joints][1:]
+    hal = SimAttachedHAL(_FakeSim([0.0] * len(names), joint_names=names), description)
+    hal.connect()
+    try:
+        with pytest.raises(ROSRuntimeError, match=description.joints[0].name):
+            hal.read_state()
     finally:
         hal.disconnect()
 

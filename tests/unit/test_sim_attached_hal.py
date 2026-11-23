@@ -568,20 +568,17 @@ def test_sim_attached_hal_estop_drops_subsequent_sends() -> None:
     assert env.step_calls == 1
 
 
-def test_sim_attached_hal_read_state_without_handles_returns_zeros() -> None:
-    """When the env can't supply MJCF handles, JointState is zero-padded.
+def test_sim_attached_hal_read_state_without_handles_or_positions_refuses() -> None:
+    """No MJCF handles and no ``obs["joint_positions"]`` → refuse, never zeros.
 
-    The shape must still match `description.joints` so the safety
-    supervisor's per-row width check passes downstream.
+    A zero-padded JointState passed the supervisor's per-row width check while
+    describing a pose the robot was not in.
     """
     env = FakeSimEnv(handles=None)
-    desc = _two_dof_description()
-    hal = SimAttachedHAL(env, desc)
+    hal = SimAttachedHAL(env, _two_dof_description())
     hal.connect()
-    state = hal.read_state()
-    assert len(state.position) == len(desc.joints)
-    assert state.name == [j.name for j in desc.joints]
-    assert all(p == 0.0 for p in state.position)
+    with pytest.raises(ROSRuntimeError, match="no measured joint positions"):
+        hal.read_state()
 
 
 def _gravity_arm_mjcf(*, drop: str | None = None) -> str:

@@ -300,12 +300,16 @@ class _ManiSkill3Sim:
         if not images:
             cam0 = self.scene.cameras[0] if self.scene.cameras else "camera1"
             images = {cam0: np.zeros((h, w, 3), dtype=np.uint8)}
-        return {
+        out: Observation = {
             "images": images,
             "state": state,
             "task": self.task.instruction,
             "raw": flat,
         }
+        joints = agent_joint_state(self._env, _PANDA_GRIPPER)
+        if joints is not None:
+            out["joint_names"], out["joint_positions"], out["joint_velocities"] = joints
+        return out
 
 
 def _unbatch(value: Any) -> Any:
@@ -411,6 +415,74 @@ def _extract_rgb_streams(
                 )
                 out[key] = np.asarray(rgb, dtype=np.uint8)
     return out
+
+
+@dataclass(frozen=True)
+class AgentGripper:
+    """How a ManiSkill agent's finger joints map onto the manifest's one gripper joint.
+
+    Attributes:
+        joint: The articulation joint the manifest gripper reads (the leader finger).
+        mimic: The follower finger, which is no manifest joint and is dropped.
+        name: The manifest gripper joint's name.
+    """
+
+    joint: str
+    mimic: str
+    name: str
+
+
+# ManiSkill's Panda fingers: ``panda_finger_joint1`` is the ``franka_panda`` manifest's
+# normalised ``panda_gripper``; ``panda_finger_joint2`` mirrors it.
+_PANDA_GRIPPER = AgentGripper(
+    joint="panda_finger_joint1", mimic="panda_finger_joint2", name="panda_gripper"
+)
+
+
+def agent_joint_state(
+    env: Any, gripper: AgentGripper
+) -> tuple[list[str], NDArray[np.float32], NDArray[np.float32]] | None:
+    """Measured joint state of a ManiSkill agent, keyed by joint name, for ``/joint_states``.
+
+    Reads the live articulation (``env.unwrapped.agent.robot``, single env): every
+    active joint by its own name, except the gripper fingers — ``gripper.joint`` is
+    reported as ``gripper.name``, normalised over the articulation's own joint limits
+    (0 = closed, 1 = open, the manifest gripper's ``[0, 1]``; velocity in the same unit
+    per second) and ``gripper.mimic`` is dropped. The names travel with the vectors
+    (``obs["joint_names"]``) so ``SimAttachedHAL.read_state`` maps them onto the
+    manifest's own joint list. None when the env has no agent or no such finger (the
+    HAL then refuses rather than publish zeros).
+
+    Args:
+        env: The ManiSkill gym env (possibly wrapped).
+        gripper: The finger-to-manifest gripper mapping.
+
+    Returns:
+        ``(names, positions, velocities)`` or None.
+    """
+    robot = getattr(getattr(getattr(env, "unwrapped", None), "agent", None), "robot", None)
+    if robot is None:
+        return None
+    names = [str(j.name) for j in robot.get_active_joints()]
+    if gripper.joint not in names:
+        return None
+    qpos = _as_float_array(robot.get_qpos()).reshape(-1)
+    qvel = _as_float_array(robot.get_qvel()).reshape(-1)
+    limits = _as_float_array(robot.get_qlimits()).reshape(-1, 2)
+    g = names.index(gripper.joint)
+    lo, hi = float(limits[g, 0]), float(limits[g, 1])
+    qpos[g] = np.clip((qpos[g] - lo) / (hi - lo), 0.0, 1.0)
+    qvel[g] = qvel[g] / (hi - lo)
+    names[g] = gripper.name
+    keep = [i for i, n in enumerate(names) if n != gripper.mimic]
+    return [names[i] for i in keep], qpos[keep], qvel[keep]
+
+
+def _as_float_array(value: Any) -> NDArray[np.float32]:
+    """A torch tensor or array-like as a float32 numpy array (copied off the device)."""
+    if hasattr(value, "cpu"):
+        value = value.cpu().numpy()
+    return np.array(value, dtype=np.float32)
 
 
 def _extract_state(flat: Any) -> NDArray[np.float32]:

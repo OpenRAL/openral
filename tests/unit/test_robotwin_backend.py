@@ -39,6 +39,7 @@ from openral_sim.backends.robotwin import (
     _build_robotwin_scene,
     _robotwin_root,
     _robotwin_task_name,
+    _RoboTwinSimSidecar,
     _scene_default_port,
 )
 from openral_sim.benchmark import check_benchmark_task_compatibility
@@ -582,4 +583,81 @@ def test_gate_rejects_rskill_on_foreign_scene() -> None:
     with pytest.raises(ROSCapabilityMismatch):
         check_benchmark_task_compatibility(
             m, task_id="maniskill3/PickCube-v1", scene_id="maniskill3"
+        )
+
+
+# ─── action packing (the HAL's pack_action / idle_action hooks) ──────────────
+
+
+def _rollout(measured: list[float] | None) -> _RoboTwinSimSidecar:
+    """The real rollout over the real aloha_agilex manifest; no sidecar is contacted.
+
+    ``_action_dim`` is the sidecar's ping answer (14), cached so no RPC fires.
+    """
+    from openral_core import SceneSpec, TaskSpec
+    from openral_sim.backends.isaac_sim import IsaacActionLayout
+
+    desc = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / "aloha_agilex" / "robot.yaml"))
+    rollout = _RoboTwinSimSidecar(
+        scene=SceneSpec(id="robotwin", backend=PhysicsBackend.SAPIEN),
+        task=TaskSpec(id="robotwin/lift_pot", scene_id="robotwin", instruction="lift"),
+        _client=cast(Any, None),
+        _action_dim=14,
+        layout=IsaacActionLayout.from_description(desc),
+    )
+    if measured is not None:
+        rollout._measured = np.asarray(measured, dtype=np.float32)
+    return rollout
+
+
+# RoboTwin's action order == manifest order: [left 6, left gripper, right 6, right gripper].
+_MEASURED = [0.01 * i for i in range(14)]
+
+
+def test_arm_row_lands_on_each_named_joint_slot() -> None:
+    from openral_core.schemas import Action, ControlMode
+
+    arm = [float(i) for i in range(1, 13)]  # left_joint1..6, right_joint1..6
+    out = _rollout(_MEASURED).pack_action(
+        Action(control_mode=ControlMode.JOINT_POSITION, joint_targets=[arm]), None
+    )
+    # The grippers (slots 6 and 13) hold the measured value; the right arm starts at 7.
+    assert out.tolist() == pytest.approx([*arm[:6], 0.06, *arm[6:], 0.13])
+
+
+def test_gripper_command_reaches_the_named_gripper_only() -> None:
+    from openral_core.schemas import Action, ControlMode
+
+    rollout = _rollout(_MEASURED)
+    out = rollout.pack_action(
+        Action(control_mode=ControlMode.GRIPPER_POSITION, gripper=[0.0], ee_name="left_gripper"),
+        None,
+    )
+    expected = list(_MEASURED)
+    expected[6] = 0.0
+    assert out.tolist() == pytest.approx(expected)
+    # A later right-gripper command keeps the left one (prev) and touches slot 13 only.
+    out2 = rollout.pack_action(
+        Action(control_mode=ControlMode.GRIPPER_POSITION, gripper=[1.0], ee_name="right_gripper"),
+        out,
+    )
+    expected[13] = 1.0
+    assert out2.tolist() == pytest.approx(expected)
+
+
+def test_idle_action_holds_the_measured_pose() -> None:
+    assert _rollout(_MEASURED).idle_action().tolist() == pytest.approx(_MEASURED)
+
+
+def test_packing_without_a_measured_pose_refuses() -> None:
+    """No measured state to hold the unnamed slots at: refuse, never zero-fill them."""
+    from openral_core.exceptions import ROSRuntimeError
+    from openral_core.schemas import Action, ControlMode
+
+    with pytest.raises(ROSRuntimeError, match="no measured joint state"):
+        _rollout(None).pack_action(
+            Action(
+                control_mode=ControlMode.GRIPPER_POSITION, gripper=[0.0], ee_name="left_gripper"
+            ),
+            None,
         )

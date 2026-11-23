@@ -565,12 +565,12 @@ class IsaacSceneBase:
         Surfaced as ``obs["joint_positions"]`` so ``openral deploy sim``'s
         ``SimAttachedHAL.read_state`` can publish a real ``/joint_states`` for a
         non-MuJoCo backend (it otherwise reads joints from a MuJoCo handle this
-        sidecar has none of). Default None → the HAL falls back to zeros.
+        sidecar has none of). Default None → the HAL refuses to publish a state.
         """
         return None
 
     def _joint_velocities(self) -> NDArray[np.float32] | None:
-        """Robot joint velocities in manifest order, or None (→ HAL zeros)."""
+        """Robot joint velocities in manifest order, or None (→ HAL publishes none)."""
         return None
 
     def _joint_efforts(self) -> NDArray[np.float32] | None:

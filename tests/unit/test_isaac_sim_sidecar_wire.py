@@ -25,6 +25,7 @@ zmq = pytest.importorskip("zmq", reason="sidecar-wire group (pyzmq) not installe
 msgpack = pytest.importorskip("msgpack", reason="sidecar-wire group (msgpack) not installed")
 
 from openral_core import RobotDescription, SceneSpec, SimEnvironment, TaskSpec  # noqa: E402
+from openral_core.exceptions import ROSRuntimeError  # noqa: E402
 from openral_core.schemas import PhysicsBackend  # noqa: E402
 from openral_hal.sim_attached import SimAttachedHAL  # noqa: E402
 from openral_sim.backends.isaac_sim import _FRAME_KEYS, _IsaacSimSidecar  # noqa: E402
@@ -922,14 +923,28 @@ class TestJointEfforts:
             finally:
                 hal.env.close()
 
-    def test_a_sidecar_without_efforts_publishes_none(self, sidecar: _FakeSidecar) -> None:
+    def test_a_sidecar_without_efforts_publishes_none(self) -> None:
+        scene, task = _scene_task()
+        desc = TestHalTimeBaseGuard._openarm()
+        extra = {"joint_positions": np.zeros(len(desc.joints), dtype=np.float32)}
+        with _FakeSidecar(_free_port(), obs_extra=extra) as s:
+            hal = SimAttachedHAL(_make_rollout(s.port, scene, task), desc)
+            try:
+                hal.connect()
+                assert hal.read_state().effort == []
+            finally:
+                hal.env.close()
+
+    def test_a_sidecar_without_positions_is_refused(self, sidecar: _FakeSidecar) -> None:
+        """No ``joint_positions`` on the wire → a typed refusal, not a zero pose."""
         scene, task = _scene_task()
         hal = SimAttachedHAL(
             _make_rollout(sidecar.port, scene, task), TestHalTimeBaseGuard._openarm()
         )
         try:
             hal.connect()
-            assert hal.read_state().effort == []
+            with pytest.raises(ROSRuntimeError, match="no measured joint positions"):
+                hal.read_state()
         finally:
             hal.env.close()
 
@@ -960,7 +975,11 @@ class TestScanPerObservation:
         from structlog.testing import capture_logs
 
         scene, task = _scene_task()
-        extra = {} if scan is None else {"scan": scan}
+        # The real Isaac sidecar always sends the measured joints; read_state refuses without.
+        n = len(self._amr().joints)
+        extra: dict[str, Any] = {"joint_positions": np.zeros(n, dtype=np.float32)}
+        if scan is not None:
+            extra["scan"] = scan
         with _FakeSidecar(
             _free_port(), obs_extra=extra, sim_time_ns=_STATE_NS, tick_ns=100_000_000
         ) as s:
