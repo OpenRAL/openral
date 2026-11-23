@@ -25,10 +25,11 @@ Only the backbone is quantized; the small diffusion action head stays bf16,
 preserving action quality and side-stepping the GR00T DiT
 ``TimestepEncoder`` uint8 bug (bug (b) below).
 
-The official 2026 BEHAVIOR-1K checkpoint is a deliberate exception to this
-native path: its organizer runtime is pinned to ``wensi-ai/Isaac-GR00T`` under
-Python 3.10, so it is its own registered family, ``gr00t_b1k``, whose factory
-delegates to ``openral_sim.policies.behavior_groot``.
+The official 2026 BEHAVIOR-1K checkpoint is its own registered family,
+``gr00t_b1k``, whose factory delegates to ``openral_sim.policies.behavior_groot``:
+by default it runs the organizers' pinned ``wensi-ai/Isaac-GR00T`` runtime in a
+Python 3.10 sidecar; ``runtime: inprocess`` loads it on this native path instead
+(``openral_sim.policies.behavior_groot_inprocess``).
 
 Embodiment mapping
 ------------------
@@ -361,11 +362,16 @@ def _build_groot_config(
 
 @POLICIES.register(
     "gr00t_b1k",
+    # The facts describe the default sidecar runtime.
     install_groups=("behavior-groot",),
     required_imports=("zmq", "msgpack"),
+    install_note=(
+        "The opt-in in-process runtime (runtime: inprocess) needs "
+        "`just sync --all-packages --group gr00t` instead."
+    ),
 )
 def _build_gr00t_b1k(env_cfg: Any) -> PolicyAdapter:
-    """Official BEHAVIOR-1K GR00T checkpoint behind its Python 3.10 sidecar."""
+    """Official BEHAVIOR-1K GR00T checkpoint: Python 3.10 sidecar, or in-process opt-in."""
     from openral_sim.policies.behavior_groot import build_behavior_groot_policy
 
     spec = env_cfg.vla

@@ -17,6 +17,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _RSKILL = _REPO_ROOT / "rskills" / "gr00t-n17-b1k-turning-on-radio"
 
 
+@pytest.fixture(autouse=True)
+def _sidecar_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests cover the sidecar runtime; a shell-exported override must not reroute them."""
+    from openral_sim.policies.behavior_groot_inprocess import RUNTIME_ENV
+
+    monkeypatch.delenv(RUNTIME_ENV, raising=False)
+
+
 def test_behavior_groot_rskill_manifest_loads() -> None:
     manifest = load_rskill_manifest(str(_RSKILL))
     # Its own registered family (not a hidden `implementation` switch inside

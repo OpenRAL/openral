@@ -33,6 +33,21 @@ CAMERA_RGB_KEYS: dict[str, str] = {
     role: f"{sensor}::rgb" for role, sensor in CAMERA_SENSORS.items()
 }
 
+# The R1Pro modality split of the 61-D proprio (the GR00T sidecar's
+# ``_register_r1pro_modality``), in the B1K checkpoint's state modality order:
+# (group, start, end) slices.
+R1PRO_STATE_GROUPS: tuple[tuple[str, int, int], ...] = (
+    ("base_qvel", 0, 3),
+    ("torso", 53, 57),
+    ("left_arm", 3, 10),
+    ("left_gripper", 24, 26),
+    ("right_arm", 28, 35),
+    ("right_gripper", 49, 51),
+)
+# The absolute gripper dims of the 23-D action (base 3, torso 4, left arm 7,
+# left gripper 1, right arm 7, right gripper 1).
+GRIPPER_ACTION_INDICES: tuple[int, int] = (14, 22)
+
 
 def explicit_port(
     env_value: str | None,
