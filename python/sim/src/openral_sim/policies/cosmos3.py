@@ -214,6 +214,14 @@ def _build_cosmos3(env_cfg: Any) -> _Cosmos3Adapter:
             f"cosmos3: {repo_id} conditions on the state action (use_state); only the "
             "state-free LIBERO recipe is verified for this adapter."
         )
+    if not getattr(config, "load_action_modules", True):
+        # lerobot then skips the action heads on load (a fine-tuning switch), and the
+        # strict check skips them too: with weight init suppressed they would hold
+        # uninitialised memory. An inference checkpoint must ship them.
+        raise ROSConfigError(
+            f"cosmos3: {repo_id} sets load_action_modules=false, so its action heads "
+            "would not load from the checkpoint; refusing to run it."
+        )
     # The camera slots must land on exactly the views the checkpoint's video canvas reads;
     # an alias override that renames one would otherwise fail mid-episode in the canvas.
     scene_cameras = getattr(env_cfg.scene, "cameras", None)
