@@ -8,8 +8,6 @@ safety-kernel SRDF parser).
 Skip/xfail policy — no faked passes:
 
 * MJCF needing an absent optional sim dep → ``pytest.skip``.
-* ``menagerie:`` refs are unwired (Task 1 YAGNI); ``widowx``'s MJCF asserts
-  ``AssetRefError`` rather than skipping.
 * h1, so100_follower, so101_follower ship a vendored, joint-name-patched URDF
   matching the manifest (so100/so101 also vendor their Apache-2.0 meshes under
   ``robots/<id>/assets/`` with the upstream LICENSE) — no xfail needed.
@@ -64,25 +62,19 @@ def test_manifest_glob_is_nonempty() -> None:
 def test_declared_assets_resolve_to_files(mf: Path) -> None:
     """Every declared static asset ref resolves to an on-disk file.
 
-    ``ros2://robot_description`` is the runtime-supplied marker (no file), and
-    ``widowx``'s ``menagerie:`` MJCF is intentionally not wired yet — both are
-    handled explicitly rather than asserted to be files.
+    ``ros2://robot_description`` is the runtime-supplied marker (no file), so it
+    is handled explicitly rather than asserted to be a file.
     """
     a = _load(mf).assets
     if a.urdf and a.urdf.ref != "ros2://robot_description":
         p = resolve_asset(a.urdf.ref, "urdf", manifest_dir=mf.parent)
         assert p is not None and p.is_file()
     if a.mjcf:
-        if a.mjcf.startswith("menagerie:"):
-            # Task 1 YAGNI: menagerie wiring is deferred; the resolver raises.
-            with pytest.raises(AssetRefError):
-                resolve_asset(a.mjcf, "mjcf", manifest_dir=mf.parent)
-        else:
-            try:
-                p = resolve_asset(a.mjcf, "mjcf", manifest_dir=mf.parent)
-            except AssetRefError as exc:
-                pytest.skip(f"optional sim dep absent for {a.mjcf}: {exc}")
-            assert p is not None and p.is_file()
+        try:
+            p = resolve_asset(a.mjcf, "mjcf", manifest_dir=mf.parent)
+        except AssetRefError as exc:
+            pytest.skip(f"optional sim dep absent for {a.mjcf}: {exc}")
+        assert p is not None and p.is_file()
     if a.srdf:
         p = resolve_asset(a.srdf, "srdf", manifest_dir=mf.parent)
         assert p is not None and p.is_file()
@@ -131,9 +123,7 @@ def test_declared_urdf_parses_and_matches_hal_joints(mf: Path) -> None:
 def test_declared_mjcf_loads(mf: Path) -> None:
     """A declared MJCF compiles under MuJoCo (raises on malformed XML).
 
-    ``widowx``'s ``menagerie:`` ref is not yet wired (Task 1 YAGNI), so the
-    resolver raises before MuJoCo is ever invoked — asserted, not skipped.
-    Other MJCFs whose optional sim package is absent are skipped honestly.
+    MJCFs whose optional sim package is absent are skipped honestly.
     """
     pytest.importorskip("mujoco")
     import mujoco
@@ -141,11 +131,6 @@ def test_declared_mjcf_loads(mf: Path) -> None:
     a = _load(mf).assets
     if not a.mjcf:
         pytest.skip("no mjcf")
-
-    if a.mjcf.startswith("menagerie:"):
-        with pytest.raises(AssetRefError):
-            resolve_asset(a.mjcf, "mjcf", manifest_dir=mf.parent)
-        return
 
     try:
         path = resolve_asset(a.mjcf, "mjcf", manifest_dir=mf.parent)

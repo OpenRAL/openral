@@ -227,7 +227,7 @@ def _resolve_robot_mjcf(description: RobotDescription) -> Path:
     ``MujocoArmHAL.from_description`` consume — so the manifest is the single
     robot-MJCF source across sim run, deploy sim, and deploy run. Resolved by the
     one ``openral_core.assets.resolve_asset`` grammar (``rd:`` for the SO-ARM
-    family, ``file:`` / ``gym_aloha:`` / ``openarm:`` / ``menagerie:``).
+    family, ``file:`` / ``gym_aloha:`` / ``openarm:`` / ``unitree:`` / ``makermods:``).
 
     The composed scene splices its task world onto this robot MJCF via the
     ``<body name="base">`` + ``<body name="gripper">`` anchors, so the robot

@@ -69,7 +69,7 @@ Severity = Literal["error", "warning"]
 # Asset-ref prefixes that download a package or need a sim-only dep; skipped by
 # default so the check runs offline in CI. ``file:`` / ``ros2://`` resolve
 # locally and are always checked.
-_REMOTE_ASSET_PREFIXES = ("rd:", "gym_aloha:", "openarm:", "menagerie:", "unitree:", "makermods:")
+_REMOTE_ASSET_PREFIXES = ("rd:", "gym_aloha:", "openarm:", "unitree:", "makermods:")
 
 _SCENE_TIERS: dict[str, type[DeployScene]] = {
     "deploy": DeployScene,
@@ -335,7 +335,7 @@ def check_description_graph(
     Args:
         repo_root: Directory holding ``robots/``, ``rskills/``, and ``scenes/``.
         resolve_remote_assets: When ``True``, also resolve ``rd:`` /
-            ``gym_aloha:`` / ``openarm:`` / ``menagerie:`` / ``unitree:`` refs (downloads /
+            ``gym_aloha:`` / ``openarm:`` / ``unitree:`` refs (downloads /
             sim-only imports). Default ``False`` keeps the check offline.
 
     Returns:

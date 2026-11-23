@@ -9,7 +9,7 @@ Grammar (``resolve_asset(ref, kind)``):
   ``URDF_PATH`` / ``MJCF_PATH`` / ``SRDF_PATH`` for the requested ``kind``.
   Cache-misses download on first use (with a structlog progress line).
 * ``file:<relpath>`` — resolved against the manifest dir, then the repo root.
-* ``gym_aloha:<scene>`` · ``openarm:<variant>`` · ``menagerie:<model>`` —
+* ``gym_aloha:<scene>`` · ``openarm:<variant>`` —
   robot-specific MJCF loaders (sim-only optional deps, lazy-imported).
 * ``unitree:<model>`` — official Unitree description files fetched at a pinned
   commit with per-file SHA-256 (``h2``: URDF from ``unitree_ros``, MJCF from
@@ -106,7 +106,7 @@ def resolve_asset(ref: str, kind: AssetKind, *, manifest_dir: Path | None = None
     raise AssetRefError(
         f"unrecognized asset ref {ref!r}; expected one of: rd:<module>, "
         f"file:<relpath>, gym_aloha:<scene>, openarm:<variant>, "
-        f"menagerie:<model>, unitree:<model>, makermods:<variant>, {_ROS2_DYNAMIC}"
+        f"unitree:<model>, makermods:<variant>, {_ROS2_DYNAMIC}"
     )
 
 
@@ -415,18 +415,12 @@ def _resolve_makermods(variant: str, kind: AssetKind) -> Path:
         raise AssetRefError(f"makermods:{variant} ({kind}): {exc}") from exc
 
 
-def _resolve_menagerie(model: str, kind: AssetKind) -> Path:
-    """Resolve ``menagerie:<model>`` — not yet wired (YAGNI)."""
-    raise AssetRefError(f"menagerie:{model} not yet wired — widowx is sim-only via SimplerEnv")
-
-
 # ``<scheme>:`` → resolver for every scheme but ``file:`` (which also takes the
 # manifest dir). Keep in lock-step with ``openral_core.schemas._ASSET_SCHEMES``.
 _SCHEME_RESOLVERS: tuple[tuple[str, Callable[[str, AssetKind], Path]], ...] = (
     ("rd:", _resolve_rd),
     ("gym_aloha:", _resolve_gym_aloha),
     ("openarm:", _resolve_openarm),
-    ("menagerie:", _resolve_menagerie),
     ("unitree:", _resolve_unitree),
     ("makermods:", _resolve_makermods),
 )
