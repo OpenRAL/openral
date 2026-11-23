@@ -477,10 +477,10 @@ _RoboTwin 2.0 dual-arm SAPIEN scene adapter, fixed to the `aloha_agilex` embodim
 - `class _RoboTwinSimSidecar(SidecarSimRollout)` — `reset`/`step`/`render`/`close`/`sim_time_ns` inherited verbatim from `sidecar.SidecarSimRollout` (shared with `_IsaacSimSidecar`). Implements `_wrap_obs` for the eval-shaped Observation (`images` keyed `camera1/camera2/camera3` / `state` / `task`) via `client.require(...)`, preferring the head frame for the cached render image, and exposes `action_dim` (14, read from the sidecar `ping`, cached).
 - `_scene_default_port(task_id, robot_id) -> int` — deterministic per-scene ZMQ port in `[_SIDECAR_PORT_MIN, _SIDECAR_PORT_MAX)` (SHA-256 digest, not the salted builtin `hash`), so distinct tasks never share a sidecar endpoint; an explicit `backend_options.port` still wins.
 - `_robotwin_task_name(task_id) -> str` — strips the `robotwin/` namespace to the bare upstream task name the LeRobot env wants.
-- `_provision_robotwin_venv() -> Path` / `_sidecar_python() -> Path` / `_locate_sidecar_script() -> Path` — opt-in (`OPENRAL_ROBOTWIN_AUTO_PROVISION=1`) provisioning of the py3.12 venv (pinned `lerobot==0.7.0` + SAPIEN + mplib + wire) plus, for the managed default root, the RoboTwin checkout at `_ROBOTWIN_SHA` and its object assets; interpreter resolution (env override → opt-in provision → cache default whose `.deps-installed` sentinel matches `_ROBOTWIN_VENV_SPEC`, else a re-provision `ROSConfigError` → typed `ROSConfigError` carrying the manual recipe); and `tools/robotwin_sidecar.py` location (env override → walk-up). `_ensure_robotwin_checkout(home, repo, sha) -> Path` returns `<home>/RoboTwin` at the pin, fetching it on first use and raising `ROSConfigError` for a reused root at any other commit or without its own `.git`; `_robotwin_root()` runs it on every launch whenever the resolved root is the managed one (also when named via `OPENRAL_ROBOTWIN_ROOT`), so the sidecar never imports an unpinned provisioned checkout. An `OPENRAL_ROBOTWIN_ROOT` elsewhere is the operator's own checkout: never cloned, patched or verified.
-- `_download_assets_script(root: Path) -> str` (L391) — Path of RoboTwin's asset download script relative to the checkout; accepts the pre-2026 `script/` and current `scripts/` layouts.
+- `_provision_robotwin_venv() -> Path` / `_sidecar_python() -> Path` / `_locate_sidecar_script() -> Path` — opt-in (`OPENRAL_ROBOTWIN_AUTO_PROVISION=1`) provisioning of the py3.12 venv (`uv pip install --require-hashes --no-deps` from `robotwin.lock`) plus, for the managed default root, the RoboTwin checkout at `_ROBOTWIN_SHA` and its object assets; interpreter resolution (env override → opt-in provision → cache default whose `.deps-installed` sentinel matches the current lock (`_robotwin_venv_spec()`), else a re-provision `ROSConfigError` → typed `ROSConfigError` carrying the manual recipe); and `tools/robotwin_sidecar.py` location (env override → walk-up). `_robotwin_lock() -> Path` returns the lock beside that script (typed `ROSConfigError` if missing); `_robotwin_venv_spec() -> tuple[str]` is its text, the venv sentinel spec. `_ensure_robotwin_checkout(home, repo, sha) -> Path` returns `<home>/RoboTwin` at the pin, fetching it on first use and raising `ROSConfigError` for a reused root at any other commit or without its own `.git`; `_robotwin_root()` runs it on every launch whenever the resolved root is the managed one (also when named via `OPENRAL_ROBOTWIN_ROOT`), so the sidecar never imports an unpinned provisioned checkout. An `OPENRAL_ROBOTWIN_ROOT` elsewhere is the operator's own checkout: never cloned, patched or verified.
+- `_download_assets_script(root: Path) -> str` (L350) — Path of RoboTwin's asset download script relative to the checkout; accepts the pre-2026 `script/` and current `scripts/` layouts.
 - `_build_robotwin_scene(env_cfg) -> _RoboTwinSimSidecar` — factory: builds the launch argv (`--task`, `--cameras`, `--episode-length`, obs h/w, host/port), connects a `SidecarClient(name="robotwin", expected_identity={"env": "robotwin", "task": <name>})`.
-- `provision_robotwin() -> None` — Pre-launch provisioner: `ensure_backend_deps("robotwin_client")` + `_sidecar_python()` (opt-in multi-GB LeRobot + SAPIEN venv under `OPENRAL_ROBOTWIN_AUTO_PROVISION=1`, else the manual recipe). Registered as `provision=`; keeps the venv build out of the HAL's 300 s `on_configure`. Note this covers **provisioning only** — the sidecar *boot* still happens inside `on_configure` via `_build_robotwin_scene`'s `connect()`, and this backend's `_DEFAULT_BOOT_TIMEOUT_S = 600.0` exceeds that bound (latent: no in-tree deploy scene selects `robotwin`). (L514)
+- `provision_robotwin() -> None` — Pre-launch provisioner: `ensure_backend_deps("robotwin_client")` + `_sidecar_python()` (opt-in multi-GB LeRobot + SAPIEN venv under `OPENRAL_ROBOTWIN_AUTO_PROVISION=1`, else the manual recipe). Registered as `provision=`; keeps the venv build out of the HAL's 300 s `on_configure`. Note this covers **provisioning only** — the sidecar *boot* still happens inside `on_configure` via `_build_robotwin_scene`'s `connect()`, and this backend's `_DEFAULT_BOOT_TIMEOUT_S = 600.0` exceeds that bound (latent: no in-tree deploy scene selects `robotwin`). (L478)
 - Module side effect: `SCENES.register("robotwin", fixed_robot="aloha_agilex", provision=provision_robotwin, sim_clock=True)(_build_robotwin_scene)` at import.
 - `const _ROBOTWIN_SCENE_ID = 'robotwin'` (L77)
 - `const _ROBOTWIN_ROBOT_ID = 'aloha_agilex'` (L78)
@@ -491,22 +491,18 @@ _RoboTwin 2.0 dual-arm SAPIEN scene adapter, fixed to the `aloha_agilex` embodim
 - `const _SIDECAR_SCRIPT_ENV = 'OPENRAL_ROBOTWIN_SIDECAR_SCRIPT'` (L84)
 - `const _ROBOTWIN_ROOT_ENV = 'OPENRAL_ROBOTWIN_ROOT'` (L85)
 - `const _AUTO_PROVISION_ENV = 'OPENRAL_ROBOTWIN_AUTO_PROVISION'` (L86)
-- `const _ROBOTWIN_SIDECAR_HOME = Path.home() / '.cache' / 'openral' / 'robotwin-sidecar'` (L94)
-- `const _ROBOTWIN_PYTHON = '3.12'` (L95)
-- `const _ROBOTWIN_REPO = 'https://github.com/RoboTwin-Platform/RoboTwin.git'` (L96)
-- `const _ROBOTWIN_BASE_DEPS` — Pinned `lerobot==0.7.0` (same as the workspace) + `sapien==3.0.3` + CUDA/Open3D/h5py sidecar install spec. (L106)
-- `const _ROBOTWIN_MPLIB_DEPS = ('mplib==0.2.1',)` (L120)
-- `const _ROBOTWIN_EXCLUDE_NEWER = '2026-06-01T00:00:00Z'` — Global `--exclude-newer` cutoff of the sidecar install. (L125)
-- `const _ROBOTWIN_NEWER_CUTOFF = '2026-11-10T00:00:00Z'` — Later cutoff for `_ROBOTWIN_NEWER_PACKAGES`. (L126)
-- `const _ROBOTWIN_NEWER_PACKAGES` — Packages exempted from the global cutoff: lerobot 0.7.0, its `draccus>=0.11.6` floor, and huggingface-hub, whose current release floors filelock / click / hf-xet past it. (L127)
-- `const _ROBOTWIN_VENV_SPEC` — Pins + both cutoffs; keys the venv's `.deps-installed` sentinel so changing any of them repairs (auto-provision) or refuses (`_sidecar_python`) an existing venv. (L131)
-- `const _DEFAULT_HOST = '127.0.0.1'` (L138)
-- `const _SIDECAR_PORT_MIN = 20000` (L144)
-- `const _SIDECAR_PORT_MAX = 40000` (L145)
-- `const _DEFAULT_TIMEOUT_MS = 120000` (L149)
-- `const _DEFAULT_BOOT_TIMEOUT_S = 600.0` (L151)
-- `const _DEFAULT_MAX_STEPS = 1000000` (L153)
-- `const _FALLBACK_SIM_DT_S = 1.0 / 25.0` (L158)
+- `const _ROBOTWIN_SIDECAR_HOME = Path.home() / '.cache' / 'openral' / 'robotwin-sidecar'` (L93)
+- `const _ROBOTWIN_PYTHON = '3.12'` (L94)
+- `const _ROBOTWIN_REPO = 'https://github.com/RoboTwin-Platform/RoboTwin.git'` (L95)
+- `const _ROBOTWIN_LOCK = 'robotwin.lock'` — Hash lock of the sidecar venv under `tools/sidecar_requirements/`, compiled from `robotwin.in` (lerobot 0.7.0 + sapien 3.0.3 + mplib 0.2.1 + open3d/trimesh/wire; its header carries the regenerate command and exclude-newer cutoffs). (L106)
+- `tools/sidecar_requirements/robotwin-override.txt` — compile-time uv `--overrides` pinning numpy 1.26.4: mplib 0.2.1 needs `numpy<2` against lerobot 0.7's `numpy>=2` floor, and 1.26.4 is the stack every RoboTwin rollout has run on. The lock is installed `--require-hashes --no-deps`.
+- `const _DEFAULT_HOST = '127.0.0.1'` (L108)
+- `const _SIDECAR_PORT_MIN = 20000` (L114)
+- `const _SIDECAR_PORT_MAX = 40000` (L115)
+- `const _DEFAULT_TIMEOUT_MS = 120000` (L119)
+- `const _DEFAULT_BOOT_TIMEOUT_S = 600.0` (L121)
+- `const _DEFAULT_MAX_STEPS = 1000000` (L123)
+- `const _FALLBACK_SIM_DT_S = 1.0 / 25.0` (L128)
 
 #### `tools/robotwin_sidecar.py`
 _RoboTwin-side sidecar (runs under the py3.12 lerobot 0.7 + RoboTwin + SAPIEN venv only). Constructs LeRobot's native `RoboTwinEnv` (`lerobot.sim.integrations.robotwin`) and serves a ZMQ REP loop matching the openral wire framing, re-keying the env's native cameras to `camera1`/`camera2`/`camera3` and including `sim_time_ns`. Not imported by the openral venv._

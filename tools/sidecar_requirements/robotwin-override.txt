@@ -1,0 +1,9 @@
+# uv --overrides for the RoboTwin sidecar lock (robotwin.in -> robotwin.lock).
+# mplib 0.2.1 (RoboTwin's motion planner) requires numpy<2.0, while lerobot 0.7.0
+# declares numpy>=2.0.0,<2.3.0. The pre-lock two-step install (`lerobot ...` then
+# `mplib==0.2.1`) silently downgraded numpy to 1.26.4, and that is the stack every
+# RoboTwin rollout has actually run on: lerobot 0.6 and 0.7's robotwin env, torch
+# 2.9.1, sapien 3.0.3 and open3d all run on it (openral#716: a seeded 30-step
+# lift_pot trajectory is bit-identical on lerobot 0.6 and 0.7, both on 1.26.4).
+# Pin it explicitly so the lock records the real stack instead of hiding the clash.
+numpy==1.26.4

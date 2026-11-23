@@ -1,0 +1,32 @@
+# Source requirements for the RoboTwin 2.0 sidecar venv (Python 3.12, Linux x86_64
+# only — SAPIEN 3.0.3 / open3d 0.19 / mplib 0.2.1 ship no aarch64 wheels).
+# lerobot==0.7.0 matches the workspace (openral#716): it provides
+# lerobot.sim.integrations.robotwin, the env tools/robotwin_sidecar.py wraps.
+# lerobot 0.7.0, its draccus>=0.11.6 floor and huggingface-hub (whose current
+# release floors filelock / click / hf-xet) postdate the global cutoff, so those
+# get the later one. Regenerate the lock with:
+#   uv pip compile tools/sidecar_requirements/robotwin.in --no-config \
+#     --python-version 3.12 --python-platform x86_64-manylinux_2_31 --generate-hashes \
+#     --exclude-newer 2026-06-01T00:00:00Z \
+#     --exclude-newer-package lerobot=2026-11-10T00:00:00Z \
+#     --exclude-newer-package draccus=2026-11-10T00:00:00Z \
+#     --exclude-newer-package huggingface-hub=2026-11-10T00:00:00Z \
+#     --exclude-newer-package filelock=2026-11-10T00:00:00Z \
+#     --exclude-newer-package click=2026-11-10T00:00:00Z \
+#     --exclude-newer-package hf-xet=2026-11-10T00:00:00Z \
+#     --overrides tools/sidecar_requirements/robotwin-override.txt \
+#     -o tools/sidecar_requirements/robotwin.lock
+lerobot==0.7.0
+sapien==3.0.3
+cuda-bindings==12.8.0
+mplib==0.2.1
+open3d
+h5py
+# RoboTwin 2.0's task base (`envs/_base_task.py`) imports these at module load.
+trimesh
+imageio
+# huggingface_hub for RoboTwin's assets/_download.py comes in via lerobot.
+pyzmq
+msgpack
+requests==2.32.5
+urllib3==2.5.0

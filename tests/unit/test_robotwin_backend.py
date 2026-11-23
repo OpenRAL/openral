@@ -229,14 +229,14 @@ def test_sidecar_python_refuses_venv_from_superseded_pins(
     from openral_sim.backends import robotwin
 
     home = tmp_path / "robotwin-sidecar"
-    # A venv provisioned before the lerobot 0.7 bump carries the old pins' marker.
-    old_spec = ("lerobot==0.6.0", *robotwin._ROBOTWIN_BASE_DEPS[1:], "mplib==0.2.1")
+    # A venv provisioned before the lock (lerobot 0.6.0 pins) carries another marker.
+    old_spec = ("lerobot==0.6.0", "sapien==3.0.3", "mplib==0.2.1")
     _fake_default_venv(home, spec_marker(old_spec))
     monkeypatch.delenv("OPENRAL_ROBOTWIN_SIDECAR_PYTHON", raising=False)
     monkeypatch.setenv("OPENRAL_ROBOTWIN_AUTO_PROVISION", "0")
     monkeypatch.setattr(robotwin, "_ROBOTWIN_SIDECAR_HOME", home)
 
-    with pytest.raises(ROSConfigError, match="built from other pins"):
+    with pytest.raises(ROSConfigError, match="built from another lock"):
         robotwin._sidecar_python()
 
 
@@ -247,7 +247,7 @@ def test_sidecar_python_returns_venv_built_from_current_pins(
     from openral_sim.backends import robotwin
 
     home = tmp_path / "robotwin-sidecar"
-    py = _fake_default_venv(home, spec_marker(robotwin._ROBOTWIN_VENV_SPEC))
+    py = _fake_default_venv(home, spec_marker(robotwin._robotwin_venv_spec()))
     monkeypatch.delenv("OPENRAL_ROBOTWIN_SIDECAR_PYTHON", raising=False)
     monkeypatch.setenv("OPENRAL_ROBOTWIN_AUTO_PROVISION", "0")
     monkeypatch.setattr(robotwin, "_ROBOTWIN_SIDECAR_HOME", home)
@@ -255,7 +255,7 @@ def test_sidecar_python_returns_venv_built_from_current_pins(
     assert robotwin._sidecar_python() == py
 
 
-def test_provision_installs_with_newer_package_cutoffs(
+def test_provision_installs_from_the_hash_lock(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     # ``run_cmd`` / ``ensure_pip_venv`` are the subprocess + venv boundary (§1.11).
@@ -277,15 +277,27 @@ def test_provision_installs_with_newer_package_cutoffs(
 
     robotwin._provision_robotwin_venv()
 
-    base, mplib = calls
-    assert "lerobot==0.7.0" in base
-    for pkg in robotwin._ROBOTWIN_NEWER_PACKAGES:
-        assert f"{pkg}={robotwin._ROBOTWIN_NEWER_CUTOFF}" in base
-    assert base[base.index("--exclude-newer") + 1] == robotwin._ROBOTWIN_EXCLUDE_NEWER
-    assert mplib[-1] == "mplib==0.2.1"
-    # The cutoffs are part of the sentinel spec, so changing one repairs a venv.
-    assert specs == [robotwin._ROBOTWIN_VENV_SPEC]
-    assert f"exclude-newer={robotwin._ROBOTWIN_EXCLUDE_NEWER}" in robotwin._ROBOTWIN_VENV_SPEC
+    (cmd,) = calls
+    assert {"--require-hashes", "--no-deps"} <= set(cmd)
+    assert cmd[cmd.index("-r") + 1] == str(robotwin._robotwin_lock())
+    # The lock text keys the sentinel, so recompiling it repairs an existing venv.
+    assert specs == [robotwin._robotwin_venv_spec()]
+
+
+def test_robotwin_lock_pins_the_sidecar_stack() -> None:
+    lock = (_REPO_ROOT / "tools" / "sidecar_requirements" / "robotwin.lock").read_text()
+    pins = {
+        line.split("==")[0]: line.split("==")[1].split()[0]
+        for line in lock.splitlines()
+        if line and line[0].isalpha() and "==" in line
+    }
+    # lerobot matches the workspace; numpy is mplib 0.2.1's (robotwin-override.txt).
+    assert pins["lerobot"] == "0.7.0"
+    assert pins["mplib"] == "0.2.1"
+    assert pins["sapien"] == "3.0.3"
+    assert pins["numpy"] == "1.26.4"
+    # Every pin is hashed (installed with --require-hashes).
+    assert lock.count("==") <= lock.count("--hash=sha256:")
 
 
 def test_robotwin_launch_argv_passes_checkout_root(

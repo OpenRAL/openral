@@ -89,8 +89,7 @@ _AUTO_PROVISION_ENV = "OPENRAL_ROBOTWIN_AUTO_PROVISION"
 # Linux-only and pulls SAPIEN / mplib + multi-GB assets — so
 # (like the Isaac sidecar) we do NOT auto-provision by default: provisioning runs
 # only when the operator opts in with OPENRAL_ROBOTWIN_AUTO_PROVISION=1, and
-# OPENRAL_ROBOTWIN_SIDECAR_PYTHON always overrides. Pins mirror the manual recipe in
-# the ROSConfigError hint below; bump both together.
+# OPENRAL_ROBOTWIN_SIDECAR_PYTHON always overrides.
 _ROBOTWIN_SIDECAR_HOME = Path.home() / ".cache" / "openral" / "robotwin-sidecar"
 _ROBOTWIN_PYTHON = "3.12"
 _ROBOTWIN_REPO = "https://github.com/RoboTwin-Platform/RoboTwin.git"
@@ -98,42 +97,14 @@ _ROBOTWIN_REPO = "https://github.com/RoboTwin-Platform/RoboTwin.git"
 # + ``require_pinned_head``; its asset script runs on the host): "Merge pull request
 # #502", 2026-09-22.
 _ROBOTWIN_SHA = "ee3d076fb61c4542e9be6c16f3af5ecd67d4a6f7"
-# Same lerobot as the workspace (0.7.0, openral#716): the sidecar ships raw pixels +
-# agent_pos and every policy preprocesses in-process, so one lerobot to track. 0.7
-# moved the env to `lerobot.sim.integrations.robotwin` and dropped its in-step
-# auto-reset (the client resets explicitly). The RoboTwin checkout is still needed
-# as task package + asset root.
-_ROBOTWIN_BASE_DEPS = (
-    "lerobot==0.7.0",
-    "sapien==3.0.3",
-    "cuda-bindings==12.8.0",
-    "open3d",
-    "h5py",
-    # RoboTwin 2.0's task base (`envs/_base_task.py`) imports these at module load.
-    "trimesh",
-    "imageio",
-    "pyzmq",
-    "msgpack",
-    "requests==2.32.5",
-    "urllib3==2.5.0",
-)
-_ROBOTWIN_MPLIB_DEPS = ("mplib==0.2.1",)
-# Global resolution cutoff for the sidecar install, and the later cutoff for the
-# packages that must postdate it: lerobot 0.7.0 itself, its draccus>=0.11.6 floor,
-# and huggingface-hub (lerobot allows >=1.31,<3) whose current release floors
-# filelock / click / hf-xet past the global cutoff.
-_ROBOTWIN_EXCLUDE_NEWER = "2026-06-01T00:00:00Z"
-_ROBOTWIN_NEWER_CUTOFF = "2026-11-10T00:00:00Z"
-_ROBOTWIN_NEWER_PACKAGES = ("lerobot", "draccus", "huggingface-hub", "filelock", "click", "hf-xet")
-# Everything that decides what the install resolves: keys the venv sentinel, so a
-# change to any of it repairs (auto-provision) or refuses (``_sidecar_python``) an
-# existing venv.
-_ROBOTWIN_VENV_SPEC = (
-    *_ROBOTWIN_BASE_DEPS,
-    *_ROBOTWIN_MPLIB_DEPS,
-    f"exclude-newer={_ROBOTWIN_EXCLUDE_NEWER}",
-    *(f"exclude-newer-package={pkg}={_ROBOTWIN_NEWER_CUTOFF}" for pkg in _ROBOTWIN_NEWER_PACKAGES),
-)
+# The venv installs from the hash-locked ``tools/sidecar_requirements/robotwin.lock``
+# (compiled from ``robotwin.in``, whose header has the regenerate command and the
+# exclude-newer cutoffs; ``robotwin-override.txt`` pins numpy 1.26.4 for mplib 0.2.1
+# at compile time). The lock is the full closure, installed ``--no-deps``. Same
+# lerobot as the workspace (0.7.0, openral#716): the sidecar ships raw pixels +
+# agent_pos and every policy preprocesses in-process, so one lerobot to track. The
+# RoboTwin checkout is still needed as task package + asset root.
+_ROBOTWIN_LOCK = "robotwin.lock"
 
 _DEFAULT_HOST = "127.0.0.1"
 # Per-scene default ports in 20000–39999 (clear of well-known + ephemeral ranges),
@@ -293,6 +264,7 @@ def _provision_robotwin_venv() -> Path:
     ``OPENRAL_ROBOTWIN_ROOT`` pointing elsewhere is the operator's own checkout and
     is left untouched.
     """
+    lock = _robotwin_lock()
 
     def _install(uv: str, py: Path) -> None:
         env = {**os.environ, "UV_HTTP_TIMEOUT": os.environ.get("UV_HTTP_TIMEOUT", "900")}
@@ -302,30 +274,18 @@ def _provision_robotwin_venv() -> Path:
                 uv,
                 "pip",
                 "install",
+                # --no-config: from the repo root uv would apply the workspace's
+                # [tool.uv] settings to this unrelated venv.
+                "--no-config",
                 "--python",
                 str(py),
-                "--exclude-newer",
-                _ROBOTWIN_EXCLUDE_NEWER,
-                *(
-                    arg
-                    for pkg in _ROBOTWIN_NEWER_PACKAGES
-                    for arg in ("--exclude-newer-package", f"{pkg}={_ROBOTWIN_NEWER_CUTOFF}")
-                ),
-                *_ROBOTWIN_BASE_DEPS,
-            ],
-            env=env,
-        )
-        run_cmd(
-            "robotwin-sidecar",
-            [
-                uv,
-                "pip",
-                "install",
-                "--python",
-                str(py),
-                "--exclude-newer",
-                _ROBOTWIN_EXCLUDE_NEWER,
-                *_ROBOTWIN_MPLIB_DEPS,
+                "--require-hashes",
+                # The lock is the complete, hashed closure; re-resolving it would
+                # trip over mplib's numpy<2 vs lerobot's numpy>=2 metadata, which
+                # the compile-time override already settled (robotwin-override.txt).
+                "--no-deps",
+                "-r",
+                str(lock),
             ],
             env=env,
         )
@@ -335,8 +295,8 @@ def _provision_robotwin_venv() -> Path:
         home=_ROBOTWIN_SIDECAR_HOME,
         python=_ROBOTWIN_PYTHON,
         install=_install,
-        # Keyed on the pins + cutoffs so editing them repairs an already-provisioned venv.
-        spec=_ROBOTWIN_VENV_SPEC,
+        # Keyed on the lock text so recompiling it repairs an already-provisioned venv.
+        spec=_robotwin_venv_spec(),
     )
     if not _is_managed_root(_robotwin_root_path()):
         # The operator's own checkout: theirs to pin, never cloned, patched or verified here.
@@ -408,7 +368,7 @@ def _sidecar_python() -> Path:
 
     Resolution order: ``OPENRAL_ROBOTWIN_SIDECAR_PYTHON`` override → opt-in
     auto-provision (``OPENRAL_ROBOTWIN_AUTO_PROVISION=1``) → an existing default
-    venv whose sentinel matches ``_ROBOTWIN_VENV_SPEC`` → a typed error carrying the
+    venv whose sentinel matches the current lock → a typed error carrying the
     exact manual commands.
 
     Auto-provision precedes the existing-venv shortcut so a venv built from
@@ -431,19 +391,13 @@ def _sidecar_python() -> Path:
     if default.is_file():
         sentinel = venv / ".deps-installed"
         built = sentinel.read_text(encoding="utf-8") if sentinel.is_file() else None
-        if built != spec_marker(_ROBOTWIN_VENV_SPEC):
+        if built != spec_marker(_robotwin_venv_spec()):
             raise ROSConfigError(
-                f"RoboTwin sidecar venv at {venv} was built from other pins (or did not "
+                f"RoboTwin sidecar venv at {venv} was built from another lock (or did not "
                 f"finish provisioning). Set {_AUTO_PROVISION_ENV}=1 to repair it in place."
             )
         return default
-    # Same two installs as ``_provision_robotwin_venv`` (mplib after the base stack).
-    deps = " ".join(f"'{d}'" for d in _ROBOTWIN_BASE_DEPS)
-    mplib = " ".join(f"'{d}'" for d in _ROBOTWIN_MPLIB_DEPS)
-    newer = " ".join(
-        f"--exclude-newer-package {pkg}={_ROBOTWIN_NEWER_CUTOFF}"
-        for pkg in _ROBOTWIN_NEWER_PACKAGES
-    )
+    lock = _robotwin_lock()
     raise ROSConfigError(
         "RoboTwin sidecar venv not found. It is an externally-provisioned dependency "
         "(SAPIEN + RoboTwin 2.0, Python 3.12, Linux-only, multi-GB). "
@@ -453,16 +407,27 @@ def _sidecar_python() -> Path:
         f"{_SIDECAR_PYTHON_ENV} at its py3.12 python:\n"
         "  VENV=~/robotwin-sidecar/.venv\n"
         "  uv venv --python 3.12 $VENV\n"
-        f"  uv pip install --python $VENV/bin/python --exclude-newer {_ROBOTWIN_EXCLUDE_NEWER} "
-        f"{newer} {deps}\n"
-        f"  uv pip install --python $VENV/bin/python --exclude-newer {_ROBOTWIN_EXCLUDE_NEWER} "
-        f"{mplib}\n"
+        "  uv pip install --no-config --python $VENV/bin/python --require-hashes "
+        f"--no-deps -r {lock}\n"
         "  git clone https://github.com/RoboTwin-Platform/RoboTwin.git\n"
         f"  git -C RoboTwin checkout {_ROBOTWIN_SHA}  # the tested pin\n"
         "  cd RoboTwin && PATH=$VENV/bin:$PATH bash scripts/_download_assets.sh\n"
         f"  export {_ROBOTWIN_ROOT_ENV}=$(pwd)  # checkout + assets path for the sidecar\n"
         f"  export {_SIDECAR_PYTHON_ENV}=$VENV/bin/python"
     )
+
+
+def _robotwin_lock() -> Path:
+    """The sidecar's hash lock, ``sidecar_requirements/`` beside ``tools/robotwin_sidecar.py``."""
+    lock = _locate_sidecar_script().parent / "sidecar_requirements" / _ROBOTWIN_LOCK
+    if not lock.is_file():
+        raise ROSConfigError(f"RoboTwin sidecar lock {lock} is missing.")
+    return lock
+
+
+def _robotwin_venv_spec() -> tuple[str]:
+    """Sentinel spec of the sidecar venv: the text of the lock it was built from."""
+    return (_robotwin_lock().read_text(encoding="utf-8"),)
 
 
 def _locate_sidecar_script() -> Path:
