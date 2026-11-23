@@ -50,10 +50,12 @@ same URDF with `mujoco.MjSpec` into `derived-<hash>/aloha_agilex.xml` beside it:
 - The two **front arms** are actuated: one `<position>` actuator per manifest joint,
   in manifest order (actuators 0–13), at the manifest's ranges; forces clamp at the
   manifest's 30 N·m. qpos 0–7 are `fl_joint1..8`, 8–15 `fr_joint1..8`.
-- Each gripper actuator drives `joint7` (0 closed .. 0.04765 m open); an MJCF
-  equality mirrors it onto `joint8`, as RoboTwin's `config.yml` couples them. The
-  twin takes the normalised `[0, 1]` gripper (`normalized_open_unit`, 1 = open),
-  RoboTwin's own encoding.
+- Each gripper actuator drives `joint7` (slide 0 closed .. 0.04765 m open); an
+  MJCF equality mirrors it onto `joint8`, as RoboTwin's `config.yml` couples them.
+  The twin takes the normalised `[0, 1]` gripper (`normalized_open_unit`, 1 = open),
+  RoboTwin's own encoding, over RoboTwin's `gripper_scale` `[-0.01, 0.045]` m: 1
+  opens to 0.045 m and 0 aims 1 cm past the closed stop (the grip squeeze). The
+  reading uses the same span, so a finger at the closed stop reads ≈ 0.18.
 - The base, wheels, castors and the two **rear arms** (`lr_*` / `rr_*`) are welded
   at zero: RoboTwin drives only the front arms.
 - COLLADA visuals are dropped; STL visuals (the base tray, the camera mast) are
@@ -61,7 +63,10 @@ same URDF with `mujoco.MjSpec` into `derived-<hash>/aloha_agilex.xml` beside it:
   render floating above the base.
 - The gains are OpenRAL's sim-only choice (kv sized so the 30 N·m clamp allows the
   3 rad/s velocity limit), not a model of the real servos.
-- It starts at qpos 0, RoboTwin's home pose (config.yml), inside every range.
+- It starts at the MJCF `home` keyframe: RoboTwin's all-zero home pose with
+  `joint2` / `joint3` at 0.05 rad. Both have a lower limit of 0, and at exactly 0
+  gravity settles them ~0.0005 rad below it, where the safety kernel (no limit
+  margin) refuses every target that repeats the measured pose.
 - Cameras come from each sensor's `sim_placement`: `top` at RoboTwin's
   `head_camera` pose (its `config.yml`, moved into the robot frame), the wrist
   cameras on the URDF's `left_camera` / `right_camera` links.

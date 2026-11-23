@@ -171,7 +171,9 @@ def test_robotwin_aloha_agilex_mjcf_actuates_the_manifest_joints() -> None:
     """The derived twin has one actuator per manifest joint, in order, at the manifest's range.
 
     Arm ranges come from the manifest (the URDF says ±10 rad); each gripper
-    spans the URDF's 0..0.04765 m finger slide, with ``joint8`` mirroring ``joint7``.
+    actuator spans the manifest ``sim.grippers`` ``ctrl_range`` (RoboTwin's
+    ``gripper_scale``), with ``joint8`` mirroring ``joint7``. The ``home``
+    keyframe the manifest starts from sits strictly inside every arm range.
     """
     mujoco = pytest.importorskip("mujoco")
     from openral_core import RobotDescription
@@ -183,7 +185,10 @@ def test_robotwin_aloha_agilex_mjcf_actuates_the_manifest_joints() -> None:
     assert path is not None
     model = mujoco.MjModel.from_xml_path(str(path))
     manifest = Path(__file__).resolve().parents[3] / "robots" / "aloha_agilex" / "robot.yaml"
-    joints = RobotDescription.from_yaml(str(manifest)).joints
+    desc = RobotDescription.from_yaml(str(manifest))
+    joints = desc.joints
+    assert desc.sim is not None
+    gripper_ranges = {g.joint: g.ctrl_range for g in desc.sim.grippers}
     assert model.nu == len(joints) == 14
     assert model.nq == 16  # 2 x (6 arm + 2 fingers); base, wheels and rear arms welded
     for i, joint in enumerate(joints):
@@ -191,15 +196,55 @@ def test_robotwin_aloha_agilex_mjcf_actuates_the_manifest_joints() -> None:
         assert model.joint(jid).name == joint.sim_joint_name
         lo, hi = model.actuator_ctrlrange[i]
         if joint.role == "gripper":
-            assert (lo, hi) == pytest.approx((0.0, 0.04765))
+            assert (lo, hi) == pytest.approx(gripper_ranges[joint.name])
         else:
             assert (lo, hi) == pytest.approx(joint.position_limits)
             assert tuple(model.jnt_range[jid]) == pytest.approx(joint.position_limits)
+    assert desc.sim.keyframe_index is not None
+    home = model.key_qpos[desc.sim.keyframe_index]
+    for joint in joints:
+        if joint.role != "gripper":
+            jid = model.actuator_trnid[joints.index(joint), 0]
+            q = home[model.jnt_qposadr[jid]]
+            assert joint.position_limits is not None
+            lo, hi = joint.position_limits
+            assert lo < q < hi, f"{joint.name} starts at {q}, not inside [{lo}, {hi}]"
     mimics = {
         (model.joint(model.eq_obj1id[e]).name, model.joint(model.eq_obj2id[e]).name)
         for e in range(model.neq)
     }
     assert mimics == {("fl_joint8", "fl_joint7"), ("fr_joint8", "fr_joint7")}
+
+
+def test_robotwin_mjcf_cache_write_failure_is_an_asset_ref_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unwritable cache surfaces as ``AssetRefError``, not a bare ``OSError``."""
+    import os
+
+    pytest.importorskip("mujoco")
+    from openral_hal import _robotwin_aloha_agilex_assets as robotwin
+
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory write permissions")
+    try:
+        urdf = resolve_asset("robotwin:aloha_agilex", "urdf")
+    except AssetFetchError as exc:
+        pytest.skip(f"RoboTwin embodiments archive not readable on this host: {exc}")
+    assert urdf is not None
+    # A verified, read-only copy of the cache (symlinks, so nothing is re-downloaded).
+    root = tmp_path / "robotwin_aloha_agilex" / robotwin.ROBOTWIN_ASSETS_REVISION[:12]
+    root.mkdir(parents=True)
+    for entry in urdf.parent.iterdir():
+        if not entry.name.startswith("derived-"):
+            (root / entry.name).symlink_to(entry)
+    root.chmod(0o555)
+    monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path))
+    try:
+        with pytest.raises(AssetRefError, match="Permission denied"):
+            resolve_asset("robotwin:aloha_agilex", "mjcf")
+    finally:
+        root.chmod(0o755)
 
 
 def test_robosuite_is_mjcf_only() -> None:

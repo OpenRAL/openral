@@ -33,6 +33,8 @@ from openral_hal._pinned_files import sha256_file
 __all__ = [
     "ARM_JOINT_RANGES",
     "EFFORT_LIMIT",
+    "GRIPPER_SCALE",
+    "HOME_ARM_QPOS",
     "ROBOTWIN_ASSETS_REVISION",
     "ensure_aloha_agilex_mjcf",
     "ensure_aloha_agilex_urdf",
@@ -232,7 +234,7 @@ _DERIVE_KEY: str = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
 
 #: Arm joint ranges (rad), joint1..joint6, from ``robots/aloha_agilex/robot.yaml``
 #: (the URDF declares ±10 rad placeholders). Both front arms share them;
-#: ``tests/unit/test_robotwin_aloha_agilex_mjcf.py`` holds the two in lock-step.
+#: ``python/core/tests/test_assets.py`` holds the two in lock-step.
 ARM_JOINT_RANGES: tuple[tuple[float, float], ...] = (
     (-2.618, 2.618),
     (0.0, 3.14),
@@ -241,6 +243,15 @@ ARM_JOINT_RANGES: tuple[tuple[float, float], ...] = (
     (-1.22, 1.22),
     (-3.14159, 3.14159),
 )
+#: The twin's start pose, joint1..joint6 per arm (rad): RoboTwin's config.yml home pose
+#: (all zeros) with joint2 / joint3 lifted 0.05 rad off their lower limit of 0.
+#: At exactly 0, gravity settles them ~0.0005 rad below the manifest limit, and
+#: the safety kernel refuses any target that repeats that measured pose.
+HOME_ARM_QPOS: tuple[float, ...] = (0.0, 0.05, 0.05, 0.0, 0.0, 0.0)
+#: Gripper command span (m of joint7) for the normalised [0, 1] gripper: RoboTwin's
+#: ``config.yml`` ``gripper_scale``. 0 targets 1 cm past the closed stop (the
+#: grip squeeze); 1 is 0.045 m, inside the 0.04765 m slide.
+GRIPPER_SCALE: tuple[float, float] = (-0.01, 0.045)
 #: Actuator force clamp (N·m / N), the manifest's ``effort_limit`` for every joint.
 EFFORT_LIMIT: float = 30.0
 _ARMS: tuple[str, ...] = ("fl_", "fr_")
@@ -283,7 +294,10 @@ def _frozen_urdf_xml(urdf: Path) -> str:
     are dropped; those links render their STL collision mesh (the same shape),
     and the visual-only STL frame (``box1_Link``, the camera mast) is kept.
     """
-    root = ET.parse(urdf).getroot()
+    try:
+        root = ET.parse(urdf).getroot()
+    except ET.ParseError as exc:
+        raise ROSConfigError(f"aloha_agilex URDF {urdf!s} is not valid XML: {exc}") from exc
     for link in root.findall("link"):
         for visual in link.findall("visual"):
             mesh = visual.find("geometry/mesh")
@@ -368,7 +382,7 @@ def _aloha_agilex_mjcf_xml(urdf: Path) -> str:
                     f"the pinned RoboTwin URDF changed its joint names."
                 )
             if name == _DRIVEN_FINGER:
-                lo, hi = (float(v) for v in str(mj_joint.get("range")).split())
+                lo, hi = GRIPPER_SCALE
             else:
                 lo, hi = ARM_JOINT_RANGES[int(name[-1]) - 1]
                 mj_joint.set("range", f"{lo} {hi}")
@@ -398,8 +412,24 @@ def _aloha_agilex_mjcf_xml(urdf: Path) -> str:
         )
         for body1, body2 in _CONTACT_EXCLUDES:
             ET.SubElement(contact, "exclude", {"body1": prefix + body1, "body2": prefix + body2})
+    _add_home_keyframe(mjcf)
     ET.indent(mjcf)
     return ET.tostring(mjcf, encoding="unicode")
+
+
+def _add_home_keyframe(mjcf: ET.Element) -> None:
+    """Replace any keyframes with ``home``: ``HOME_ARM_QPOS`` per arm, grippers closed."""
+    # qpos per arm: joint1..6, joint7, joint8; ctrl per arm: joint1..6, joint7.
+    arm_qpos = " ".join(f"{q}" for q in (*HOME_ARM_QPOS, 0.0, 0.0))
+    arm_ctrl = " ".join(f"{q}" for q in (*HOME_ARM_QPOS, 0.0))
+    for old in mjcf.findall("keyframe"):
+        mjcf.remove(old)
+    keyframe = ET.SubElement(mjcf, "keyframe")
+    ET.SubElement(
+        keyframe,
+        "key",
+        {"name": "home", "qpos": f"{arm_qpos} {arm_qpos}", "ctrl": f"{arm_ctrl} {arm_ctrl}"},
+    )
 
 
 def ensure_aloha_agilex_mjcf() -> Path:

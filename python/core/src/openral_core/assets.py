@@ -459,8 +459,8 @@ def _resolve_robotwin(model: str, kind: AssetKind) -> Path:
     """Resolve ``robotwin:aloha_agilex`` to RoboTwin's pinned URDF or its MuJoCo twin.
 
     A failed download is an ``AssetFetchError``; a digest mismatch, an unknown
-    model or kind, a failed MJCF derive, or a missing ``openral_hal`` is an
-    ``AssetRefError``.
+    model or kind, a failed MJCF derive (including an ``OSError`` writing into
+    the cache), or a missing ``openral_hal`` is an ``AssetRefError``.
     """
     from openral_core.exceptions import ROSConfigError
 
@@ -482,7 +482,8 @@ def _resolve_robotwin(model: str, kind: AssetKind) -> Path:
         if kind == "mjcf":
             return robotwin.ensure_aloha_agilex_mjcf()
         return robotwin.ensure_aloha_agilex_urdf()
-    except ROSConfigError as exc:
+    # ``OSError``: the MJCF derive writes into the cache (mkdir / mkstemp / replace).
+    except (ROSConfigError, OSError) as exc:
         raise AssetRefError(f"robotwin:{model} ({kind}): {exc}") from exc
 
 

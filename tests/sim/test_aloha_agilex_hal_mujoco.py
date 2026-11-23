@@ -31,6 +31,9 @@ pytestmark = pytest.mark.sim
 _ROOT = Path(__file__).resolve().parents[2]
 _TRACK_TOL_RAD = 0.05
 _GRIPPER_TOL = 0.05
+#: The normalised reading of a finger at its closed stop (joint7 = 0): the gripper
+#: spans RoboTwin's gripper_scale [-0.01, 0.045] m, so 0 commands 1 cm past the stop.
+_CLOSED_READING = 0.01 / 0.055
 _SETTLE_SIM_S = 2.0
 #: joint1..joint6 per arm, inside every manifest limit and away from them; near
 #: RoboTwin's working pose (``lerobot/robotwin_unified`` state mean j2 1.1, j3 0.8).
@@ -71,13 +74,18 @@ def _drive(hal: MujocoArmHAL, target: list[float]) -> list[float]:
 def test_tracks_joint_targets_and_grippers(
     connected: tuple[RobotDescription, MujocoArmHAL], left: float, right: float
 ) -> None:
-    """Arm joints settle within 0.05 rad; each normalised gripper within 0.05."""
+    """Arm joints settle within 0.05 rad; each gripper within 0.05 of where it can go.
+
+    Open (1.0) reaches 1.0; closed (0.0) stops at the closed stop, which reads
+    ``_CLOSED_READING`` because the command aims 1 cm past it.
+    """
     desc, hal = connected
     target = [*_LEFT_ARM, left, *_RIGHT_ARM, right]
     assert [j.name for j in desc.joints] == list(hal.read_state().name)
     got = _drive(hal, target)
-    for joint, want, have in zip(desc.joints, target, got, strict=True):
+    for joint, commanded, have in zip(desc.joints, target, got, strict=True):
         tol = _GRIPPER_TOL if joint.role == "gripper" else _TRACK_TOL_RAD
+        want = max(commanded, _CLOSED_READING) if joint.role == "gripper" else commanded
         assert abs(have - want) < tol, f"{joint.name}: commanded {want:.3f}, settled {have:.3f}"
 
 
@@ -92,6 +100,22 @@ def test_cameras_render(connected: tuple[RobotDescription, MujocoArmHAL]) -> Non
         assert frame.shape == (sensor.intrinsics.height, sensor.intrinsics.width, 3)
         assert frame.dtype == np.uint8
         assert float(frame.std()) > 5.0, f"{sensor.name} camera frame is blank"
+
+
+def test_starts_inside_the_manifest_limits(
+    connected: tuple[RobotDescription, MujocoArmHAL],
+) -> None:
+    """At rest after connect, every arm joint reads strictly inside its manifest limits.
+
+    The safety kernel's position check has no margin: a start pose on a limit that
+    gravity pushes just past it makes every hold-the-current-pose target a violation.
+    """
+    desc, hal = connected
+    _drive(hal, list(hal.read_state().position))
+    for joint, q in zip(desc.joints, hal.read_state().position, strict=True):
+        assert joint.position_limits is not None
+        lo, hi = joint.position_limits
+        assert lo < q < hi, f"{joint.name} rests at {q:.5f}, outside ({lo}, {hi})"
 
 
 def test_manifest_resolves_each_hand_and_jaw(

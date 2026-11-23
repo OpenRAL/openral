@@ -5,7 +5,7 @@
 # `aloha_agilex_twin` is not an openral_sim scene id, so `deploy sim` builds the bare
 # twin (`MujocoArmHAL.from_description` on the robotwin:aloha_agilex MJCF, the
 # manifest's `sim:` block) at the manifest's 25 Hz, with the head + two wrist
-# cameras. RoboTwin task scenes (the SAPIEN sidecar) stay on scenes/sim/robotwin_*.
+# cameras. RoboTwin task scenes (the SAPIEN sidecar) stay on scenes/benchmark/robotwin_*.
 #
 # Two arms, no depth camera: every runtime feature that needs a sensor the manifest
 # does not declare is off.
