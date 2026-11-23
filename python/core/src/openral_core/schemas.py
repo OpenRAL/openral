@@ -3048,6 +3048,12 @@ class FixedAttachment(BaseModel):
             for movable joints.
         origin_rpy: Orientation ``(roll, pitch, yaw)`` in radians, same frame
             convention as ``origin_xyz``.
+        sweep_xyz: A travel the child link makes from ``origin`` that nothing
+            reports (``None`` = rigid): a translation in the child's own frame,
+            reached along a straight line. The kernel still poses the link at
+            ``origin``; the collision lowering fits its geometry over the whole
+            travel, so the model covers every position (the Galaxea A1's fingers,
+            vendor ``fixed`` joints that slide 30 mm with no joint state).
 
     Example:
         >>> a = FixedAttachment(
@@ -3068,6 +3074,7 @@ class FixedAttachment(BaseModel):
     child_link: str
     origin_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0)
     origin_rpy: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    sweep_xyz: tuple[float, float, float] | None = None
 
 
 class MimicJoint(BaseModel):

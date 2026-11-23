@@ -946,6 +946,7 @@ def lower_link_geometry(
     *,
     tight_links: Mapping[str, int] | Iterable[str] = (),
     extra_meshes: Mapping[str, Any] | None = None,
+    sweeps: Mapping[str, tuple[float, float, float]] | None = None,
 ) -> list[LinkCollisionGeometry]:
     """The conservative primitive set of every URDF link with geometry.
 
@@ -969,8 +970,11 @@ def lower_link_geometry(
     (``fit_link_with_tight_geometry``), or as ``k`` such slabs when
     ``tight_links`` maps it to ``k > 1``. ``extra_meshes`` adds geometry per link,
     already in the link frame, to the cloud (``lower_robot`` passes the robot's
-    MJCF twin meshes, ``_twin_link_meshes``). A link whose only geometry is one
-    sphere ``<collision>`` emits that exact ``SphereShape``.
+    MJCF twin meshes, ``_twin_link_meshes``). ``sweeps`` maps a link to a travel in
+    its own frame (``FixedAttachment.sweep_xyz``): its cloud is joined with a copy
+    moved by that travel, so the fit (which bounds the cloud's hull) covers every
+    position along it. A link whose only geometry is one sphere ``<collision>``
+    emits that exact ``SphereShape``.
 
     Fails closed on partial resolution: a link some of whose geometry loads and
     some does not raises, because fitting the part that loaded would under-cover
@@ -983,7 +987,7 @@ def lower_link_geometry(
     """
     tight = _as_tight_links(tight_links)
     out: list[LinkCollisionGeometry] = []
-    for link_name, item in _link_clouds(urdf_path, tight, extra_meshes):
+    for link_name, item in _link_clouds(urdf_path, tight, extra_meshes, sweeps):
         if isinstance(item, LinkCollisionGeometry):
             out.append(item)
         else:
@@ -992,7 +996,10 @@ def lower_link_geometry(
 
 
 def _link_clouds(
-    urdf_path: str, tight: Mapping[str, int], extra_meshes: Mapping[str, Any] | None
+    urdf_path: str,
+    tight: Mapping[str, int],
+    extra_meshes: Mapping[str, Any] | None,
+    sweeps: Mapping[str, tuple[float, float, float]] | None = None,
 ) -> Iterator[tuple[str, LinkCollisionGeometry | Any]]:
     """Each URDF link's geometry, ready to fit: an exact sphere entry or a link-frame mesh.
 
@@ -1008,6 +1015,7 @@ def _link_clouds(
     model = _load_urdf(urdf_path)
     handler = getattr(model, "_filename_handler", None)
     extra = dict(extra_meshes or {})
+    swept = dict(sweeps or {})
 
     for link_name, link in model.link_map.items():  # type: ignore[attr-defined]  # reason: yourdfpy URDF
         collisions = list(getattr(link, "collisions", None) or [])
@@ -1018,6 +1026,7 @@ def _link_clouds(
         if (
             link_name not in tight
             and link_name not in extra
+            and link_name not in swept
             and len(elements) == 1
             and getattr(collisions[0].geometry, "sphere", None) is not None
         ):
@@ -1054,6 +1063,12 @@ def _link_clouds(
         if link_name in extra:
             parts.append(extra[link_name])
         cloud = trimesh.util.concatenate(parts)
+        if link_name in swept:
+            # The hull of the link at both ends of a straight travel is the link swept
+            # along it (K + [0, d] for convex K), so a hull-bounding fit covers it all.
+            cloud = trimesh.util.concatenate(
+                [cloud, cloud.copy().apply_translation(swept[link_name])]
+            )
         if len(cloud.vertices) < 4:
             continue
         yield link_name, cloud
@@ -2426,11 +2441,19 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
 
     Raises:
         ROSConfigError: If the robot has no ``assets.mjcf`` ref, or it cannot be
-            resolved to a file.
+            resolved to a file, or a ``fixed_attachments`` row declares a
+            ``sweep_xyz`` (only the URDF fit covers a sweep; ignoring it would
+            under-cover the link).
     """
     import mujoco
     import numpy as np
     from openral_core.assets import AssetRefError, resolve_asset
+
+    if swept := sorted(_link_sweeps(robot)):
+        raise ROSConfigError(
+            f"{robot.name}: fixed_attachments {swept} declare sweep_xyz, which the MJCF "
+            "lowering does not cover; lower this robot from its URDF."
+        )
 
     if not robot.assets.mjcf:
         raise ROSConfigError(f"{robot.name}: no urdf and no assets.mjcf to lower from")
@@ -2701,6 +2724,11 @@ def _twin_link_meshes(
     return out
 
 
+def _link_sweeps(robot: RobotDescription) -> dict[str, tuple[float, float, float]]:
+    """Each ``fixed_attachments`` child with a declared ``sweep_xyz``: its travel."""
+    return {a.child_link: a.sweep_xyz for a in robot.fixed_attachments if a.sweep_xyz}
+
+
 def modelled_links(robot: RobotDescription) -> set[str]:
     """The links the manifest models, the only ones lowered geometry may land on.
 
@@ -2820,6 +2848,7 @@ def lower_robot(
                 urdf_ref,
                 tight_links=_tight_links_of(robot, tight_links),
                 extra_meshes=_twin_link_meshes(robot, _load_urdf(urdf_ref), manifest_dir),
+                sweeps=_link_sweeps(robot),
             )
             if g.link_name in chain_links
         ]

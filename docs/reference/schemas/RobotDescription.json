@@ -582,7 +582,7 @@
     },
     "FixedAttachment": {
       "additionalProperties": false,
-      "description": "A rigid, zero-DoF parent\u2192child link attachment in the kinematic tree.\n\n``RobotDescription.joints`` enumerates only the robot's **movable**\njoints \u2014 consumed unfiltered as the action-vector width, the sim\n``qpos`` map, the reasoner's rSkill state-contract filter and the\nrunner's joint permutation, so a zero-DoF entry there would corrupt all\nfour. But a real robot's collision tree also contains rigid mounts (a\nFranka hand bolted to the flange, a bimanual rig's two arm pedestals),\nand without them the tree is a *forest*.\n\nThis list is that missing connectivity and nothing else: no limits, no\nsensors, no DoF, never a command channel, invisible to every ``joints``\nconsumer. The safety envelope loader unions it with ``joints`` to build\nthe collision tree and **refuses to load a robot whose collision links\ndo not form one connected tree**\n(``openral_safety.envelope_loader.collision_params_from_description``).\n\nEvery value must come from the robot's real URDF/MJCF at the zero\nconfiguration \u2014 the same source ``joints``' own ``origin_xyz`` /\n``origin_rpy`` come from. Never hand-estimate a mount transform.\n\nAttributes:\n    name: Attachment name, matching the source URDF ``<joint>`` name where\n        one exists (a composed multi-hop mount is named for its endpoint).\n    parent_link: The link this attachment hangs from. Must be reachable\n        from the tree's single root.\n    child_link: The rigidly attached link.\n    origin_xyz: Translation (metres) of ``child_link``'s frame in\n        ``parent_link``'s frame. When the source model inserts intermediate\n        links between the two, this is the **composed** transform, exactly\n        as ``openral_safety.urdf_lowering.lower_joint_fk`` computes it\n        for movable joints.\n    origin_rpy: Orientation ``(roll, pitch, yaw)`` in radians, same frame\n        convention as ``origin_xyz``.\n\nExample:\n    >>> a = FixedAttachment(\n    ...     name=\"panda_hand_joint\",\n    ...     parent_link=\"panda_link7\",\n    ...     child_link=\"panda_hand\",\n    ...     origin_xyz=(0.0, 0.0, 0.107),\n    ...     origin_rpy=(0.0, 0.0, -0.7853981633974483),\n    ... )\n    >>> a.child_link\n    'panda_hand'",
+      "description": "A rigid, zero-DoF parent\u2192child link attachment in the kinematic tree.\n\n``RobotDescription.joints`` enumerates only the robot's **movable**\njoints \u2014 consumed unfiltered as the action-vector width, the sim\n``qpos`` map, the reasoner's rSkill state-contract filter and the\nrunner's joint permutation, so a zero-DoF entry there would corrupt all\nfour. But a real robot's collision tree also contains rigid mounts (a\nFranka hand bolted to the flange, a bimanual rig's two arm pedestals),\nand without them the tree is a *forest*.\n\nThis list is that missing connectivity and nothing else: no limits, no\nsensors, no DoF, never a command channel, invisible to every ``joints``\nconsumer. The safety envelope loader unions it with ``joints`` to build\nthe collision tree and **refuses to load a robot whose collision links\ndo not form one connected tree**\n(``openral_safety.envelope_loader.collision_params_from_description``).\n\nEvery value must come from the robot's real URDF/MJCF at the zero\nconfiguration \u2014 the same source ``joints``' own ``origin_xyz`` /\n``origin_rpy`` come from. Never hand-estimate a mount transform.\n\nAttributes:\n    name: Attachment name, matching the source URDF ``<joint>`` name where\n        one exists (a composed multi-hop mount is named for its endpoint).\n    parent_link: The link this attachment hangs from. Must be reachable\n        from the tree's single root.\n    child_link: The rigidly attached link.\n    origin_xyz: Translation (metres) of ``child_link``'s frame in\n        ``parent_link``'s frame. When the source model inserts intermediate\n        links between the two, this is the **composed** transform, exactly\n        as ``openral_safety.urdf_lowering.lower_joint_fk`` computes it\n        for movable joints.\n    origin_rpy: Orientation ``(roll, pitch, yaw)`` in radians, same frame\n        convention as ``origin_xyz``.\n    sweep_xyz: A travel the child link makes from ``origin`` that nothing\n        reports (``None`` = rigid): a translation in the child's own frame,\n        reached along a straight line. The kernel still poses the link at\n        ``origin``; the collision lowering fits its geometry over the whole\n        travel, so the model covers every position (the Galaxea A1's fingers,\n        vendor ``fixed`` joints that slide 30 mm with no joint state).\n\nExample:\n    >>> a = FixedAttachment(\n    ...     name=\"panda_hand_joint\",\n    ...     parent_link=\"panda_link7\",\n    ...     child_link=\"panda_hand\",\n    ...     origin_xyz=(0.0, 0.0, 0.107),\n    ...     origin_rpy=(0.0, 0.0, -0.7853981633974483),\n    ... )\n    >>> a.child_link\n    'panda_hand'",
       "properties": {
         "name": {
           "title": "Name",
@@ -639,6 +639,31 @@
           ],
           "title": "Origin Rpy",
           "type": "array"
+        },
+        "sweep_xyz": {
+          "anyOf": [
+            {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sweep Xyz"
         }
       },
       "required": [

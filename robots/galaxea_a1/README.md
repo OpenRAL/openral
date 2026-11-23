@@ -36,9 +36,11 @@ Automatic sim grasp evidence (`SimAttachmentEvidenceTracker`) arms one hand on t
 end-effector gripper: attach link `arm_seg6`, touch links the finger bodies `gripper1`
 / `gripper2`. The kernel's self-collision model (`openral collision lower`, each arm
 link a box plus its exact hull) has the fingers as `fixed_attachments` at the URDF's
-closed pose, as capsules: rigid on `arm_seg6`, they overlap by 30 mm, which the tool
-proves always-colliding. **The fingers' 30 mm opening stroke is not in the kernel's
-model** (Safety-WG item).
+closed pose. Nothing reports where they are, so each carries `sweep_xyz: [0, 0, 0.03]`
+(the URDF's own axis and limit) and is lowered as a box plus the exact hull of the
+finger at both ends of its 30 mm stroke: the model covers every opening
+(`tests/sim/safety/test_galaxea_a1_finger_sweep_covered.py`). The two swept hulls overlap
+at every pose, so `galaxea_a1.srdf` exempts that one finger pair (Safety-WG item).
 
 Still to confirm on the bench: whether the A1's normalised gripper position maps
 to the same 0-60 mm finger opening as the URDF's two 0-30 mm slides (the HAL's
