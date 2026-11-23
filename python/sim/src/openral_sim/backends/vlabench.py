@@ -302,4 +302,5 @@ SCENES.register(
     fixed_robot="franka_panda",
     provision=provision_vlabench,
     gripper_convention="normalized_open_unit",
+    sequential_init=True,  # lerobot.envs.configs -> lerobot.processor pulls transformers
 )(_build_vlabench_scene)

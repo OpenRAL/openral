@@ -84,6 +84,8 @@ def test_factories_registered() -> None:
     from openral_sim.registry import POLICIES, SCENES
 
     assert SCENES.fixed_robot("vlabench") == "franka_panda"
+    # lerobot>=0.7 env import races the policy thread on transformers.
+    assert SCENES.meta("vlabench").get("sequential_init") is True
     # raises KeyError if unregistered
     POLICIES.get("smolvla")
 
@@ -102,6 +104,7 @@ def test_install_plan_registered() -> None:
     assert "mujoco==3.2.2" in install_argv
     assert "dm_control==1.0.22" in install_argv
     assert "opencv-python" in install_argv
+    assert "scikit-learn" in install_argv  # VLABench/utils/utils.py imports sklearn
 
 
 def test_xiaomi_camera_order_preserves_orientation() -> None:
