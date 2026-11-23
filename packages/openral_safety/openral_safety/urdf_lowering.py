@@ -1987,9 +1987,10 @@ def _mjcf_link_bodies(robot: RobotDescription, model: object) -> dict[str, int]:
         ji = int(mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, mim.sim_joint_name or mim.name))
         if ji >= 0:
             link_body[mim.child_link] = int(m.jnt_bodyid[ji])
-    for ln in {g.link_name for g in robot.collision_geometry} | {
-        j.parent_link for j in robot.joints
-    }:
+    # Every link the manifest models, not only those that already carry geometry: a
+    # fixed_attachments child lowered fresh must map exactly as on a re-lower, or the
+    # twin meshes folded into its fit (``_twin_link_meshes``) differ between the two.
+    for ln in {g.link_name for g in robot.collision_geometry} | modelled_links(robot):
         bid = int(mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, ln))
         if ln not in link_body and bid >= 0:
             link_body[ln] = bid
