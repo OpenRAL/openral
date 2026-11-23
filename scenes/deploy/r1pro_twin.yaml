@@ -1,0 +1,31 @@
+# Galaxea R1 Pro (BEHAVIOR-1K) — bare MuJoCo twin (#740).
+#
+#     openral deploy sim --config scenes/deploy/r1pro_twin.yaml
+#
+# `r1pro_twin` is not an openral_sim scene id, so `deploy sim` builds the bare twin
+# (`MujocoArmHAL.from_description` on the `behavior:r1pro` MJCF, the manifest's `sim:`
+# block) at the manifest's 30 Hz, with the head ZED and both wrist RealSense cameras on
+# their URDF frames. BEHAVIOR tasks run on scenes/deploy/behavior_r1pro.yaml (OmniGibson).
+#
+# No depth camera, lidar or `base_joints`: every runtime feature that needs one is off.
+scene:
+  id: r1pro_twin
+robot_id: r1pro
+
+runtime:
+  enable_reasoner: false
+  enable_slam: false
+  enable_nav2: false
+  enable_octomap: false
+  enable_octomap_kernel_check: true
+  enable_object_detector: false
+  object_detector_onnx: null
+  object_detector_manifest: null
+  object_detector_query: null
+  object_detector_locators: null
+  enable_reward_monitor: false
+  reward_monitor_manifest: null
+  reward_monitor_task: null
+  enable_critic: false
+  spatial_memory_ingest: false
+  approach_skill_id: null

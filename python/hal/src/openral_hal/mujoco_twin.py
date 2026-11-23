@@ -18,7 +18,8 @@ overriding the per-robot hooks (``_per_step``, ``_apply_targets``, ``_drive_base
 ``_on_load``, ``_on_idle``, ``_compose``), chosen by its HAL subclass; the building
 blocks for the humanoids live here (``_GlideTwin``: the ADR-0087 pinned glide base;
 ``_SoftwarePDTwin``: a position loop over torque actuators; ``_FreeBaseTwin``: a base
-pose read off the free joint). The rollout never holds a reference to its HAL.
+pose read off the free joint; ``_PlanarBaseTwin``: a kinematic wheeled base on MJCF
+planar joints). The rollout never holds a reference to its HAL.
 
 Only ``mujoco`` is needed (imported lazily, on ``load``): ``openral_sim`` is never
 imported here, so a bare twin runs on a host without it.
@@ -1143,6 +1144,68 @@ class _FreeBaseTwin(MujocoTwinRollout):
         _model, data = self._require_loaded("base_pose")
         x, y, yaw, _z = capture_base_pin(data.qpos)
         return (x, y, yaw)
+
+
+class _PlanarBaseTwin(MujocoTwinRollout):
+    """A wheeled base the twin places kinematically on MJCF planar joints.
+
+    The MJCF carries ``base_x`` / ``base_y`` slides and a ``base_yaw`` hinge that are
+    not manifest joints (the manifest has no ``base_joints``; the base is driven only by
+    ``BODY_TWIST``). Their pose is written into qpos, velocity zeroed, before every
+    physics step (actions and idle slices alike), so the arms' reaction forces never
+    push the base. A ``BODY_TWIST`` slides that pose by one ``body_twist_dt_s`` of
+    ``(vx, vy, wz)`` (``integrate_planar_twist``: a holonomic base). ``MujocoArmHAL
+    .from_description`` picks it for a fixed-base-addressed manifest that supports
+    ``BODY_TWIST`` (the R1 Pro).
+    """
+
+    BASE_JOINTS: ClassVar[tuple[str, str, str]] = ("base_x", "base_y", "base_yaw")
+    _base_qpos: list[int]
+    _base_qvel: list[int]
+    _base: tuple[float, float, float]
+
+    def _on_load(self) -> None:
+        """Find the three base joints in the MJCF; the pose starts at their qpos.
+
+        Raises:
+            ROSConfigError: The MJCF lacks one of ``BASE_JOINTS``.
+        """
+        import mujoco as mj  # reason: optional sim-only dep
+
+        super()._on_load()
+        model, data = self._require_loaded("load")
+        ids = [mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, n) for n in self.BASE_JOINTS]
+        if min(ids) < 0:
+            raise ROSConfigError(
+                f"{self.backend}: robot '{self.description.name}' supports BODY_TWIST but "
+                f"its MJCF lacks the planar base joints {self.BASE_JOINTS}."
+            )
+        self._base_qpos = [int(model.jnt_qposadr[i]) for i in ids]
+        self._base_qvel = [int(model.jnt_dofadr[i]) for i in ids]
+        x, y, yaw = (float(data.qpos[a]) for a in self._base_qpos)
+        self._base = (x, y, yaw)
+
+    def read_base_pose(self) -> tuple[float, float, float]:
+        """The base ``(x, y, yaw)``.
+
+        Raises:
+            ROSRuntimeError: Not loaded (the HAL is not connected).
+        """
+        self._require_loaded("base_pose")
+        return self._base
+
+    def _drive_base(self, vx: float, vy: float, wz: float) -> None:
+        assert self.body_twist_dt_s is not None
+        x, y, yaw, _ = integrate_planar_twist((*self._base, 0.0), vx, vy, wz, self.body_twist_dt_s)
+        self._base = (x, y, yaw)
+
+    def _per_step(self) -> None:
+        """Write the base pose into its joints, then the next block's hook."""
+        assert self.data is not None
+        for qpos, qvel, value in zip(self._base_qpos, self._base_qvel, self._base, strict=True):
+            self.data.qpos[qpos] = value
+            self.data.qvel[qvel] = 0.0
+        super()._per_step()
 
 
 class _SoftwarePDTwin(MujocoTwinRollout):

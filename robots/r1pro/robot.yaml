@@ -19,10 +19,15 @@ footprint_polygon: [[0.24, 0.31], [0.20, 0.34], [-0.11, 0.34], [-0.36, 0.15],
 assets:
   urdf:
     ref: "behavior:r1pro"
+  # The `deploy sim` MuJoCo twin built from that URDF: visual meshes double as convex
+  # collision, the swerve base is planar base_x/base_y/base_yaw joints placed by
+  # BODY_TWIST, and 20 position actuators (openral_hal._behavior_r1pro_assets).
+  mjcf: "behavior:r1pro"
 
 joints:
   - name: "torso_joint1"
     joint_type: "revolute"
+    sim_joint_name: "torso_joint1"
     parent_link: "base_link"
     child_link: "torso_link1"
     position_limits: [-1.1345, 1.8326]
@@ -31,6 +36,7 @@ joints:
     actuator_kind: "bldc"
   - name: "torso_joint2"
     joint_type: "revolute"
+    sim_joint_name: "torso_joint2"
     parent_link: "torso_link1"
     child_link: "torso_link2"
     position_limits: [-2.7925, 2.5307]
@@ -39,6 +45,7 @@ joints:
     actuator_kind: "bldc"
   - name: "torso_joint3"
     joint_type: "revolute"
+    sim_joint_name: "torso_joint3"
     parent_link: "torso_link2"
     child_link: "torso_link3"
     position_limits: [-1.8326, 1.5708]
@@ -47,6 +54,7 @@ joints:
     actuator_kind: "bldc"
   - name: "torso_joint4"
     joint_type: "revolute"
+    sim_joint_name: "torso_joint4"
     parent_link: "torso_link3"
     child_link: "torso_link4"
     position_limits: [-3.0543, 3.0543]
@@ -56,6 +64,7 @@ joints:
 
   - name: "left_arm_joint1"
     joint_type: "revolute"
+    sim_joint_name: "left_arm_joint1"
     parent_link: "left_arm_base_link"
     child_link: "left_arm_link1"
     position_limits: [-4.4506, 1.3090]
@@ -64,6 +73,7 @@ joints:
     actuator_kind: "bldc"
   - name: "left_arm_joint2"
     joint_type: "revolute"
+    sim_joint_name: "left_arm_joint2"
     parent_link: "left_arm_link1"
     child_link: "left_arm_link2"
     position_limits: [-0.1745, 3.1416]
@@ -72,6 +82,7 @@ joints:
     actuator_kind: "bldc"
   - name: "left_arm_joint3"
     joint_type: "revolute"
+    sim_joint_name: "left_arm_joint3"
     parent_link: "left_arm_link2"
     child_link: "left_arm_link3"
     position_limits: [-2.356196, 2.356196]
@@ -80,6 +91,7 @@ joints:
     actuator_kind: "bldc"
   - name: "left_arm_joint4"
     joint_type: "revolute"
+    sim_joint_name: "left_arm_joint4"
     parent_link: "left_arm_link3"
     child_link: "left_arm_link4"
     position_limits: [-2.0944, 0.3491]
@@ -88,6 +100,7 @@ joints:
     actuator_kind: "bldc"
   - name: "left_arm_joint5"
     joint_type: "revolute"
+    sim_joint_name: "left_arm_joint5"
     parent_link: "left_arm_link4"
     child_link: "left_arm_link5"
     position_limits: [-2.356196, 2.356196]
@@ -96,6 +109,7 @@ joints:
     actuator_kind: "bldc"
   - name: "left_arm_joint6"
     joint_type: "revolute"
+    sim_joint_name: "left_arm_joint6"
     parent_link: "left_arm_link5"
     child_link: "left_arm_link6"
     position_limits: [-1.047198, 1.047198]
@@ -104,6 +118,7 @@ joints:
     actuator_kind: "bldc"
   - name: "left_arm_joint7"
     joint_type: "revolute"
+    sim_joint_name: "left_arm_joint7"
     parent_link: "left_arm_link6"
     child_link: "left_arm_link7"
     position_limits: [-1.5708, 1.5708]
@@ -112,6 +127,7 @@ joints:
     actuator_kind: "bldc"
   - name: "left_gripper_finger_joint1"
     joint_type: "prismatic"
+    sim_joint_name: "left_gripper_finger_joint1"
     parent_link: "left_gripper_link"
     child_link: "left_gripper_finger_link1"
     position_limits: [0.0, 0.05]
@@ -121,6 +137,7 @@ joints:
     role: "gripper"
   - name: "left_gripper_finger_joint2"
     joint_type: "prismatic"
+    sim_joint_name: "left_gripper_finger_joint2"
     parent_link: "left_gripper_link"
     child_link: "left_gripper_finger_link2"
     position_limits: [0.0, 0.05]
@@ -131,6 +148,7 @@ joints:
 
   - name: "right_arm_joint1"
     joint_type: "revolute"
+    sim_joint_name: "right_arm_joint1"
     parent_link: "right_arm_base_link"
     child_link: "right_arm_link1"
     position_limits: [-4.4506, 1.3090]
@@ -139,6 +157,7 @@ joints:
     actuator_kind: "bldc"
   - name: "right_arm_joint2"
     joint_type: "revolute"
+    sim_joint_name: "right_arm_joint2"
     parent_link: "right_arm_link1"
     child_link: "right_arm_link2"
     position_limits: [-3.1416, 0.1745]
@@ -147,6 +166,7 @@ joints:
     actuator_kind: "bldc"
   - name: "right_arm_joint3"
     joint_type: "revolute"
+    sim_joint_name: "right_arm_joint3"
     parent_link: "right_arm_link2"
     child_link: "right_arm_link3"
     position_limits: [-2.356196, 2.356196]
@@ -155,6 +175,7 @@ joints:
     actuator_kind: "bldc"
   - name: "right_arm_joint4"
     joint_type: "revolute"
+    sim_joint_name: "right_arm_joint4"
     parent_link: "right_arm_link3"
     child_link: "right_arm_link4"
     position_limits: [-2.0944, 0.3491]
@@ -163,6 +184,7 @@ joints:
     actuator_kind: "bldc"
   - name: "right_arm_joint5"
     joint_type: "revolute"
+    sim_joint_name: "right_arm_joint5"
     parent_link: "right_arm_link4"
     child_link: "right_arm_link5"
     position_limits: [-2.356196, 2.356196]
@@ -171,6 +193,7 @@ joints:
     actuator_kind: "bldc"
   - name: "right_arm_joint6"
     joint_type: "revolute"
+    sim_joint_name: "right_arm_joint6"
     parent_link: "right_arm_link5"
     child_link: "right_arm_link6"
     position_limits: [-1.047198, 1.047198]
@@ -179,6 +202,7 @@ joints:
     actuator_kind: "bldc"
   - name: "right_arm_joint7"
     joint_type: "revolute"
+    sim_joint_name: "right_arm_joint7"
     parent_link: "right_arm_link6"
     child_link: "right_arm_link7"
     position_limits: [-1.5708, 1.5708]
@@ -187,6 +211,7 @@ joints:
     actuator_kind: "bldc"
   - name: "right_gripper_finger_joint1"
     joint_type: "prismatic"
+    sim_joint_name: "right_gripper_finger_joint1"
     parent_link: "right_gripper_link"
     child_link: "right_gripper_finger_link1"
     position_limits: [0.0, 0.05]
@@ -196,6 +221,7 @@ joints:
     role: "gripper"
   - name: "right_gripper_finger_joint2"
     joint_type: "prismatic"
+    sim_joint_name: "right_gripper_finger_joint2"
     parent_link: "right_gripper_link"
     child_link: "right_gripper_finger_link2"
     position_limits: [0.0, 0.05]
@@ -206,12 +232,15 @@ joints:
 
 end_effectors:
   - name: "left_gripper"
-    command_convention: "normalized_open_symmetric"
+    # The MuJoCo twin's encoding (0 closed, 1 open). The BEHAVIOR scene declares its
+    # own normalized_open_symmetric (OmniGibson's [-1, 1]), which sim_runner and the
+    # rSkill runner pass as scene_gripper_convention.
+    command_convention: "normalized_open_unit"
     kind: "parallel_gripper"
     parent_link: "left_gripper_link"
     actuated: true
   - name: "right_gripper"
-    command_convention: "normalized_open_symmetric"
+    command_convention: "normalized_open_unit"
     kind: "parallel_gripper"
     parent_link: "right_gripper_link"
     actuated: true
@@ -258,6 +287,12 @@ sensors:
     vla_feature_key: "observation.images.head"
     vendor: "sim"
     model: "zed"
+    # zed_link is a REP-103 optical frame (z forward, y down), pitched 20 deg down.
+    sim_placement:
+      parent_body: "zed_link"
+      pos: [0.0, 0.0, 0.0]
+      target: [0.0, 0.0, 1.0]
+      up: [0.0, -1.0, 0.0]
   - name: "left_wrist"
     modality: "rgb"
     frame_id: "left_realsense_link"
@@ -273,6 +308,11 @@ sensors:
     vla_feature_key: "observation.images.left_wrist"
     vendor: "sim"
     model: "realsense"
+    sim_placement:
+      parent_body: "left_realsense_link"
+      pos: [0.0, 0.0, 0.0]
+      target: [0.0, 0.0, 1.0]
+      up: [0.0, -1.0, 0.0]
   - name: "right_wrist"
     modality: "rgb"
     frame_id: "right_realsense_link"
@@ -288,9 +328,85 @@ sensors:
     vla_feature_key: "observation.images.right_wrist"
     vendor: "sim"
     model: "realsense"
+    sim_placement:
+      parent_body: "right_realsense_link"
+      pos: [0.0, 0.0, 0.0]
+      target: [0.0, 0.0, 1.0]
+      up: [0.0, -1.0, 0.0]
 
 sdk_kind: "open"
+
+# The MuJoCo twin (openral_hal._behavior_r1pro_assets). qpos 0..2 are the planar base
+# joints, which are not manifest joints: BODY_TWIST moves them (_PlanarBaseTwin). Each
+# hand's finger_joint2 follows finger_joint1 through an MJCF equality and has no
+# actuator; the gripper actuator drives finger_joint1 over its 0-0.05 m slide
+# (0 closed), read as the two fingers' summed opening over 0.1 m.
+sim:
+  joint_qpos_addr:
+    torso_joint1: 3
+    torso_joint2: 4
+    torso_joint3: 5
+    torso_joint4: 6
+    left_arm_joint1: 7
+    left_arm_joint2: 8
+    left_arm_joint3: 9
+    left_arm_joint4: 10
+    left_arm_joint5: 11
+    left_arm_joint6: 12
+    left_arm_joint7: 13
+    left_gripper_finger_joint1: 14
+    left_gripper_finger_joint2: 15
+    right_arm_joint1: 16
+    right_arm_joint2: 17
+    right_arm_joint3: 18
+    right_arm_joint4: 19
+    right_arm_joint5: 20
+    right_arm_joint6: 21
+    right_arm_joint7: 22
+    right_gripper_finger_joint1: 23
+    right_gripper_finger_joint2: 24
+  actuator_index:
+    torso_joint1: 0
+    torso_joint2: 1
+    torso_joint3: 2
+    torso_joint4: 3
+    left_arm_joint1: 4
+    left_arm_joint2: 5
+    left_arm_joint3: 6
+    left_arm_joint4: 7
+    left_arm_joint5: 8
+    left_arm_joint6: 9
+    left_arm_joint7: 10
+    left_gripper_finger_joint1: 11
+    right_arm_joint1: 12
+    right_arm_joint2: 13
+    right_arm_joint3: 14
+    right_arm_joint4: 15
+    right_arm_joint5: 16
+    right_arm_joint6: 17
+    right_arm_joint7: 18
+    right_gripper_finger_joint1: 19
+  grippers:
+    - joint: "left_gripper_finger_joint1"
+      ctrl_range: [0.0, 0.05]
+      qpos_addrs: [14, 15]
+      qpos_scale: 0.1
+    - joint: "right_gripper_finger_joint1"
+      ctrl_range: [0.0, 0.05]
+      qpos_addrs: [23, 24]
+      qpos_scale: 0.1
+  seed_ctrl_from_qpos: true
+
+# The robot's control rate: one action per 1/30 s, BEHAVIOR's challenge env
+# (StanfordVL/BEHAVIOR-1K @ c6aca46, OmniGibson/omnigibson/eval/utils/eval_utils.py:
+# action_frequency 30, physics_frequency 120). The MuJoCo twin steps one period per
+# action; observation_spec and the action layout stay with the BEHAVIOR scene adapter.
+action_spec:
+  control_freq_hz: 30.0
+
 hal:
+  # null -> build_hal derives MujocoArmHAL.from_description from `sim:` above. The
+  # BEHAVIOR deploy scene (scenes/deploy/behavior_r1pro.yaml) attaches its own env.
   sim: null
   real: null
 schema_version: "0.2"

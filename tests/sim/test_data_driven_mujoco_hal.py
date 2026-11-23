@@ -75,6 +75,7 @@ _MANIFEST_DRIVEN_ROBOTS = [
     "makermods_metal_station",  # bimanual: 2 x makermods_metal, explicit actuator_index
     "widowx",  # mirrored fingers via MJCF equality; starts at the `home` keyframe (#740)
     "aloha_agilex",  # bimanual: URDF-derived MJCF, joint8 mirrors joint7 (robotwin:, #740)
+    "r1pro",  # planar base off the manifest (qpos 0..2), finger_joint2 by equality (#740)
 ]
 
 
