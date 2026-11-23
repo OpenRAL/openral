@@ -298,14 +298,18 @@ class TestBhDetect:
     def test_a_urdf_only_robot_with_a_depth_camera_is_also_reminded(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """panda_mobile has no MJCF, only a URDF, and its ``front_depth`` is parented
-        directly to ``base_frame`` -- both reminders still fire."""
+        """A URDF-only robot whose depth camera is parented directly to ``base_frame``
+        gets both reminders. panda_mobile is that robot with its ``robosuite:`` MJCF
+        (#726) set aside: no in-tree URDF-only manifest has a base-frame depth camera."""
         from openral_cli.main import _print_safety_fitting_reminders
         from openral_core import RobotDescription
 
         monkeypatch.setenv("COLUMNS", "300")
         robot = _REPO_ROOT / "robots" / "panda_mobile" / "robot.yaml"
         description = RobotDescription.from_yaml(str(robot))
+        description = description.model_copy(
+            update={"assets": description.assets.model_copy(update={"mjcf": None})}
+        )
         assert description.assets.mjcf is None and description.assets.urdf is not None
         _print_safety_fitting_reminders(description, robot)
         out = _flat(capsys.readouterr().out)
