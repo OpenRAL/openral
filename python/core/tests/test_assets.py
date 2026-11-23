@@ -103,8 +103,8 @@ def test_ros2_marker_is_passthrough_not_a_file() -> None:
 
 
 def test_behavior_rejects_unknown_model_and_kind() -> None:
-    """``behavior:`` serves only the R1 Pro URDF; anything else fails before any fetch."""
-    for ref, kind in (("behavior:r1", "urdf"), ("behavior:r1pro", "mjcf")):
+    """``behavior:`` serves only the R1 Pro (URDF / MJCF); anything else fails before any fetch."""
+    for ref, kind in (("behavior:r1", "urdf"), ("behavior:r1", "mjcf")):
         with pytest.raises(AssetRefError, match="only behavior:r1pro") as info:
             resolve_asset(ref, kind)  # type: ignore[arg-type]  # reason: AssetKind literal from a loop
         assert not isinstance(info.value, AssetFetchError)
@@ -127,8 +127,8 @@ def test_behavior_r1pro_urdf_loads_in_mujoco_with_visuals() -> None:
 
 
 def test_galaxea_rejects_unknown_model_and_kind() -> None:
-    """``galaxea:`` serves only the A1 URDF; anything else fails before any fetch."""
-    for ref, kind in (("galaxea:r1pro", "urdf"), ("galaxea:a1", "mjcf")):
+    """``galaxea:`` serves only the A1 (URDF / MJCF); anything else fails before any fetch."""
+    for ref, kind in (("galaxea:r1pro", "urdf"), ("galaxea:r1pro", "mjcf")):
         with pytest.raises(AssetRefError, match="only galaxea:a1") as info:
             resolve_asset(ref, kind)  # type: ignore[arg-type]  # reason: AssetKind literal from a loop
         assert not isinstance(info.value, AssetFetchError)
