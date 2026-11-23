@@ -1703,9 +1703,11 @@ class SimAttachmentEvidenceTracker:
     part-way still publishes, on the next update, the transitions earlier hands
     already committed.
 
-    ``unknown_kernel_links``: the attach/touch links the safety kernel's collision
-    model lacks. The kernel rejects a whole set naming an unknown link and never
-    acknowledges it, so the bridge must not arm a tracker that would name one.
+    ``bind_kernel_links``: names each hand as the safety kernel's collision model does
+    (manifest links, or the sim bodies of a model lowered from the MJCF) and returns
+    the links neither naming resolves. The kernel rejects a whole set naming an
+    unknown link and never acknowledges it, so the bridge must not arm a tracker
+    that would name one.
     An unattachable payload (no MJCF name, no collision geometry) is refused for that
     hand alone and logged; the other hands keep publishing.
     """
@@ -1826,14 +1828,29 @@ class SimAttachmentEvidenceTracker:
             resolved = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, base_body_name))
             self._base_body_id = resolved if resolved >= 0 else None
 
-    def unknown_kernel_links(self, kernel_link_names: Collection[str]) -> list[str]:
-        """Every attach/touch link the safety kernel's collision model does not know."""
-        return [
-            name
-            for hand in self._hands
-            for name in (hand.attach_link, *hand.touch_links)
-            if name not in kernel_link_names
-        ]
+    def bind_kernel_links(self, kernel_link_names: Collection[str]) -> list[str]:
+        """Name every hand's attach/touch links as the safety kernel's collision model does.
+
+        A model lowered from the manifest keeps the manifest's link names; one lowered
+        from the MJCF bodies (``mjcf_lowering``, the WidowX twin's ``wx250s/*``) names
+        the sim bodies. Per hand, the manifest names are kept when the kernel knows them
+        all, else the hand's own sim bodies are named (its attach body; every body under
+        its jaws as touch links) when the kernel knows those. Returns the manifest links
+        neither naming resolves: the kernel rejects a whole set naming one, so a
+        non-empty result means the tracker must not arm.
+        """
+        unknown: list[str] = []
+        for hand in self._hands:
+            names = (hand.attach_link, *hand.touch_links)
+            if all(name in kernel_link_names for name in names):
+                continue
+            attach = str(self._model.body(hand.attach_body_id).name)
+            touch = [str(self._model.body(body).name) for body in sorted(hand.body_groups)]
+            if all(name in kernel_link_names for name in (attach, *touch)):
+                hand.attach_link, hand.touch_links = attach, touch
+                continue
+            unknown += [name for name in names if name not in kernel_link_names]
+        return unknown
 
     @property
     def attach_links(self) -> tuple[str, ...]:

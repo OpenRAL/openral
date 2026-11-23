@@ -124,3 +124,31 @@ def test_attachment_evidence_resolves_the_gripper(
     assert model.body(hand.attach_body_id).name == "wx250s/gripper_link"
     jaws = {model.body(root).name for root in hand.body_groups.values()}
     assert jaws == {"wx250s/left_finger_link", "wx250s/right_finger_link"}
+
+
+def test_attachment_evidence_names_the_kernel_links(
+    connected: tuple[RobotDescription, MujocoArmHAL],
+) -> None:
+    """Grasp evidence names the links the kernel's MJCF-lowered model has.
+
+    The WidowX kernel model is lowered from the MJCF bodies (``wx250s/*``), not the
+    manifest's ``gripper_link`` / ``finger_pair``; the kernel rejects a set naming a
+    link it lacks, so the tracker binds its hand to the sim bodies the kernel knows.
+    """
+    lowering = pytest.importorskip("openral_safety.mjcf_lowering")
+    desc, hal = connected
+    model = hal._model
+    assert model is not None
+    params = lowering.lower_collision_params(model, [j.name for j in desc.joints])
+    kernel_links = set(params["collision_link_names"])
+    tracker = SimAttachmentEvidenceTracker(model, desc)
+    assert tracker.bind_kernel_links(kernel_links) == []
+    (hand,) = tracker._hands
+    assert hand.attach_link == "wx250s/gripper_link"
+    assert set(hand.touch_links) >= {"wx250s/left_finger_link", "wx250s/right_finger_link"}
+    assert {hand.attach_link, *hand.touch_links} <= kernel_links
+    # A kernel model with neither naming still refuses, naming the manifest links.
+    assert tracker.bind_kernel_links({"base_link"}) == [
+        "wx250s/gripper_link",
+        *hand.touch_links,
+    ]

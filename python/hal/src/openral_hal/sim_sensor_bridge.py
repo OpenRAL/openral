@@ -4123,7 +4123,7 @@ class SimSensorBridge:
                 unknown = (
                     []
                     if self._attachment_kernel_link_names is None
-                    else tracker.unknown_kernel_links(self._attachment_kernel_link_names)
+                    else tracker.bind_kernel_links(self._attachment_kernel_link_names)
                 )
                 if unknown:
                     # The robot can grasp, but every set naming these links would be rejected.

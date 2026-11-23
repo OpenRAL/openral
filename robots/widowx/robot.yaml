@@ -7,7 +7,9 @@
 #   python/sim/src/openral_sim/backends/simpler_env.py, not here;
 # * a bare MuJoCo twin (`MujocoArmHAL.from_description`, the `sim:` block
 #   below) on the Menagerie MJCF, for `openral deploy sim` and the dashboard
-#   (scenes/deploy/widowx_twin.yaml). The twin takes joint-space actions only.
+#   (scenes/deploy/widowx_twin.yaml). The twin takes joint-space actions and a lone
+#   GRIPPER_POSITION; its kernel collision model is lowered from the MJCF
+#   bodies, so grasp evidence names `wx250s/*` links, not the ones below.
 #
 # Kinematic numbers from the public WidowX-250s data sheet
 # (trossenrobotics.com/widowx-250). Joint limits are placeholder for the

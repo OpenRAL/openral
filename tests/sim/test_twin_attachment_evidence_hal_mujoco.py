@@ -438,8 +438,8 @@ def test_construction_refuses_what_the_kernel_would_reject() -> None:
     model, _ = _compile(path, [])
     tracker = SimAttachmentEvidenceTracker(model, desc)
     names = {n for h in tracker._hands for n in (h.attach_link, *h.touch_links)}
-    assert tracker.unknown_kernel_links(names) == []
-    assert tracker.unknown_kernel_links(names - {"fr_link8"}) == ["fr_link8"]
+    assert tracker.bind_kernel_links(names) == []
+    assert tracker.bind_kernel_links(names - {"fr_link8"}) == ["fr_link8"]
     # An end-effector entry over the left fingers as well: two hands, one gripper.
     assert desc.sim is not None
     qpos = [int(model.jnt_qposadr[model.joint(n).id]) for n in ("fl_joint7", "fl_joint8")]
