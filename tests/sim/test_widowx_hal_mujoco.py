@@ -24,6 +24,7 @@ import numpy as np
 from openral_core import Action, ControlMode, RobotDescription
 from openral_core.assets import AssetFetchError, resolve_asset
 from openral_hal._mujoco_arm import MujocoArmHAL
+from openral_hal._sim_attachment_evidence import SimAttachmentEvidenceTracker
 
 pytestmark = pytest.mark.sim
 
@@ -62,7 +63,7 @@ def _drive(hal: MujocoArmHAL, target: list[float]) -> list[float]:
     return list(hal.read_state().position)
 
 
-@pytest.mark.parametrize("gripper", [1.0, 0.0], ids=["open", "closed"])
+@pytest.mark.parametrize("gripper", [1.0, 0.5, 0.0], ids=["open", "half", "closed"])
 def test_tracks_joint_targets_and_gripper(
     connected: tuple[RobotDescription, MujocoArmHAL], gripper: float
 ) -> None:
@@ -85,3 +86,40 @@ def test_top_camera_renders_the_arm(connected: tuple[RobotDescription, MujocoArm
     assert frame.shape == (intr.height, intr.width, 3)
     assert frame.dtype == np.uint8
     assert float(frame.std()) > 5.0, "top camera frame is blank"
+
+
+def test_reset_to_pose_snaps_both_fingers(
+    connected: tuple[RobotDescription, MujocoArmHAL],
+) -> None:
+    """A snapped gripper moves the equality-mirrored right finger with the left one.
+
+    ``right_finger`` (qpos 7) mirrors ``left_finger`` (qpos 6) through an MJCF joint
+    equality; a snap that wrote only the left finger left the pair violating it, and
+    the solver yanked the right finger across on the next steps.
+    """
+    _, hal = connected
+    for gripper in (1.0, 0.0, 0.5):
+        hal.reset_to_pose([*_ARM_TARGET, gripper])
+        data = hal._data
+        assert data is not None
+        left, right = float(data.qpos[6]), float(data.qpos[7])
+        assert right == pytest.approx(-left, abs=1e-9), f"gripper={gripper}"
+        assert float(data.qvel[7]) == 0.0
+        assert hal.read_state().position[6] == pytest.approx(gripper, abs=1e-6)
+
+
+def test_attachment_evidence_resolves_the_gripper(
+    connected: tuple[RobotDescription, MujocoArmHAL],
+) -> None:
+    """The twin's grasp evidence resolves the hand body and both jaws.
+
+    Without ``sim_joint_name`` on the joints the tracker cannot find the gripper's
+    parent body and deploy disables attachment evidence for the twin.
+    """
+    desc, hal = connected
+    model = hal._model
+    assert model is not None
+    tracker = SimAttachmentEvidenceTracker(model, desc)
+    assert model.body(tracker._attach_body_id).name == "wx250s/gripper_link"
+    jaws = {model.body(root).name for root in tracker._gripper_body_groups.values()}
+    assert jaws == {"wx250s/left_finger_link", "wx250s/right_finger_link"}
