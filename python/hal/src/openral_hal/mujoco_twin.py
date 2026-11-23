@@ -694,6 +694,10 @@ class MujocoTwinRollout:
                 self._reset_gripper_qpos(gripper, float(value))
                 for addr in self._gripper_reset_addrs(gripper):
                     data.qvel[self._dof_of_qpos(addr)] = 0.0
+                    # A finger the MJCF couples by a joint equality (the WidowX
+                    # right_finger mirrors left_finger) is snapped with it, or the
+                    # constraint yanks it across on the next steps.
+                    self._snap_equality_followers(addr)
         # Re-seed ctrl so the actuators hold the new pose on the next ``mj_step``:
         # position actuators from qpos, grippers through their write mode.
         self._hold_qpos_in_ctrl([n for n in self.joint_names if n not in self.grippers_by_joint])
@@ -702,6 +706,39 @@ class MujocoTwinRollout:
         # After the last ctrl write, so efforts read right after reflect the new ctrl.
         mj.mj_forward(model, data)
         self.last_state_time = time.monotonic()
+
+    def _snap_equality_followers(self, qpos_addr: int) -> None:
+        """Write every joint tied to the joint at ``qpos_addr`` by an active joint equality.
+
+        MuJoCo's joint equality holds ``q1 - q1_0 = c0 + c1 (q2 - q2_0) + ... + c4 (q2 -
+        q2_0)^4`` (``q_0`` = ``qpos0``). When ``qpos_addr`` is ``joint2`` its follower
+        ``joint1`` is evaluated directly; when it is ``joint1``, ``joint2`` is solved for
+        a linear coupling only (``c2..c4 == 0``, ``c1 != 0``) and left alone otherwise.
+        The follower's velocity is zeroed like the snapped joint's.
+        """
+        model, data = self.model, self.data
+        assert model is not None and data is not None
+        import mujoco as mj  # reason: optional sim-only dep
+
+        for eq in range(int(model.neq)):
+            if int(model.eq_type[eq]) != int(mj.mjtEq.mjEQ_JOINT) or not bool(data.eq_active[eq]):
+                continue
+            j1, j2 = int(model.eq_obj1id[eq]), int(model.eq_obj2id[eq])
+            if j2 < 0:
+                continue  # joint1 pinned to a constant: nothing follows it
+            a1, a2 = int(model.jnt_qposadr[j1]), int(model.jnt_qposadr[j2])
+            c = [float(v) for v in model.eq_data[eq][:5]]
+            q1_0, q2_0 = float(model.qpos0[a1]), float(model.qpos0[a2])
+            if qpos_addr == a2:
+                x = float(data.qpos[a2]) - q2_0
+                data.qpos[a1] = q1_0 + sum(ck * x**k for k, ck in enumerate(c))
+                follower = a1
+            elif qpos_addr == a1 and c[1] != 0.0 and not any(c[2:]):
+                data.qpos[a2] = q2_0 + (float(data.qpos[a1]) - q1_0 - c[0]) / c[1]
+                follower = a2
+            else:
+                continue
+            data.qvel[self._dof_of_qpos(follower)] = 0.0
 
     def _dof_of_qpos(self, qpos_addr: int) -> int:
         """The DOF (``qvel``) address of the joint whose ``qpos`` starts at ``qpos_addr``.
