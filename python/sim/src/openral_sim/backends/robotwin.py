@@ -4,8 +4,10 @@ RoboTwin 2.0 (Chen et al., arXiv 2506.18088, MIT) is a large-scale
 **bimanual** benchmark: 50 dual-arm tasks on the SAPIEN physics engine, evaluated
 on the aloha-agilex embodiment (14-DoF, 7 per arm; action 14-D joint-space).
 
-RoboTwin's stack (SAPIEN, CuRobo, mplib, pytorch3d) pins **Python 3.10 + CUDA 12.1**
-and an incompatible torch build — it cannot share the openral ``>=3.12`` venv. So,
+RoboTwin's stack (SAPIEN, mplib 0.2.1, open3d, its ``envs`` task package + multi-GB
+assets) is kept out of the openral venv: mplib 0.2.1 conflicts with ManiSkill's
+``mplib==0.1.1`` pin, and the checkout must sit on ``sys.path`` as a generic
+top-level ``envs`` package. So,
 exactly like the Isaac Sim scene backend (``openral_sim.backends.isaac_sim``) and
 the RLDX-1 policy sidecar (``openral_sim.policies.rldx``), we run it in its own
 sidecar venv and talk to it over ZMQ REQ/REP framed by msgpack
@@ -30,7 +32,7 @@ The launcher runs under the **robotwin** venv, not this one. We resolve its
 interpreter from ``OPENRAL_ROBOTWIN_SIDECAR_PYTHON`` (absolute path to the
 sidecar venv's ``python``), else a cache default, else (opt-in
 ``OPENRAL_ROBOTWIN_AUTO_PROVISION=1``) we provision it. The provisioning installs
-LeRobot 0.6 + the RoboTwin SAPIEN stack + downloads assets (a multi-GB,
+LeRobot 0.7 + the RoboTwin SAPIEN stack + downloads assets (a multi-GB,
 Linux-only job); without opt-in we raise a typed ``ROSConfigError``
 carrying the exact manual recipe.
 
@@ -57,6 +59,7 @@ from openral_sim._sidecar_common import (
     require_pinned_head,
     run_cmd,
     sidecar_port_for_key,
+    spec_marker,
 )
 from openral_sim._sidecar_common import (
     opt_num as _opt_num,
@@ -95,10 +98,13 @@ _ROBOTWIN_REPO = "https://github.com/RoboTwin-Platform/RoboTwin.git"
 # + ``require_pinned_head``; its asset script runs on the host): "Merge pull request
 # #502", 2026-09-22.
 _ROBOTWIN_SHA = "ee3d076fb61c4542e9be6c16f3af5ecd67d4a6f7"
-# LeRobot 0.6.0 ships `lerobot.envs.robotwin` and supports the workspace's Python
-# 3.12. The RoboTwin checkout is still needed as task package + asset root.
+# Same lerobot as the workspace (0.7.0, openral#716): the sidecar ships raw pixels +
+# agent_pos and every policy preprocesses in-process, so one lerobot to track. 0.7
+# moved the env to `lerobot.sim.integrations.robotwin` and dropped its in-step
+# auto-reset (the client resets explicitly). The RoboTwin checkout is still needed
+# as task package + asset root.
 _ROBOTWIN_BASE_DEPS = (
-    "lerobot==0.6.0",
+    "lerobot==0.7.0",
     "sapien==3.0.3",
     "cuda-bindings==12.8.0",
     "open3d",
@@ -112,6 +118,22 @@ _ROBOTWIN_BASE_DEPS = (
     "urllib3==2.5.0",
 )
 _ROBOTWIN_MPLIB_DEPS = ("mplib==0.2.1",)
+# Global resolution cutoff for the sidecar install, and the later cutoff for the
+# packages that must postdate it: lerobot 0.7.0 itself, its draccus>=0.11.6 floor,
+# and huggingface-hub (lerobot allows >=1.31,<3) whose current release floors
+# filelock / click / hf-xet past the global cutoff.
+_ROBOTWIN_EXCLUDE_NEWER = "2026-06-01T00:00:00Z"
+_ROBOTWIN_NEWER_CUTOFF = "2026-11-10T00:00:00Z"
+_ROBOTWIN_NEWER_PACKAGES = ("lerobot", "draccus", "huggingface-hub", "filelock", "click", "hf-xet")
+# Everything that decides what the install resolves: keys the venv sentinel, so a
+# change to any of it repairs (auto-provision) or refuses (``_sidecar_python``) an
+# existing venv.
+_ROBOTWIN_VENV_SPEC = (
+    *_ROBOTWIN_BASE_DEPS,
+    *_ROBOTWIN_MPLIB_DEPS,
+    f"exclude-newer={_ROBOTWIN_EXCLUDE_NEWER}",
+    *(f"exclude-newer-package={pkg}={_ROBOTWIN_NEWER_CUTOFF}" for pkg in _ROBOTWIN_NEWER_PACKAGES),
+)
 
 _DEFAULT_HOST = "127.0.0.1"
 # Per-scene default ports in 20000–39999 (clear of well-known + ephemeral ranges),
@@ -131,8 +153,9 @@ _DEFAULT_BOOT_TIMEOUT_S = 600.0
 _DEFAULT_MAX_STEPS = 1_000_000
 # Last-resort sim-time cadence the sidecar uses only when the live SAPIEN env
 # exposes neither an elapsed-time scalar nor a control period (control_timestep/
-# control_dt/control_freq); RoboTwin's default control rate is ~30 Hz.
-_FALLBACK_SIM_DT_S = 1.0 / 30.0
+# control_dt/control_freq) — RoboTwin exposes none. lerobot 0.7's robotwin
+# integration declares 25 fps (``conventions()``, ``metadata["render_fps"]``).
+_FALLBACK_SIM_DT_S = 1.0 / 25.0
 
 
 def _scene_default_port(task_id: str, robot_id: str) -> int:
@@ -282,9 +305,12 @@ def _provision_robotwin_venv() -> Path:
                 "--python",
                 str(py),
                 "--exclude-newer",
-                "2026-06-01T00:00:00Z",
-                "--exclude-newer-package",
-                "lerobot=2026-07-07T00:00:00Z",
+                _ROBOTWIN_EXCLUDE_NEWER,
+                *(
+                    arg
+                    for pkg in _ROBOTWIN_NEWER_PACKAGES
+                    for arg in ("--exclude-newer-package", f"{pkg}={_ROBOTWIN_NEWER_CUTOFF}")
+                ),
                 *_ROBOTWIN_BASE_DEPS,
             ],
             env=env,
@@ -298,7 +324,7 @@ def _provision_robotwin_venv() -> Path:
                 "--python",
                 str(py),
                 "--exclude-newer",
-                "2026-06-01T00:00:00Z",
+                _ROBOTWIN_EXCLUDE_NEWER,
                 *_ROBOTWIN_MPLIB_DEPS,
             ],
             env=env,
@@ -309,8 +335,8 @@ def _provision_robotwin_venv() -> Path:
         home=_ROBOTWIN_SIDECAR_HOME,
         python=_ROBOTWIN_PYTHON,
         install=_install,
-        # Keyed on the pins so editing them repairs an already-provisioned venv.
-        spec=(*_ROBOTWIN_BASE_DEPS, *_ROBOTWIN_MPLIB_DEPS),
+        # Keyed on the pins + cutoffs so editing them repairs an already-provisioned venv.
+        spec=_ROBOTWIN_VENV_SPEC,
     )
     if not _is_managed_root(_robotwin_root_path()):
         # The operator's own checkout: theirs to pin, never cloned, patched or verified here.
@@ -382,11 +408,15 @@ def _sidecar_python() -> Path:
 
     Resolution order: ``OPENRAL_ROBOTWIN_SIDECAR_PYTHON`` override → opt-in
     auto-provision (``OPENRAL_ROBOTWIN_AUTO_PROVISION=1``) → an existing default
-    venv → a typed error carrying the exact manual commands.
+    venv whose sentinel matches ``_ROBOTWIN_VENV_SPEC`` → a typed error carrying the
+    exact manual commands.
 
     Auto-provision precedes the existing-venv shortcut so a venv built from
     superseded pins is repaired rather than returned untouched (same ordering
-    fix as the Isaac backend — see ``ensure_pip_venv``'s ``spec``).
+    fix as the Isaac backend — see ``ensure_pip_venv``'s ``spec``). Without the
+    opt-in, a default venv from superseded pins (e.g. lerobot 0.6.0) raises a
+    re-provision ``ROSConfigError`` instead of booting a sidecar that cannot import
+    the env.
     """
     override = os.environ.get(_SIDECAR_PYTHON_ENV)
     if override:
@@ -396,9 +426,24 @@ def _sidecar_python() -> Path:
         return p
     if os.environ.get(_AUTO_PROVISION_ENV, "").strip() not in ("", "0", "false", "False"):
         return _provision_robotwin_venv()
-    default = _ROBOTWIN_SIDECAR_HOME / ".venv" / "bin" / "python"
+    venv = _ROBOTWIN_SIDECAR_HOME / ".venv"
+    default = venv / "bin" / "python"
     if default.is_file():
+        sentinel = venv / ".deps-installed"
+        built = sentinel.read_text(encoding="utf-8") if sentinel.is_file() else None
+        if built != spec_marker(_ROBOTWIN_VENV_SPEC):
+            raise ROSConfigError(
+                f"RoboTwin sidecar venv at {venv} was built from other pins (or did not "
+                f"finish provisioning). Set {_AUTO_PROVISION_ENV}=1 to repair it in place."
+            )
         return default
+    # Same two installs as ``_provision_robotwin_venv`` (mplib after the base stack).
+    deps = " ".join(f"'{d}'" for d in _ROBOTWIN_BASE_DEPS)
+    mplib = " ".join(f"'{d}'" for d in _ROBOTWIN_MPLIB_DEPS)
+    newer = " ".join(
+        f"--exclude-newer-package {pkg}={_ROBOTWIN_NEWER_CUTOFF}"
+        for pkg in _ROBOTWIN_NEWER_PACKAGES
+    )
     raise ROSConfigError(
         "RoboTwin sidecar venv not found. It is an externally-provisioned dependency "
         "(SAPIEN + RoboTwin 2.0, Python 3.12, Linux-only, multi-GB). "
@@ -406,14 +451,17 @@ def _sidecar_python() -> Path:
         f"{_AUTO_PROVISION_ENV}=1 to auto-provision the LeRobot+SAPIEN venv (a "
         "multi-GB download), or provision it manually and point "
         f"{_SIDECAR_PYTHON_ENV} at its py3.12 python:\n"
-        "  uv venv --python 3.12 ~/.cache/openral/robotwin-sidecar/.venv\n"
-        "  uv pip install --python ~/.cache/openral/robotwin-sidecar/.venv/bin/python "
-        "lerobot==0.6.0 sapien mplib pyzmq msgpack\n"
+        "  VENV=~/robotwin-sidecar/.venv\n"
+        "  uv venv --python 3.12 $VENV\n"
+        f"  uv pip install --python $VENV/bin/python --exclude-newer {_ROBOTWIN_EXCLUDE_NEWER} "
+        f"{newer} {deps}\n"
+        f"  uv pip install --python $VENV/bin/python --exclude-newer {_ROBOTWIN_EXCLUDE_NEWER} "
+        f"{mplib}\n"
         "  git clone https://github.com/RoboTwin-Platform/RoboTwin.git\n"
         f"  git -C RoboTwin checkout {_ROBOTWIN_SHA}  # the tested pin\n"
-        "  cd RoboTwin && bash scripts/_download_assets.sh\n"
+        "  cd RoboTwin && PATH=$VENV/bin:$PATH bash scripts/_download_assets.sh\n"
         f"  export {_ROBOTWIN_ROOT_ENV}=$(pwd)  # checkout + assets path for the sidecar\n"
-        "  export OPENRAL_ROBOTWIN_SIDECAR_PYTHON=$(which python)"
+        f"  export {_SIDECAR_PYTHON_ENV}=$VENV/bin/python"
     )
 
 

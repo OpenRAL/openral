@@ -2,7 +2,7 @@
 
 Exercises the openral-side backend, the shipped scene/suite YAMLs, the
 ``aloha_agilex`` robot manifest, and the ``smolvla-robotwin`` rSkill — all without
-booting the SAPIEN sidecar (the heavy py3.10 lerobot-main + RoboTwin venv is
+booting the SAPIEN sidecar (the heavy py3.12 lerobot + RoboTwin venv is
 externally provisioned; the sim-tier test skips when it is absent).
 
 Covers:
@@ -175,16 +175,117 @@ def test_robotwin_sidecar_fallback_time_starts_at_zero_and_steps() -> None:
 
     scene = object.__new__(module._RoboTwinEnv)
     scene._env = Env()
-    scene._is_vector_env = False
     scene._success_key = "is_success"
-    scene._fallback_dt_ns = 33_333_333
+    scene._fallback_dt_ns = 40_000_000
     scene._fallback_time_ns = 0
     scene._unwrap_obs = lambda _obs: {"images": {}, "state": np.zeros(14), "task": ""}
 
     assert scene.sim_time_ns() == 0
     reply = scene.step(np.zeros(14, dtype=np.float32))
 
-    assert reply["sim_time_ns"] == 33_333_333
+    assert reply["sim_time_ns"] == 40_000_000
+
+
+def test_robotwin_sidecar_builds_lerobot_07_env() -> None:
+    # The sidecar constructs lerobot 0.7's RoboTwinEnv (SAPIEN is deferred to the
+    # first reset, so no RoboTwin checkout is needed); catches a moved import path.
+    pytest.importorskip("lerobot.sim.integrations.robotwin")
+    spec = importlib.util.spec_from_file_location(
+        "robotwin_sidecar_build_for_test",
+        _REPO_ROOT / "tools" / "robotwin_sidecar.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    env = module._RoboTwinEnv(
+        task="lift_pot",
+        instruction="lift the pot with both arms",
+        cameras=["top", "wrist_left", "wrist_right"],
+        obs_height=64,
+        obs_width=64,
+        episode_length=10,
+        success_key="is_success",
+        fallback_dt_s=1.0 / 25.0,
+    )
+
+    assert type(env._env).__module__ == "lerobot.sim.integrations.robotwin"
+    assert env.action_dim == 14
+
+
+def _fake_default_venv(home: Path, marker: str | None) -> Path:
+    py = home / ".venv" / "bin" / "python"
+    py.parent.mkdir(parents=True)
+    py.write_text("")
+    if marker is not None:
+        (home / ".venv" / ".deps-installed").write_text(marker)
+    return py
+
+
+def test_sidecar_python_refuses_venv_from_superseded_pins(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from openral_sim._sidecar_common import spec_marker
+    from openral_sim.backends import robotwin
+
+    home = tmp_path / "robotwin-sidecar"
+    # A venv provisioned before the lerobot 0.7 bump carries the old pins' marker.
+    old_spec = ("lerobot==0.6.0", *robotwin._ROBOTWIN_BASE_DEPS[1:], "mplib==0.2.1")
+    _fake_default_venv(home, spec_marker(old_spec))
+    monkeypatch.delenv("OPENRAL_ROBOTWIN_SIDECAR_PYTHON", raising=False)
+    monkeypatch.setenv("OPENRAL_ROBOTWIN_AUTO_PROVISION", "0")
+    monkeypatch.setattr(robotwin, "_ROBOTWIN_SIDECAR_HOME", home)
+
+    with pytest.raises(ROSConfigError, match="built from other pins"):
+        robotwin._sidecar_python()
+
+
+def test_sidecar_python_returns_venv_built_from_current_pins(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from openral_sim._sidecar_common import spec_marker
+    from openral_sim.backends import robotwin
+
+    home = tmp_path / "robotwin-sidecar"
+    py = _fake_default_venv(home, spec_marker(robotwin._ROBOTWIN_VENV_SPEC))
+    monkeypatch.delenv("OPENRAL_ROBOTWIN_SIDECAR_PYTHON", raising=False)
+    monkeypatch.setenv("OPENRAL_ROBOTWIN_AUTO_PROVISION", "0")
+    monkeypatch.setattr(robotwin, "_ROBOTWIN_SIDECAR_HOME", home)
+
+    assert robotwin._sidecar_python() == py
+
+
+def test_provision_installs_with_newer_package_cutoffs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # ``run_cmd`` / ``ensure_pip_venv`` are the subprocess + venv boundary (§1.11).
+    from openral_sim.backends import robotwin
+
+    calls: list[list[str]] = []
+    specs: list[object] = []
+
+    def fake_ensure(**kw: Any) -> Path:
+        specs.append(kw["spec"])
+        py = tmp_path / ".venv" / "bin" / "python"
+        kw["install"]("uv", py)
+        return py
+
+    monkeypatch.setattr(robotwin, "run_cmd", lambda _label, cmd, **_kw: calls.append(list(cmd)))
+    monkeypatch.setattr(robotwin, "ensure_pip_venv", fake_ensure)
+    # An operator-owned root: provisioning returns before cloning or fetching assets.
+    monkeypatch.setenv(_ROBOTWIN_ROOT_ENV, str(tmp_path / "own-RoboTwin"))
+
+    robotwin._provision_robotwin_venv()
+
+    base, mplib = calls
+    assert "lerobot==0.7.0" in base
+    for pkg in robotwin._ROBOTWIN_NEWER_PACKAGES:
+        assert f"{pkg}={robotwin._ROBOTWIN_NEWER_CUTOFF}" in base
+    assert base[base.index("--exclude-newer") + 1] == robotwin._ROBOTWIN_EXCLUDE_NEWER
+    assert mplib[-1] == "mplib==0.2.1"
+    # The cutoffs are part of the sentinel spec, so changing one repairs a venv.
+    assert specs == [robotwin._ROBOTWIN_VENV_SPEC]
+    assert f"exclude-newer={robotwin._ROBOTWIN_EXCLUDE_NEWER}" in robotwin._ROBOTWIN_VENV_SPEC
 
 
 def test_robotwin_launch_argv_passes_checkout_root(
