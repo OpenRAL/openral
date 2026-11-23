@@ -489,9 +489,12 @@ def _end_effector_gripper_hands(
     if description.sim is None:
         return []
     link_by_body = {
-        _sim_joint_body_id(model, joint): joint.child_link
+        int(model.jnt_bodyid[joint_id]): joint.child_link
         for joint in description.joints
         if joint.sim_joint_name
+        # A joint the twin does not model is no EE attach link (as _resolve_robot_bodies).
+        and (joint_id := mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint.sim_joint_name))
+        >= 0
     }
     hands: list[_Hand] = []
     for gripper in description.sim.grippers:
@@ -1703,8 +1706,11 @@ class SimAttachmentEvidenceTracker:
     gripper does. Across hands only conservative rules apply: a payload held by one
     hand is never a candidate for another, hands publish in a fixed order, a record
     whose slot in the published set moves loses its support witness (the safety
-    kernel keys witness re-arming by slot), and one place declaration licenses one
-    attestation across all hands.
+    kernel keys witness re-arming by slot), and a place declaration licenses one
+    attestation per carry with at most one attested carry at a time across hands (a
+    release ends its carry, as with a single gripper, whose re-grasp starts a new place
+    phase). An update that fails part-way still publishes, on the next update, the
+    transitions earlier hands already committed.
     """
 
     def __init__(
@@ -1726,11 +1732,14 @@ class SimAttachmentEvidenceTracker:
         # The declaration itself, the bodies its target resolves to, and (per
         # hand, ``_Hand.place_attested_stamp_ns``) the stamp of the declaration a
         # place witness has already been attested for. That last one is the
-        # hysteresis: one declaration licenses ONE attestation across all hands,
-        # so a payload that separates from its place surface and touches it again
-        # is a fresh violation, never silently re-forgiven.
+        # hysteresis: one declaration licenses ONE attestation per carry, and no hand
+        # attests while another holds an attestation under it, so a payload that
+        # separates from its place surface and touches it again is a fresh
+        # violation, never silently re-forgiven.
         self._place_declaration: PlaceDeclaration | None = None
         self._place_target_bodies: frozenset[int] = frozenset()
+        # Some hand's record changed since the last published set (see ``update``).
+        self._set_changed = False
         # The declared target's body and its model-measured region box, in that
         # body's own frame (ADR-0097's 2026-08-14 amendment). Measured once at
         # declaration time; posed into the robot base frame on every
@@ -1847,18 +1856,20 @@ class SimAttachmentEvidenceTracker:
         The set holds one record per holding hand, in hand order.
         """
         contacts = self._contacts(data)
-        changed = False
         for hand, hand_contacts in zip(self._hands, contacts, strict=True):
             held_elsewhere = {
                 root
                 for other in self._hands
                 if other is not hand and (root := other.attached_root) is not None
             }
-            changed |= self._update_hand(
+            # Accumulated on the tracker, not a local: if a later hand raises, the
+            # transitions earlier hands committed still publish on the next update.
+            self._set_changed |= self._update_hand(
                 hand, hand_contacts, held_elsewhere, data, stamp_ns=stamp_ns
             )
-        if not changed:
+        if not self._set_changed:
             return None
+        self._set_changed = False
         published: list[AttachedCollisionObject] = []
         for hand in self._hands:
             if hand.attachment is None:
@@ -1929,7 +1940,10 @@ class SimAttachmentEvidenceTracker:
 
         for root, contact_bodies in contacts.items():
             if root in held_elsewhere:
-                continue  # one payload, one holding hand
+                # One payload, one holding hand; and no stability carried over, so after
+                # the other hand releases this one must build a fresh grasp.
+                hand.candidates.pop(root, None)
+                continue
             if classify_body_mobility(self._model, root) is not SimObjectMobility.FREE:
                 continue
             candidate = hand.candidates.setdefault(root, _ContactCandidate())

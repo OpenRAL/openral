@@ -40,7 +40,11 @@ import mujoco
 import numpy as np
 from openral_core import AttachedCollisionObject, RobotDescription
 from openral_core.assets import AssetFetchError, resolve_asset
-from openral_hal._sim_attachment_evidence import SimAttachmentEvidenceTracker, _Hand
+from openral_hal._sim_attachment_evidence import (
+    SimAttachmentEvidenceTracker,
+    _ContactCandidate,
+    _Hand,
+)
 from openral_hal.mujoco_twin import _PlanarBaseTwin
 
 pytestmark = pytest.mark.sim
@@ -104,7 +108,16 @@ def _description(robot: str) -> tuple[RobotDescription, Path]:
     return desc, path
 
 
-def _compile(path: Path, boxes: list[tuple[Any, Any, list[float]]]) -> tuple[Any, Any]:
+def _compile(
+    path: Path, boxes: list[tuple[Any, Any, list[float]]], *, support: bool = True
+) -> tuple[Any, Any]:
+    """The twin plus one free box per hand, each on a mocap pad.
+
+    ``support``: the pad sits under the box in world -z, flush, so the attach-time
+    support witness is real. Otherwise it is a backstop behind the box along the
+    hand's approach axis (the box's local -z), which keeps closing jaws from squeezing
+    the box into the palm; it attests nothing.
+    """
     spec = mujoco.MjSpec.from_file(str(path))
     spec.option.gravity = [0.0, 0.0, 0.0]
     for i, (pos, quat, half) in enumerate(boxes):
@@ -113,13 +126,21 @@ def _compile(path: Path, boxes: list[tuple[Any, Any, list[float]]]) -> tuple[Any
         body.add_geom(
             type=mujoco.mjtGeom.mjGEOM_BOX, size=half, mass=0.05, friction=[2.0, 0.05, 0.01]
         )
-        # A flush support under the box, so the attach-time support witness is real.
-        platform = spec.worldbody.add_body(name=f"platform{i}", pos=pos, quat=quat, mocap=True)
-        platform.add_geom(
-            type=mujoco.mjtGeom.mjGEOM_BOX,
-            size=[half[0] * 0.6, half[1], 0.004],
-            pos=[0.0, 0.0, -half[2] - 0.004],
+        if not support:
+            backstop = spec.worldbody.add_body(name=f"platform{i}", pos=pos, quat=quat, mocap=True)
+            backstop.add_geom(
+                type=mujoco.mjtGeom.mjGEOM_BOX,
+                size=[half[0] * 0.6, half[1], 0.004],
+                pos=[0.0, 0.0, -half[2] - 0.004],
+            )
+            continue
+        rot = np.zeros(9)
+        mujoco.mju_quat2Mat(rot, np.asarray(quat, dtype=np.float64))
+        depth = float(np.abs(rot.reshape(3, 3)[2]) @ np.asarray(half))
+        platform = spec.worldbody.add_body(
+            name=f"platform{i}", pos=np.asarray(pos) - [0.0, 0.0, depth + 0.004], mocap=True
         )
+        platform.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, size=[0.005, 0.005, 0.004])
     model = spec.compile()
     return model, mujoco.MjData(model)
 
@@ -165,7 +186,7 @@ def _payload_clear(model: Any, data: Any, n_boxes: int) -> bool:
     return True
 
 
-def _rig(robot: str) -> _Rig:
+def _rig(robot: str, *, support: bool = True) -> _Rig:
     """The twin with one box between each hand's open jaws, touching nothing but its platform.
 
     The box spans the line between the jaw roots, centred on their midpoint and slid
@@ -211,7 +232,7 @@ def _rig(robot: str) -> _Rig:
         placements.append((middle, approach, quat, half))
     for slide in np.arange(0.0, 0.08, 0.005):
         boxes = [(m + slide * a, q, h) for m, a, q, h in placements]
-        model, data = _compile(path, boxes)
+        model, data = _compile(path, boxes, support=support)
         data.qpos[: len(qpos)] = qpos
         data.ctrl[: len(ctrl)] = ctrl
         mujoco.mj_forward(model, data)
@@ -241,16 +262,18 @@ def _rig(robot: str) -> _Rig:
 
 
 @pytest.mark.parametrize(
-    ("robot", "attach_links"),
+    ("robot", "attach_links", "witnessed"),
     [
-        ("aloha_agilex", ("fl_link6", "fr_link6")),
-        ("r1pro", ("left_gripper_link", "right_gripper_link")),
+        # aloha_agilex's box rests flush on its platform at attach: a support witness.
+        ("aloha_agilex", ("fl_link6", "fr_link6"), True),
+        # r1pro's narrow jaws need the backstop pad, which attests no support: none.
+        ("r1pro", ("left_gripper_link", "right_gripper_link"), False),
     ],
 )
 def test_each_hand_attaches_and_releases_independently(
-    robot: str, attach_links: tuple[str, str]
+    robot: str, attach_links: tuple[str, str], witnessed: bool
 ) -> None:
-    rig = _rig(robot)
+    rig = _rig(robot, support=witnessed)
     assert rig.tracker.attach_links == attach_links
     assert rig.run(50) == [], "a box touching no jaw attached"
 
@@ -268,6 +291,8 @@ def test_each_hand_attaches_and_releases_independently(
     assert held_left == left, "the right hand's attach re-measured the left hand's record"
     assert (right.object_id, right.attach_link) == ("sim:payload1", attach_links[1])
     assert set(right.touch_links) == set(rig.tracker._hands[1].touch_links)
+    # The slot-shift rule below only means something when there is a witness to drop.
+    assert (right.support_contact is not None) == witnessed
 
     rig.set_gripper(0, closed=False)
     rig.run(100)
@@ -335,7 +360,23 @@ def test_a_held_payload_is_never_a_candidate_for_the_other_hand() -> None:
     root = left.attached_root
     assert root is not None and held.attach_link == left.attach_link
     both_jaws = set(right.body_groups.values())
+    # A stability count the right hand built before the left attached is discarded.
+    right.candidates[root] = _ContactCandidate(contact_bodies=both_jaws, stable_ticks=2)
     assert not rig.tracker._update_hand(
         right, {root: both_jaws}, {root}, rig.data, stamp_ns=rig.step_ns + 1
     )
     assert right.attachment is None and right.attached_root is None
+    assert root not in right.candidates
+
+
+def test_a_transition_survives_a_later_hand_failing() -> None:
+    """A set change committed before a later hand raised still publishes next update."""
+    rig = _rig("aloha_agilex")
+    rig.set_gripper(0, closed=True)
+    (held,) = rig.run(400)[-1]
+    assert rig.run(5) == []  # nothing changes while it is held
+    # As if the left hand had just committed a transition and the right hand then
+    # raised (``update`` never reached its publish): the flag is all that survives.
+    rig.tracker._set_changed = True
+    assert rig.tracker.update(rig.data, stamp_ns=rig.step_ns + 1) == [held]
+    assert rig.tracker.update(rig.data, stamp_ns=rig.step_ns + 2) is None
