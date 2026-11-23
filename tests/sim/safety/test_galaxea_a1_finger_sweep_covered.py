@@ -20,9 +20,10 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 pytest.importorskip("yourdfpy", reason="URDF lowering extras not installed")
-from openral_core import RobotDescription
+from openral_core import LinkCollisionGeometry, RobotDescription
 from openral_core.exceptions import ROSConfigError
 from openral_core.kinematics import transform_from_xyz_rpy
 from openral_safety.urdf_lowering import _link_clouds, lower_robot_from_mjcf
@@ -43,13 +44,16 @@ def _committed_hull(robot: RobotDescription, link: str) -> ConvexHull:
     return ConvexHull(verts @ place[:3, :3].T + place[:3, 3])
 
 
-def _outside_m(hull: ConvexHull, points: np.ndarray) -> np.ndarray:
+def _outside_m(hull: ConvexHull, points: NDArray[np.float64]) -> NDArray[np.float64]:
     """Each point's largest signed distance past the hull's facets (<= 0 inside)."""
-    return np.max(points @ hull.equations[:, :3].T + hull.equations[:, 3], axis=1)
+    distance: NDArray[np.float64] = np.max(
+        points @ hull.equations[:, :3].T + hull.equations[:, 3], axis=1
+    )
+    return distance
 
 
 @pytest.fixture(scope="module")
-def robot_and_meshes() -> tuple[RobotDescription, dict[str, np.ndarray]]:
+def robot_and_meshes() -> tuple[RobotDescription, dict[str, NDArray[np.float64]]]:
     from openral_hal._galaxea_a1_assets import ensure_a1_urdf
 
     try:
@@ -60,14 +64,14 @@ def robot_and_meshes() -> tuple[RobotDescription, dict[str, np.ndarray]]:
     meshes = {
         link: np.asarray(cloud.vertices)
         for link, cloud in _link_clouds(str(urdf), {}, None)
-        if link in ("gripper1", "gripper2")
+        if link in ("gripper1", "gripper2") and not isinstance(cloud, LinkCollisionGeometry)
     }
     return robot, meshes
 
 
 @pytest.mark.parametrize("link", ["gripper1", "gripper2"])
 def test_finger_hull_holds_the_closed_and_fully_open_finger(
-    robot_and_meshes: tuple[RobotDescription, dict[str, np.ndarray]], link: str
+    robot_and_meshes: tuple[RobotDescription, dict[str, NDArray[np.float64]]], link: str
 ) -> None:
     robot, meshes = robot_and_meshes
     (sweep,) = [a.sweep_xyz for a in robot.fixed_attachments if a.child_link == link]
