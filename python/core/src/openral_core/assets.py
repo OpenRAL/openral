@@ -16,6 +16,9 @@ Grammar (``resolve_asset(ref, kind)``):
   ``unitree_mujoco``), for robots in neither menagerie nor robot_descriptions.
 * ``makermods:<variant>`` — the MakerMods Metal arm URDF / MJCF, derived from
   a pinned clone of the unlicensed upstream description (nothing vendored).
+* ``galaxea:a1`` — the Galaxea A1 URDF + meshes from Galaxea's unlicensed
+  public description repo at a pinned commit with per-file SHA-256 (nothing
+  vendored), its ``package://mobiman`` mesh refs made relative (URDF only).
 * ``behavior:r1pro`` — the BEHAVIOR-1K Galaxea R1 Pro URDF (MIT Hugging Face
   dataset at a pinned revision), with absolute mesh paths and the collision
   meshes upstream does not ship dropped (URDF only).
@@ -110,7 +113,7 @@ def resolve_asset(ref: str, kind: AssetKind, *, manifest_dir: Path | None = None
     raise AssetRefError(
         f"unrecognized asset ref {ref!r}; expected one of: rd:<module>, "
         f"file:<relpath>, gym_aloha:<scene>, openarm:<variant>, "
-        f"unitree:<model>, makermods:<variant>, behavior:<model>, {_ROS2_DYNAMIC}"
+        f"unitree:<model>, makermods:<variant>, galaxea:<model>, behavior:<model>, {_ROS2_DYNAMIC}"
     )
 
 
@@ -419,6 +422,31 @@ def _resolve_makermods(variant: str, kind: AssetKind) -> Path:
         raise AssetRefError(f"makermods:{variant} ({kind}): {exc}") from exc
 
 
+def _resolve_galaxea(model: str, kind: AssetKind) -> Path:
+    """Resolve ``galaxea:a1`` to the pinned Galaxea A1 URDF.
+
+    A failed download is an ``AssetFetchError``; a digest mismatch, an unknown
+    model or kind, or a missing ``openral_hal`` is an ``AssetRefError``.
+    """
+    from openral_core.exceptions import ROSConfigError
+
+    if model != "a1" or kind != "urdf":
+        raise AssetRefError(f"galaxea:{model} ({kind}): only galaxea:a1 as a urdf exists")
+    try:
+        from openral_hal._galaxea_a1_assets import ensure_a1_urdf
+        from openral_hal._pinned_files import is_download_failure
+    except ImportError as exc:
+        raise AssetRefError(
+            f"galaxea:{model} needs openral_hal ({type(exc).__name__}: {exc})"
+        ) from exc
+    try:
+        return ensure_a1_urdf()
+    except ROSConfigError as exc:
+        if is_download_failure(exc):
+            raise AssetFetchError(f"galaxea:{model} ({kind}): {exc}") from exc
+        raise AssetRefError(f"galaxea:{model} ({kind}): {exc}") from exc
+
+
 def _resolve_behavior(model: str, kind: AssetKind) -> Path:
     """Resolve ``behavior:r1pro`` to the derived BEHAVIOR-1K R1 Pro URDF.
 
@@ -452,5 +480,6 @@ _SCHEME_RESOLVERS: tuple[tuple[str, Callable[[str, AssetKind], Path]], ...] = (
     ("openarm:", _resolve_openarm),
     ("unitree:", _resolve_unitree),
     ("makermods:", _resolve_makermods),
+    ("galaxea:", _resolve_galaxea),
     ("behavior:", _resolve_behavior),
 )

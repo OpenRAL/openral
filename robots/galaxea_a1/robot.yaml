@@ -3,12 +3,19 @@
 # Kinematic limits and link names are transcribed from the official A1 SDK
 # A1_URDF_0607_0028.urdf. The SDK itself remains operator-provided and is not
 # redistributed by OpenRAL. The HAL remains intentionally joint/gripper-space;
-# the LingBot rSkill lowers its EEF output before the safety boundary. URDF
-# asset publication and lowered collision geometry follow after the vendor
-# confirms a redistributable asset source.
+# the LingBot rSkill lowers its EEF output before the safety boundary. Lowered
+# collision geometry follows after the vendor confirms a redistributable asset
+# source.
 name: galaxea_a1
 embodiment_kind: manipulator
 base_frame: base_link
+
+# That same URDF, which Galaxea publishes without a license in
+# userguide-galaxea/robot_descriptions: fetched at a pinned commit with per-file
+# SHA-256 on first use, never vendored (openral_hal._galaxea_a1_assets).
+assets:
+  urdf:
+    ref: "galaxea:a1"
 
 joints:
   - name: arm_joint1

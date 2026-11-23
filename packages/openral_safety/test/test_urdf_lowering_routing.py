@@ -43,7 +43,7 @@ _ROUTES: dict[str, str | None] = {
     "droid_franka_robotiq": "srdf",
     "franka_panda": "srdf",
     "g1": "sampling",
-    "galaxea_a1": None,
+    "galaxea_a1": "sampling",  # galaxea:a1 URDF (#726); no assets before
     "google_robot": None,
     "gr1": "sampling",
     "h1": "sampling",
@@ -55,7 +55,7 @@ _ROUTES: dict[str, str | None] = {
     "panda_mobile": "srdf",
     "panda_mobile_vslam": "srdf",
     "pusht_2d": None,
-    "r1pro": None,
+    "r1pro": "sampling",  # behavior:r1pro URDF, visual-only: lowering surfaces the gap (#726)
     "rizon4": "srdf",
     "rizon_dual": "srdf",
     "sawyer": "mjcf",

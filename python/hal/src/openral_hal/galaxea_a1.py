@@ -38,6 +38,7 @@ from openral_core.exceptions import (
 from openral_core.schemas import (
     Action,
     ActionSpec,
+    AssetRefs,
     ControlMode,
     EmbodimentKind,
     EndEffectorSpec,
@@ -51,6 +52,7 @@ from openral_core.schemas import (
     SafetyEnvelope,
     SensorModality,
     SensorSpec,
+    UrdfAsset,
 )
 
 from openral_hal._base import HALBase
@@ -100,6 +102,7 @@ GALAXEA_A1_DESCRIPTION = RobotDescription(
     name="galaxea_a1",
     embodiment_kind=EmbodimentKind.MANIPULATOR,
     base_frame="base_link",
+    assets=AssetRefs(urdf=UrdfAsset(ref="galaxea:a1")),
     joints=[
         JointSpec(
             name=name,

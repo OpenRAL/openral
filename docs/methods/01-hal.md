@@ -359,26 +359,26 @@ _Real-only Galaxea A1 HAL. OpenRAL stays ROS 2 / Python 3.12; the operator's
 official ROS 1 Noetic SDK runs out of process behind a literal IPv4-loopback
 JSON-lines sidecar. No vendor source, binary, or message package is distributed._
 
-- `class GalaxeaA1HAL(HALBase)` (L582) — Six-axis joint-position + normalized-gripper adapter. Takes `description=` (loaded manifest; `None` keeps `GALAXEA_A1_DESCRIPTION`). `read_state`/`send_action` use a cached snapshot/latest target so network I/O stays off the hot path. Commands fail closed on stale state/status, unaccepted motor bits, non-finite values, target misalignment, or an excessive feedback-relative step. `estop` asks the sidecar to stop its owned ROS 1 stack, records a `DownstreamStopReport` (`DownstreamStopReporting`), and always raises `ROSEStopRequested`.
-  - `connect() -> None` (L714) — Connect to the sidecar (sends the `hello` handshake with joint names/limits/timeouts/masks); requires one complete fresh snapshot. Raises `ROSRuntimeError` if already connected.
-  - `disconnect() -> None` (L749) — Close the sidecar transport idempotently.
-  - `read_state() -> JointState` (L754) — Return the latest non-stale six-joint feedback snapshot.
-  - `send_action(action: Action) -> None` (L766) — Queue one validated joint or normalized-gripper target; raises `ROSConfigError` for an unsupported control mode.
-  - `health() -> HALHealthReport` (L821) — Cached hardware health for the lifecycle diagnostics heartbeat (sidecar address, feedback/status ages, motor status, relay state, staged/forwarded targets).
-  - **(property)** `last_stop_report -> DownstreamStopReport | None` (L706) — Report of the last `estop()`; `None` before the first and after `connect()`.
-  - `estop() -> None` (L843) — Drop the connection flag first, then stop the sidecar-owned ROS 1 stack (bounded, SIGINT then SIGKILL). The sidecar's `estopped` confirmation is the acknowledgement (`stopped=True`, `joint_tracker`/`serial_driver`/`roscore` = `exited`); a refusal, timeout or link drop is recorded as `stopped=False` with the error as `detail` — never escaping as anything but `ROSEStopRequested`, which it always raises.
-- module const `_JOINT_NAMES` (L64) — six `arm_jointN` names.
-- module const `_JOINT_LIMITS` (L65) — per-joint `(min, max)` position limits, official A1 URDF.
-- module const `_JOINT_ORIGINS_XYZ` (L73) — per-joint URDF origin translation, transcribed from the official A1 URDF.
-- module const `_JOINT_ORIGINS_RPY` (L81) — per-joint URDF origin rotation, transcribed from the official A1 URDF.
-- module const `_PROTOCOL_VERSION = 1` (L89) — sidecar wire-protocol version sent in the `hello` handshake.
-- module const `_ESTOP_SIDECAR_PROCESSES` (L94) — `("joint_tracker", "serial_driver", "roscore")`, what the sidecar's e-stop stops; named in the `DownstreamStopReport`.
-- module const `_ESTOP_VENDOR_STOP` (L95) — `"ros1_sidecar_estop"`, the report's `vendor_stop` label.
-- module const `_GRIPPER_STATUS_INDEX` (L90) — index of the gripper's status code within the sidecar's status array.
-- module const `_MAX_TCP_PORT = 65536` (L91) — upper bound accepted for the sidecar's loopback TCP port.
-- module const `_MAX_STATUS_MASK = 0xFFFFFFFF` (L96) — bit-mask upper bound for a motor status/error mask.
-- const `GALAXEA_A1_DESCRIPTION` (L99) — Real-only `RobotDescription`, mirrored by
-  `robots/galaxea_a1/robot.yaml`: official A1 URDF joint names/limits, sidecar
+- `class GalaxeaA1HAL(HALBase)` (L585) — Six-axis joint-position + normalized-gripper adapter. Takes `description=` (loaded manifest; `None` keeps `GALAXEA_A1_DESCRIPTION`). `read_state`/`send_action` use a cached snapshot/latest target so network I/O stays off the hot path. Commands fail closed on stale state/status, unaccepted motor bits, non-finite values, target misalignment, or an excessive feedback-relative step. `estop` asks the sidecar to stop its owned ROS 1 stack, records a `DownstreamStopReport` (`DownstreamStopReporting`), and always raises `ROSEStopRequested`.
+  - `connect() -> None` (L717) — Connect to the sidecar (sends the `hello` handshake with joint names/limits/timeouts/masks); requires one complete fresh snapshot. Raises `ROSRuntimeError` if already connected.
+  - `disconnect() -> None` (L752) — Close the sidecar transport idempotently.
+  - `read_state() -> JointState` (L757) — Return the latest non-stale six-joint feedback snapshot.
+  - `send_action(action: Action) -> None` (L769) — Queue one validated joint or normalized-gripper target; raises `ROSConfigError` for an unsupported control mode.
+  - `health() -> HALHealthReport` (L824) — Cached hardware health for the lifecycle diagnostics heartbeat (sidecar address, feedback/status ages, motor status, relay state, staged/forwarded targets).
+  - **(property)** `last_stop_report -> DownstreamStopReport | None` (L709) — Report of the last `estop()`; `None` before the first and after `connect()`.
+  - `estop() -> None` (L846) — Drop the connection flag first, then stop the sidecar-owned ROS 1 stack (bounded, SIGINT then SIGKILL). The sidecar's `estopped` confirmation is the acknowledgement (`stopped=True`, `joint_tracker`/`serial_driver`/`roscore` = `exited`); a refusal, timeout or link drop is recorded as `stopped=False` with the error as `detail` — never escaping as anything but `ROSEStopRequested`, which it always raises.
+- module const `_JOINT_NAMES` (L66) — six `arm_jointN` names.
+- module const `_JOINT_LIMITS` (L67) — per-joint `(min, max)` position limits, official A1 URDF.
+- module const `_JOINT_ORIGINS_XYZ` (L75) — per-joint URDF origin translation, transcribed from the official A1 URDF.
+- module const `_JOINT_ORIGINS_RPY` (L83) — per-joint URDF origin rotation, transcribed from the official A1 URDF.
+- module const `_PROTOCOL_VERSION = 1` (L91) — sidecar wire-protocol version sent in the `hello` handshake.
+- module const `_ESTOP_SIDECAR_PROCESSES` (L96) — `("joint_tracker", "serial_driver", "roscore")`, what the sidecar's e-stop stops; named in the `DownstreamStopReport`.
+- module const `_ESTOP_VENDOR_STOP` (L97) — `"ros1_sidecar_estop"`, the report's `vendor_stop` label.
+- module const `_GRIPPER_STATUS_INDEX` (L92) — index of the gripper's status code within the sidecar's status array.
+- module const `_MAX_TCP_PORT = 65536` (L93) — upper bound accepted for the sidecar's loopback TCP port.
+- module const `_MAX_STATUS_MASK = 0xFFFFFFFF` (L98) — bit-mask upper bound for a motor status/error mask.
+- const `GALAXEA_A1_DESCRIPTION` (L101) — Real-only `RobotDescription`, mirrored by
+  `robots/galaxea_a1/robot.yaml`: official A1 URDF joint names/limits, `assets.urdf` `galaxea:a1`, sidecar
   deadlines, motor masks, 0..104 mm normalized gripper mapping, and calibrated
   D455 front / D405 wrist RGB observation contracts. Collision primitives are
   absent until their redistribution/lowering provenance is cleared.
@@ -442,6 +442,12 @@ _Fetches Unitree's official H2 description files at pinned commits, each beside 
 - `ensure_h2_mjcf() -> Path` (L264) — `unitree_mujoco` @ `1eb6642e` `unitree_robots/h2/h2_mujoco.xml` (+ `scene.xml`, 32 meshes); returns the bare-robot MJCF. Same failure contract.
 - const `UNITREE_ROS_SHA: str` (L41) — pinned `unitreerobotics/unitree_ros` commit.
 - const `UNITREE_MUJOCO_SHA: str` (L43) — pinned `unitreerobotics/unitree_mujoco` commit.
+
+### `python/hal/src/openral_hal/_galaxea_a1_assets.py`
+_Fetches Galaxea's A1 URDF + 9 STL meshes from the unlicensed `userguide-galaxea/robot_descriptions` at a pinned commit with per-file SHA-256 (nothing vendored) — backs the `galaxea:a1` asset ref._
+
+- `ensure_a1_urdf() -> Path` (L46) — `a1_description/` @ `72008ea9` into `$OPENRAL_CACHE_DIR/galaxea_a1/<sha>/`; returns a derived `urdf/a1.urdf` whose `package://mobiman/urdf/A1/meshes/` refs are rewritten to `../meshes/`. Raises `ROSConfigError` on a failed download or digest mismatch.
+- const `GALAXEA_DESCRIPTIONS_SHA: str` (L26) — pinned `userguide-galaxea/robot_descriptions` commit.
 
 ### `python/hal/src/openral_hal/_behavior_r1pro_assets.py`
 _Fetches BEHAVIOR-1K's R1 Pro URDF and visual meshes (`behavior-1k/omnigibson-robot-assets`, MIT HF dataset) at a pinned revision and derives a loadable copy — backs the `behavior:r1pro` asset ref._
