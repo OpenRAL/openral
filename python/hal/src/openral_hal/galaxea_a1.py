@@ -107,7 +107,9 @@ GALAXEA_A1_DESCRIPTION = RobotDescription(
     name="galaxea_a1",
     embodiment_kind=EmbodimentKind.MANIPULATOR,
     base_frame="base_link",
-    assets=AssetRefs(urdf=UrdfAsset(ref="galaxea:a1"), mjcf="galaxea:a1"),
+    assets=AssetRefs(
+        urdf=UrdfAsset(ref="galaxea:a1"), mjcf="galaxea:a1", srdf="file:galaxea_a1.srdf"
+    ),
     joints=[
         JointSpec(
             name=name,
