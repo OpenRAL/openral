@@ -35,7 +35,7 @@ their environment directly and start no lifecycle node.
 | Panda mobile, visual-SLAM twin | [`robots/panda_mobile_vslam/`](https://github.com/OpenRAL/openral/tree/master/robots/panda_mobile_vslam/) | `PandaMobileHAL` (sim-only); localises from two base RGB cameras via cuVSLAM instead of a `LaserScan` | ✓ sim |
 | Galaxea R1 Pro | [`robots/r1pro/`](https://github.com/OpenRAL/openral/tree/master/robots/r1pro/) | generic scene-attached HAL + official BEHAVIOR/OmniGibson sidecar | ✓ sim |
 | Google Robot (SimplerEnv) | [`robots/google_robot/`](https://github.com/OpenRAL/openral/tree/master/robots/google_robot/) | eval-only (SimplerEnv `fractal20220817_data` bridge env) | ✓ sim |
-| WidowX (SimplerEnv) | [`robots/widowx/`](https://github.com/OpenRAL/openral/tree/master/robots/widowx/) | eval-only (SimplerEnv `bridge_orig` env) | ✓ sim |
+| WidowX (SimplerEnv) | [`robots/widowx/`](https://github.com/OpenRAL/openral/tree/master/robots/widowx/) | SimplerEnv `bridge_orig` env for eval, plus a manifest-driven `MujocoArmHAL` twin on the Menagerie MJCF for `deploy sim` (`scenes/deploy/widowx_twin.yaml`) | ✓ sim |
 | PushT 2-D (gym-pusht) | [`robots/pusht_2d/`](https://github.com/OpenRAL/openral/tree/master/robots/pusht_2d/) | eval-only (`pymunk` 2-D rigid-body) | ✓ sim |
 
 ## Manifest format

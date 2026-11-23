@@ -38,6 +38,7 @@ MOUNTS: dict[str, dict[str, tuple[str, str, str]]] = {
     "makermods_metal_station": {"top": ("top", "top_camera", "top_camera_optical_frame")},
     "openamrobot_v2": {"top": ("head_zed", "zed_camera_link", "zed_camera_link_optical_frame")},
     "openarm": {"top": ("head_zed", "zed_camera_link", "zed_camera_link_optical_frame")},
+    "widowx": {"top": ("top", "overhead_camera", "overhead_camera_optical_frame")},
 }
 
 
