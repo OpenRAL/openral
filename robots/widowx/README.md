@@ -5,7 +5,7 @@ WidowX envs only: `python/sim/src/openral_sim/backends/simpler_env.py`
 registers the `simpler_env` scene with `fixed_robot="widowx"`; its
 `simpler_env/widowx_*` tasks are the BridgeData V2 / SimplerEnv WidowX setup.
 
-The WidowX-250s is a real 5-DoF + gripper desktop arm (Trossen Robotics), but
+The WidowX-250s is a real 6-DoF + gripper desktop arm (Trossen Robotics), but
 OpenRAL ships no HAL adapter for it: `hal.sim` and `hal.real` are both null
 (scene-only) until a real-HW HAL lands. Kinematic and safety numbers come from
 the public Trossen data sheet.

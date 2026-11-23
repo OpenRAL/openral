@@ -167,7 +167,7 @@ def _resolve_robot_mjcf(description: RobotDescription) -> str:
 
     Reuses ``openral_core.assets.resolve_asset`` — the single resolver that
     ``build_hal(mode="sim")`` / ``MujocoArmHAL.from_description`` use — so every
-    ref scheme (``rd:``, ``gym_aloha:``, ``openarm:``, ``menagerie:``, ``file:``)
+    ref scheme (``rd:``, ``gym_aloha:``, ``openarm:``, ``unitree:``, ``makermods:``, ``file:``)
     is honoured identically across the sim/real paths.
     """
     from openral_core.assets import AssetRefError, resolve_asset
