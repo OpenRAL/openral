@@ -257,7 +257,7 @@ def test_the_action_contract_carries_an_optional_trained_rate() -> None:
 
 @pytest.mark.parametrize(
     ("param", "robot", "source"),
-    [(0.0, "ur5e", "manifest"), (15.0, "ur5e", "rate_hz_param"), (0.0, "widowx", "fallback")],
+    [(0.0, "ur5e", "manifest"), (15.0, "ur5e", "rate_hz_param"), (0.0, "google_robot", "fallback")],
 )
 def test_the_tick_rate_source_is_named(param: float, robot: str, source: str) -> None:
     """A robot with no declared rate ticks at the 30 Hz fallback, and says so."""

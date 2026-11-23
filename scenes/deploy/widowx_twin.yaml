@@ -1,0 +1,32 @@
+# Trossen WidowX-250s — bare MuJoCo twin (#740).
+#
+#     openral deploy sim --config scenes/deploy/widowx_twin.yaml
+#
+# `widowx_twin` is not an openral_sim scene id, so `deploy sim` builds the bare twin
+# (`MujocoArmHAL.from_description` on the Menagerie MJCF, the manifest's `sim:` block)
+# at the manifest's 5 Hz, with the world-fixed `top` camera. Joint-space actions only:
+# the Bridge/SimplerEnv rSkills emit EEF deltas and run on scenes/sim/widowx_*.yaml.
+#
+# Arm only, no depth camera: every runtime feature that needs a sensor the manifest does
+# not declare is off.
+scene:
+  id: widowx_twin
+robot_id: widowx
+
+runtime:
+  enable_reasoner: false
+  enable_slam: false
+  enable_nav2: false
+  enable_octomap: false
+  enable_octomap_kernel_check: true
+  enable_object_detector: false
+  object_detector_onnx: null
+  object_detector_manifest: null
+  object_detector_query: null
+  object_detector_locators: null
+  enable_reward_monitor: false
+  reward_monitor_manifest: null
+  reward_monitor_task: null
+  enable_critic: false
+  spatial_memory_ingest: false
+  approach_skill_id: null

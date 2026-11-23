@@ -1,0 +1,87 @@
+# SPDX-License-Identifier: Apache-2.0
+"""WidowX-250s MuJoCo twin: closed-loop tracking and the top camera (#740).
+
+Drives the real ``MujocoArmHAL.from_description`` built purely from
+``robots/widowx/robot.yaml`` against the Menagerie ``trossen_wx250s`` MJCF
+(``rd:widow_mj_description``), gravity on. The arm is moved only through
+``send_action``; ``read_state`` / ``read_images`` are the only read-backs.
+
+No mocks (CLAUDE.md §1.11): when ``mujoco`` is missing or the MJCF cannot be
+downloaded (``AssetFetchError``), the module skips with the reason.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip("mujoco")
+pytest.importorskip("robot_descriptions")
+
+import numpy as np
+from openral_core import Action, ControlMode, RobotDescription
+from openral_core.assets import AssetFetchError, resolve_asset
+from openral_hal._mujoco_arm import MujocoArmHAL
+
+pytestmark = pytest.mark.sim
+
+_ROOT = Path(__file__).resolve().parents[2]
+_TRACK_TOL_RAD = 0.05
+_GRIPPER_TOL = 0.05
+_SETTLE_SIM_S = 2.0
+#: waist..wrist_rotate, inside every manifest limit and away from them.
+_ARM_TARGET = [0.4, -0.3, 0.3, 0.3, 0.5, -0.4]
+
+
+@pytest.fixture
+def connected() -> Iterator[tuple[RobotDescription, MujocoArmHAL]]:
+    desc = RobotDescription.from_yaml(str(_ROOT / "robots" / "widowx" / "robot.yaml"))
+    assert desc.assets.mjcf is not None
+    try:
+        resolve_asset(desc.assets.mjcf, "mjcf")
+    except AssetFetchError as exc:
+        pytest.skip(f"Menagerie WidowX MJCF not fetchable on this host: {exc}")
+    hal = MujocoArmHAL.from_description(desc, gravity_enabled=True)
+    hal.connect()
+    try:
+        yield desc, hal
+    finally:
+        hal.disconnect()
+
+
+def _drive(hal: MujocoArmHAL, target: list[float]) -> list[float]:
+    """Hold ``target`` for ``_SETTLE_SIM_S`` of sim time; return the final positions."""
+    tick_s = hal.sim_dt_per_tick_s
+    assert tick_s is not None and tick_s > 0.0
+    for _ in range(round(_SETTLE_SIM_S / tick_s)):
+        hal.send_action(
+            Action(control_mode=ControlMode.JOINT_POSITION, joint_targets=[target], horizon=1)
+        )
+    return list(hal.read_state().position)
+
+
+@pytest.mark.parametrize("gripper", [1.0, 0.0], ids=["open", "closed"])
+def test_tracks_joint_targets_and_gripper(
+    connected: tuple[RobotDescription, MujocoArmHAL], gripper: float
+) -> None:
+    """Arm joints settle within 0.05 rad; the normalised gripper within 0.05."""
+    desc, hal = connected
+    target = [*_ARM_TARGET, gripper]
+    assert [j.name for j in desc.joints] == list(hal.read_state().name)
+    got = _drive(hal, target)
+    for joint, want, have in zip(desc.joints, target, got, strict=True):
+        tol = _GRIPPER_TOL if joint.role == "gripper" else _TRACK_TOL_RAD
+        assert abs(have - want) < tol, f"{joint.name}: commanded {want:.3f}, settled {have:.3f}"
+
+
+def test_top_camera_renders_the_arm(connected: tuple[RobotDescription, MujocoArmHAL]) -> None:
+    """The manifest's ``top`` camera renders at its intrinsics and sees the scene."""
+    desc, hal = connected
+    frame = hal.read_images()["top"]
+    intr = desc.sensors[0].intrinsics
+    assert intr is not None
+    assert frame.shape == (intr.height, intr.width, 3)
+    assert frame.dtype == np.uint8
+    assert float(frame.std()) > 5.0, "top camera frame is blank"

@@ -1,11 +1,13 @@
 # RobotDescription — Trossen WidowX-250s (sim-only embodiment).
 #
-# Sim-only pseudo-embodiment exception: WidowX-250s is a real 6-DoF + gripper
-# desktop arm (Trossen Robotics), but OpenRAL ships no HAL adapter for it
-# today — exists only so SimEnvironment configs targeting SimplerEnv's
-# `widowx_*` envs (Bridge-Data setup) can round-trip through the schema.
-# Sim-imposed observation/action contract lives in
-# python/sim/src/openral_sim/backends/simpler_env.py, not here.
+# Sim-only embodiment: WidowX-250s is a real 6-DoF + gripper desktop arm
+# (Trossen Robotics), but OpenRAL ships no real HAL for it. Two sims run it:
+# * SimplerEnv's `widowx_*` envs (Bridge-Data setup, ManiSkill3/SAPIEN), whose
+#   observation/action contract lives in
+#   python/sim/src/openral_sim/backends/simpler_env.py, not here;
+# * a bare MuJoCo twin (`MujocoArmHAL.from_description`, the `sim:` block
+#   below) on the Menagerie MJCF, for `openral deploy sim` and the dashboard
+#   (scenes/deploy/widowx_bench.yaml). The twin takes joint-space actions only.
 #
 # Kinematic numbers from the public WidowX-250s data sheet
 # (trossenrobotics.com/widowx-250). Joint limits are placeholder for the
@@ -91,7 +93,9 @@ joints:
 
 end_effectors:
   - name: "gripper"
-    command_convention: "normalized_open_symmetric"
+    # The twin's encoding (0 = closed, 1 = open). SimplerEnv scenes override it
+    # with their own `normalized_open_symmetric` (SCENES gripper_convention).
+    command_convention: "normalized_open_unit"
     kind: "parallel_gripper"
     hand: "na"
     n_dof: 1
@@ -145,8 +149,49 @@ sensors:
     vla_feature_key: "observation.images.camera1"
     vendor: "sim"
     model: "simpler_env_overhead"
+    # MuJoCo twin only (SimplerEnv renders its own camera): a world-fixed view
+    # of the workspace in front of the arm. A sim choice, not a measured mount.
+    sim_placement:
+      pos: [0.75, 0.0, 0.55]
+      target: [0.25, 0.0, 0.05]
 
 sdk_kind: "open"
-# observation_spec / action_spec deliberately omitted, per the robot/sim split convention. The
-# per-sim IO contracts live in the matching scene adapters.
+
+hal:
+  # null -> build_hal derives MujocoArmHAL.from_description from `sim:` below.
+  sim: null
+  real: null
+
+# MuJoCo wiring for the twin, on the Menagerie `trossen_wx250s/wx250s.xml`:
+# qpos 0-5 / actuators 0-5 are the arm in manifest order; the `gripper`
+# actuator (6) drives `left_finger` (qpos 6, slide 0.015-0.037 m), and an MJCF
+# equality mirrors it onto `right_finger` (qpos 7). The twin starts at the MJCF's
+# `home` keyframe: qpos 0 puts both fingers outside their slide ranges, where
+# they jam and never open.
+sim:
+  keyframe_index: 0
+  joint_qpos_addr:
+    waist: 0
+    shoulder: 1
+    elbow: 2
+    forearm_roll: 3
+    wrist_angle: 4
+    wrist_rotate: 5
+    gripper: 6
+  grippers:
+    - joint: "gripper"
+      ctrl_range: [0.015, 0.037]
+      qpos_addrs: [6]
+      qpos_scale: 0.022
+      read_mode: "affine_low_high"
+      write_mode: "normalised"
+      actuator_index: 6
+
+# observation_spec and the action representation stay with the scene adapters (robot/sim
+# split). Only the control rate lives here: one action is one 5 Hz period, the rate of
+# ManiSkill3's bridge_dataset_eval WidowX envs (SimConfig control_freq=5) and of
+# BridgeData V2. The MuJoCo twin steps one period per action at this rate.
+action_spec:
+  control_freq_hz: 5.0
+
 schema_version: "0.2"
