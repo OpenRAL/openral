@@ -7,12 +7,15 @@ from its arm, base and gripper models. ``compose_robot_mjcf`` performs the same
 composition as ``robosuite.robots.Robot.load_model``, with the same ``idn``
 naming, so the joint names match the manifest's ``sim_joint_name``s
 (``mobilebase0_*``, ``robot0_*``, ``gripper0_right_*``), and writes the XML into
-``$OPENRAL_CACHE_DIR/robosuite/<robosuite version>/<robot>.xml``. Mesh paths
-point into the installed robosuite package; nothing is vendored.
+``$OPENRAL_CACHE_DIR/robosuite/<version>-<install hash>/<robot>.xml``. Mesh
+paths point into the installed robosuite package, so the cache is keyed by where
+that package lives as well as its version: RoboCasa's pinned clone and the PyPI
+wheel both report 1.5.2. Nothing is vendored.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 
@@ -41,7 +44,9 @@ def compose_robot_mjcf(name: str) -> Path:
     if name not in REGISTERED_ROBOTS:
         raise ROSConfigError(f"robosuite:{name}: not a registered robosuite robot")
     base = Path(os.environ.get("OPENRAL_CACHE_DIR") or Path.home() / ".cache" / "openral")
-    out: Path = base / "robosuite" / str(robosuite.__version__) / f"{name}.xml"
+    package = Path(str(robosuite.__file__)).parent
+    install = hashlib.sha256(str(package).encode()).hexdigest()[:12]
+    out: Path = base / "robosuite" / f"{robosuite.__version__}-{install}" / f"{name}.xml"
     if out.is_file():
         return out
     model = create_robot(name, idn=0)
