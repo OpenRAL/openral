@@ -480,6 +480,8 @@ def _resolve_robotwin(model: str, kind: AssetKind) -> Path:
         robotwin.fetch_aloha_agilex_files()
     except ROSConfigError as exc:
         raise AssetFetchError(f"robotwin:{model} ({kind}): {exc}") from exc
+    except OSError as exc:  # writing into the cache: a local error, not an unreachable upstream
+        raise AssetRefError(f"robotwin:{model} ({kind}): {exc}") from exc
     try:
         return robotwin.ensure_aloha_agilex_urdf()
     except (ROSConfigError, OSError) as exc:
