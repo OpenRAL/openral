@@ -93,9 +93,10 @@ policy_extras:
   # would sample each next chunk from an observation ~15 steps old.
   chunk_prefetch: false
 latency_budget:
-  # ESTIMATE, not a per-chunk measurement: RTX 5090 bf16 runs averaged 50 ms per step
-  # (sim stepping included) over 16-step replay, i.e. <= 0.8 s per UniPC-30 chunk.
-  per_chunk_ms: 1500.0
+  # Timed predict_action_chunk (UniPC-30, bf16) on Jetson AGX Thor: 2.13-2.17 s steady,
+  # 2.68 s for the first chunk. An RTX 5090 averaged 50 ms per step over 16-step replay
+  # (sim included), i.e. <= 0.8 s per chunk.
+  per_chunk_ms: 2500.0
 
 # ── Provenance ─────────────────────────────────────────────────────────────
 paper_url: "https://arxiv.org/abs/2606.02800"

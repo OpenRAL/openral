@@ -23,7 +23,7 @@ metadata:
   min_vram_gb: {bf16: 14.1}
   chunk_size: 16
   n_action_steps: 16
-  latency_budget: {per_chunk_ms: 1500.0}
+  latency_budget: {per_chunk_ms: 2500.0}
   license_code: Apache-2.0
   license_weights: openmdw-1.1
   weights_uri: hf://lerobot/Cosmos3-Edge-Policy-LIBERO@9d4de4350e416c12babc9a42db01ab0c5df9f82f
