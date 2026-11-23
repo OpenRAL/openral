@@ -46,6 +46,7 @@ from openral_rskill._vla_core import (
     resolve_rskill_repo_revision,
     rtc_enabled_in_extra,
     run_inference,
+    suppress_hf_weight_init,
     to_numpy_action,
     validate_processor_steps,
 )
@@ -61,8 +62,6 @@ if TYPE_CHECKING:
     from openral_sim.rollout import Observation
 
 _log = structlog.get_logger(__name__)
-
-_LIBERO_STATE_DIM = 8
 
 
 @dataclass
@@ -116,17 +115,9 @@ class _Cosmos3Adapter:
             )
             if slot == self._camera_keys[0]:  # the third-person view is the preview
                 self._last_input_frame = to_input_frame(frame, flip_180=self._flip_180)
-        state = observation.get("state")
-        if state is None:
-            raise ROSCapabilityMismatch(
-                "cosmos3 (LIBERO) needs the 8-D canonical LIBERO state as observation['state']."
-            )
-        state_arr = np.asarray(state, dtype=np.float32).reshape(-1)
-        if state_arr.shape[0] != _LIBERO_STATE_DIM:
-            raise ROSCapabilityMismatch(
-                f"cosmos3 (LIBERO) expects the {_LIBERO_STATE_DIM}-D canonical LIBERO state "
-                f"eef_pos | axis-angle | gripper_qpos, got {state_arr.shape[0]}-D."
-            )
+        from openral_sim.backends.libero import libero_canonical_state
+
+        state_arr = libero_canonical_state(observation, "cosmos3")
         batch["observation.state"] = torch.from_numpy(state_arr).unsqueeze(0).to(self.device)
         return cast("dict[str, Any]", self._preprocessor(batch))
 
@@ -148,6 +139,24 @@ class _Cosmos3Adapter:
         )
 
 
+def _load_policy(policy_cls: Any, ckpt: str, config: Any, *, torch: Any) -> Any:
+    """``policy_cls.from_pretrained`` built in ``config.dtype``, init skipped, strict load.
+
+    lerobot builds the whole model at the default dtype and random-inits it before
+    ``_set_precision`` casts it and the checkpoint loads over it: an fp32 build of
+    Cosmos3-Edge peaks at ~18 GB of host RAM for values nothing reads. Build in the run
+    dtype with the init skipped, and load strictly so a key the checkpoint misses cannot
+    leave uninitialised memory behind.
+    """
+    prev_dtype = torch.get_default_dtype()
+    torch.set_default_dtype(config.dtype)
+    try:
+        with suppress_hf_weight_init():
+            return policy_cls.from_pretrained(ckpt, config=config, strict=True)
+    finally:
+        torch.set_default_dtype(prev_dtype)
+
+
 @POLICIES.register(
     "cosmos3",
     install_groups=("vla",),
@@ -159,14 +168,11 @@ def _build_cosmos3(env_cfg: Any) -> _Cosmos3Adapter:
     device = resolve_device(spec)
 
     # The checkpoint's action decode targets LIBERO's OSC command, and the 8-D state it
-    # declares is LIBERO's task-space state: refuse any other scene before loading.
-    from openral_sim.backends.libero import _LIBERO_SUITES
+    # declares is LIBERO's task-space state: refuse any other sim scene before loading
+    # (the deploy runner's scene stub carries no id and passes).
+    from openral_sim.backends.libero import require_libero_scene
 
-    if env_cfg.scene.id not in _LIBERO_SUITES:
-        raise ROSCapabilityMismatch(
-            f"cosmos3 runs the rot6d LIBERO recipe only: scene {env_cfg.scene.id!r} is not one "
-            f"of {_LIBERO_SUITES}."
-        )
+    require_libero_scene(env_cfg, "cosmos3")
     try:
         import torch
         from lerobot.configs.policies import PreTrainedConfig
@@ -208,11 +214,23 @@ def _build_cosmos3(env_cfg: Any) -> _Cosmos3Adapter:
             f"cosmos3: {repo_id} conditions on the state action (use_state); only the "
             "state-free LIBERO recipe is verified for this adapter."
         )
+    # The camera slots must land on exactly the views the checkpoint's video canvas reads;
+    # an alias override that renames one would otherwise fail mid-episode in the canvas.
+    scene_cameras = getattr(env_cfg.scene, "cameras", None)
+    cam_keys = resolve_camera_keys(manifest, extra, scene_cameras=scene_cameras)
+    image_prep = resolve_image_preprocessing(manifest, extra)
+    image_keys = checkpoint_image_keys(image_prep, cam_keys)
+    if set(image_keys) != set(config.image_features):
+        raise ROSConfigError(
+            f"cosmos3: camera slots {list(cam_keys)} map to {sorted(image_keys)}, but "
+            f"{repo_id} reads {sorted(config.image_features)} (check image_preprocessing)."
+        )
+
     # The checkpoint config says float32 so fine-tuning keeps fp32 master weights; the
     # model card evaluates in bf16 (the stored tensors). The model keeps its own fp32
     # exceptions (timestep embedding) whatever config.dtype is.
     config.dtype = dtypes[plan.dtype]
-    config.device = device
+    config.device = device  # lerobot loads the safetensors here, then moves the policy
     config.gradient_checkpointing = False  # a training-time memory trade; inference only here
     _log.info(
         "cosmos3.load",
@@ -222,7 +240,8 @@ def _build_cosmos3(env_cfg: Any) -> _Cosmos3Adapter:
         dtype=plan.dtype,
         source=plan.source,
     )
-    policy = Cosmos3Policy.from_pretrained(ckpt, config=config).to(device).eval()
+    policy = _load_policy(Cosmos3Policy, ckpt, config, torch=torch)
+    policy.eval()
     assert_all_parameters_finite(policy, repo_id=repo_id)
     apply_chunk_replay(policy, extra, manifest=manifest)
     policy.reset()
@@ -233,11 +252,6 @@ def _build_cosmos3(env_cfg: Any) -> _Cosmos3Adapter:
         preprocessor_overrides={"device_processor": {"device": device}},
         postprocessor_overrides={"device_processor": {"device": device}},
     )
-
-    scene_cameras = getattr(env_cfg.scene, "cameras", None)
-    cam_keys = resolve_camera_keys(manifest, extra, scene_cameras=scene_cameras)
-    image_prep = resolve_image_preprocessing(manifest, extra)
-    image_keys = checkpoint_image_keys(image_prep, cam_keys)
 
     adapter = _Cosmos3Adapter(
         spec=spec,

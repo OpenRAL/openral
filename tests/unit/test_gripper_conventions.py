@@ -30,6 +30,7 @@ _SKILL_SCENES: dict[str, str | None] = {
     "rldx1-ft-libero-nf4": "libero_spatial",
     "smolvla-libero": "libero_spatial",
     "xvla-libero": "libero_spatial",
+    "cosmos3-edge-libero-bf16": "libero_spatial",
     "smolvla-vlabench": "vlabench",
     "xr1-vlabench": "vlabench",
     "openvla-oft-simpler-widowx-nf4": "simpler_env",

@@ -7,11 +7,12 @@ lerobot>=0.7's ``Cosmos3Policy`` — no sidecar, no mocks.
 
 What is asserted
 ----------------
-* One ``policy.step`` on a real LIBERO reset observation returns a finite 7-D action:
-  the 10-D rot6d chunk decoded by lerobot's ``Cosmos3LiberoActionProcessorStep`` into the
-  LIBERO OSC command, with the gripper in ``[-1, 1]``.
-* The 16-step chunk is replayed in full: after the first step the chunk executor holds
-  the other 15.
+* One closed-loop episode of ``libero_spatial/0`` (seed 0) succeeds within the model
+  card's 210-step budget. Finite, in-range actions are not evidence: a wrong 180-degree
+  flip or a wrong rot6d -> axis-angle decode still yields them, but does not solve the
+  task (seed 0 took 75 steps on an RTX 5090).
+* Every action is a finite 7-D LIBERO command, and the 16-step chunk is replayed in
+  full through the chunk executor.
 
 Skip policy
 -----------
@@ -84,38 +85,52 @@ pytestmark = [
 ]
 
 
+_BUDGET = 210  # the model card's LIBERO-Spatial policy budget
+
+
 @pytest.fixture(scope="module")
 def env_cfg() -> SimEnvironment:
     from tests.sim.conftest import compose_sim_env
 
     # LIBERO's MuJoCo reset needs a GL backend on a headless host.
     os.environ.setdefault("MUJOCO_GL", "egl")
-    return compose_sim_env(_CONFIG, rskill_uri=_RSKILL, n_episodes=1, max_steps=20)
+    return compose_sim_env(_CONFIG, rskill_uri=_RSKILL, n_episodes=1, max_steps=_BUDGET)
 
 
-def test_step_returns_finite_libero_action_and_replays_the_chunk(env_cfg: SimEnvironment) -> None:
+def test_closed_loop_episode_succeeds(env_cfg: SimEnvironment) -> None:
+    import torch
     from openral_sim import make_env, make_policy
 
+    torch.manual_seed(0)  # the UniPC sampler draws its noise from the global generator
     env = make_env(env_cfg)
-    policy = cast("_Cosmos3Adapter", make_policy(env_cfg))
     try:
-        obs = env.reset(seed=env_cfg.seed)
-        instruction = str(obs.get("task", "") or env_cfg.task.instruction or "")
-        policy.reset()
-        action = policy.step(obs, instruction)
-
-        assert action.shape == (7,), action.shape
-        assert action.dtype == np.float32
-        assert np.isfinite(action).all(), action
-        assert -1.0 <= float(action[6]) <= 1.0, action
-
-        # n_action_steps=16 routes steps through the chunk executor, which keeps the rest
-        # of the chunk in its own buffer (the policy's queue stays unused).
-        chunk = policy._policy.config.n_action_steps
-        assert chunk == 16
-        executor = policy._chunk_executor
-        assert executor is not None
-        assert len(executor._buffer) == chunk - 1
+        policy = cast("_Cosmos3Adapter", make_policy(env_cfg))
+        try:
+            obs = env.reset(seed=env_cfg.seed)
+            instruction = str(obs.get("task", "") or env_cfg.task.instruction or "")
+            policy.reset()
+            success_key = env_cfg.task.success_key or "is_success"
+            success = False
+            for step in range(_BUDGET):
+                action = policy.step(obs, instruction)
+                assert action.shape == (7,), action.shape
+                assert action.dtype == np.float32
+                assert np.isfinite(action).all(), action
+                if step == 0:
+                    # n_action_steps=16 routes steps through the chunk executor, which
+                    # keeps the rest of the chunk in its own buffer.
+                    assert policy._policy.config.n_action_steps == 16
+                    assert policy._chunk_executor is not None
+                    assert len(policy._chunk_executor._buffer) == 15
+                result = env.step(action)
+                obs = result.observation
+                if result.info.get(success_key):
+                    success = True
+                    break
+                if result.terminated or result.truncated:
+                    break
+            assert success, f"libero_spatial/0 seed {env_cfg.seed} not solved in {_BUDGET} steps"
+        finally:
+            policy.close()
     finally:
-        policy.close()
         env.close()
