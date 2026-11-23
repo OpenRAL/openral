@@ -459,7 +459,7 @@ _Range-reads RoboTwin 2.0's aloha-agilex URDF + its 34 meshes out of `embodiment
 ### `python/hal/src/openral_hal/_robosuite_assets.py`
 _Composes a robosuite (>= 1.5, MIT) robot with its default base and grippers into one MJCF, as `robosuite.robots.Robot.load_model` does — backs the `robosuite:<robot>` asset ref (panda_mobile's `PandaOmron`)._
 
-- `compose_robot_mjcf(name) -> Path` (L24) — `create_robot` + `robot_base_factory(default_base)` + one `gripper_factory(default_gripper[arm], idn="0_<arm>")` per arm (robosuite's own `idn`s, so joints are `mobilebase0_*` / `robot0_*` / `gripper0_right_*`); writes `$OPENRAL_CACHE_DIR/robosuite/<version>/<name>.xml` once, meshes pointing into the installed package. Raises `ROSConfigError` without robosuite >= 1.5 or for an unregistered name.
+- `compose_robot_mjcf(name) -> Path` (L24) — `create_robot` + `robot_base_factory(default_base)` + one `gripper_factory(default_gripper[arm], idn="0_<arm>")` per arm (robosuite's own `idn`s, so joints are `mobilebase0_*` / `robot0_*` / `gripper0_right_*`); writes `$OPENRAL_CACHE_DIR/robosuite/<version>-<install-path hash>/<name>.xml` once (the pinned clone and the PyPI wheel share a version), meshes pointing into the installed package. Raises `ROSConfigError` without robosuite >= 1.5 or for an unregistered name.
 
 ### `python/hal/src/openral_hal/_behavior_r1pro_assets.py`
 _Fetches BEHAVIOR-1K's R1 Pro URDF and visual meshes (`behavior-1k/omnigibson-robot-assets`, MIT HF dataset) at a pinned revision and derives a loadable copy — backs the `behavior:r1pro` asset ref._
