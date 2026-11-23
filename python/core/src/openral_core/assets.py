@@ -27,7 +27,8 @@ Grammar (``resolve_asset(ref, kind)``):
   (``panda_mobile`` is ``PandaOmron``) (MJCF only).
 * ``behavior:r1pro`` — the BEHAVIOR-1K Galaxea R1 Pro URDF (MIT Hugging Face
   dataset at a pinned revision), with absolute mesh paths and the collision
-  meshes upstream does not ship dropped (URDF only).
+  meshes upstream does not ship dropped; as an MJCF, the deploy-sim twin built
+  from it (visual meshes as convex collision, planar base, position actuators).
 * ``ros2://robot_description`` — dynamic-detection marker (URDF only); not a
   file, returned as ``None`` for the launch to subscribe at runtime.
 
@@ -505,7 +506,7 @@ def _resolve_robosuite(robot: str, kind: AssetKind) -> Path:
 
 
 def _resolve_behavior(model: str, kind: AssetKind) -> Path:
-    """Resolve ``behavior:r1pro`` to the derived BEHAVIOR-1K R1 Pro URDF.
+    """Resolve ``behavior:r1pro`` to the derived BEHAVIOR-1K R1 Pro URDF or its MJCF twin.
 
     A failed download is an ``AssetFetchError`` (an offline host may skip on
     it); an unknown model or kind, or a missing ``openral_hal`` /
@@ -513,20 +514,28 @@ def _resolve_behavior(model: str, kind: AssetKind) -> Path:
     """
     from openral_core.exceptions import ROSConfigError
 
-    if model != "r1pro" or kind != "urdf":
-        raise AssetRefError(f"behavior:{model} ({kind}): only behavior:r1pro as a urdf exists")
+    if model != "r1pro" or kind not in ("urdf", "mjcf"):
+        raise AssetRefError(
+            f"behavior:{model} ({kind}): only behavior:r1pro as a urdf or mjcf exists"
+        )
     if importlib.util.find_spec("huggingface_hub") is None:
         raise AssetRefError(f"behavior:{model} needs huggingface_hub")
     try:
-        from openral_hal._behavior_r1pro_assets import ensure_r1pro_urdf
+        from openral_hal._behavior_r1pro_assets import ensure_r1pro_mjcf, ensure_r1pro_urdf
     except ImportError as exc:
         raise AssetRefError(
             f"behavior:{model} needs openral_hal ({type(exc).__name__}: {exc})"
         ) from exc
     try:
-        return ensure_r1pro_urdf()
+        urdf = ensure_r1pro_urdf()
     except ROSConfigError as exc:
         raise AssetFetchError(f"behavior:{model} ({kind}): {exc}") from exc
+    if kind == "urdf":
+        return urdf
+    try:
+        return ensure_r1pro_mjcf()  # the URDF is cached now: a failure is the build's
+    except ROSConfigError as exc:
+        raise AssetRefError(f"behavior:{model} ({kind}): {exc}") from exc
 
 
 # ``<scheme>:`` → resolver for every scheme but ``file:`` (which also takes the

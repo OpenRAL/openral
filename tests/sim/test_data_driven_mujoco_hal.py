@@ -74,6 +74,7 @@ _MANIFEST_DRIVEN_ROBOTS = [
     "makermods_metal",  # mimic finger at qpos 6; gripper pinned to qpos 7 (makermods: scheme)
     "makermods_metal_station",  # bimanual: 2 x makermods_metal, explicit actuator_index
     "widowx",  # mirrored fingers via MJCF equality; starts at the `home` keyframe (#740)
+    "r1pro",  # planar base off the manifest (qpos 0..2), finger_joint2 by equality (#740)
 ]
 
 
