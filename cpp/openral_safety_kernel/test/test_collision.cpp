@@ -1272,6 +1272,107 @@ TEST(AttachedVoxelCollision, EmbeddedResidueIsAllowedOnlyUntilSeparation) {
   EXPECT_TRUE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
 }
 
+TEST(AttachedVoxelCollision, CarriedPayloadIsNotRebaselinedWhenAnotherJoins) {
+  // Bimanual: object 0 is carried with its attach-time residue; an obstacle cell it
+  // now overlaps appears; object 1 joins the set. Only object 1 is snapshotted, so
+  // the obstacle under object 0 stays checked (a full re-snapshot exempted it).
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_object(att, 1, identity(), {sphere_prim(0.1)});
+
+  std::vector<std::uint8_t> occ(125, 0);
+  std::vector<std::uint8_t> contact_mask(125, 0);
+  std::vector<double> contact_distance(250, std::numeric_limits<double>::infinity());
+  const auto residue = static_cast<std::size_t>(voxel_index(2, 2, 2));
+  const auto obstacle = static_cast<std::size_t>(voxel_index(3, 2, 2));
+  const auto other = static_cast<std::size_t>(voxel_index(4, 2, 2));
+  occ[residue] = 1;
+  auto grid = make_grid(occ);
+  grid.attached_contact_mask = contact_mask.data();
+  grid.attached_contact_distance = contact_distance.data();
+  grid.attached_contact_stride = occ.size();
+  ASSERT_TRUE(osk::update_attached_voxel_contacts(att, s, grid, contact_mask.data(),
+                                                  contact_distance.data(), contact_mask.size(),
+                                                  contact_distance.size(), true));
+  ASSERT_NE(contact_mask[residue] & 0x1U, 0U);
+
+  occ[obstacle] = 1;
+  occ[other] = 1;
+  append_object(att, 1, translate(0.2, 0.0, 0.0), {sphere_prim(0.06)});
+  auto both = make_grid(occ);
+  both.attached_contact_mask = contact_mask.data();
+  both.attached_contact_distance = contact_distance.data();
+  both.attached_contact_stride = occ.size();
+  std::vector<std::uint8_t> full_mask = contact_mask;
+  std::vector<double> full_distance = contact_distance;
+
+  EXPECT_TRUE(osk::update_attached_voxel_contacts(
+      att, s, both, contact_mask.data(), contact_distance.data(), contact_mask.size(),
+      contact_distance.size(), static_cast<std::uint8_t>(0x2U)));
+  EXPECT_NE(contact_mask[residue] & 0x1U, 0U) << "the carried payload keeps its own residue";
+  EXPECT_EQ(contact_mask[obstacle] & 0x1U, 0U) << "and is not handed what it overlaps now";
+  EXPECT_NE(contact_mask[other] & 0x2U, 0U) << "the new payload is baselined";
+
+  // The all-objects form (the old behaviour) would have exempted the obstacle.
+  osk::update_attached_voxel_contacts(att, s, both, full_mask.data(), full_distance.data(),
+                                      full_mask.size(), full_distance.size(), true);
+  EXPECT_NE(full_mask[obstacle] & 0x1U, 0U);
+}
+
+TEST(AttachedVoxelCollision, CarrySlotBitsFollowThePayloadNotTheSlot) {
+  osk::SlotOrigin from{};
+  from.fill(-1);
+  from[0] = 1;  // the slot-1 payload moved to slot 0; slot 0's payload left
+  EXPECT_EQ(osk::carry_slot_bits(0x2U, from), 0x1U);
+  EXPECT_EQ(osk::carry_slot_bits(0x1U, from), 0x0U) << "a departed payload's bit is dropped";
+  from[0] = -1;
+  from[1] = 0;  // a new payload took slot 0, the old one moved up
+  EXPECT_EQ(osk::carry_slot_bits(0x1U, from), 0x2U);
+  EXPECT_EQ(osk::carry_slot_bits(0xFFU, from), 0x2U) << "a new slot starts empty";
+}
+
+TEST(AttachedVoxelCollision, CarryAttachedContactsMovesBlocksIncludingACycle) {
+  constexpr std::size_t kCells = 4;
+  const double inf = std::numeric_limits<double>::infinity();
+  const auto run = [&](const osk::SlotOrigin& from, std::size_t n) {
+    std::vector<std::uint8_t> mask = {0x1U, 0x2U, 0x3U, 0x0U};
+    std::vector<double> distance(2 * kCells, inf);
+    for (std::size_t c = 0; c < kCells; ++c) {
+      distance[c] = -0.01 * static_cast<double>(c + 1);          // object 0's baseline
+      distance[kCells + c] = -0.1 * static_cast<double>(c + 1);  // object 1's baseline
+    }
+    std::vector<double> temp(kCells, 0.0);
+    osk::carry_attached_contacts(mask.data(), kCells, distance.data(), kCells, 2, from, n,
+                                 temp.data());
+    return std::make_pair(mask, distance);
+  };
+  osk::SlotOrigin swap_slots{};
+  swap_slots.fill(-1);
+  swap_slots[0] = 1;
+  swap_slots[1] = 0;
+  const auto [swapped_mask, swapped] = run(swap_slots, 2);
+  EXPECT_EQ(swapped_mask, (std::vector<std::uint8_t>{0x2U, 0x1U, 0x3U, 0x0U}));
+  EXPECT_DOUBLE_EQ(swapped[0], -0.1);
+  EXPECT_DOUBLE_EQ(swapped[kCells], -0.01);
+
+  osk::SlotOrigin shift_down{};
+  shift_down.fill(-1);
+  shift_down[0] = 1;
+  const auto [down_mask, down] = run(shift_down, 1);
+  EXPECT_EQ(down_mask, (std::vector<std::uint8_t>{0x0U, 0x1U, 0x1U, 0x0U}));
+  EXPECT_DOUBLE_EQ(down[1], -0.2);
+  EXPECT_EQ(down[kCells + 1], inf) << "the vacated slot is cleared";
+
+  osk::SlotOrigin insert_front{};
+  insert_front.fill(-1);
+  insert_front[1] = 0;
+  const auto [ins_mask, ins] = run(insert_front, 2);
+  EXPECT_EQ(ins_mask, (std::vector<std::uint8_t>{0x2U, 0x0U, 0x2U, 0x0U}));
+  EXPECT_EQ(ins[0], inf) << "the new payload has no baseline until it is snapshotted";
+  EXPECT_DOUBLE_EQ(ins[kCells + 2], -0.03);
+}
+
 TEST(AttachedVoxelCollision, MultiObjectBaselinesUseDeclaredGridStride) {
   osk::CollisionModel m = hand_model();
   osk::CollisionScratch s;

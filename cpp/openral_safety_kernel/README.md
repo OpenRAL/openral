@@ -485,7 +485,10 @@ exempt is still in contact, its bit clears and the kernel never sets it again.
 Only a genuinely new attestation — keyed on `(object_id, support_id,
 stamp_ns)`, so the heartbeated attachment snapshot cannot resurrect it —
 re-arms it. Lift and re-contact is a new violation; so is a regrasp; so is any
-contact against a surface the witness does not name. No attestation at all —
+contact against a surface the witness does not name. The key is looked up across
+every slot of the previous set, not only the same slot: when another payload joins
+or leaves (a bimanual attach or release), a record that moves slot keeps its live or
+dead state and never re-arms (`carry_slot_bits`). No attestation at all —
 which is what the vision attachment producer emits, honestly — means no
 exemption.
 
@@ -825,7 +828,14 @@ loaded (ADR-0121 `on`). The object tracker bumps the revision when a carried pay
 *grows*; in the open kernel (no provider) that keeps the residue mask taken at attach, with its
 active state, so a track cannot widen the allowance (the per-tick update still prunes cells as they
 separate). The kept edge logs once, `safety.attached_residue_kept reason=same_objects revision=N`.
-A detach or a different object / epoch / link retakes the snapshot as before. Tests:
+When the set changes without a provider, only payloads NEW to the set are snapshotted: a payload
+that was already carried keeps its own attach-time baseline, moved to its new slot
+(`carry_attached_contacts`), instead of being re-baselined against whatever it overlaps at that
+instant — the other hand's attach or release must not exempt the shelf a carried box is being
+lowered into. With a provider the whole set is retaken, as before. A detach or a different
+object / epoch / link retakes the snapshot for that object. Tests (`test_collision.cpp`):
+`CarriedPayloadIsNotRebaselinedWhenAnotherJoins`, `CarryAttachedContactsMovesBlocksIncludingACycle`,
+`CarrySlotBitsFollowThePayloadNotTheSlot`; node tests:
 `AGrownPayloadOfTheSameObjectDoesNotWidenTheResidueWithoutAProvider`,
 `ANewObjectOrEpochStillReSnapshotsTheResidue`, `ADetachThenReattachReSnapshotsTheResidue`,
 `ALoadedProviderStillReSnapshotsTheResidueOnGrowth`. **Safety-WG review owed; hazard-log row owed.**

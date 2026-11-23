@@ -2849,7 +2849,8 @@ std::uint8_t update_support_contact_witnesses(const AttachedModel& attached,
 bool update_attached_voxel_contacts(const AttachedModel& attached, const CollisionScratch& scratch,
                                     const VoxelGrid& grid, std::uint8_t* contact_mask,
                                     double* contact_distance, std::size_t mask_capacity,
-                                    std::size_t distance_capacity, bool snapshot) noexcept {
+                                    std::size_t distance_capacity,
+                                    std::uint8_t snapshot_objects) noexcept {
   const std::size_t cells = static_cast<std::size_t>(grid.sx) * static_cast<std::size_t>(grid.sy) *
                             static_cast<std::size_t>(grid.sz);
   const std::size_t objects = std::min<std::size_t>(attached.n_objects, 8);
@@ -2858,10 +2859,18 @@ bool update_attached_voxel_contacts(const AttachedModel& attached, const Collisi
       distance_capacity < grid.attached_contact_stride * objects || grid.resolution <= 0.0) {
     return false;
   }
-  if (snapshot) {
-    std::fill(contact_mask, contact_mask + cells, static_cast<std::uint8_t>(0));
-    std::fill(contact_distance, contact_distance + distance_capacity,
-              std::numeric_limits<double>::infinity());
+  if (snapshot_objects != 0) {
+    const auto keep = static_cast<std::uint8_t>(~snapshot_objects);
+    for (std::size_t idx = 0; idx < cells; ++idx) {
+      contact_mask[idx] = static_cast<std::uint8_t>(contact_mask[idx] & keep);
+    }
+    for (std::size_t object_index = 0; object_index < objects; ++object_index) {
+      if ((snapshot_objects & (1U << object_index)) != 0) {
+        double* block = contact_distance + object_index * grid.attached_contact_stride;
+        std::fill(block, block + grid.attached_contact_stride,
+                  std::numeric_limits<double>::infinity());
+      }
+    }
   }
   const double half_side = grid.resolution * 0.5;
   const Vec3 voxel_half{half_side, half_side, half_side};
@@ -2880,6 +2889,7 @@ bool update_attached_voxel_contacts(const AttachedModel& attached, const Collisi
     voxel.t = voxel_center_local(grid, ix, iy, iz);
     for (std::size_t object_index = 0; object_index < objects; ++object_index) {
       const std::uint8_t bit = static_cast<std::uint8_t>(1U << object_index);
+      const bool snapshot = (snapshot_objects & bit) != 0;
       if (!snapshot && (contact_mask[idx] & bit) == 0) {
         continue;
       }
@@ -2905,6 +2915,83 @@ bool update_attached_voxel_contacts(const AttachedModel& attached, const Collisi
     }
   }
   return active;
+}
+
+std::uint8_t carry_slot_bits(std::uint8_t old_bits, const SlotOrigin& from) noexcept {
+  std::uint8_t out = 0;
+  for (std::size_t i = 0; i < from.size(); ++i) {
+    const int j = from[i];
+    if (j >= 0 && j < 8 && (old_bits & (1U << static_cast<unsigned>(j))) != 0) {
+      out = static_cast<std::uint8_t>(out | (1U << i));
+    }
+  }
+  return out;
+}
+
+void carry_attached_contacts(std::uint8_t* contact_mask, std::size_t cells,
+                             double* contact_distance, std::size_t stride, std::size_t max_objects,
+                             const SlotOrigin& from, std::size_t n_objects,
+                             double* temp_block) noexcept {
+  const std::size_t slots = std::min<std::size_t>(max_objects, 8);
+  for (std::size_t idx = 0; idx < cells; ++idx) {
+    contact_mask[idx] = carry_slot_bits(contact_mask[idx], from);
+  }
+  // Distance blocks: move each carried block j -> i. A move may run once its
+  // destination is no longer some other pending move's source; a cycle (every
+  // destination still a source) is broken by parking one source in `temp_block`.
+  constexpr int kTemp = -2;
+  std::array<int, 8> source{};
+  source.fill(-1);
+  for (std::size_t i = 0; i < slots && i < n_objects; ++i) {
+    const int j = from[i];
+    if (j >= 0 && static_cast<std::size_t>(j) < slots && static_cast<std::size_t>(j) != i) {
+      source[i] = j;
+    }
+  }
+  const auto block = [&](int slot) -> double* {
+    return slot == kTemp ? temp_block : contact_distance + static_cast<std::size_t>(slot) * stride;
+  };
+  for (;;) {
+    bool pending = false;
+    bool progressed = false;
+    for (std::size_t i = 0; i < slots; ++i) {
+      if (source[i] == -1) {
+        continue;
+      }
+      pending = true;
+      bool dest_needed = false;
+      for (std::size_t k = 0; k < slots; ++k) {
+        dest_needed = dest_needed || (k != i && source[k] == static_cast<int>(i));
+      }
+      if (!dest_needed) {
+        std::copy(block(source[i]), block(source[i]) + stride, block(static_cast<int>(i)));
+        source[i] = -1;
+        progressed = true;
+      }
+    }
+    if (!pending) {
+      break;
+    }
+    if (!progressed) {  // a cycle: park one destination's current block in temp
+      for (std::size_t i = 0; i < slots; ++i) {
+        if (source[i] != -1) {
+          std::copy(block(static_cast<int>(i)), block(static_cast<int>(i)) + stride, temp_block);
+          for (std::size_t k = 0; k < slots; ++k) {
+            if (source[k] == static_cast<int>(i)) {
+              source[k] = kTemp;
+            }
+          }
+          break;
+        }
+      }
+    }
+  }
+  for (std::size_t i = 0; i < slots; ++i) {
+    if (i >= n_objects || from[i] < 0) {
+      std::fill(block(static_cast<int>(i)), block(static_cast<int>(i)) + stride,
+                std::numeric_limits<double>::infinity());
+    }
+  }
 }
 
 CollisionHit check_attached_self_collision(const CollisionModel& model,

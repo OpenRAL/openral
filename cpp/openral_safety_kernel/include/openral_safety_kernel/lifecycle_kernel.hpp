@@ -604,7 +604,13 @@ private:
   /// Hash of the accepted attached set's (object_id, epoch, attach_link): a revision edge retakes
   /// the embedded-residue snapshot only when it changes (or a provider is loaded).
   std::size_t attached_set_identity_{0};
-  bool attached_contact_snapshot_pending_{false};
+  /// Per accepted object, in slot order: the same (object_id, epoch, attach_link) hash. On a
+  /// set change a payload found here keeps its attach-time residue in its new slot.
+  std::array<std::size_t, 8> attached_object_identity_{};
+  std::size_t attached_object_identity_n_{0};
+  /// Bit i: object i's embedded-residue baseline is (re)taken on the next tick — only
+  /// payloads new to the set, so a carried one never re-baselines what it overlaps now.
+  std::uint8_t attached_contact_snapshot_mask_{0};
   bool attached_contact_active_{false};
   /// Identity of the support-contact attestation currently armed for one
   /// payload slot. The attachment set is heartbeated, so the kernel re-arms a
@@ -705,6 +711,7 @@ private:
   std::chrono::steady_clock::time_point binding_last_warn_{};
   std::uint8_t support_witness_live_{0};  ///< bit i: object i's witness is still live
   std::vector<SupportWitnessKey> support_witness_keys_;
+  std::vector<SupportWitnessKey> support_witness_keys_next_;  ///< same capacity, swapped in
   /// A producer-released record's window (`apply_declared_release`), keyed on the record's
   /// (object id, epoch, stamp). Capacity = max attached objects, assigned at configure.
   struct ReleasedRecord {
@@ -940,6 +947,7 @@ private:
   bool workspace_speed_max_measured_{false};  ///< source of `workspace_speed_max_seen_`
   std::vector<std::uint8_t> attached_contact_mask_;
   std::vector<double> attached_contact_distance_;
+  std::vector<double> attached_contact_temp_block_;  ///< one stride: breaks a slot-move cycle
   std::vector<AttachedObjectInput> attached_ingest_scratch_;  ///< reused across messages
   /// Issue #418 K4: the held bound geometry per TRACKED_OBJECT binding, fixed
   /// capacity. An entry outlives a message that omits it (a dropped-and-re-added

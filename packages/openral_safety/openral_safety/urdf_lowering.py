@@ -1336,7 +1336,11 @@ def _axis_radius_bound(
 
 
 def _pair_relative_dofs(
-    model: object, link_a: str, link_b: str, geoms: _GeomsByLink
+    model: object,
+    link_a: str,
+    link_b: str,
+    geoms: _GeomsByLink,
+    welded: frozenset[str] = frozenset(),
 ) -> list[tuple[object, float, tuple[float, float]]] | None:
     """The joints that move ``link_a`` relative to ``link_b``, with their radius bounds.
 
@@ -1344,7 +1348,10 @@ def _pair_relative_dofs(
     certificate needs — or ``None`` if the pair's relative pose cannot be pinned
     down (links in different trees). An **empty** list is a meaningful answer: the
     two links are rigidly related, so a single evaluation decides the pair
-    exactly.
+    exactly. ``welded`` names URDF joints the manifest models as rigid (a
+    ``fixed_attachments`` row at the joint's zero pose, as a twin welds them): the
+    kernel never moves them, so they are no DoF here and ``_chain_transforms`` holds
+    them at zero, the pose the kernel's model has them in.
     """
     chains = _relative_chains(model, link_a, link_b)
     if chains is None:
@@ -1354,6 +1361,8 @@ def _pair_relative_dofs(
     for chain, distal in ((chain_a, link_a), (chain_b, link_b)):
         for joint in chain:
             if str(joint.type) not in _MOVABLE_JOINT_TYPES:  # type: ignore[attr-defined]  # reason: yourdfpy Joint
+                continue
+            if str(joint.name) in welded:  # type: ignore[attr-defined]  # reason: yourdfpy Joint
                 continue
             radius = 1.0  # prismatic: 1 m of travel moves the link 1 m
             if str(joint.type) != "prismatic":  # type: ignore[attr-defined]  # reason: yourdfpy Joint
@@ -1369,6 +1378,7 @@ def _certified_always_colliding(  # noqa: PLR0911  # reason: one early-out per w
     link_b: str,
     *,
     margin_m: float,
+    welded: frozenset[str] = frozenset(),
 ) -> bool:
     """Is the kernel's trip condition **provably** true at every reachable pose?
 
@@ -1399,7 +1409,7 @@ def _certified_always_colliding(  # noqa: PLR0911  # reason: one early-out per w
     """
     import numpy as np
 
-    dofs = _pair_relative_dofs(model, link_a, link_b, geoms)
+    dofs = _pair_relative_dofs(model, link_a, link_b, geoms, welded)
     if dofs is None or len(dofs) > _CERTIFY_MAX_DOF:
         return False
 
@@ -1484,6 +1494,24 @@ def _xyzrpy_matrix(origin: _Origin) -> _Arr:
     return out
 
 
+def _manifest_welded_joints(robot: RobotDescription, urdf_ref: str) -> frozenset[str]:
+    """URDF joints the manifest models as rigid: a ``fixed_attachments`` row's child.
+
+    A twin may weld URDF-movable joints (aloha_agilex's rear arms, wheels): the
+    manifest then carries the welded link as a ``fixed_attachments`` row at that
+    joint's zero pose, which is all the kernel ever poses it at. The always-colliding
+    proof must use the same kinematics, or it cannot certify a pair the kernel holds
+    rigid and would trip on forever.
+    """
+    model = _load_urdf(urdf_ref)
+    welded_links = {a.child_link for a in robot.fixed_attachments}
+    return frozenset(
+        str(j.name)
+        for j in model.robot.joints  # type: ignore[attr-defined]  # reason: yourdfpy URDF
+        if str(j.child) in welded_links and str(j.type) in _MOVABLE_JOINT_TYPES
+    )
+
+
 def acm_for_geometry(
     urdf_path: str,
     geoms: Mapping[str, LinkCollisionGeometry | Sequence[LinkCollisionGeometry]]
@@ -1491,6 +1519,7 @@ def acm_for_geometry(
     *,
     srdf_path: str | None = None,
     margin_m: float = 0.0,
+    welded: frozenset[str] = frozenset(),
 ) -> _AcmPairs:
     """The self-collision ACM for a specific per-link primitive geometry ``geoms``.
 
@@ -1526,6 +1555,9 @@ def acm_for_geometry(
             use the same threshold — a sweep pinned at ``0.0`` against a kernel
             running a negative margin would exempt pairs the kernel never trips
             on, silently deleting a live check.
+        welded: URDF joints the manifest models as rigid (``fixed_attachments``
+            rows, ``_manifest_welded_joints``); the proof holds them at zero, as
+            the kernel does.
 
     Returns:
         The disabled pairs, as unordered two-element frozensets.
@@ -1542,7 +1574,7 @@ def acm_for_geometry(
         for b in links[i + 1 :]:
             if frozenset({a, b}) in disabled:
                 continue  # already adjacent; no need to prove anything
-            if _certified_always_colliding(model, by_link, a, b, margin_m=margin_m):
+            if _certified_always_colliding(model, by_link, a, b, margin_m=margin_m, welded=welded):
                 disabled.add(frozenset({a, b}))
 
     if srdf_path is not None:
@@ -2792,6 +2824,7 @@ def lower_robot(
             geom_list,
             srdf_path=used_srdf,
             margin_m=float(getattr(robot.safety, "self_collision_margin_m", 0.0) or 0.0),
+            welded=_manifest_welded_joints(robot, urdf_ref),
         )
         source = "srdf" if used_srdf else "sampling"
         pairs = _scoped_sorted_pairs(disabled, {g.link_name for g in geom_list})

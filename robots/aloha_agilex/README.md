@@ -81,10 +81,10 @@ URDF slide (0-0.04765 m). `collision_geometry` / `allowed_collision_pairs` are
 `openral collision lower` output: the moving links a box plus their exact hull
 (`--tight-link`), the links the twin welds (chassis, wheels, wrist cameras, the rear
 `lr_`/`rr_` arms at q = 0, all `*_weld` fixed attachments) capsules. The ACM is adjacent
-pairs, pairs the tool proves always collide, and the eight rows of the hand-written
-`aloha_agilex.srdf`: rigid rear-arm pairs whose capsules overlap, which the tool cannot
-prove because the URDF still calls those joints revolute. Safety-WG review owed (every
-SRDF row).
+pairs and pairs the tool proves always collide: the proof holds the `*_weld` joints at
+zero as the kernel does (the URDF still calls the rear-arm joints revolute), which
+certifies the rear arms' rigid overlapping pairs; no hand-written rows. Safety-WG review
+owed.
 
 Tests: `tests/sim/test_aloha_agilex_hal_mujoco.py` (gravity-on tracking, both
 grippers, three cameras, each hand and jaw resolving through `sim_joint_name`) and `test_data_driven_mujoco_hal.py`.
