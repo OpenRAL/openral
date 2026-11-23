@@ -16,7 +16,7 @@ What is asserted
 
 Skip policy
 -----------
-RoboTwin's SAPIEN + lerobot-main + asset stack is an externally-provisioned sidecar
+RoboTwin's SAPIEN + lerobot + asset stack is an externally-provisioned sidecar
 venv (multi-GB, CUDA-pinned, Linux-only; CLAUDE.md §1.9). The test skips
 unless BOTH pyzmq/msgpack are importable on the openral venv AND the sidecar
 interpreter is resolvable via ``OPENRAL_ROBOTWIN_SIDECAR_PYTHON`` (or the cache

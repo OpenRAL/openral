@@ -151,11 +151,11 @@ checkpoint-native preprocessing until a manifest provides evidence otherwise.
 ### 3.8 RoboTwin 2.0 (ALOHA-AgileX, SAPIEN)
 
 > RoboTwin 2.0 is a dual-arm SAPIEN benchmark on the 14-DoF ALOHA-AgileX. The
-> simulator and policy run out-of-process in a py3.10 SAPIEN sidecar.
+> simulator and policy run out-of-process in a py3.12 SAPIEN sidecar.
 
 | VLA (HF ID) | Sim env | Robot tag | State dim | Cameras | Norm stats in ckpt | rSkill | License | Notes |
 |---|---|---|---|---|---|---|---|---|
-| SmolVLA RoboTwin | RoboTwin 2.0 (50 tasks) | `aloha_agilex` | 14-D bimanual | dual-arm camera set | Yes (in ckpt) | `rskills/smolvla-robotwin/` | Apache-2.0 | py3.10 SAPIEN sidecar; scenes `scenes/benchmark/robotwin_*.yaml` |
+| SmolVLA RoboTwin | RoboTwin 2.0 (50 tasks) | `aloha_agilex` | 14-D bimanual | dual-arm camera set | Yes (in ckpt) | `rskills/smolvla-robotwin/` | Apache-2.0 | py3.12 SAPIEN sidecar; scenes `scenes/benchmark/robotwin_*.yaml` |
 
 ### 3.9 VLABench (Franka Panda)
 
@@ -197,7 +197,7 @@ therefore not packaged as an rSkill and cannot be claimed as real-robot ready.
 | NVIDIA Arena | Isaac Sim | Requires NVIDIA Isaac Sim license | GR1 | microwave | TBD |
 | BEHAVIOR-1K 2026 | OmniGibson / Isaac Sim | Official `behavior` environment plus `just sync --group behavior-groot` for the OpenRAL-side wire | Galaxea R1 Pro | 100 household tasks; packaged starter is `turning_on_radio` | head + dual wrist RGB; official full wrapper also exposes depth |
 | ManiSkill3 | SAPIEN via `mani_skill` | `just sync --group maniskill3` | Franka Panda | `PickCube-v1` (+ more) | single RGB `camera1` |
-| RoboTwin 2.0 | SAPIEN (py3.10 sidecar) | py3.10 SAPIEN sidecar (auto-provisioned) | ALOHA-AgileX | 50 dual-arm tasks (`robotwin/*`) | dual-arm camera set |
+| RoboTwin 2.0 | SAPIEN (py3.12 sidecar) | py3.12 SAPIEN sidecar (auto-provisioned) | ALOHA-AgileX | 50 dual-arm tasks (`robotwin/*`) | dual-arm camera set |
 | VLABench | MuJoCo | auto-installed on first env build (`vlabench` install plan, `OPENRAL_AUTO_INSTALL_DEPS`); the ~12 GB asset bundle is a manual download (`VLABENCH_ROOT`) | Franka Panda | 97 tasks (`vlabench/*`) | TBD |
 | PushT | gym-pusht (`pymunk`, 2-D) | `just sync --group sim` | PushT 2-D | `pusht/0` | 2-D top view |
 | gym-aloha | MuJoCo | `just sync --group sim` | ALOHA bimanual | transfer-cube, insertion | overhead + wrist |

@@ -432,9 +432,9 @@ robotwin = [
     #
     # Same shape as the `isaacsim` / `rldx` groups: the RoboTwin SAPIEN env
     # (`tools/robotwin_sidecar.py`, wrapping LeRobot's `robotwin` env) runs in its
-    # OWN Python 3.10 venv that this group does NOT touch — RoboTwin pins
-    # SAPIEN + CuRobo + mplib + pytorch3d against Python 3.10 / CUDA 12.1,
-    # incompatible with this repo's Python 3.12, and ships multi-GB assets, so it is
+    # OWN Python 3.12 venv that this group does NOT touch — RoboTwin needs
+    # mplib==0.2.1 (ManiSkill pins mplib==0.1.1 here), puts its checkout on
+    # sys.path as a top-level `envs` package and ships multi-GB assets, so it is
     # externally provisioned (CLAUDE.md §1.9), never pinned here.
     { include-group = "sidecar-wire" },
 ]
