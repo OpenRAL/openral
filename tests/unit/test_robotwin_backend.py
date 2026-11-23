@@ -255,49 +255,196 @@ def test_sidecar_python_returns_venv_built_from_current_pins(
     assert robotwin._sidecar_python() == py
 
 
-def test_provision_installs_from_the_hash_lock(
+def _x86_64_linux(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr("platform.machine", lambda: "x86_64")
+
+
+def test_provision_syncs_the_hash_lock_and_writes_its_sentinel(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # ``run_cmd`` / ``ensure_pip_venv`` are the subprocess + venv boundary (§1.11).
+    # ``run_cmd`` is the subprocess boundary (§1.11); ``ensure_pip_venv`` runs for real,
+    # so its sentinel check + write are exercised.
+    from openral_sim._sidecar_common import spec_marker
     from openral_sim.backends import robotwin
 
+    home = tmp_path / "robotwin-sidecar"
     calls: list[list[str]] = []
-    specs: list[object] = []
 
-    def fake_ensure(**kw: Any) -> Path:
-        specs.append(kw["spec"])
-        py = tmp_path / ".venv" / "bin" / "python"
-        kw["install"]("uv", py)
-        return py
+    def fake_run_cmd(_label: str, cmd: list[str], **_kw: Any) -> None:
+        calls.append(list(cmd))
+        if cmd[1:2] == ["venv"]:  # `uv venv <dir> --python 3.12`
+            py = Path(cmd[2]) / "bin" / "python"
+            py.parent.mkdir(parents=True)
+            py.write_text("")
 
-    monkeypatch.setattr(robotwin, "run_cmd", lambda _label, cmd, **_kw: calls.append(list(cmd)))
-    monkeypatch.setattr(robotwin, "ensure_pip_venv", fake_ensure)
+    _x86_64_linux(monkeypatch)
+    monkeypatch.setattr(robotwin, "_ROBOTWIN_SIDECAR_HOME", home)
+    monkeypatch.setattr("openral_sim._sidecar_common.run_cmd", fake_run_cmd)
+    monkeypatch.setattr(robotwin, "run_cmd", fake_run_cmd)
     # An operator-owned root: provisioning returns before cloning or fetching assets.
     monkeypatch.setenv(_ROBOTWIN_ROOT_ENV, str(tmp_path / "own-RoboTwin"))
 
+    py = robotwin._provision_robotwin_venv()
+
+    _venv_cmd, sync = calls
+    assert sync[1:3] == ["pip", "sync"]
+    assert "--require-hashes" in sync
+    assert sync[-1] == str(robotwin._robotwin_lock())
+    sentinel = (home / ".venv" / ".deps-installed").read_text(encoding="utf-8")
+    assert sentinel == spec_marker(robotwin._robotwin_venv_spec())
+    # ... which is exactly what the non-provisioning lookup accepts.
+    monkeypatch.delenv("OPENRAL_ROBOTWIN_SIDECAR_PYTHON", raising=False)
+    assert robotwin._find_sidecar_python() == py
+
+    # A second provision reuses the venv: no further commands.
     robotwin._provision_robotwin_venv()
-
-    (cmd,) = calls
-    assert {"--require-hashes", "--no-deps"} <= set(cmd)
-    assert cmd[cmd.index("-r") + 1] == str(robotwin._robotwin_lock())
-    # The lock text keys the sentinel, so recompiling it repairs an existing venv.
-    assert specs == [robotwin._robotwin_venv_spec()]
+    assert len(calls) == 2
 
 
-def test_robotwin_lock_pins_the_sidecar_stack() -> None:
+def test_provision_refuses_a_non_x86_64_linux_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openral_sim.backends import robotwin
+
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr("platform.machine", lambda: "aarch64")
+
+    with pytest.raises(ROSConfigError, match="x86_64 Linux only"):
+        robotwin._provision_robotwin_venv()
+
+
+def test_lock_is_found_without_the_sidecar_script(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A relocated sidecar script does not move the lock the venv is checked against.
+    from openral_sim.backends import robotwin
+
+    script = tmp_path / "robotwin_sidecar.py"
+    script.write_text("")
+    monkeypatch.setenv("OPENRAL_ROBOTWIN_SIDECAR_SCRIPT", str(script))
+
+    assert robotwin._robotwin_lock() == (
+        _REPO_ROOT / "tools" / "sidecar_requirements" / "robotwin.lock"
+    )
+
+
+def test_fetch_assets_downloads_unzips_and_configures(tmp_path: Path) -> None:
+    # The download + config steps run in the sidecar venv (process boundary, doubled);
+    # the unzip is real.
+    import zipfile
+
+    from openral_sim.backends import robotwin
+
+    root = tmp_path / "RoboTwin"
+    (root / "assets").mkdir(parents=True)
+    (root / "scripts").mkdir()
+    (root / "scripts" / "update_embodiment_config_path.py").write_text("")
+    calls: list[tuple[list[str], Path]] = []
+
+    def fake_run_cmd(_label: str, cmd: list[str], *, cwd: Path, **_kw: Any) -> None:
+        calls.append((list(cmd), cwd))
+        if "snapshot_download" in cmd[-1]:
+            for name in robotwin._ROBOTWIN_ASSET_ZIPS:
+                with zipfile.ZipFile(cwd / name, "w") as zf:
+                    zf.writestr(f"{name.removesuffix('.zip')}/marker.txt", name)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(robotwin, "run_cmd", fake_run_cmd)
+        robotwin._fetch_robotwin_assets(root, Path("/venv/bin/python"))
+
+    (download, download_cwd), (config, config_cwd) = calls
+    assert download_cwd == root / "assets"
+    # No resume_download: huggingface-hub 2.x (the lock's) rejects it.
+    assert "resume_download" not in download[-1]
+    assert config == ["/venv/bin/python", "scripts/update_embodiment_config_path.py"]
+    assert config_cwd == root
+    for name in robotwin._ROBOTWIN_ASSET_ZIPS:
+        assert not (root / "assets" / name).exists()
+        assert (root / "assets" / name.removesuffix(".zip") / "marker.txt").is_file()
+
+
+def _lock_pins() -> dict[str, str]:
     lock = (_REPO_ROOT / "tools" / "sidecar_requirements" / "robotwin.lock").read_text()
-    pins = {
+    return {
         line.split("==")[0]: line.split("==")[1].split()[0]
         for line in lock.splitlines()
         if line and line[0].isalpha() and "==" in line
     }
-    # lerobot matches the workspace; numpy is mplib 0.2.1's (robotwin-override.txt).
+
+
+def test_robotwin_lock_pins_the_sidecar_stack() -> None:
+    pins = _lock_pins()
+    # numpy is mplib 0.2.1's (robotwin-override.txt).
     assert pins["lerobot"] == "0.7.0"
     assert pins["mplib"] == "0.2.1"
     assert pins["sapien"] == "3.0.3"
     assert pins["numpy"] == "1.26.4"
-    # Every pin is hashed (installed with --require-hashes).
-    assert lock.count("==") <= lock.count("--hash=sha256:")
+
+
+def test_every_robotwin_lock_pin_is_hashed() -> None:
+    # Installed with --require-hashes: each `name==ver` block needs its own hash line.
+    lines = (_REPO_ROOT / "tools" / "sidecar_requirements" / "robotwin.lock").read_text()
+    blocks: dict[str, list[str]] = {}
+    current = ""
+    for line in lines.splitlines():
+        if line and line[0].isalpha() and "==" in line:
+            current = line.split()[0]
+            blocks[current] = []
+        elif current and line.strip().startswith("--hash=sha256:"):
+            blocks[current].append(line)
+    unhashed = sorted(pin for pin, hashes in blocks.items() if not hashes)
+    assert blocks and not unhashed, unhashed
+
+
+def test_sidecar_lerobot_matches_the_workspace() -> None:
+    # One lerobot across the workspace and the sidecar (openral#716): a workspace bump
+    # must recompile robotwin.lock, and test_robotwin_sidecar_builds_lerobot_07_env
+    # only checks the sidecar's import path when the two agree.
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        workspace = version("lerobot")
+    except PackageNotFoundError:
+        pytest.skip("lerobot not installed in this venv")
+    assert _lock_pins()["lerobot"] == workspace
+
+
+def test_curobo_planner_fallback_fills_the_missing_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A RoboTwin-shaped package whose planner defines CuroboPlanner only when cuRobo
+    # imports; the sidecar's import hook supplies the stand-in without editing it.
+    import sys
+
+    spec = importlib.util.spec_from_file_location(
+        "robotwin_sidecar_curobo_for_test",
+        _REPO_ROOT / "tools" / "robotwin_sidecar.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    robot = tmp_path / "envs" / "robot"
+    robot.mkdir(parents=True)
+    (tmp_path / "envs" / "__init__.py").write_text("")
+    (robot / "__init__.py").write_text("from .robot import *\n")
+    (robot / "planner.py").write_text(
+        "try:\n    import curobo_not_installed\n\n    class CuroboPlanner: ...\n"
+        "except Exception:\n    pass\n"
+    )
+    (robot / "robot.py").write_text("from .planner import CuroboPlanner\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    for name in [m for m in sys.modules if m == "envs" or m.startswith("envs.")]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setattr(sys, "meta_path", list(sys.meta_path))
+
+    module._install_curobo_planner_fallback()
+    import envs.robot.robot as robot_mod  # type: ignore[import-not-found]  # reason: package written to tmp_path above
+
+    stub = robot_mod.CuroboPlanner()
+    assert robot_mod.CuroboPlanner is module._CuroboPlannerUnavailable
+    assert stub.plan_grippers(0.0, 1.0)["num_step"] == 200
+    with pytest.raises(RuntimeError, match="cuRobo is not installed"):
+        stub.plan_path()
 
 
 def test_robotwin_launch_argv_passes_checkout_root(

@@ -28,8 +28,6 @@ default exists). Hosts without the provisioned venv skip — the legitimate skip
 from __future__ import annotations
 
 import importlib.util
-import os
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -37,11 +35,12 @@ import pytest
 
 
 def _sidecar_python_available() -> bool:
-    override = os.environ.get("OPENRAL_ROBOTWIN_SIDECAR_PYTHON")
-    if override:
-        return Path(override).is_file()
-    default = Path.home() / ".cache" / "openral" / "robotwin-sidecar" / ".venv" / "bin" / "python"
-    return default.is_file()
+    # The backend's own non-provisioning lookup: a default venv built from another
+    # lock (e.g. lerobot 0.6.0) counts as unavailable, so the test skips instead of
+    # erroring on the re-provision ROSConfigError.
+    from openral_sim.backends.robotwin import _find_sidecar_python
+
+    return _find_sidecar_python() is not None
 
 
 _WIRE_MISSING = [m for m in ("zmq", "msgpack") if importlib.util.find_spec(m) is None]
@@ -54,7 +53,10 @@ pytestmark = [
     ),
     pytest.mark.skipif(
         not _sidecar_python_available(),
-        reason="RoboTwin sidecar venv not provisioned (set OPENRAL_ROBOTWIN_SIDECAR_PYTHON)",
+        reason=(
+            "RoboTwin sidecar venv not provisioned from the current lock "
+            "(set OPENRAL_ROBOTWIN_SIDECAR_PYTHON or OPENRAL_ROBOTWIN_AUTO_PROVISION=1)"
+        ),
     ),
 ]
 

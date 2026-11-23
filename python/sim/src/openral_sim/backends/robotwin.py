@@ -45,6 +45,9 @@ wire is just pyzmq + msgpack (the ``robotwin`` dependency-group).
 from __future__ import annotations
 
 import os
+import platform
+import sys
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -59,7 +62,7 @@ from openral_sim._sidecar_common import (
     require_pinned_head,
     run_cmd,
     sidecar_port_for_key,
-    spec_marker,
+    venv_matches_spec,
 )
 from openral_sim._sidecar_common import (
     opt_num as _opt_num,
@@ -105,6 +108,9 @@ _ROBOTWIN_SHA = "ee3d076fb61c4542e9be6c16f3af5ecd67d4a6f7"
 # agent_pos and every policy preprocesses in-process, so one lerobot to track. The
 # RoboTwin checkout is still needed as task package + asset root.
 _ROBOTWIN_LOCK = "robotwin.lock"
+# RoboTwin 2.0 asset archives (HF dataset, as upstream's assets/_download.py names them).
+_ROBOTWIN_ASSETS_REPO = "TianxingChen/RoboTwin2.0"
+_ROBOTWIN_ASSET_ZIPS = ("background_texture.zip", "embodiments.zip", "objects.zip")
 
 _DEFAULT_HOST = "127.0.0.1"
 # Per-scene default ports in 20000–39999 (clear of well-known + ephemeral ranges),
@@ -210,48 +216,8 @@ class _RoboTwinSimSidecar(SidecarSimRollout):
 # ── factory ───────────────────────────────────────────────────────────────────
 
 
-def _patch_robotwin_checkout(root: Path) -> None:
-    """Apply narrow compatibility repairs to the operator-local RoboTwin checkout."""
-    planner = root / "envs" / "robot" / "planner.py"
-    text = planner.read_text()
-    marker = "class CuroboPlanner:\n        def __init__(self, *args, **kwargs):"
-    if marker in text:
-        return
-    needle = (
-        "    traceback.print_exc()\n\n\n"
-        "# ********************** MplibPlanner **********************"
-    )
-    replacement = """    traceback.print_exc()
-    class CuroboPlanner:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def plan_grippers(self, now_val, target_val):
-            num_step = 200
-            dis_val = target_val - now_val
-            step = dis_val / num_step
-            res = {}
-            vals = np.linspace(now_val, target_val, num_step)
-            res["num_step"] = num_step
-            res["per_step"] = step
-            res["result"] = vals
-            return res
-
-        def __getattr__(self, name):
-            raise RuntimeError("CuroboPlanner is unavailable in this environment")
-
-
-# ********************** MplibPlanner **********************"""
-    if needle not in text:
-        raise ROSConfigError(
-            f"RoboTwin planner source at {planner} does not match the expected optional "
-            "cuRobo import block; remove the checkout and rerun provisioning."
-        )
-    planner.write_text(text.replace(needle, replacement))
-
-
 def _provision_robotwin_venv() -> Path:
-    """Create the robotwin sidecar venv from the pinned LeRobot + SAPIEN install.
+    """Create the robotwin sidecar venv from the hash-locked LeRobot + SAPIEN stack.
 
     Opt-in (``OPENRAL_ROBOTWIN_AUTO_PROVISION=1``) because it is a multi-GB,
     Linux-only download. Uses the shared ``ensure_pip_venv``
@@ -263,7 +229,17 @@ def _provision_robotwin_venv() -> Path:
     verifier can run the live env instead of skipping on a half-provision. An
     ``OPENRAL_ROBOTWIN_ROOT`` pointing elsewhere is the operator's own checkout and
     is left untouched.
+
+    Raises:
+        ROSConfigError: On a host other than x86_64 Linux, the only platform the
+            lock (SAPIEN / open3d / mplib wheels) resolves for.
     """
+    if sys.platform != "linux" or platform.machine() != "x86_64":
+        raise ROSConfigError(
+            f"The RoboTwin sidecar runs on x86_64 Linux only (this host: {sys.platform}/"
+            f"{platform.machine()}): SAPIEN 3.0.3, open3d and mplib 0.2.1 ship no wheels "
+            "for it, so tools/sidecar_requirements/robotwin.lock cannot install."
+        )
     lock = _robotwin_lock()
 
     def _install(uv: str, py: Path) -> None:
@@ -273,18 +249,17 @@ def _provision_robotwin_venv() -> Path:
             [
                 uv,
                 "pip",
-                "install",
+                # sync, not install: the venv ends up exactly the lock (a repaired
+                # venv sheds packages an older stack left behind), and no resolver
+                # runs, so mplib's numpy<2 vs lerobot's numpy>=2 metadata — settled
+                # at compile time by robotwin-override.txt — is not re-checked.
+                "sync",
                 # --no-config: from the repo root uv would apply the workspace's
                 # [tool.uv] settings to this unrelated venv.
                 "--no-config",
                 "--python",
                 str(py),
                 "--require-hashes",
-                # The lock is the complete, hashed closure; re-resolving it would
-                # trip over mplib's numpy<2 vs lerobot's numpy>=2 metadata, which
-                # the compile-time override already settled (robotwin-override.txt).
-                "--no-deps",
-                "-r",
                 str(lock),
             ],
             env=env,
@@ -299,24 +274,41 @@ def _provision_robotwin_venv() -> Path:
         spec=_robotwin_venv_spec(),
     )
     if not _is_managed_root(_robotwin_root_path()):
-        # The operator's own checkout: theirs to pin, never cloned, patched or verified here.
+        # The operator's own checkout: theirs to pin, never cloned or verified here.
         return py
     root = _ensure_robotwin_checkout(_ROBOTWIN_SIDECAR_HOME)
-    _patch_robotwin_checkout(root)
-    assets = root / "assets" / "objects" / "objaverse" / "list.json"
-    if not assets.is_file():
-        # Upstream's script calls bare `python` to run assets/_download.py, which
-        # needs the sidecar venv's huggingface_hub: put that venv first on PATH, or
-        # a host without a `python` (python3 only) fails with exit 127 and one
-        # with a system `python` lacks the hub client.
-        path = f"{py.parent}{os.pathsep}{os.environ.get('PATH', '')}"
-        run_cmd(
-            "robotwin-assets",
-            ["bash", _download_assets_script(root)],
-            cwd=root,
-            env={**os.environ, "PATH": path},
-        )
+    if not (root / "assets" / "objects" / "objaverse" / "list.json").is_file():
+        _fetch_robotwin_assets(root, py)
     return py
+
+
+def _fetch_robotwin_assets(root: Path, py: Path) -> None:
+    """Download + unpack RoboTwin's assets the way its ``_download_assets.sh`` does.
+
+    Not by running that script: its ``assets/_download.py`` passes
+    ``snapshot_download(resume_download=True)``, which the locked huggingface-hub
+    (2.x) no longer accepts, and the script has no ``set -e`` so the failure would
+    surface only later as missing assets. The download runs under the sidecar venv
+    ``py`` (its huggingface_hub), the unzip in-process, and every step fails loudly.
+    """
+    assets = root / "assets"
+    run_cmd(
+        "robotwin-assets",
+        [
+            str(py),
+            "-c",
+            "from huggingface_hub import snapshot_download; snapshot_download("
+            f"repo_id={_ROBOTWIN_ASSETS_REPO!r}, repo_type='dataset', local_dir='.', "
+            f"allow_patterns={list(_ROBOTWIN_ASSET_ZIPS)!r})",
+        ],
+        cwd=assets,
+    )
+    for name in _ROBOTWIN_ASSET_ZIPS:
+        archive = assets / name
+        with zipfile.ZipFile(archive) as zf:
+            zf.extractall(assets)
+        archive.unlink()
+    run_cmd("robotwin-assets", [str(py), _embodiment_config_script(root)], cwd=root)
 
 
 def _ensure_robotwin_checkout(
@@ -348,19 +340,40 @@ def _is_managed_root(root: Path) -> bool:
     return root.resolve() == (_ROBOTWIN_SIDECAR_HOME / "RoboTwin").resolve()
 
 
-def _download_assets_script(root: Path) -> str:
-    """Path (relative to ``root``) of RoboTwin's asset download script.
+def _embodiment_config_script(root: Path) -> str:
+    """Path (relative to ``root``) of RoboTwin's ``update_embodiment_config_path.py``.
 
     Upstream renamed ``script/`` to ``scripts/`` in 2026; an operator checkout may be
     either vintage, so both are accepted.
     """
-    for candidate in ("scripts/_download_assets.sh", "script/_download_assets.sh"):
+    for candidate in (
+        "scripts/update_embodiment_config_path.py",
+        "script/update_embodiment_config_path.py",
+    ):
         if (root / candidate).is_file():
             return candidate
     raise ROSConfigError(
-        f"RoboTwin checkout at {root} has no scripts/_download_assets.sh; remove the "
-        "checkout and rerun provisioning."
+        f"RoboTwin checkout at {root} has no scripts/update_embodiment_config_path.py; "
+        "remove the checkout and rerun provisioning."
     )
+
+
+def _find_sidecar_python() -> Path | None:
+    """A usable RoboTwin interpreter that already exists — never provisions anything.
+
+    ``OPENRAL_ROBOTWIN_SIDECAR_PYTHON`` (when it is a file), or the default venv when
+    its sentinel matches the current lock; else ``None``. For availability checks
+    (the sim-test gate) that must not trigger a multi-GB install.
+    """
+    override = os.environ.get(_SIDECAR_PYTHON_ENV)
+    if override:
+        p = Path(override).expanduser()
+        return p if p.is_file() else None
+    venv = _ROBOTWIN_SIDECAR_HOME / ".venv"
+    default = venv / "bin" / "python"
+    if default.is_file() and venv_matches_spec(venv, _robotwin_venv_spec()):
+        return default
+    return None
 
 
 def _sidecar_python() -> Path:
@@ -368,8 +381,8 @@ def _sidecar_python() -> Path:
 
     Resolution order: ``OPENRAL_ROBOTWIN_SIDECAR_PYTHON`` override → opt-in
     auto-provision (``OPENRAL_ROBOTWIN_AUTO_PROVISION=1``) → an existing default
-    venv whose sentinel matches the current lock → a typed error carrying the
-    exact manual commands.
+    venv whose sentinel matches the current lock (``_find_sidecar_python``) → a typed
+    error: re-provision for a venv from another lock, else the manual commands.
 
     Auto-provision precedes the existing-venv shortcut so a venv built from
     superseded pins is repaired rather than returned untouched (same ordering
@@ -386,43 +399,53 @@ def _sidecar_python() -> Path:
         return p
     if os.environ.get(_AUTO_PROVISION_ENV, "").strip() not in ("", "0", "false", "False"):
         return _provision_robotwin_venv()
+    found = _find_sidecar_python()
+    if found is not None:
+        return found
     venv = _ROBOTWIN_SIDECAR_HOME / ".venv"
-    default = venv / "bin" / "python"
-    if default.is_file():
-        sentinel = venv / ".deps-installed"
-        built = sentinel.read_text(encoding="utf-8") if sentinel.is_file() else None
-        if built != spec_marker(_robotwin_venv_spec()):
-            raise ROSConfigError(
-                f"RoboTwin sidecar venv at {venv} was built from another lock (or did not "
-                f"finish provisioning). Set {_AUTO_PROVISION_ENV}=1 to repair it in place."
-            )
-        return default
-    lock = _robotwin_lock()
+    if (venv / "bin" / "python").is_file():
+        raise ROSConfigError(
+            f"RoboTwin sidecar venv at {venv} was built from another lock (or did not "
+            f"finish provisioning). Set {_AUTO_PROVISION_ENV}=1 to repair it in place."
+        )
     raise ROSConfigError(
         "RoboTwin sidecar venv not found. It is an externally-provisioned dependency "
-        "(SAPIEN + RoboTwin 2.0, Python 3.12, Linux-only, multi-GB). "
+        "(SAPIEN + RoboTwin 2.0, Python 3.12, x86_64 Linux only, multi-GB). "
         "Set "
         f"{_AUTO_PROVISION_ENV}=1 to auto-provision the LeRobot+SAPIEN venv (a "
-        "multi-GB download), or provision it manually and point "
-        f"{_SIDECAR_PYTHON_ENV} at its py3.12 python:\n"
+        "multi-GB download), or provision it manually from the openral repo root and "
+        f"point {_SIDECAR_PYTHON_ENV} at its py3.12 python:\n"
         "  VENV=~/robotwin-sidecar/.venv\n"
         "  uv venv --python 3.12 $VENV\n"
-        "  uv pip install --no-config --python $VENV/bin/python --require-hashes "
-        f"--no-deps -r {lock}\n"
-        "  git clone https://github.com/RoboTwin-Platform/RoboTwin.git\n"
+        "  uv pip sync --no-config --python $VENV/bin/python --require-hashes "
+        f"tools/sidecar_requirements/{_ROBOTWIN_LOCK}\n"
+        f"  git clone {_ROBOTWIN_REPO} RoboTwin\n"
         f"  git -C RoboTwin checkout {_ROBOTWIN_SHA}  # the tested pin\n"
-        "  cd RoboTwin && PATH=$VENV/bin:$PATH bash scripts/_download_assets.sh\n"
+        "  cd RoboTwin/assets\n"
+        '  $VENV/bin/python -c "from huggingface_hub import snapshot_download; '
+        f"snapshot_download(repo_id='{_ROBOTWIN_ASSETS_REPO}', repo_type='dataset', "
+        f"local_dir='.', allow_patterns={list(_ROBOTWIN_ASSET_ZIPS)!r})\"\n"
+        "  for z in *.zip; do unzip -q $z && rm $z; done; cd ..\n"
+        "  $VENV/bin/python scripts/update_embodiment_config_path.py\n"
         f"  export {_ROBOTWIN_ROOT_ENV}=$(pwd)  # checkout + assets path for the sidecar\n"
         f"  export {_SIDECAR_PYTHON_ENV}=$VENV/bin/python"
     )
 
 
 def _robotwin_lock() -> Path:
-    """The sidecar's hash lock, ``sidecar_requirements/`` beside ``tools/robotwin_sidecar.py``."""
-    lock = _locate_sidecar_script().parent / "sidecar_requirements" / _ROBOTWIN_LOCK
-    if not lock.is_file():
-        raise ROSConfigError(f"RoboTwin sidecar lock {lock} is missing.")
-    return lock
+    """``tools/sidecar_requirements/robotwin.lock``, found by walking up from this module.
+
+    Independent of ``OPENRAL_ROBOTWIN_SIDECAR_SCRIPT``: a relocated sidecar script does
+    not move the lock the venv is checked against.
+    """
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        lock = parent / "tools" / "sidecar_requirements" / _ROBOTWIN_LOCK
+        if lock.is_file():
+            return lock
+    raise ROSConfigError(
+        f"Could not locate tools/sidecar_requirements/{_ROBOTWIN_LOCK} upwards from {here}."
+    )
 
 
 def _robotwin_venv_spec() -> tuple[str]:
@@ -466,8 +489,9 @@ def _robotwin_root() -> Path:
     assets = root / "assets" / "objects" / "objaverse" / "list.json"
     if not assets.is_file():
         raise ROSConfigError(
-            f"RoboTwin assets not found at {assets}. Run scripts/_download_assets.sh in "
-            f"the RoboTwin checkout, then set {_ROBOTWIN_ROOT_ENV}={root}."
+            f"RoboTwin assets not found at {assets}. Fetch them as the "
+            f"{_AUTO_PROVISION_ENV}=1 recipe does (see the sidecar-venv error), then set "
+            f"{_ROBOTWIN_ROOT_ENV}={root}."
         )
     if _is_managed_root(root):
         # The sidecar imports this checkout's code: the provisioned one must be the pin

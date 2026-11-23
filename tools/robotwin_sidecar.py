@@ -22,9 +22,13 @@ CUDA-bound, so this is an externally-provisioned sidecar venv, never vendored (C
 from __future__ import annotations
 
 import argparse
+import importlib.abc
+import importlib.machinery
 import io
 import os
 import sys
+import types
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -162,10 +166,73 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument(
         "--fallback-dt-s",
         type=float,
-        default=1.0 / 30.0,
+        # 25 Hz: lerobot 0.7's robotwin integration + robots/aloha_agilex control rate.
+        default=1.0 / 25.0,
         help="deterministic sim-time step used only when RoboTwin hides elapsed-time attrs",
     )
     return p.parse_args(argv)
+
+
+# ── RoboTwin cuRobo fallback ──────────────────────────────────────────────────
+
+
+class _CuroboPlannerUnavailable:
+    """Stand-in for RoboTwin's optional ``CuroboPlanner`` when cuRobo is absent.
+
+    RoboTwin's ``envs/robot/planner.py`` defines ``CuroboPlanner`` only inside a
+    ``try`` that imports cuRobo (not in the lock: CUDA-built, unneeded for the
+    mplib planner every benchmark task uses), yet ``envs/robot/robot.py`` imports
+    the name unconditionally and ``isinstance``-checks it. Gripper interpolation
+    matches upstream's; anything else raises.
+    """
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def plan_grippers(self, now_val: float, target_val: float) -> dict[str, Any]:
+        num_step = 200
+        return {
+            "num_step": num_step,
+            "per_step": (target_val - now_val) / num_step,
+            "result": np.linspace(now_val, target_val, num_step),
+        }
+
+    def __getattr__(self, name: str) -> Any:
+        raise RuntimeError("CuroboPlanner is unavailable: cuRobo is not installed")
+
+
+class _PlannerFallbackFinder(importlib.abc.MetaPathFinder):
+    """Give ``envs.robot.planner`` a ``CuroboPlanner`` after it executes, if it lacks one.
+
+    In-process, so neither the managed nor an operator's RoboTwin checkout is edited.
+    """
+
+    def find_spec(
+        self,
+        fullname: str,
+        path: Sequence[str] | None,
+        target: types.ModuleType | None = None,
+    ) -> importlib.machinery.ModuleSpec | None:
+        if fullname != "envs.robot.planner":
+            return None
+        spec = importlib.machinery.PathFinder.find_spec(fullname, path)
+        if spec is None or not isinstance(spec.loader, importlib.machinery.SourceFileLoader):
+            return spec
+        loader = spec.loader
+        exec_module = loader.exec_module
+
+        def exec_with_fallback(module: types.ModuleType) -> None:
+            exec_module(module)
+            if not hasattr(module, "CuroboPlanner"):
+                module.CuroboPlanner = _CuroboPlannerUnavailable  # type: ignore[attr-defined]  # reason: adding the name the module failed to define
+
+        loader.exec_module = exec_with_fallback  # type: ignore[method-assign]  # reason: per-spec wrap of this one module's loader
+        return spec
+
+
+def _install_curobo_planner_fallback() -> None:
+    if not any(isinstance(f, _PlannerFallbackFinder) for f in sys.meta_path):
+        sys.meta_path.insert(0, _PlannerFallbackFinder())
 
 
 # ── env construction + observation adaptation ─────────────────────────────────
@@ -232,6 +299,10 @@ class _RoboTwinEnv:
                 RoboTwinEnv,
             )
         except ModuleNotFoundError as exc:
+            # Only a missing lerobot module means a wrong lerobot; any other missing
+            # module (torch, gymnasium, ...) propagates as itself.
+            if not (exc.name or "").startswith("lerobot"):
+                raise
             from importlib.metadata import PackageNotFoundError, version
 
             try:
@@ -240,8 +311,10 @@ class _RoboTwinEnv:
                 found = "not installed"
             raise ModuleNotFoundError(
                 f"RoboTwin sidecar needs lerobot 0.7 (lerobot.sim.integrations.robotwin); "
-                f"this venv ({sys.executable}) has lerobot {found}. Re-provision it with "
-                "OPENRAL_ROBOTWIN_AUTO_PROVISION=1."
+                f"this venv ({sys.executable}) has lerobot {found}. Sync it to the lock "
+                "(uv pip sync --require-hashes tools/sidecar_requirements/robotwin.lock), "
+                "or unset OPENRAL_ROBOTWIN_SIDECAR_PYTHON and set "
+                "OPENRAL_ROBOTWIN_AUTO_PROVISION=1 to use the managed venv."
             ) from exc
 
         return RoboTwinEnv(
@@ -323,6 +396,7 @@ def main(argv: list[str]) -> int:
         os.chdir(root)
         sys.path.insert(0, str(root))
         sys.path.insert(0, str(root / "envs"))
+        _install_curobo_planner_fallback()
     cameras = [c.strip() for c in args.cameras.split(",") if c.strip()]
     env = _RoboTwinEnv(
         task=args.task,

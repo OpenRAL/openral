@@ -359,6 +359,18 @@ def spec_marker(spec: Sequence[str] | None) -> str:
     return f"{digest.hexdigest()}\n"
 
 
+def venv_matches_spec(
+    venv: Path, spec: Sequence[str] | None, sentinel_name: str = ".deps-installed"
+) -> bool:
+    """Whether ``venv``'s sentinel says it was provisioned from exactly ``spec``.
+
+    The check ``ensure_pip_venv`` runs before reusing a venv, shared so a caller
+    that only *resolves* an existing venv (no provisioning) applies the same rule.
+    """
+    sentinel = venv / sentinel_name
+    return sentinel.is_file() and sentinel.read_text(encoding="utf-8") == spec_marker(spec)
+
+
 def ensure_pip_venv(
     *,
     label: str,
@@ -416,11 +428,10 @@ def ensure_pip_venv(
     sentinel = venv / sentinel_name
     marker = spec_marker(spec)
     if py.exists():
-        current = sentinel.read_text(encoding="utf-8") if sentinel.exists() else None
-        if current == marker:
+        if venv_matches_spec(venv, spec, sentinel_name):
             print(f"[{label}] reusing venv at {venv}", flush=True)
             return py
-        why = "incomplete" if current is None else "stale (dependency spec changed)"
+        why = "incomplete" if not sentinel.exists() else "stale (dependency spec changed)"
         print(f"[{label}] repairing {why} venv at {venv}", flush=True)
         install(uv, py)
         sentinel.write_text(marker)
