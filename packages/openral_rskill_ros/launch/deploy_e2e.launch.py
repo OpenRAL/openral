@@ -2508,6 +2508,21 @@ def _sim_scene_package(hal_mode: str) -> dict[str, pathlib.Path]:
 
 # A local mesh path: relative, or absolute (an expanded `rd:` mesh); never a URI.
 _LOCAL_MESH = re.compile(r'(filename=")(?![A-Za-z][\w+.-]*:)([^"]+)(")')
+_PACKAGE_MESH = re.compile(r'(filename=")package://([^/"]+)/([^"]+)(")')
+
+
+def _ancestor_package_file(m: re.Match[str], urdf_dir: pathlib.Path) -> str:
+    """``m``'s ``package://<pkg>/<path>`` as an absolute file under an ancestor named ``<pkg>``.
+
+    Left as it was when no ancestor of ``urdf_dir`` has that name or the file is absent.
+    """
+    try:
+        for folder in (urdf_dir, *urdf_dir.parents):
+            if folder.name == m[2] and (folder / m[3]).is_file():
+                return f"{m[1]}{folder / m[3]}{m[4]}"
+    except OSError:
+        pass
+    return m[0]
 
 
 def _robot_mesh_package(
@@ -2525,7 +2540,14 @@ def _robot_mesh_package(
     so never the URDF's whole folder. Named after the folder plus a hash of its path, so
     two robots in same-named folders don't share one. The bridge's ament overlay
     registers it (``_foxglove_asset_env``). Any failure leaves the URDF as it was.
+
+    A ``package://<pkg>/<path>`` ref whose ``<pkg>`` is an ancestor folder of the URDF
+    (the ROS package-root convention: ``rd:panda_description`` lives in an
+    ``example-robot-data`` clone and names its meshes
+    ``package://example-robot-data/...``, a package on no ament index) is resolved
+    against that folder first, so those meshes join the same package.
     """
+    urdf_xml = _PACKAGE_MESH.sub(lambda m: _ancestor_package_file(m, urdf_dir), urdf_xml)
     refs = {m[2] for m in _LOCAL_MESH.finditer(urdf_xml)}
     try:  # an unreadable parent raises from resolve()/is_file()
         files = {r: (urdf_dir / r).resolve() for r in refs}
