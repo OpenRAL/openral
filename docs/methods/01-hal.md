@@ -452,9 +452,9 @@ _Fetches Galaxea's A1 URDF + 9 STL meshes from the unlicensed `userguide-galaxea
 ### `python/hal/src/openral_hal/_robotwin_aloha_agilex_assets.py`
 _Range-reads RoboTwin 2.0's aloha-agilex URDF + its 34 meshes out of `embodiments.zip` (MIT HF dataset `TianxingChen/RoboTwin2.0`) at a pinned revision, per-file SHA-256 — backs the `robotwin:aloha_agilex` asset ref._
 
-- `fetch_aloha_agilex_files() -> Path` (L157) — Downloads every pinned file not yet cached into `$OPENRAL_CACHE_DIR/robotwin_aloha_agilex/<rev12>/` (the archive's own layout, so relative mesh refs resolve) and drops the `.verified` stamp; presence only. Raises `ROSConfigError` when `huggingface_hub` is missing or the archive read fails.
-- `ensure_aloha_agilex_urdf() -> Path` (L198) — Fetches, then verifies every SHA-256 (skipped once `.verified` exists) and returns `arx5_description_isaac.urdf`; a mismatching file is deleted. Raises `ROSConfigError`.
-- const `ROBOTWIN_ASSETS_REVISION: str` (L38) — pinned dataset commit.
+- `fetch_aloha_agilex_files() -> Path` (L171) — Downloads every pinned file not yet cached into `$OPENRAL_CACHE_DIR/robotwin_aloha_agilex/<rev12>/` (the archive's own layout, so relative mesh refs resolve) and drops the `.verified` stamp; presence only. Raises `ROSConfigError` when `huggingface_hub` is missing or a remote archive read fails (each read wrapped by `_remote`), and a bare `OSError` for a local cache write, so the resolver maps them to `AssetFetchError` / `AssetRefError`.
+- `ensure_aloha_agilex_urdf() -> Path` (L213) — Fetches, then verifies every SHA-256 (skipped once `.verified` exists) and returns `arx5_description_isaac.urdf`; a mismatching file is deleted. Raises `ROSConfigError`.
+- const `ROBOTWIN_ASSETS_REVISION: str` (L42) — pinned dataset commit.
 
 ### `python/hal/src/openral_hal/_robosuite_assets.py`
 _Composes a robosuite (>= 1.5, MIT) robot with its default base and grippers into one MJCF, as `robosuite.robots.Robot.load_model` does — backs the `robosuite:<robot>` asset ref (panda_mobile's `PandaOmron`)._
