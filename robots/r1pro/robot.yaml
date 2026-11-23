@@ -171,8 +171,9 @@ joints:
     sim_joint_name: "left_gripper_finger_joint1"
     parent_link: "left_gripper_link"
     child_link: "left_gripper_finger_link1"
-    position_limits: [0.0, 0.05]
-    velocity_limit: 0.25
+    # The channel is normalised (sim.grippers normalised), so the envelope is [0, 1].
+    position_limits: [0.0, 1.0]
+    velocity_limit: 5.0  # 0.25 m/s over the 0.05 m stroke
     effort_limit: 100.0
     actuator_kind: "servo"
     role: "gripper"
@@ -288,8 +289,9 @@ joints:
     sim_joint_name: "right_gripper_finger_joint1"
     parent_link: "right_gripper_link"
     child_link: "right_gripper_finger_link1"
-    position_limits: [0.0, 0.05]
-    velocity_limit: 0.25
+    # The channel is normalised (sim.grippers normalised), so the envelope is [0, 1].
+    position_limits: [0.0, 1.0]
+    velocity_limit: 5.0  # 0.25 m/s over the 0.05 m stroke
     effort_limit: 100.0
     actuator_kind: "servo"
     role: "gripper"

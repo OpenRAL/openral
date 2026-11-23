@@ -139,6 +139,9 @@ def test_manifest_joints_name_mjcf_joints_within_range(
         lo, hi = (float(v) for v in model.jnt_range[jid])
         assert joint.position_limits is not None, f"{joint.name} has no position limits"
         low, high = joint.position_limits
+        if joint.urdf_curve:  # a normalised jaw channel: compare its URDF/MJCF slide value
+            xs, ys = zip(*joint.urdf_curve, strict=True)
+            low, high = (float(np.interp(v, xs, ys)) for v in (low, high))
         assert lo - 1e-6 <= low <= high <= hi + 1e-6, f"{joint.name}: {low, high} vs {lo, hi}"
 
 
