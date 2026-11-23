@@ -24,6 +24,7 @@ import numpy as np
 from openral_core import Action, ControlMode, RobotDescription
 from openral_core.assets import AssetFetchError, resolve_asset
 from openral_hal._mujoco_arm import MujocoArmHAL
+from openral_hal._sim_attachment_evidence import _resolve_gripper_body_groups, _sim_joint_body_id
 
 pytestmark = pytest.mark.sim
 
@@ -91,3 +92,25 @@ def test_cameras_render(connected: tuple[RobotDescription, MujocoArmHAL]) -> Non
         assert frame.shape == (sensor.intrinsics.height, sensor.intrinsics.width, 3)
         assert frame.dtype == np.uint8
         assert float(frame.std()) > 5.0, f"{sensor.name} camera frame is blank"
+
+
+def test_manifest_resolves_each_hand_and_jaw(
+    connected: tuple[RobotDescription, MujocoArmHAL],
+) -> None:
+    """Each arm's hand and jaw resolve to twin bodies through ``sim_joint_name``.
+
+    The single-gripper ``SimAttachmentEvidenceTracker`` refuses a bimanual robot
+    (two gripper parent links), so deploy runs this twin without automatic grasp
+    evidence; this pins the per-arm wiring that a bimanual tracker would use.
+    """
+    desc, hal = connected
+    model = hal._model
+    assert model is not None
+    grippers = [j for j in desc.joints if j.role == "gripper"]
+    by_child = {j.child_link: j for j in desc.joints}
+    hands = {model.body(_sim_joint_body_id(model, by_child[g.parent_link])).name for g in grippers}
+    assert hands == {"fl_link6", "fr_link6"}
+    jaws = {
+        model.body(root).name for root in _resolve_gripper_body_groups(model, grippers).values()
+    }
+    assert jaws == {"fl_link7", "fl_link8", "fr_link7", "fr_link8"}  # + mimic fingers

@@ -66,8 +66,12 @@ same URDF with `mujoco.MjSpec` into `derived-<hash>/aloha_agilex.xml` beside it:
   `head_camera` pose (its `config.yml`, moved into the robot frame), the wrist
   cameras on the URDF's `left_camera` / `right_camera` links.
 
+Automatic sim grasp evidence (`SimAttachmentEvidenceTracker`) is off on this twin: the
+tracker takes a single gripper parent link and refuses the two hands, as for every
+bimanual twin; deploy logs `automatic sim attachment evidence disabled`.
+
 Tests: `tests/sim/test_aloha_agilex_hal_mujoco.py` (gravity-on tracking, both
-grippers, three cameras) and `test_data_driven_mujoco_hal.py`.
+grippers, three cameras, each hand and jaw resolving through `sim_joint_name`) and `test_data_driven_mujoco_hal.py`.
 
 ## Driving it
 
