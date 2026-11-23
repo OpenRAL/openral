@@ -446,20 +446,20 @@ _Fetches Unitree's official H2 description files at pinned commits, each beside 
 ### `python/hal/src/openral_hal/_galaxea_a1_assets.py`
 _Fetches Galaxea's A1 URDF + 9 STL meshes from the unlicensed `userguide-galaxea/robot_descriptions` at a pinned commit with per-file SHA-256 (nothing vendored) — backs the `galaxea:a1` asset ref._
 
-- `ensure_a1_urdf() -> Path` (L46) — `a1_description/` @ `72008ea9` into `$OPENRAL_CACHE_DIR/galaxea_a1/<sha>/`; returns a derived `urdf/a1.urdf` whose `package://mobiman/urdf/A1/meshes/` refs are rewritten to `../meshes/`. Raises `ROSConfigError` on a failed download or digest mismatch.
-- const `GALAXEA_DESCRIPTIONS_SHA: str` (L26) — pinned `userguide-galaxea/robot_descriptions` commit.
+- `ensure_a1_urdf() -> Path` (L47) — `a1_description/` @ `72008ea9` into `$OPENRAL_CACHE_DIR/galaxea_a1/<sha>/`; returns a derived `urdf/a1.urdf` whose `package://mobiman/urdf/A1/meshes/` refs are rewritten to `../meshes/`. Raises `ROSConfigError` on a failed download or digest mismatch.
+- const `GALAXEA_DESCRIPTIONS_SHA: str` (L27) — pinned `userguide-galaxea/robot_descriptions` commit.
 
 ### `python/hal/src/openral_hal/_robotwin_aloha_agilex_assets.py`
 _Range-reads RoboTwin 2.0's aloha-agilex URDF + its 34 meshes out of `embodiments.zip` (MIT HF dataset `TianxingChen/RoboTwin2.0`) at a pinned revision, per-file SHA-256 — backs the `robotwin:aloha_agilex` asset ref._
 
-- `fetch_aloha_agilex_files() -> Path` (L156) — Downloads every pinned file not yet cached into `$OPENRAL_CACHE_DIR/robotwin_aloha_agilex/<rev12>/` (the archive's own layout, so relative mesh refs resolve) and drops the `.verified` stamp; presence only. Raises `ROSConfigError` when `huggingface_hub` is missing or the archive read fails.
-- `ensure_aloha_agilex_urdf() -> Path` (L194) — Fetches, then verifies every SHA-256 (skipped once `.verified` exists) and returns `arx5_description_isaac.urdf`; a mismatching file is deleted. Raises `ROSConfigError`.
-- const `ROBOTWIN_ASSETS_REVISION: str` (L37) — pinned dataset commit.
+- `fetch_aloha_agilex_files() -> Path` (L157) — Downloads every pinned file not yet cached into `$OPENRAL_CACHE_DIR/robotwin_aloha_agilex/<rev12>/` (the archive's own layout, so relative mesh refs resolve) and drops the `.verified` stamp; presence only. Raises `ROSConfigError` when `huggingface_hub` is missing or the archive read fails.
+- `ensure_aloha_agilex_urdf() -> Path` (L198) — Fetches, then verifies every SHA-256 (skipped once `.verified` exists) and returns `arx5_description_isaac.urdf`; a mismatching file is deleted. Raises `ROSConfigError`.
+- const `ROBOTWIN_ASSETS_REVISION: str` (L38) — pinned dataset commit.
 
 ### `python/hal/src/openral_hal/_robosuite_assets.py`
 _Composes a robosuite (>= 1.5, MIT) robot with its default base and grippers into one MJCF, as `robosuite.robots.Robot.load_model` does — backs the `robosuite:<robot>` asset ref (panda_mobile's `PandaOmron`)._
 
-- `compose_robot_mjcf(name) -> Path` (L27) — `create_robot` + `robot_base_factory(default_base)` + one `gripper_factory(default_gripper[arm], idn="0_<arm>")` per arm (robosuite's own `idn`s, so joints are `mobilebase0_*` / `robot0_*` / `gripper0_right_*`); writes `$OPENRAL_CACHE_DIR/robosuite/<version>-<install-path hash>/<name>.xml` once (the pinned clone and the PyPI wheel share a version), meshes pointing into the installed package. Raises `ROSConfigError` without robosuite >= 1.5 or for an unregistered name.
+- `compose_robot_mjcf(name) -> Path` (L28) — `create_robot` + `robot_base_factory(default_base)` + one `gripper_factory(default_gripper[arm], idn="0_<arm>")` per arm (robosuite's own `idn`s, so joints are `mobilebase0_*` / `robot0_*` / `gripper0_right_*`); writes `$OPENRAL_CACHE_DIR/robosuite/<version>-<install-path hash>/<name>.xml` once (the pinned clone and the PyPI wheel share a version), meshes pointing into the installed package. Raises `ROSConfigError` without robosuite >= 1.5 or for an unregistered name.
 
 ### `python/hal/src/openral_hal/_behavior_r1pro_assets.py`
 _Fetches BEHAVIOR-1K's R1 Pro URDF and visual meshes (`behavior-1k/omnigibson-robot-assets`, MIT HF dataset) at a pinned revision and derives a loadable copy — backs the `behavior:r1pro` asset ref._
