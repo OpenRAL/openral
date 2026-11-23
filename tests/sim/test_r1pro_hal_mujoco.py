@@ -25,7 +25,9 @@ pytest.importorskip("huggingface_hub")
 import numpy as np
 from openral_core import Action, ControlMode, RobotDescription
 from openral_core.assets import AssetFetchError, resolve_asset
+from openral_core.exceptions import ROSConfigError
 from openral_hal._mujoco_arm import MujocoArmHAL
+from openral_hal._sim_attachment_evidence import SimAttachmentEvidenceTracker
 from openral_hal.resolver import build_hal
 
 pytestmark = pytest.mark.sim
@@ -120,3 +122,35 @@ def test_cameras_render(connected: tuple[RobotDescription, MujocoArmHAL]) -> Non
         assert frame.shape == (intr.height, intr.width, 3)
         assert frame.dtype == np.uint8
         assert float(frame.std()) > 5.0, f"{sensor.name} frame is blank"
+
+
+def test_manifest_joints_name_mjcf_joints_within_range(
+    connected: tuple[RobotDescription, MujocoArmHAL],
+) -> None:
+    """Every manifest joint names its MJCF joint, and its limits sit inside that range."""
+    import mujoco
+
+    desc, hal = connected
+    model = hal._model
+    assert model is not None
+    for joint in desc.joints:
+        assert joint.sim_joint_name, f"{joint.name} has no sim_joint_name"
+        jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint.sim_joint_name)
+        assert jid >= 0, f"{joint.sim_joint_name} is not an MJCF joint"
+        lo, hi = (float(v) for v in model.jnt_range[jid])
+        assert joint.position_limits is not None, f"{joint.name} has no position limits"
+        low, high = joint.position_limits
+        assert lo - 1e-6 <= low <= high <= hi + 1e-6, f"{joint.name}: {low, high} vs {lo, hi}"
+
+
+def test_attachment_evidence_refuses_the_two_handed_robot(
+    connected: tuple[RobotDescription, MujocoArmHAL],
+) -> None:
+    """Sim grasp evidence is single-gripper today: r1pro is refused like openarm / aloha.
+
+    The deploy bridge logs "automatic sim attachment evidence disabled" on this
+    refusal. Pinned here so a tracker that learns two hands flips this test.
+    """
+    desc, hal = connected
+    with pytest.raises(ROSConfigError, match="needs one gripper parent link"):
+        SimAttachmentEvidenceTracker(hal._model, desc)

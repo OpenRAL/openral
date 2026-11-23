@@ -27,6 +27,7 @@ assets:
 joints:
   - name: "torso_joint1"
     joint_type: "revolute"
+    sim_joint_name: "torso_joint1"
     parent_link: "base_link"
     child_link: "torso_link1"
     position_limits: [-1.1345, 1.8326]
@@ -35,6 +36,7 @@ joints:
     actuator_kind: "bldc"
   - name: "torso_joint2"
     joint_type: "revolute"
+    sim_joint_name: "torso_joint2"
     parent_link: "torso_link1"
     child_link: "torso_link2"
     position_limits: [-2.7925, 2.5307]
@@ -43,6 +45,7 @@ joints:
     actuator_kind: "bldc"
   - name: "torso_joint3"
     joint_type: "revolute"
+    sim_joint_name: "torso_joint3"
     parent_link: "torso_link2"
     child_link: "torso_link3"
     position_limits: [-1.8326, 1.5708]
@@ -51,6 +54,7 @@ joints:
     actuator_kind: "bldc"
   - name: "torso_joint4"
     joint_type: "revolute"
+    sim_joint_name: "torso_joint4"
     parent_link: "torso_link3"
     child_link: "torso_link4"
     position_limits: [-3.0543, 3.0543]
@@ -60,6 +64,7 @@ joints:
 
   - name: "left_arm_joint1"
     joint_type: "revolute"
+    sim_joint_name: "left_arm_joint1"
     parent_link: "left_arm_base_link"
     child_link: "left_arm_link1"
     position_limits: [-4.4506, 1.3090]
@@ -68,6 +73,7 @@ joints:
     actuator_kind: "bldc"
   - name: "left_arm_joint2"
     joint_type: "revolute"
+    sim_joint_name: "left_arm_joint2"
     parent_link: "left_arm_link1"
     child_link: "left_arm_link2"
     position_limits: [-0.1745, 3.1416]
@@ -76,6 +82,7 @@ joints:
     actuator_kind: "bldc"
   - name: "left_arm_joint3"
     joint_type: "revolute"
+    sim_joint_name: "left_arm_joint3"
     parent_link: "left_arm_link2"
     child_link: "left_arm_link3"
     position_limits: [-2.356196, 2.356196]
@@ -84,6 +91,7 @@ joints:
     actuator_kind: "bldc"
   - name: "left_arm_joint4"
     joint_type: "revolute"
+    sim_joint_name: "left_arm_joint4"
     parent_link: "left_arm_link3"
     child_link: "left_arm_link4"
     position_limits: [-2.0944, 0.3491]
@@ -92,6 +100,7 @@ joints:
     actuator_kind: "bldc"
   - name: "left_arm_joint5"
     joint_type: "revolute"
+    sim_joint_name: "left_arm_joint5"
     parent_link: "left_arm_link4"
     child_link: "left_arm_link5"
     position_limits: [-2.356196, 2.356196]
@@ -100,6 +109,7 @@ joints:
     actuator_kind: "bldc"
   - name: "left_arm_joint6"
     joint_type: "revolute"
+    sim_joint_name: "left_arm_joint6"
     parent_link: "left_arm_link5"
     child_link: "left_arm_link6"
     position_limits: [-1.047198, 1.047198]
@@ -108,6 +118,7 @@ joints:
     actuator_kind: "bldc"
   - name: "left_arm_joint7"
     joint_type: "revolute"
+    sim_joint_name: "left_arm_joint7"
     parent_link: "left_arm_link6"
     child_link: "left_arm_link7"
     position_limits: [-1.5708, 1.5708]
@@ -116,6 +127,7 @@ joints:
     actuator_kind: "bldc"
   - name: "left_gripper_finger_joint1"
     joint_type: "prismatic"
+    sim_joint_name: "left_gripper_finger_joint1"
     parent_link: "left_gripper_link"
     child_link: "left_gripper_finger_link1"
     position_limits: [0.0, 0.05]
@@ -125,6 +137,7 @@ joints:
     role: "gripper"
   - name: "left_gripper_finger_joint2"
     joint_type: "prismatic"
+    sim_joint_name: "left_gripper_finger_joint2"
     parent_link: "left_gripper_link"
     child_link: "left_gripper_finger_link2"
     position_limits: [0.0, 0.05]
@@ -135,6 +148,7 @@ joints:
 
   - name: "right_arm_joint1"
     joint_type: "revolute"
+    sim_joint_name: "right_arm_joint1"
     parent_link: "right_arm_base_link"
     child_link: "right_arm_link1"
     position_limits: [-4.4506, 1.3090]
@@ -143,6 +157,7 @@ joints:
     actuator_kind: "bldc"
   - name: "right_arm_joint2"
     joint_type: "revolute"
+    sim_joint_name: "right_arm_joint2"
     parent_link: "right_arm_link1"
     child_link: "right_arm_link2"
     position_limits: [-3.1416, 0.1745]
@@ -151,6 +166,7 @@ joints:
     actuator_kind: "bldc"
   - name: "right_arm_joint3"
     joint_type: "revolute"
+    sim_joint_name: "right_arm_joint3"
     parent_link: "right_arm_link2"
     child_link: "right_arm_link3"
     position_limits: [-2.356196, 2.356196]
@@ -159,6 +175,7 @@ joints:
     actuator_kind: "bldc"
   - name: "right_arm_joint4"
     joint_type: "revolute"
+    sim_joint_name: "right_arm_joint4"
     parent_link: "right_arm_link3"
     child_link: "right_arm_link4"
     position_limits: [-2.0944, 0.3491]
@@ -167,6 +184,7 @@ joints:
     actuator_kind: "bldc"
   - name: "right_arm_joint5"
     joint_type: "revolute"
+    sim_joint_name: "right_arm_joint5"
     parent_link: "right_arm_link4"
     child_link: "right_arm_link5"
     position_limits: [-2.356196, 2.356196]
@@ -175,6 +193,7 @@ joints:
     actuator_kind: "bldc"
   - name: "right_arm_joint6"
     joint_type: "revolute"
+    sim_joint_name: "right_arm_joint6"
     parent_link: "right_arm_link5"
     child_link: "right_arm_link6"
     position_limits: [-1.047198, 1.047198]
@@ -183,6 +202,7 @@ joints:
     actuator_kind: "bldc"
   - name: "right_arm_joint7"
     joint_type: "revolute"
+    sim_joint_name: "right_arm_joint7"
     parent_link: "right_arm_link6"
     child_link: "right_arm_link7"
     position_limits: [-1.5708, 1.5708]
@@ -191,6 +211,7 @@ joints:
     actuator_kind: "bldc"
   - name: "right_gripper_finger_joint1"
     joint_type: "prismatic"
+    sim_joint_name: "right_gripper_finger_joint1"
     parent_link: "right_gripper_link"
     child_link: "right_gripper_finger_link1"
     position_limits: [0.0, 0.05]
@@ -200,6 +221,7 @@ joints:
     role: "gripper"
   - name: "right_gripper_finger_joint2"
     joint_type: "prismatic"
+    sim_joint_name: "right_gripper_finger_joint2"
     parent_link: "right_gripper_link"
     child_link: "right_gripper_finger_link2"
     position_limits: [0.0, 0.05]

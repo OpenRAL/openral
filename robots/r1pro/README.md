@@ -41,6 +41,11 @@ The manifest has no `base_joints`, so `deploy sim` attaches no
 `MobileBaseBridge`: the twin's base moves by `BODY_TWIST` from the HAL, not from
 `/cmd_vel`, and there is no `/odom`.
 
+Every manifest joint names its MJCF joint (`sim_joint_name`). Automatic sim grasp
+evidence (`SimAttachmentEvidenceTracker`) stays off on this robot: it handles one
+gripper parent link, and the R1 Pro has two, as the OpenArm and ALOHA do. Deploy
+logs "automatic sim attachment evidence disabled".
+
 The robot is **simulation-only** in OpenRAL. `hal.real` remains null; no physical
 R1 Pro safety or transport claim is made.
 
