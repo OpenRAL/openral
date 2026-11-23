@@ -38,9 +38,15 @@ MuJoCo twin built from that URDF (`ensure_r1pro_mjcf`):
 openral deploy sim --config scenes/deploy/r1pro_twin.yaml
 ```
 
-The manifest has no `base_joints`, so `deploy sim` attaches no
-`MobileBaseBridge`: the twin's base moves by `BODY_TWIST` from the HAL, not from
-`/cmd_vel`, and there is no `/odom`.
+The base is not a manifest joint (no `base_joints`), but `sim.planar_base_joints`
+declares it, so `deploy sim` attaches `MobileBaseBridge` on both the twin and the
+BEHAVIOR scene: `/odom` and `odom -> base_link` follow the base (the twin's pinned
+pose; OmniGibson's world pose on BEHAVIOR) and `/cmd_vel` becomes `BODY_TWIST`.
+BEHAVIOR's env steps only whole six-slot groups (`action_group_size` 6), so a lone
+`/cmd_vel` twist there is staged as a partial group and never stepped, and one that
+lands mid-tick would break the policy's group: do not teleop the BEHAVIOR deploy
+over `/cmd_vel` (nothing publishes it there; Nav2 is off). There is no lidar,
+so no SLAM or Nav2.
 
 Every manifest joint names its MJCF joint (`sim_joint_name`). Automatic sim grasp
 evidence (`SimAttachmentEvidenceTracker`) stays off on this robot: it handles one

@@ -18,7 +18,8 @@ sensor bridge owns cameras / depth / scan / viewer, this bridge owns the
 
 The manifest-driven ``ManifestHALLifecycleNode``
 attaches this bridge in ``on_activate_post_subs`` **iff the manifest declares
-``base_joints``** — so adding a mobile robot needs only that manifest field, no
+a planar base** (``base_joints``, or ``sim.planar_base_joints``:
+``describes_mobile_base``) — so adding a mobile robot needs only that manifest field, no
 per-robot lifecycle subclass (issue #191 Phase 3). Frame ids come from the
 robot's ``RobotDescription`` (``odom_frame`` / ``base_frame``)
 so nothing is hardcoded (CLAUDE.md §2 — TF2 is the only source of frames).
@@ -53,14 +54,17 @@ def describes_mobile_base(description: RobotDescription) -> bool:
         description: The robot manifest.
 
     Returns:
-        ``True`` when the manifest declares ``base_joints``.
+        ``True`` when the manifest declares ``base_joints``, or a wheeled base that
+        is not a manifest joint (``sim.planar_base_joints``: the R1 Pro, whose base
+        the twin and the BEHAVIOR sidecar both report as ``base_pose``).
 
     Example:
         >>> from openral_hal.panda_mobile import PANDA_MOBILE_DESCRIPTION
         >>> describes_mobile_base(PANDA_MOBILE_DESCRIPTION)
         True
     """
-    return bool(description.base_joints)
+    sim = description.sim
+    return bool(description.base_joints) or (sim is not None and bool(sim.planar_base_joints))
 
 
 def platform_owns_navigation(description: RobotDescription, *, hal_mode: str) -> bool:

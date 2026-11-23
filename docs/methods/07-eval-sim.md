@@ -868,7 +868,7 @@ _BEHAVIOR-1K / OmniGibson scene adapter. Runs the official evaluator environment
 - `class _BehaviorSidecar` — ZMQ-backed `SimRollout`; surfaces 61-D `state`/`policy_state`, manifest-order 22-joint positions/velocities, three RGB views, and sim time.
 - `step_action_group(actions) -> StepResult` — Validate six equal-tick safety-approved slots and commit them as one official 23-D action.
 - `_compose_action_group(actions) -> NDArray[float32]` — Compose base twist + torso/arm joint targets + dual grippers into the official action order.
-- `provision_behavior() -> None` — Pre-launch provisioner: locates the externally-installed OmniGibson + BEHAVIOR dataset environment (set up via upstream's `./setup.sh`) or raises the setup command. Covers provisioning only — the OmniGibson boot still runs inside the HAL's 300s-bounded `on_configure`, and the scene's boot timeout is set well past that bound. (L363)
+- `provision_behavior() -> None` — Pre-launch provisioner: locates the externally-installed OmniGibson + BEHAVIOR dataset environment (set up via upstream's `./setup.sh`) or raises the setup command. Covers provisioning only — the OmniGibson boot still runs inside the HAL's 300s-bounded `on_configure`, and the scene's boot timeout is set well past that bound. (L364)
 - `const _SCENE_ID = 'behavior'` (L27)
 - `const _ROBOT_ID = 'r1pro'` (L28)
 - `const _SIDECAR_PYTHON_ENV = 'OPENRAL_BEHAVIOR_SIDECAR_PYTHON'` (L29)

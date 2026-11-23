@@ -78,3 +78,15 @@ def test_footprint_radius_decides_nothing_in_either_direction() -> None:
     franka = _description("franka_panda")
     with_nav2_tuning = franka.model_copy(update={"footprint_radius": 0.35})
     assert not describes_mobile_base(with_nav2_tuning)
+
+
+def test_a_wheeled_base_outside_the_manifest_joints_reads_as_mobile() -> None:
+    """r1pro's base is MJCF planar joints, not manifest joints: still a mobile base.
+
+    Its twin and the BEHAVIOR sidecar both report ``base_pose``, so ``/odom`` and
+    ``odom -> base_link`` must come from ``MobileBaseBridge``, not a static root.
+    """
+    r1pro = _description("r1pro")
+    assert r1pro.base_joints is None
+    assert r1pro.sim is not None and r1pro.sim.planar_base_joints
+    assert describes_mobile_base(r1pro)

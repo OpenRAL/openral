@@ -2448,7 +2448,7 @@ if _ROS2_AVAILABLE:
             self.declare_parameter("depth_max_range_m", 5.0)
             self.declare_parameter("depth_pixel_stride", 4)
             # Mobile-base params (issue #191 Phase 3): consumed by MobileBaseBridge
-            # only when the manifest declares `base_joints` (panda_mobile today).
+            # only when the manifest declares a planar base (describes_mobile_base).
             # Harmless for fixed-base arms — declared so deploy_sim's
             # `odom_publish_rate_hz` default + a `cmd_vel_topic` override are
             # accepted by rclpy.
@@ -3103,7 +3103,8 @@ if _ROS2_AVAILABLE:
 
             Mobile-base streams (issue #191 Phase 3): ``/odom`` + ``odom -> base`` TF +
             ``/cmd_vel`` -> ``BODY_TWIST``, attached when the manifest declares a planar base
-            (``base_joints``) and OpenRAL owns navigation (``deploy sim``). On ``deploy run``
+            (``describes_mobile_base``: ``base_joints`` or ``sim.planar_base_joints``) and
+            OpenRAL owns navigation (``deploy sim``). On ``deploy run``
             the platform owns them (ADR-0127 Decision 1): no bridge. Fixed-base arms skip it.
             """
             assert self._hal is not None  # invariant: called after the HAL is built
