@@ -409,6 +409,28 @@ def test_an_unattachable_payload_in_one_hand_does_not_block_the_other() -> None:
     assert published and published[0] == [], f"the left release was held back: {published}"
     assert rig.tracker._hands[1].attached_root is None
 
+    # A refusal is per payload, not per hand: the right hand still grasps a valid one.
+    # Open it, take the unnamed box out, and put the (named) left box where it stood.
+    rig.set_gripper(1, closed=False)
+    rig.run(100)
+    named, unnamed = (
+        int(rig.model.jnt_qposadr[rig.model.joint(f"payload{i}_free").id]) for i in (0, 1)
+    )
+    named_dof, unnamed_dof = (
+        int(rig.model.jnt_dofadr[rig.model.joint(f"payload{i}_free").id]) for i in (0, 1)
+    )
+    slot = rig.data.qpos[unnamed : unnamed + 7].copy()
+    rig.data.qpos[unnamed : unnamed + 3] += [0.0, 0.0, -1.0]  # parked well below the hands
+    rig.data.qpos[named : named + 7] = slot
+    rig.data.qvel[named_dof : named_dof + 6] = 0.0
+    rig.data.qvel[unnamed_dof : unnamed_dof + 6] = 0.0
+    mujoco.mj_forward(rig.model, rig.data)
+    rig.set_gripper(1, closed=True)
+    published = rig.run(400)
+    assert [[(o.object_id, o.attach_link) for o in s] for s in published][:1] == [
+        [("sim:payload0", "fr_link6")]
+    ], f"the right hand could not grasp a valid payload after a refusal: {published}"
+
 
 def test_construction_refuses_what_the_kernel_would_reject() -> None:
     """Links the kernel model lacks, and two hands over one finger, refuse up front."""
