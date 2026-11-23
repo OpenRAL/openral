@@ -13,5 +13,10 @@ if ! command -v uv >/dev/null 2>&1; then
     exit 1
 fi
 
+# Never let a hook re-sync .venv (#715). pre-commit stashes unstaged files, so an
+# uncommitted uv.lock bump would make every nested `uv run` sync the venv back to
+# the committed lock. Exported here so all hooks (YAML entries, run_mypy.sh) inherit it.
+export UV_NO_SYNC=1
+
 # `pre-commit run` with no file selector runs against the staged files.
 exec uv run pre-commit run --hook-stage pre-commit
