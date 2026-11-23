@@ -109,3 +109,28 @@ def test_manifest_resolves_each_hand_and_jaw(
     assert {model.body(h.attach_body_id).name for h in hands} == {"fl_link6", "fr_link6"}
     jaws = {model.body(root).name for h in hands for root in h.body_groups.values()}
     assert jaws == {"fl_link7", "fl_link8", "fr_link7", "fr_link8"}  # + mimic fingers
+
+
+def test_lowering_refuses_a_follower_off_its_urdf_frame() -> None:
+    """A ``mimic_joints`` row whose origin is not the URDF's would misplace its geometry."""
+    pytest.importorskip("yourdfpy")
+    from openral_core.exceptions import ROSConfigError
+    from openral_safety.urdf_lowering import _check_mimic_frames, modelled_links
+
+    desc = RobotDescription.from_yaml(str(_ROOT / "robots" / "aloha_agilex" / "robot.yaml"))
+    assert desc.assets.urdf is not None
+    try:
+        urdf = resolve_asset(desc.assets.urdf.ref, "urdf")
+    except AssetFetchError as exc:
+        pytest.skip(f"RoboTwin embodiments archive not readable on this host: {exc}")
+    _check_mimic_frames(desc, str(urdf), modelled_links(desc))  # the committed rows agree
+    zeroed = [
+        m.model_copy(update={"origin_xyz": (0.0, 0.0, 0.0)})
+        if m.name == "left_finger_mirror"
+        else m
+        for m in desc.mimic_joints
+    ]
+    with pytest.raises(ROSConfigError, match="left_finger_mirror"):
+        _check_mimic_frames(
+            desc.model_copy(update={"mimic_joints": zeroed}), str(urdf), modelled_links(desc)
+        )

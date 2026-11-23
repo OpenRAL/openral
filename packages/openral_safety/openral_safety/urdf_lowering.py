@@ -69,6 +69,7 @@ __all__ = [
     "lower_robot_auto",
     "lower_robot_from_mjcf",
     "mjcf_coupled_joints",
+    "modelled_links",
     "parse_srdf_disabled_pairs",
     "sample_acm_from_urdf",
     "select_lowering",
@@ -2699,6 +2700,53 @@ def _twin_link_meshes(
     return out
 
 
+def modelled_links(robot: RobotDescription) -> set[str]:
+    """The links the manifest models, the only ones lowered geometry may land on.
+
+    Its kinematic chain, the rigid links ``fixed_attachments`` hang on it, and every
+    ``mimic_joints`` follower (the aloha_agilex mirror finger): the attachment
+    producers name followers as touch links, and the kernel rejects a whole set
+    naming a link it does not know.
+    """
+    return (
+        {j.parent_link for j in robot.joints}
+        | {j.child_link for j in robot.joints}
+        | {a.parent_link for a in robot.fixed_attachments}
+        | {a.child_link for a in robot.fixed_attachments}
+        | {m.child_link for m in robot.mimic_joints}
+    )
+
+
+def _check_mimic_frames(robot: RobotDescription, urdf_ref: str, lowered: set[str]) -> None:
+    """Refuse a lowered mimic follower whose manifest origin/axis is not the URDF's.
+
+    The kernel poses a follower from its ``mimic_joints`` row (``MimicJoint`` takes
+    the origin from the URDF), and the URDF fit puts its geometry in the URDF frame:
+    a row left at the zero default would place that geometry wrong.
+    """
+    import numpy as np
+    from openral_core.kinematics import transform_from_xyz_rpy
+
+    mimics = [m for m in robot.mimic_joints if m.child_link in lowered]
+    if not mimics:
+        return
+    fk = lower_joint_fk(robot.model_copy(update={"joints": mimics}), urdf_ref)
+    for mimic in mimics:
+        if mimic.name not in fk:
+            continue  # not a URDF joint pair: nothing to compare against
+        xyz, rpy, axis = fk[mimic.name]
+        frame_off = np.abs(
+            transform_from_xyz_rpy(mimic.origin_xyz, mimic.origin_rpy)
+            - transform_from_xyz_rpy(xyz, rpy)
+        ).max()
+        if frame_off > _TWIN_FRAME_TOL or not np.allclose(mimic.axis_xyz, axis, atol=1e-6):
+            raise ROSConfigError(
+                f"{robot.name}: mimic_joints row {mimic.name!r} has origin "
+                f"{mimic.origin_xyz} {mimic.origin_rpy} axis {mimic.axis_xyz}, but the URDF "
+                f"has {xyz} {rpy} axis {axis}; the kernel would pose its geometry wrong."
+            )
+
+
 def lower_robot(
     robot: RobotDescription,
     *,
@@ -2760,15 +2808,7 @@ def lower_robot(
     # orphan URDF link (e.g. panda_leftfinger, absent from a manifest that models a
     # single panda_finger_pair) can't reach the kernel — and a URDF body link the
     # kernel should see is one `fixed_attachments` row away.
-    chain_links = (
-        {j.parent_link for j in robot.joints}
-        | {j.child_link for j in robot.joints}
-        | {a.parent_link for a in robot.fixed_attachments}
-        | {a.child_link for a in robot.fixed_attachments}
-        # A mimic follower (the aloha_agilex mirror finger) is a modelled moving link:
-        # the producers name it a touch link, so the kernel must know it.
-        | {m.child_link for m in robot.mimic_joints}
-    )
+    chain_links = modelled_links(robot)
 
     geometry: list[LinkCollisionGeometry] = []
     joint_fk: dict[str, tuple[_Vec3, _Vec3, _Vec3]] = {}
@@ -2794,6 +2834,7 @@ def lower_robot(
                 f"(urdf={urdf_ref}). Refusing to lower an empty collision model."
             )
         joint_fk = lower_joint_fk(robot, urdf_ref)
+        _check_mimic_frames(robot, urdf_ref, chain_links)
 
     pairs: list[tuple[str, str]] = []
     source = "sampling"

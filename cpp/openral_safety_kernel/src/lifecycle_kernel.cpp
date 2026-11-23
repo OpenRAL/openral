@@ -5304,7 +5304,9 @@ void SafetyKernelLifecycleNode::on_world_state(
           fresh = static_cast<std::uint8_t>(fresh | (1U << i));
         }
       }
-      attached_contact_snapshot_mask_ = fresh;
+      // A baseline still pending from an earlier revision moves with its payload too.
+      attached_contact_snapshot_mask_ = static_cast<std::uint8_t>(
+          carry_slot_bits(attached_contact_snapshot_mask_, slot_origin) | fresh);
       attached_set_identity_ = set_identity;
     } else {
       // Same objects, no exemption provider: the revision moved because a payload's geometry grew
