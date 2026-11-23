@@ -2283,7 +2283,7 @@ class SimGripperDescription(BaseModel):
 # below only checks the ref *string* shape (cheap, no I/O); the resolver in
 # ``openral_core.assets`` does the file resolution. Both must accept the same
 # schemes, so keep these in lock-step with ``openral_core.assets``.
-_ASSET_SCHEMES = ("rd:", "file:", "gym_aloha:", "openarm:", "unitree:", "makermods:")
+_ASSET_SCHEMES = ("rd:", "file:", "gym_aloha:", "openarm:", "unitree:", "makermods:", "behavior:")
 _ROS2_DYNAMIC = "ros2://robot_description"
 
 

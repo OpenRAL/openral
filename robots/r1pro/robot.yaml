@@ -14,6 +14,12 @@ footprint_polygon: [[0.24, 0.31], [0.20, 0.34], [-0.11, 0.34], [-0.36, 0.15],
                     [-0.39, 0.11], [-0.40, 0.03], [-0.40, -0.03], [-0.39, -0.11],
                     [-0.36, -0.15], [-0.11, -0.34], [0.20, -0.34], [0.24, -0.31]]
 
+# Visual-only URDF: BEHAVIOR's r1pro.urdf at the revision the limits below came
+# from, its unshipped collision meshes dropped (openral_hal._behavior_r1pro_assets).
+assets:
+  urdf:
+    ref: "behavior:r1pro"
+
 joints:
   - name: "torso_joint1"
     joint_type: "revolute"

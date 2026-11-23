@@ -16,6 +16,9 @@ Grammar (``resolve_asset(ref, kind)``):
   ``unitree_mujoco``), for robots in neither menagerie nor robot_descriptions.
 * ``makermods:<variant>`` — the MakerMods Metal arm URDF / MJCF, derived from
   a pinned clone of the unlicensed upstream description (nothing vendored).
+* ``behavior:r1pro`` — the BEHAVIOR-1K Galaxea R1 Pro URDF (MIT Hugging Face
+  dataset at a pinned revision), with absolute mesh paths and the collision
+  meshes upstream does not ship dropped (URDF only).
 * ``ros2://robot_description`` — dynamic-detection marker (URDF only); not a
   file, returned as ``None`` for the launch to subscribe at runtime.
 
@@ -31,6 +34,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import importlib.util
 import os
 import re
 from collections.abc import Callable, Iterator
@@ -106,7 +110,7 @@ def resolve_asset(ref: str, kind: AssetKind, *, manifest_dir: Path | None = None
     raise AssetRefError(
         f"unrecognized asset ref {ref!r}; expected one of: rd:<module>, "
         f"file:<relpath>, gym_aloha:<scene>, openarm:<variant>, "
-        f"unitree:<model>, makermods:<variant>, {_ROS2_DYNAMIC}"
+        f"unitree:<model>, makermods:<variant>, behavior:<model>, {_ROS2_DYNAMIC}"
     )
 
 
@@ -415,6 +419,31 @@ def _resolve_makermods(variant: str, kind: AssetKind) -> Path:
         raise AssetRefError(f"makermods:{variant} ({kind}): {exc}") from exc
 
 
+def _resolve_behavior(model: str, kind: AssetKind) -> Path:
+    """Resolve ``behavior:r1pro`` to the derived BEHAVIOR-1K R1 Pro URDF.
+
+    A failed download is an ``AssetFetchError`` (an offline host may skip on
+    it); an unknown model or kind, or a missing ``openral_hal`` /
+    ``huggingface_hub``, is an ``AssetRefError``.
+    """
+    from openral_core.exceptions import ROSConfigError
+
+    if model != "r1pro" or kind != "urdf":
+        raise AssetRefError(f"behavior:{model} ({kind}): only behavior:r1pro as a urdf exists")
+    if importlib.util.find_spec("huggingface_hub") is None:
+        raise AssetRefError(f"behavior:{model} needs huggingface_hub")
+    try:
+        from openral_hal._behavior_r1pro_assets import ensure_r1pro_urdf
+    except ImportError as exc:
+        raise AssetRefError(
+            f"behavior:{model} needs openral_hal ({type(exc).__name__}: {exc})"
+        ) from exc
+    try:
+        return ensure_r1pro_urdf()
+    except ROSConfigError as exc:
+        raise AssetFetchError(f"behavior:{model} ({kind}): {exc}") from exc
+
+
 # ``<scheme>:`` → resolver for every scheme but ``file:`` (which also takes the
 # manifest dir). Keep in lock-step with ``openral_core.schemas._ASSET_SCHEMES``.
 _SCHEME_RESOLVERS: tuple[tuple[str, Callable[[str, AssetKind], Path]], ...] = (
@@ -423,4 +452,5 @@ _SCHEME_RESOLVERS: tuple[tuple[str, Callable[[str, AssetKind], Path]], ...] = (
     ("openarm:", _resolve_openarm),
     ("unitree:", _resolve_unitree),
     ("makermods:", _resolve_makermods),
+    ("behavior:", _resolve_behavior),
 )

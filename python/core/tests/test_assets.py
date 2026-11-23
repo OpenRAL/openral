@@ -99,3 +99,27 @@ def test_makermods_resolves_to_existing_file(ref: str, kind: AssetKind) -> None:
 
 def test_ros2_marker_is_passthrough_not_a_file() -> None:
     assert resolve_asset("ros2://robot_description", "urdf") is None
+
+
+def test_behavior_rejects_unknown_model_and_kind() -> None:
+    """``behavior:`` serves only the R1 Pro URDF; anything else fails before any fetch."""
+    for ref, kind in (("behavior:r1", "urdf"), ("behavior:r1pro", "mjcf")):
+        with pytest.raises(AssetRefError, match="only behavior:r1pro") as info:
+            resolve_asset(ref, kind)  # type: ignore[arg-type]  # reason: AssetKind literal from a loop
+        assert not isinstance(info.value, AssetFetchError)
+
+
+def test_behavior_r1pro_urdf_loads_in_mujoco_with_visuals() -> None:
+    """The derived URDF opens with its visual meshes: no unshipped collision ref left."""
+    mujoco = pytest.importorskip("mujoco")
+    try:
+        path = resolve_asset("behavior:r1pro", "urdf")
+    except AssetFetchError as exc:
+        pytest.skip(f"BEHAVIOR-1K robot assets not fetchable on this host: {exc}")
+    assert path is not None
+    xml = path.read_text(encoding="utf-8").replace(
+        "<link", '<mujoco><compiler strippath="false" discardvisual="false"/></mujoco><link', 1
+    )
+    model = mujoco.MjModel.from_xml_string(xml)
+    assert model.ngeom > 0
+    assert "torso_joint1" in {model.joint(i).name for i in range(model.njnt)}
