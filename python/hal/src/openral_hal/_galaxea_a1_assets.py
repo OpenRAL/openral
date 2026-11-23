@@ -142,7 +142,9 @@ def _derive_mjcf(urdf: Path) -> str:
         efforts[name] = float(str(limit.get("effort")))
         if name in (_DRIVEN_FINGER, _MIMIC_FINGER):
             joint.set("type", "prismatic")  # the vendor's declared axis + limit
-    meshdir = urdf.parent.parent / "meshes"
+    # Absolute: MuJoCo resolves a relative meshdir against the generated file's own
+    # directory, so a relative OPENRAL_CACHE_DIR would point the cached MJCF nowhere.
+    meshdir = (urdf.parent.parent / "meshes").resolve()
     ext = ET.SubElement(root, "mujoco")
     ET.SubElement(
         ext,

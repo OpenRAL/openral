@@ -211,6 +211,8 @@ class MujocoTwinRollout:
         if len(self.grippers_by_joint) + len(self.grippers_by_end_effector) != len(list(grippers)):
             duplicates = [g.joint or g.end_effector for g in grippers]
             raise ROSConfigError(f"grippers contains duplicate joint names: {duplicates}")
+        for ee_name in self.grippers_by_end_effector:
+            self._require_open_unit(ee_name)
         joint_name_set = {j.name for j in description.joints}
         for g_joint in self.grippers_by_joint:
             if g_joint not in joint_name_set:
@@ -408,8 +410,9 @@ class MujocoTwinRollout:
     def step_action_group(self, actions: list[Action]) -> TwinStepResult:
         """Apply one command for one control period: a slot group, or one ungrouped action.
 
-        End-effector gripper slots (``GRIPPER_POSITION`` on a gripper with no manifest
-        joint) are split off first (``_split_end_effector_grippers``); ``_compose``
+        Directly written gripper slots (``GRIPPER_POSITION`` on an end-effector gripper,
+        or a lone one on a joint gripper) are split off first
+        (``_split_end_effector_grippers``); ``_compose``
         validates the rest and turns it into a full-dof target row and/or a planar twist;
         the row goes into ``ctrl`` (``_apply_targets``), the twist drives the base
         (``_drive_base``), the gripper slots into their actuators, and ONE ``advance``
@@ -699,11 +702,14 @@ class MujocoTwinRollout:
             )
         import mujoco as mj  # reason: optional sim-only dep
 
+        # A follower jaw a gripper already snaps (the R1 Pro's finger_joint2, inside its
+        # leader's qpos_addrs) is not written again: its own entry would undo the snap.
+        gripper_owned = {a for g in self.grippers_by_joint.values() for a in g.qpos_addrs}
         for name, value in zip(self.joint_names, pose, strict=True):
             qpos_addr = self.joint_qpos_addr.get(name)
-            if qpos_addr is None:
-                continue
             gripper = self.grippers_by_joint.get(name)
+            if qpos_addr is None or (gripper is None and qpos_addr in gripper_owned):
+                continue
             # Zero qvel too so the snap doesn't carry momentum: every coordinate written.
             if gripper is None:
                 data.qpos[qpos_addr] = float(value)
@@ -848,26 +854,84 @@ class MujocoTwinRollout:
         assert command.joint_targets is not None
         return list(command.joint_targets[-1]), twist, command
 
+    def _require_open_unit(self, ee_name: str | None) -> None:
+        """Refuse an end effector whose ``command_convention`` the twin cannot write.
+
+        The twin writes ``Action.gripper`` as the ``[0, 1]`` opening (``1`` = open);
+        a ``normalized_close_symmetric`` command would reverse the gripper and a
+        ``width_meters`` one would be read as a fraction. An undeclared convention
+        (``None``) or a name that is no end effector keeps that default.
+
+        Raises:
+            ROSConfigError: The end effector declares any other convention.
+        """
+        for ee in self.description.end_effectors:
+            if ee.name == ee_name and ee.command_convention not in (None, "normalized_open_unit"):
+                raise ROSConfigError(
+                    f"{self.description.name}: end effector {ee_name!r} declares "
+                    f"command_convention {ee.command_convention!r}; the twin writes only "
+                    "'normalized_open_unit'."
+                )
+
+    def _gripper_of(self, action: Action, *, lone: bool) -> SimGripperDescription | None:
+        """The sim gripper a ``GRIPPER_POSITION`` slot drives; ``None`` leaves it to ``_compose``.
+
+        An end-effector gripper by ``ee_name`` (or the only one). A joint gripper only
+        for a lone action: in a slot group ``compose_slot_group`` already places a
+        gripper slot by the joint its ``ee_name`` names. A lone action's ``ee_name``
+        names its gripper joint (the slot-group rule), or, with exactly one joint
+        gripper, any end effector (or none).
+
+        Raises:
+            ROSConfigError: The action names no gripper of this twin.
+        """
+        name = action.ee_name
+        if self.grippers_by_end_effector:
+            if name is None and len(self.grippers_by_end_effector) == 1:
+                name = next(iter(self.grippers_by_end_effector))
+            gripper = self.grippers_by_end_effector.get(name or "")
+            if gripper is None:
+                raise ROSConfigError(
+                    f"{self.backend}: GRIPPER_POSITION ee_name={action.ee_name!r} names no "
+                    f"end-effector gripper (have: {sorted(self.grippers_by_end_effector)})."
+                )
+            return gripper
+        if not lone:
+            return None
+        gripper = self.grippers_by_joint.get(name or "")
+        ee_names = {ee.name for ee in self.description.end_effectors}
+        if gripper is None and len(self.grippers_by_joint) == 1 and name in {None, *ee_names}:
+            gripper = next(iter(self.grippers_by_joint.values()))
+        if gripper is None or gripper.write_mode is not GripperWriteMode.NORMALISED:
+            raise ROSConfigError(
+                f"{self.backend}: GRIPPER_POSITION ee_name={action.ee_name!r} names no "
+                f"normalised gripper joint (have: {sorted(self.grippers_by_joint)})."
+            )
+        self._require_open_unit(name)
+        return gripper
+
     def _split_end_effector_grippers(
         self, actions: list[Action]
     ) -> tuple[list[tuple[SimGripperDescription, float, Action]], list[Action]]:
-        """The command's end-effector gripper slots and its other slots.
+        """The command's directly written gripper slots and its other slots.
 
-        A ``GRIPPER_POSITION`` slot drives the end-effector gripper named by its
-        ``ee_name`` (or the only one) with ``gripper[0]``, normalised ``[0, 1]`` and
-        refused outside it, as the real HAL of such a robot refuses it. A twin without
-        end-effector grippers passes every slot through unchanged.
+        A ``GRIPPER_POSITION`` slot ``_gripper_of`` resolves drives that gripper with
+        ``gripper[0]``, normalised ``[0, 1]`` and refused outside it, as the real HAL of
+        such a robot refuses it; every other slot passes through unchanged.
 
         Raises:
             ROSConfigError: An unsupported mode, an empty or out-of-range ``gripper``,
-                or an ``ee_name`` that names no end-effector gripper.
+                or an ``ee_name`` that names no gripper.
         """
-        if not self.grippers_by_end_effector:
-            return [], actions
         out: list[tuple[SimGripperDescription, float, Action]] = []
         rest: list[Action] = []
         for action in actions:
-            if action.control_mode is not ControlMode.GRIPPER_POSITION:
+            gripper = (
+                self._gripper_of(action, lone=len(actions) == 1)
+                if action.control_mode is ControlMode.GRIPPER_POSITION
+                else None
+            )
+            if gripper is None:
                 rest.append(action)
                 continue
             require_supported_control_mode(self.description, action)
@@ -877,15 +941,6 @@ class MujocoTwinRollout:
             if not math.isfinite(command) or not 0.0 <= command <= 1.0:
                 raise ROSConfigError(
                     f"{self.backend}: gripper target {command} is not finite within [0, 1]."
-                )
-            name = action.ee_name
-            if name is None and len(self.grippers_by_end_effector) == 1:
-                name = next(iter(self.grippers_by_end_effector))
-            gripper = self.grippers_by_end_effector.get(name or "")
-            if gripper is None:
-                raise ROSConfigError(
-                    f"{self.backend}: GRIPPER_POSITION ee_name={action.ee_name!r} names no "
-                    f"end-effector gripper (have: {sorted(self.grippers_by_end_effector)})."
                 )
             out.append((gripper, command, action))
         return out, rest

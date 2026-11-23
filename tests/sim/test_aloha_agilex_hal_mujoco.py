@@ -134,3 +134,23 @@ def test_lowering_refuses_a_follower_off_its_urdf_frame() -> None:
         _check_mimic_frames(
             desc.model_copy(update={"mimic_joints": zeroed}), str(urdf), modelled_links(desc)
         )
+
+
+def test_a_named_gripper_action_drives_only_that_hand(
+    connected: tuple[RobotDescription, MujocoArmHAL],
+) -> None:
+    """A lone ``GRIPPER_POSITION`` by ``ee_name`` closes that hand; arms and the other hold."""
+    desc, hal = connected
+    before = _drive(hal, [*_LEFT_ARM, 1.0, *_RIGHT_ARM, 1.0])
+    tick_s = hal.sim_dt_per_tick_s
+    assert tick_s is not None
+    close_left = Action(
+        control_mode=ControlMode.GRIPPER_POSITION, gripper=[0.0], ee_name="left_gripper"
+    )
+    for _ in range(round(_SETTLE_SIM_S / tick_s)):
+        hal.send_action(close_left)
+    after = list(hal.read_state().position)
+    for joint, was, now in zip(desc.joints, before, after, strict=True):
+        want = 0.0 if joint.name == "left_gripper" else was
+        tol = _GRIPPER_TOL if joint.role == "gripper" else _TRACK_TOL_RAD
+        assert abs(now - want) < tol, f"{joint.name}: expected {want:.3f}, settled {now:.3f}"

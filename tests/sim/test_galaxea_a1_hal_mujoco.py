@@ -141,3 +141,34 @@ def test_front_and_wrist_cameras_render(connected: MujocoArmHAL) -> None:
         assert frame.shape == (sensor.intrinsics.height, sensor.intrinsics.width, 3)
         assert frame.dtype == np.uint8
         assert float(frame.std()) > 5.0, f"{sensor.name} frame is blank"
+
+
+@pytest.mark.parametrize("convention", ["normalized_close_symmetric", "width_meters"])
+def test_refuses_a_gripper_convention_it_cannot_write(convention: str) -> None:
+    """The twin writes [0, 1] opening only: any other declared convention is refused."""
+    desc = RobotDescription.from_yaml(str(_ROOT / "robots" / "galaxea_a1" / "robot.yaml"))
+    (ee,) = desc.end_effectors
+    update: dict[str, object] = {"command_convention": convention}
+    if convention == "width_meters":
+        update["command_range"] = (0.0, 0.06)
+    flipped = desc.model_copy(update={"end_effectors": [ee.model_copy(update=update)]})
+    with pytest.raises(ROSConfigError, match="normalized_open_unit"):
+        MujocoArmHAL.from_description(flipped, gravity_enabled=True)
+
+
+def test_derived_mjcf_loads_from_anywhere_under_a_relative_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A relative cache path still yields an MJCF that finds its meshes once moved."""
+    import mujoco
+    from openral_hal._galaxea_a1_assets import _derive_mjcf, ensure_a1_urdf
+
+    try:
+        urdf = ensure_a1_urdf()
+    except ROSConfigError as exc:
+        pytest.skip(f"Galaxea A1 vendor files not fetchable on this host: {exc}")
+    monkeypatch.chdir(urdf.parents[2])
+    xml = _derive_mjcf(urdf.relative_to(urdf.parents[2]))
+    elsewhere = tmp_path / "a1.xml"
+    elsewhere.write_text(xml, encoding="utf-8")
+    assert mujoco.MjModel.from_xml_path(str(elsewhere)).nmesh > 0

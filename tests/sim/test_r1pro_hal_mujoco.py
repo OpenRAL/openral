@@ -165,3 +165,42 @@ def test_attachment_evidence_arms_one_hand_per_arm(
             f"{side}_gripper_finger_link1",
             f"{side}_gripper_finger_link2",
         }
+
+
+def test_a_named_gripper_action_drives_only_that_hand(
+    connected: tuple[RobotDescription, MujocoArmHAL],
+) -> None:
+    """A lone ``GRIPPER_POSITION`` naming a gripper joint closes that hand only."""
+    desc, hal = connected
+    open_row = [*_TORSO, *_LEFT_ARM, 1.0, 0.0, *_RIGHT_ARM, 1.0, 0.0]
+    _send_for(
+        hal,
+        Action(control_mode=ControlMode.JOINT_POSITION, joint_targets=[open_row], horizon=1),
+        _SETTLE_SIM_S,
+    )
+    before = dict(zip(hal.read_state().name, hal.read_state().position, strict=True))
+    close_left = Action(
+        control_mode=ControlMode.GRIPPER_POSITION,
+        gripper=[0.0],
+        ee_name="left_gripper_finger_joint1",
+    )
+    _send_for(hal, close_left, _SETTLE_SIM_S)
+    after = dict(zip(hal.read_state().name, hal.read_state().position, strict=True))
+    for joint in desc.joints:
+        # Both left slides close (joint1 normalised, joint2 metres); the rest hold.
+        want = 0.0 if joint.name.startswith("left_gripper_finger") else before[joint.name]
+        tol = _GRIPPER_TOL if joint.role == "gripper" else _TRACK_TOL_RAD
+        assert abs(after[joint.name] - want) < tol, f"{joint.name}: {after[joint.name]:.3f}"
+
+
+@pytest.mark.parametrize("follower", [0.0, 0.05])
+def test_pose_reset_keeps_the_jaws_in_step(
+    connected: tuple[RobotDescription, MujocoArmHAL], follower: float
+) -> None:
+    """A reset snaps both slides from the leader; the follower's own entry cannot undo it."""
+    _desc, hal = connected
+    hal.reset_to_pose([*_TORSO, *_LEFT_ARM, 0.5, follower, *_RIGHT_ARM, 0.5, follower])
+    got = dict(zip(hal.read_state().name, hal.read_state().position, strict=True))
+    for side in ("left", "right"):
+        assert got[f"{side}_gripper_finger_joint1"] == pytest.approx(0.5, abs=1e-6)
+        assert got[f"{side}_gripper_finger_joint2"] == pytest.approx(0.025, abs=1e-6)
