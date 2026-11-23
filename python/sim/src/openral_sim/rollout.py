@@ -319,6 +319,11 @@ class SimRollout(Protocol):
             addresses, grippers in their public units) returns it here;
             ``SimAttachedHAL.read_state`` then serves it instead of walking
             the MJCF joints by name or reading ``obs["joint_positions"]``.
+            A backend with neither (no MJCF handle) must put the measured
+            ``joint_positions`` (and ``joint_velocities`` when it has them) in
+            every observation, in description-joint order or keyed by
+            ``obs["joint_names"]``; without them ``read_state`` refuses with
+            ``ROSRuntimeError`` rather than publish a zero pose.
 
         ``read_images(self) -> dict[str, NDArray[np.uint8]]``
             — a backend that renders on demand returns the current state's
