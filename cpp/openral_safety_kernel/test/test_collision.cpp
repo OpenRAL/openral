@@ -7763,7 +7763,14 @@ TEST(ReleaseArm, RecordsNothingClearOfTheMarginOrWithoutAWindow) {
   osk::CollisionScratch s = arm_scratch();
   osk::AttachedModel att = frozen_on_hand();
   s.link_world[2] = translate(0.2, 0.0, 0.0);  // the forearm clear of the payload at release
-  EXPECT_EQ(osk::release_arm_floors(m, s, att, att.objects[0], 0.0), 1U);
+  osk::ReleaseArmSurvey survey;
+  EXPECT_EQ(osk::release_arm_floors(m, s, att, att.objects[0], 0.0, &survey), 1U);
+  // The survey keeps both looked-at links, the clear one with its positive distance.
+  ASSERT_EQ(survey.n, 2U);
+  EXPECT_EQ(survey.link[0], 3);
+  EXPECT_NEAR(survey.distance[0], -0.03, 1e-9);
+  EXPECT_EQ(survey.link[1], 2);
+  EXPECT_NEAR(survey.distance[1], 0.17, 1e-9);
   EXPECT_EQ(att.objects[0].release_arm_link[0], 3);
   EXPECT_EQ(att.objects[0].release_arm_link[1], -1) << "not met at release: never offered";
   // No release window, or a payload still carried: nothing, and stale slots are cleared.

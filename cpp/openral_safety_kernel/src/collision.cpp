@@ -3123,8 +3123,11 @@ double released_payload_clearance(const CollisionModel& model, const CollisionSc
 }
 
 std::size_t release_arm_floors(const CollisionModel& model, const CollisionScratch& scratch,
-                               const AttachedModel& attached, AttachedObject& object,
-                               double margin) noexcept {
+                               const AttachedModel& attached, AttachedObject& object, double margin,
+                               ReleaseArmSurvey* survey) noexcept {
+  if (survey != nullptr) {
+    survey->n = 0;
+  }
   object.release_arm_link.fill(-1);
   object.release_arm_floor.fill(0.0);
   const int n_links = static_cast<int>(model.parent.size());
@@ -3186,6 +3189,11 @@ std::size_t release_arm_floors(const CollisionModel& model, const CollisionScrat
       continue;
     }
     const double d = distance_to(link);
+    if (survey != nullptr && survey->n < ReleaseArmSurvey::kMax) {
+      survey->link[survey->n] = link;
+      survey->distance[survey->n] = d;
+      ++survey->n;
+    }
     if (std::isfinite(d) && d <= margin) {
       object.release_arm_link[recorded] = link;
       object.release_arm_floor[recorded] = d;

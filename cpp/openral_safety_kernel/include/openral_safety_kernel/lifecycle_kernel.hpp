@@ -294,7 +294,8 @@ private:
   // releases on its own decision.
   void apply_tracked_release();
   /// Issue #706: log the releasing arm's links a just-opened window may offer the provider.
-  void log_release_arm_links(const std::string& object_id, const AttachedObject& obj) const;
+  void log_release_arm_links(const std::string& object_id, const AttachedObject& obj,
+                             const ReleaseArmSurvey& survey) const;
   /// A producer-released record (`released_by_link`): frozen, its window kept by the kernel.
   void apply_declared_release(const std::vector<openral_msgs::msg::AttachedCollisionObject>& wire);
   // Issue #418 — record the live grasp declaration's `declaration_key`

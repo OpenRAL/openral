@@ -5916,16 +5916,29 @@ void SafetyKernelLifecycleNode::union_bound_geometry(
 }
 
 void SafetyKernelLifecycleNode::log_release_arm_links(const std::string& object_id,
-                                                      const AttachedObject& obj) const {
-  // Issue #706: disclose every arm pair a release window may offer the provider, with its floor.
+                                                      const AttachedObject& obj,
+                                                      const ReleaseArmSurvey& survey) const {
+  const auto name = [&](int link) -> const char* {
+    return link >= 0 && static_cast<std::size_t>(link) < collision_link_names_.size()
+               ? collision_link_names_[static_cast<std::size_t>(link)].c_str()
+               : "?";
+  };
+  // Issue #706: every wrist/forearm link looked at and its distance to the frozen payload, so a
+  // run shows whether the margin bound (met at release) catches the links that later stop.
+  for (std::size_t k = 0; k < survey.n; ++k) {
+    RCLCPP_INFO(this->get_logger(),
+                "safety.release_arm_distance object=%s link=%s distance_m=%g margin_m=%g",
+                object_id.c_str(), name(survey.link[k]), survey.distance[k],
+                attached_collision_margin_m_);
+  }
+  // Every arm pair a release window may offer the provider, with its floor.
   for (std::size_t k = 0; k < kMaxReleaseArmLinks; ++k) {
     const int link = obj.release_arm_link[k];
-    if (link >= 0 && static_cast<std::size_t>(link) < collision_link_names_.size()) {
+    if (link >= 0) {
       RCLCPP_WARN(this->get_logger(),
                   "safety.release_arm_pair object=%s link=%s floor_m=%g: met at release, offered "
                   "to the provider only while no deeper (issue #706)",
-                  object_id.c_str(), collision_link_names_[static_cast<std::size_t>(link)].c_str(),
-                  obj.release_arm_floor[k]);
+                  object_id.c_str(), name(link), obj.release_arm_floor[k]);
     }
   }
 }
@@ -6011,11 +6024,12 @@ void SafetyKernelLifecycleNode::apply_declared_release(
     attached_binding_[i].off_hand = "released";  // never a handover, no witness
     obj.release_hand_link = released_by;
     if (opened) {
+      ReleaseArmSurvey survey;
       release_arm_floors(collision_model_, binding_scratch_, attached_model_, obj,
-                         attached_collision_margin_m_);
+                         attached_collision_margin_m_, &survey);
       rec->arm_link = obj.release_arm_link;
       rec->arm_floor = obj.release_arm_floor;
-      log_release_arm_links(w.object_id, obj);
+      log_release_arm_links(w.object_id, obj, survey);
     }
     obj.release_arm_link = rec->arm_link;
     obj.release_arm_floor = rec->arm_floor;
@@ -6109,8 +6123,9 @@ void SafetyKernelLifecycleNode::apply_tracked_release() {
       obj.attach_link = -1;
       obj.pose_in_link = e.frozen;
       obj.release_hand_link = e.hand_link;
+      ReleaseArmSurvey survey;
       release_arm_floors(collision_model_, binding_scratch_, attached_model_, obj,
-                         attached_collision_margin_m_);
+                         attached_collision_margin_m_, &survey);
       e.arm_link = obj.release_arm_link;
       e.arm_floor = obj.release_arm_floor;
       RCLCPP_WARN(this->get_logger(),
@@ -6118,7 +6133,7 @@ void SafetyKernelLifecycleNode::apply_tracked_release() {
                   "and touch links exempt until %g m clear or %g s (ADR-0121)",
                   e.object_id.c_str(), static_cast<unsigned>(e.epoch), provider_->name(),
                   release_clear_m_, release_timeout_s_);
-      log_release_arm_links(e.object_id, obj);
+      log_release_arm_links(e.object_id, obj, survey);
       if (grasp_latched_ && grasp_latched_tracked_ && grasp_latched_object_ == e.object_id &&
           grasp_latched_epoch_ == e.epoch) {
         retire_grasp_declaration("tracked_release");

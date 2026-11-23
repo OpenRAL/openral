@@ -1746,10 +1746,20 @@ double released_payload_clearance(const CollisionModel& model, const CollisionSc
 /// FK'd into `scratch` is recorded in `release_arm_link` with that distance as its floor; every
 /// other slot is cleared to -1. The payload's frozen box is the padded bind-time model, so the
 /// wrist that just let go of it overlaps it from the first tick (issue #706: 4 of 5 restock stops).
-/// Returns the number recorded. Call once, when the window opens. Allocation-free.
+/// Returns the number recorded. `survey`, when given, gets every link looked at with its distance.
+/// Call once, when the window opens. Allocation-free.
+/// Every wrist/forearm link `release_arm_floors` looked at, recorded or not, with its distance
+/// (+inf = no geometry): the evidence for the margin bound (issue #706 A/B). Up to `kMax` kept.
+struct ReleaseArmSurvey {
+  static constexpr std::size_t kMax = 4;
+  std::size_t n{0};
+  std::array<int, kMax> link{};
+  std::array<double, kMax> distance{};
+};
+
 std::size_t release_arm_floors(const CollisionModel& model, const CollisionScratch& scratch,
-                               const AttachedModel& attached, AttachedObject& object,
-                               double margin) noexcept;
+                               const AttachedModel& attached, AttachedObject& object, double margin,
+                               ReleaseArmSurvey* survey = nullptr) noexcept;
 
 /// Stable snake_case token naming `status`, for the `reason=` key of the
 /// kernel's grasp-region log lines. Never null; unknown values read `unknown`.

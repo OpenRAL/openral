@@ -8504,6 +8504,10 @@ TEST_F(LifecycleKernelTest, AReleasingWristIsOfferedToTheProviderOnlyWhileNoDeep
   ASSERT_EQ(logs.count("safety.tracked_release object=trk:1 epoch=0"), 1U) << logs.joined();
   ASSERT_EQ(logs.count("safety.release_arm_pair object=trk:1 link=other floor_m=0.015"), 1U)
       << logs.joined();
+  EXPECT_EQ(logs.count("safety.release_arm_distance object=trk:1 link=other distance_m=0.015 "
+                       "margin_m=0.02"),
+            1U)
+      << logs.joined();
   EXPECT_TRUE(r.passes(0.0)) << "the wrist where it let go: " << logs.joined();
   EXPECT_FALSE(r.passes(0.0, 0.01)) << "the wrist 10 mm deeper: " << logs.joined();
   EXPECT_EQ(logs.count("b=other step="), 1U) << logs.joined();
