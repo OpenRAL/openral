@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -268,3 +269,23 @@ def test_robosuite_panda_omron_has_the_manifest_sim_joints() -> None:
     manifest = Path(__file__).resolve().parents[3] / "robots" / "panda_mobile" / "robot.yaml"
     declared = {j.sim_joint_name for j in RobotDescription.from_yaml(str(manifest)).joints}
     assert declared - {None} <= joints
+
+
+def test_robotwin_cache_write_failure_is_not_a_fetch_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unwritable cache is a local error (``AssetRefError``), never the
+    skippable ``AssetFetchError`` an unreachable upstream raises."""
+    pytest.importorskip("huggingface_hub")
+    if os.geteuid() == 0:
+        pytest.skip("root ignores the read-only mode this test relies on")
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    cache.chmod(0o500)  # read-only: the fetcher cannot create its cache root
+    monkeypatch.setenv("OPENRAL_CACHE_DIR", str(cache))
+    try:
+        with pytest.raises(AssetRefError) as info:
+            resolve_asset("robotwin:aloha_agilex", "urdf")
+        assert not isinstance(info.value, AssetFetchError)
+    finally:
+        cache.chmod(0o700)

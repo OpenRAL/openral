@@ -241,12 +241,13 @@ def test_ancestor_package_meshes_reach_the_bridge_as_a_package(
     lives in is a folder of that name, so every mesh is served (#726)."""
     from openral_core.assets import AssetRefError, resolve_asset
 
+    # Before the resolve: a host without the launch deps skips without cloning.
+    module: Any = _load_launch("deploy_e2e_launch_ancestor_package")  # loaded by path
     try:
         urdf = resolve_asset("rd:panda_description", "urdf")
     except AssetRefError as exc:
         pytest.skip(f"robot_descriptions example-robot-data clone unavailable: {exc}")
     assert urdf is not None
-    module: Any = _load_launch("deploy_e2e_launch_ancestor_package")  # loaded by path
     monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path / "cache"))
     xml = urdf.read_text(encoding="utf-8")
     assert "package://example-robot-data/" in xml

@@ -20,15 +20,20 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shutil
 import tempfile
+import uuid
 import xml.etree.ElementTree as ET
 import zipfile
+from collections.abc import Callable
+from functools import partial
 from pathlib import Path
+from typing import TypeVar
 
 from openral_core.exceptions import ROSConfigError
 
 from openral_hal._pinned_files import sha256_file
+
+_T = TypeVar("_T")
 
 __all__ = [
     "ARM_JOINT_RANGES",
@@ -161,6 +166,16 @@ def _root() -> Path:
     return base / "robotwin_aloha_agilex" / ROBOTWIN_ASSETS_REVISION[:12]
 
 
+def _remote(read: Callable[[], _T]) -> _T:
+    """Run one read of the remote archive, every failure a ``ROSConfigError`` (a fetch)."""
+    try:
+        return read()
+    except Exception as exc:  # every hub / network / archive read failure is a fetch failure
+        raise ROSConfigError(
+            f"Failed to read {_MEMBER_DIR} from {_ARCHIVE}: {type(exc).__name__}: {exc}"
+        ) from exc
+
+
 def fetch_aloha_agilex_files() -> Path:
     """Download every pinned file not already cached; return the cache root.
 
@@ -169,7 +184,9 @@ def fetch_aloha_agilex_files() -> Path:
 
     Raises:
         ROSConfigError: ``huggingface_hub`` is missing, or the archive could not
-            be read (``.__cause__`` carries the hub / network error).
+            be read (``.__cause__`` carries the hub / network error). Only remote
+            reads are wrapped, so a caller can tell them from a local cache error.
+        OSError: Writing into the local cache failed (a full or read-only disk).
     """
     root = _root()
     missing = [rel for rel in _FILES if not (root / rel).is_file()]
@@ -179,23 +196,25 @@ def fetch_aloha_agilex_files() -> Path:
         from huggingface_hub import HfFileSystem  # noqa: PLC0415  # reason: optional dep
     except ImportError as exc:
         raise ROSConfigError(f"robotwin:aloha_agilex needs huggingface_hub: {exc}") from exc
+    # The cache root first: a full or read-only disk fails here, before any network.
+    root.mkdir(parents=True, exist_ok=True)
     (root / ".verified").unlink(missing_ok=True)
-    try:
-        with (
-            HfFileSystem().open(_ARCHIVE, "rb", block_size=8 << 20) as remote,
-            zipfile.ZipFile(remote) as archive,
-        ):
-            for rel in missing:
-                dest = root / rel
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                tmp = dest.with_name(f".{dest.name}.{os.getpid()}.tmp")
-                with archive.open(_MEMBER_DIR + rel) as src, tmp.open("wb") as out:
-                    shutil.copyfileobj(src, out, 1 << 20)
+    remote = _remote(lambda: HfFileSystem().open(_ARCHIVE, "rb", block_size=8 << 20))
+    with remote, _remote(lambda: zipfile.ZipFile(remote)) as archive:
+        for rel in missing:
+            dest = root / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dest.with_name(f".{dest.name}.{uuid.uuid4().hex}.tmp")
+            try:
+                with (
+                    _remote(partial(archive.open, _MEMBER_DIR + rel)) as src,
+                    tmp.open("wb") as out,
+                ):
+                    while chunk := _remote(partial(src.read, 1 << 20)):
+                        out.write(chunk)
                 os.replace(tmp, dest)
-    except Exception as exc:  # every hub / network / archive read failure is a fetch failure
-        raise ROSConfigError(
-            f"Failed to read {_MEMBER_DIR} from {_ARCHIVE}: {type(exc).__name__}: {exc}"
-        ) from exc
+            finally:  # a failed read or write leaves no partial mesh behind
+                tmp.unlink(missing_ok=True)
     return root
 
 
