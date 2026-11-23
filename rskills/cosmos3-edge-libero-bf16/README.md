@@ -31,7 +31,7 @@ openral:
     Spatial / Object / Goal / 10 (MuJoCo 2.3.7). bf16.'
   model_family: cosmos3
   min_vram_gb: 14.1
-  latency_ms: 1500.0
+  latency_ms: 2500.0
   runtime: pytorch
   dtype: bf16
 ---
@@ -149,6 +149,9 @@ over the full suite populates `eval/`.
 | `libero_spatial/0` | 1 (seed 0) | 1/1 | 75 | 49.8 ms | RTX 5090, bf16 |
 | `libero_spatial/1` | 1 (seed 0) | 1/1 | 114 | 50.8 ms | RTX 5090, bf16 |
 | `libero_spatial/2` | 1 (seed 0) | 1/1 | 100 | 52.4 ms | RTX 5090, bf16 |
+| `libero_spatial/0` | 1 (seed 0) | 1/1 | 74 | 157.2 ms | Jetson AGX Thor, bf16 |
+| `libero_spatial/1` | 1 (seed 0) | 1/1 | 112 | 141.1 ms | Jetson AGX Thor, bf16 |
+| `libero_spatial/2` | 1 (seed 0) | 1/1 | 97 | 161.8 ms | Jetson AGX Thor, bf16 |
 
 Peak GPU memory 14.1 GiB. This is a smoke check of the port, not a benchmark claim;
 `eval/` is empty until a full suite run. The run used the workspace's MuJoCo 3.x; the
@@ -156,7 +159,13 @@ model card warns that contact-rich LIBERO tasks differ under MuJoCo 3.x versus t
 2.3.7 it was measured with. The card's numbers also ran the preprocessor's video-canvas
 step on the CPU; this adapter runs the whole preprocessor on the policy device, which the
 card notes shifts the inputs and the sampling by small numerical amounts. The 1500 ms
-`per_chunk_ms` budget is an estimate from the mean step time, not a timed chunk.
+`per_chunk_ms` budget (2500 ms) covers the timed chunk on Jetson AGX Thor: 2.13–2.17 s
+steady, 2.68 s for the first one.
+
+On Thor the adapter's load (bf16 build, weight init skipped, strict) took 19.3 s and
+peaked at 12.5 GiB of host RAM, against 86.8 s and 22.1 GiB for lerobot's own
+`from_pretrained`, with all 1188 parameters, every buffer and a seeded action chunk
+identical between the two.
 
 ## License
 
