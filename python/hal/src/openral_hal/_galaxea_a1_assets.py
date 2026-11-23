@@ -112,8 +112,6 @@ _CONTACT_EXCLUDES: tuple[tuple[str, str], ...] = (
     ("gripper1", "gripper2"),
     ("base_link", "arm_seg1"),
 )
-_JOINT_DAMPING = 0.5
-_JOINT_ARMATURE = 0.02
 
 
 def _derive_mjcf(urdf: Path) -> str:
@@ -130,7 +128,10 @@ def _derive_mjcf(urdf: Path) -> str:
             f"Deriving the Galaxea A1 MJCF needs the `mujoco` package "
             f"({type(exc).__name__}: {exc}); install the sim extras."
         ) from exc
-    root = ET.parse(urdf).getroot()
+    try:
+        root = ET.parse(urdf).getroot()
+    except ET.ParseError as exc:
+        raise ROSConfigError(f"Galaxea A1 URDF {urdf!s} is not valid XML: {exc}") from exc
     urdf_joints = {str(j.get("name")): j for j in root.iter("joint")}
     efforts: dict[str, float] = {}
     for name in (*_ARM_JOINTS, _DRIVEN_FINGER, _MIMIC_FINGER):
@@ -167,10 +168,27 @@ def _derive_mjcf(urdf: Path) -> str:
         mjcf.insert(0, compiler)
     compiler.set("meshdir", str(meshdir))
     compiler.set("angle", "radian")
+    # No joint damping / armature is invented: the MJCF carries the vendor's dynamics
+    # only, since `openral_safety.dynamics_lowering` reads them as the real arm's. The
+    # implicit integrator keeps the position servos stable on the light wrist links.
+    option = mjcf.find("option")
+    if option is None:
+        option = ET.Element("option")
+        mjcf.insert(1, option)
+    option.set("integrator", "implicitfast")
     mj_joints = {str(j.get("name")): j for j in mjcf.iter("joint")}
-    for joint in mj_joints.values():
-        joint.set("damping", f"{_JOINT_DAMPING}")
-        joint.set("armature", f"{_JOINT_ARMATURE}")
+    missing = [n for n in (*_ARM_JOINTS, _DRIVEN_FINGER, _MIMIC_FINGER) if n not in mj_joints]
+    if missing or any(mj_joints[n].get("range") is None for n in (*_ARM_JOINTS, _DRIVEN_FINGER)):
+        raise ROSConfigError(f"Galaxea A1 MJCF: joints {missing} or their ranges are missing.")
+    _add_actuation(mjcf, mj_joints, efforts)
+    ET.indent(mjcf)
+    return ET.tostring(mjcf, encoding="unicode")
+
+
+def _add_actuation(
+    mjcf: ET.Element, mj_joints: dict[str, ET.Element], efforts: dict[str, float]
+) -> None:
+    """Replace the compiled model's contacts / actuators / equalities with the twin's."""
     for old in mjcf.findall("actuator") + mjcf.findall("equality") + mjcf.findall("contact"):
         mjcf.remove(old)
     contact = ET.SubElement(mjcf, "contact")
@@ -204,8 +222,6 @@ def _derive_mjcf(urdf: Path) -> str:
             "polycoef": "0 1 0 0 0",
         },
     )
-    ET.indent(mjcf)
-    return ET.tostring(mjcf, encoding="unicode")
 
 
 def ensure_a1_mjcf() -> Path:
@@ -217,8 +233,13 @@ def ensure_a1_mjcf() -> Path:
     urdf = ensure_a1_urdf()
     path = urdf.parent.parent / f"derived-{_DERIVE_KEY}" / "a1.xml"
     if not path.is_file():
-        path.parent.mkdir(parents=True, exist_ok=True)
+        xml = _derive_mjcf(urdf)
         tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        tmp.write_text(_derive_mjcf(urdf), encoding="utf-8")
-        os.replace(tmp, path)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(xml, encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError as exc:  # an unwritable cache is a broken reference, not a skip
+            tmp.unlink(missing_ok=True)
+            raise ROSConfigError(f"Cannot write the Galaxea A1 MJCF to {path!s}: {exc}") from exc
     return path

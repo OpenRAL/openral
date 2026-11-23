@@ -21,8 +21,13 @@ vendored (`openral_hal._galaxea_a1_assets`).
 (`ensure_a1_mjcf`). Upstream declares the fingers `fixed` but gives each its
 own axis and a 0-30 mm `<limit>`; the twin makes them those prismatic slides,
 one driven and one coupled by an equality, and adds position actuators (sim-only
-gains). The twin keeps the real HAL's contract exactly: `/joint_states` carries
-the six arm joints only, the gripper is commanded as `GRIPPER_POSITION`
+gains; no joint damping or armature is made up, so the force-observer lowering
+reads only vendor dynamics). The twin (`hal.sim: GalaxeaA1MujocoHAL`) keeps the
+real HAL's contract: `/joint_states` carries the six arm joints only, a joint
+target is refused exactly as `GalaxeaA1HAL` refuses it (one shared
+`validated_a1_joint_target`: URDF limits, the 0.05 rad initial-alignment and
+0.08 rad step bounds from `hal.parameters.defaults`, no gripper payload) and
+its first waypoint is driven, and the gripper is commanded as `GRIPPER_POSITION`
 (`Action.gripper[0]` in `[0, 1]`, 1 = open, refused outside it) and reported in
 the diagnostics as `gripper_position_normalized` (`sim.grippers[].end_effector`).
 The `front` / `wrist` cameras render from their `sim_placement`s, which are sim

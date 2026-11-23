@@ -100,7 +100,7 @@ def test_description_and_protocol_surface() -> None:
     assert isinstance(hal, LifecycleEStopHAL)
     assert hal.description is GALAXEA_A1_DESCRIPTION
     assert hal.description.sdk_kind == "closed_with_api"
-    assert hal.description.hal.sim is None
+    assert hal.description.hal.sim == "openral_hal.galaxea_a1:GalaxeaA1MujocoHAL"  # the twin (#740)
     assert hal.description.capabilities.has_vision
     assert [sensor.name for sensor in hal.description.sensors] == ["front", "wrist"]
     assert "policy_substep_rad" not in hal.description.hal.parameters.defaults

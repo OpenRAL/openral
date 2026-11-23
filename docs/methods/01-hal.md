@@ -358,29 +358,32 @@ _Out-of-process torque-off for a Feetech servo bus when the HAL process dies (is
   - `stop(*, clean: bool, timeout_s=5.0) -> int | None` (L296) — `clean=True` sends `q` (caller proved torque off); `clean=False` closes the pipe so the watcher cuts torque itself. Returns the exit code, `None` if it had to be killed.
 
 ### `python/hal/src/openral_hal/galaxea_a1.py`
-_Real Galaxea A1 HAL (its MuJoCo twin is the manifest-driven `MujocoArmHAL`, #740). OpenRAL stays ROS 2 / Python 3.12; the operator's
+_Real Galaxea A1 HAL and its MuJoCo twin (`GalaxeaA1MujocoHAL`, #740), which share one joint-acceptance rule. OpenRAL stays ROS 2 / Python 3.12; the operator's
 official ROS 1 Noetic SDK runs out of process behind a literal IPv4-loopback
 JSON-lines sidecar. No vendor source, binary, or message package is distributed._
 
-- `class GalaxeaA1HAL(HALBase)` (L609) — Six-axis joint-position + normalized-gripper adapter. Takes `description=` (loaded manifest; `None` keeps `GALAXEA_A1_DESCRIPTION`). `read_state`/`send_action` use a cached snapshot/latest target so network I/O stays off the hot path. Commands fail closed on stale state/status, unaccepted motor bits, non-finite values, target misalignment, or an excessive feedback-relative step. `estop` asks the sidecar to stop its owned ROS 1 stack, records a `DownstreamStopReport` (`DownstreamStopReporting`), and always raises `ROSEStopRequested`.
-  - `connect() -> None` (L741) — Connect to the sidecar (sends the `hello` handshake with joint names/limits/timeouts/masks); requires one complete fresh snapshot. Raises `ROSRuntimeError` if already connected.
-  - `disconnect() -> None` (L776) — Close the sidecar transport idempotently.
-  - `read_state() -> JointState` (L781) — Return the latest non-stale six-joint feedback snapshot.
-  - `send_action(action: Action) -> None` (L793) — Queue one validated joint or normalized-gripper target; raises `ROSConfigError` for an unsupported control mode.
-  - `health() -> HALHealthReport` (L848) — Cached hardware health for the lifecycle diagnostics heartbeat (sidecar address, feedback/status ages, motor status, relay state, staged/forwarded targets).
-  - **(property)** `last_stop_report -> DownstreamStopReport | None` (L733) — Report of the last `estop()`; `None` before the first and after `connect()`.
-  - `estop() -> None` (L870) — Drop the connection flag first, then stop the sidecar-owned ROS 1 stack (bounded, SIGINT then SIGKILL). The sidecar's `estopped` confirmation is the acknowledgement (`stopped=True`, `joint_tracker`/`serial_driver`/`roscore` = `exited`); a refusal, timeout or link drop is recorded as `stopped=False` with the error as `detail` — never escaping as anything but `ROSEStopRequested`, which it always raises.
-- module const `_JOINT_NAMES` (L71) — six `arm_jointN` names.
-- module const `_JOINT_LIMITS` (L72) — per-joint `(min, max)` position limits, official A1 URDF.
-- module const `_JOINT_ORIGINS_XYZ` (L80) — per-joint URDF origin translation, transcribed from the official A1 URDF.
-- module const `_JOINT_ORIGINS_RPY` (L88) — per-joint URDF origin rotation, transcribed from the official A1 URDF.
-- module const `_PROTOCOL_VERSION = 1` (L96) — sidecar wire-protocol version sent in the `hello` handshake.
-- module const `_ESTOP_SIDECAR_PROCESSES` (L101) — `("joint_tracker", "serial_driver", "roscore")`, what the sidecar's e-stop stops; named in the `DownstreamStopReport`.
-- module const `_ESTOP_VENDOR_STOP` (L102) — `"ros1_sidecar_estop"`, the report's `vendor_stop` label.
-- module const `_GRIPPER_STATUS_INDEX` (L97) — index of the gripper's status code within the sidecar's status array.
-- module const `_MAX_TCP_PORT = 65536` (L98) — upper bound accepted for the sidecar's loopback TCP port.
-- module const `_MAX_STATUS_MASK = 0xFFFFFFFF` (L103) — bit-mask upper bound for a motor status/error mask.
-- const `GALAXEA_A1_DESCRIPTION` (L106) — The A1 `RobotDescription` (real HAL + the twin's `sim:` block), mirrored by
+- `class GalaxeaA1HAL(HALBase)` (L733) — Six-axis joint-position + normalized-gripper adapter. Takes `description=` (loaded manifest; `None` keeps `GALAXEA_A1_DESCRIPTION`). `read_state`/`send_action` use a cached snapshot/latest target so network I/O stays off the hot path. Commands fail closed on stale state/status, unaccepted motor bits, non-finite values, target misalignment, or an excessive feedback-relative step. `estop` asks the sidecar to stop its owned ROS 1 stack, records a `DownstreamStopReport` (`DownstreamStopReporting`), and always raises `ROSEStopRequested`.
+  - `connect() -> None` (L865) — Connect to the sidecar (sends the `hello` handshake with joint names/limits/timeouts/masks); requires one complete fresh snapshot. Raises `ROSRuntimeError` if already connected.
+  - `disconnect() -> None` (L900) — Close the sidecar transport idempotently.
+  - `read_state() -> JointState` (L905) — Return the latest non-stale six-joint feedback snapshot.
+  - `send_action(action: Action) -> None` (L917) — Queue one validated joint or normalized-gripper target; raises `ROSConfigError` for an unsupported control mode.
+  - `health() -> HALHealthReport` (L954) — Cached hardware health for the lifecycle diagnostics heartbeat (sidecar address, feedback/status ages, motor status, relay state, staged/forwarded targets).
+  - **(property)** `last_stop_report -> DownstreamStopReport | None` (L857) — Report of the last `estop()`; `None` before the first and after `connect()`.
+  - `estop() -> None` (L976) — Drop the connection flag first, then stop the sidecar-owned ROS 1 stack (bounded, SIGINT then SIGKILL). The sidecar's `estopped` confirmation is the acknowledgement (`stopped=True`, `joint_tracker`/`serial_driver`/`roscore` = `exited`); a refusal, timeout or link drop is recorded as `stopped=False` with the error as `detail` — never escaping as anything but `ROSEStopRequested`, which it always raises.
+- `validated_a1_joint_target(action, current, *, bound, first) -> tuple[float, ...]` (L619) — The A1's one joint acceptance rule, used by `GalaxeaA1HAL` and `GalaxeaA1MujocoHAL`: six finite targets of the FIRST waypoint inside the URDF limits, no gripper payload, each within `bound` rad of `current` (`first` names the bound "initial alignment", else "target step" in the error). Raises `ROSConfigError`.
+- `class GalaxeaA1MujocoHAL(MujocoArmHAL)` (L694) — The manifest's `hal.sim`: the data-driven twin (`_init_from_description` on the `sim:` block) on `_GalaxeaA1Twin`, taking the real HAL's `max_target_step_rad` / `initial_alignment_tolerance_rad` from `hal.parameters.defaults`, so it refuses what `GalaxeaA1HAL` refuses.
+- `class _GalaxeaA1Twin(MujocoTwinRollout)` [private] (L651) — `_compose` runs `validated_a1_joint_target` on every composed joint command against the twin's current positions (initial-alignment bound until the first accepted joint command after a load / reset, the step bound after) and drives its first waypoint.
+- module const `_JOINT_NAMES` (L80) — six `arm_jointN` names.
+- module const `_JOINT_LIMITS` (L81) — per-joint `(min, max)` position limits, official A1 URDF.
+- module const `_JOINT_ORIGINS_XYZ` (L89) — per-joint URDF origin translation, transcribed from the official A1 URDF.
+- module const `_JOINT_ORIGINS_RPY` (L97) — per-joint URDF origin rotation, transcribed from the official A1 URDF.
+- module const `_PROTOCOL_VERSION = 1` (L105) — sidecar wire-protocol version sent in the `hello` handshake.
+- module const `_ESTOP_SIDECAR_PROCESSES` (L110) — `("joint_tracker", "serial_driver", "roscore")`, what the sidecar's e-stop stops; named in the `DownstreamStopReport`.
+- module const `_ESTOP_VENDOR_STOP` (L111) — `"ros1_sidecar_estop"`, the report's `vendor_stop` label.
+- module const `_GRIPPER_STATUS_INDEX` (L106) — index of the gripper's status code within the sidecar's status array.
+- module const `_MAX_TCP_PORT = 65536` (L107) — upper bound accepted for the sidecar's loopback TCP port.
+- module const `_MAX_STATUS_MASK = 0xFFFFFFFF` (L112) — bit-mask upper bound for a motor status/error mask.
+- const `GALAXEA_A1_DESCRIPTION` (L115) — The A1 `RobotDescription` (real HAL + the twin's `sim:` block), mirrored by
   `robots/galaxea_a1/robot.yaml`: official A1 URDF joint names/limits, `assets.urdf` `galaxea:a1`, sidecar
   deadlines, motor masks, 0..104 mm normalized gripper mapping, and calibrated
   D455 front / D405 wrist RGB observation contracts. Collision primitives are
@@ -450,7 +453,7 @@ _Fetches Unitree's official H2 description files at pinned commits, each beside 
 _Fetches Galaxea's A1 URDF + 9 STL meshes from the unlicensed `userguide-galaxea/robot_descriptions` at a pinned commit with per-file SHA-256 (nothing vendored) — backs the `galaxea:a1` asset ref._
 
 - `ensure_a1_urdf() -> Path` (L63) — `a1_description/` @ `72008ea9` into `$OPENRAL_CACHE_DIR/galaxea_a1/<sha>/`; returns a derived `urdf/a1.urdf` whose `package://mobiman/urdf/A1/meshes/` refs are rewritten to `../meshes/`. Raises `ROSConfigError` on a failed download or digest mismatch.
-- `ensure_a1_mjcf() -> Path` (L211) — The MuJoCo twin MJCF (issue #740), compiled from `ensure_a1_urdf()` through `MjSpec` into `galaxea_a1/<sha>/derived-<module-source hash>/a1.xml`: the vendor's `fixed` `gripper1_axis` / `gripper2_axis` turned into the prismatic slides their own `<axis>` / `<limit 0..0.03>` declare, sim-only `<position>` actuators (arm_joint1..6 + `gripper` on `gripper1_axis`, each clamped at the URDF effort), an `<equality>` coupling `gripper2_axis` to it, joint damping/armature and contact excludes (the two fingers, `base_link`/`arm_seg1`). The gains say nothing about the real A1 loop. Raises `ROSConfigError` when the fetch fails or `mujoco` is missing.
+- `ensure_a1_mjcf() -> Path` (L227) — The MuJoCo twin MJCF (issue #740), compiled from `ensure_a1_urdf()` through `MjSpec` into `galaxea_a1/<sha>/derived-<module-source hash>/a1.xml`: the vendor's `fixed` `gripper1_axis` / `gripper2_axis` turned into the prismatic slides their own `<axis>` / `<limit 0..0.03>` declare, sim-only `<position>` actuators (arm_joint1..6 + `gripper` on `gripper1_axis`, each clamped at the URDF effort), an `<equality>` coupling `gripper2_axis` to it, contact excludes (the two fingers, `base_link`/`arm_seg1`) and the `implicitfast` integrator. No joint damping/armature is invented (`openral_safety.dynamics_lowering` reads the MJCF's as the real arm's). The gains say nothing about the real A1 loop. Raises `ROSConfigError` when the fetch fails, `mujoco` is missing, the URDF lost a joint or range, or the cache is unwritable (`resolve_asset` then raises a typed asset error, never a bare `OSError`).
 - const `GALAXEA_DESCRIPTIONS_SHA: str` (L43) — pinned `userguide-galaxea/robot_descriptions` commit.
 
 ### `python/hal/src/openral_hal/_robotwin_aloha_agilex_assets.py`

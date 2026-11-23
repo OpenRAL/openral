@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """Galaxea A1 MuJoCo twin: the real HAL's contract, tracking, gripper, cameras (#740).
 
-Drives the real ``MujocoArmHAL.from_description`` built purely from
-``robots/galaxea_a1/robot.yaml`` on the MJCF derived from the vendor URDF
-(``galaxea:a1``), gravity on. The twin must accept and publish exactly what
-``GalaxeaA1HAL`` does: six arm joints in the joint state, the gripper only as a
-``GRIPPER_POSITION`` action with ``gripper[0]`` in ``[0, 1]`` (refused outside it),
-reported in ``health`` as ``gripper_position_normalized``.
+Drives the manifest's ``hal.sim`` (``GalaxeaA1MujocoHAL``, built by ``build_hal``
+from ``robots/galaxea_a1/robot.yaml``) on the MJCF derived from the vendor URDF
+(``galaxea:a1``), gravity on. The twin must accept and publish what ``GalaxeaA1HAL``
+does: six arm joints in the joint state; joint targets within the step / alignment
+bounds and URDF limits, no gripper payload, the first waypoint driven; the gripper
+only as a ``GRIPPER_POSITION`` action with ``gripper[0]`` in ``[0, 1]`` (refused
+outside it), reported in ``health`` as ``gripper_position_normalized``.
 
 No mocks (CLAUDE.md §1.11): when ``mujoco`` is missing or the vendor files cannot be
 downloaded (``AssetFetchError``), the module skips with the reason.
@@ -25,8 +26,9 @@ import numpy as np
 from openral_core import Action, ControlMode, RobotDescription
 from openral_core.assets import AssetFetchError, resolve_asset
 from openral_core.exceptions import ROSConfigError
+from openral_hal import build_hal
 from openral_hal._mujoco_arm import MujocoArmHAL
-from openral_hal.galaxea_a1 import GALAXEA_A1_DESCRIPTION
+from openral_hal.galaxea_a1 import GALAXEA_A1_DESCRIPTION, GalaxeaA1MujocoHAL
 
 pytestmark = pytest.mark.sim
 
@@ -46,7 +48,8 @@ def connected() -> Iterator[MujocoArmHAL]:
         resolve_asset(desc.assets.mjcf, "mjcf")
     except AssetFetchError as exc:
         pytest.skip(f"Galaxea A1 vendor files not fetchable on this host: {exc}")
-    hal = MujocoArmHAL.from_description(desc, gravity_enabled=True)
+    hal = build_hal(desc, mode="sim")
+    assert isinstance(hal, GalaxeaA1MujocoHAL)
     hal.connect()
     try:
         yield hal
@@ -84,12 +87,23 @@ def test_every_joint_names_its_mjcf_joint(connected: MujocoArmHAL) -> None:
         assert jid >= 0 and int(model.jnt_qposadr[jid]) == index, joint.name
 
 
+def _joint(target: list[float]) -> Action:
+    return Action(control_mode=ControlMode.JOINT_POSITION, joint_targets=[target])
+
+
+def _ramp_to(hal: MujocoArmHAL, target: list[float], step: float = 0.04) -> None:
+    """Walk the commanded target to ``target`` in steps inside the real HAL's 0.08 rad bound."""
+    cmd = list(hal.read_state().position)
+    while any(abs(t - c) > 1e-9 for t, c in zip(target, cmd, strict=True)):
+        cmd = [c + max(-step, min(step, t - c)) for t, c in zip(target, cmd, strict=True)]
+        hal.send_action(_joint(cmd))
+    for _ in range(_ticks(hal)):
+        hal.send_action(_joint(target))
+
+
 def test_tracks_joint_targets(connected: MujocoArmHAL) -> None:
-    """Arm joints settle within 0.05 rad of a 6-wide JOINT_POSITION target."""
-    for _ in range(_ticks(connected)):
-        connected.send_action(
-            Action(control_mode=ControlMode.JOINT_POSITION, joint_targets=[_ARM_TARGET])
-        )
+    """Arm joints settle within 0.05 rad of a target reached in bounded steps."""
+    _ramp_to(connected, _ARM_TARGET)
     got = list(connected.read_state().position)
     for want, have in zip(_ARM_TARGET, got, strict=True):
         assert abs(have - want) < _TRACK_TOL_RAD, f"commanded {want:.3f}, settled {have:.3f}"
@@ -127,9 +141,41 @@ def test_refuses_out_of_range_gripper_like_the_real_hal(
 def test_refuses_a_seven_wide_joint_row(connected: MujocoArmHAL) -> None:
     """The gripper is not a joint: a row with a 7th entry is malformed, as on the real HAL."""
     with pytest.raises(ROSConfigError):
+        connected.send_action(_joint([*_ARM_TARGET, 1.0]))
+
+
+def test_refuses_what_the_real_hal_refuses(connected: MujocoArmHAL) -> None:
+    """Initial alignment, step bound, URDF limits and a gripper payload, as GalaxeaA1HAL."""
+    here = list(connected.read_state().position)
+    with pytest.raises(ROSConfigError, match="initial alignment"):
+        connected.send_action(_joint([here[0] + 0.06, *here[1:]]))
+    connected.send_action(_joint([here[0] + 0.04, *here[1:]]))  # inside 0.05: accepted
+    with pytest.raises(ROSConfigError, match="target step"):
+        connected.send_action(_joint([here[0] + 0.04 + 0.09, *here[1:]]))
+    with pytest.raises(ROSConfigError, match="outside"):
+        connected.send_action(_joint([here[0], here[1], 0.01, *here[3:]]))  # joint3 <= 0
+    with pytest.raises(ROSConfigError, match="GRIPPER_POSITION"):
         connected.send_action(
-            Action(control_mode=ControlMode.JOINT_POSITION, joint_targets=[[*_ARM_TARGET, 1.0]])
+            Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                joint_targets=[[here[0] + 0.04, *here[1:]]],
+                gripper=[1.0],
+            )
         )
+
+
+def test_drives_the_first_waypoint_like_the_real_hal(connected: MujocoArmHAL) -> None:
+    """Of a two-waypoint command the twin drives the first, as GalaxeaA1HAL does."""
+    here = list(connected.read_state().position)
+    first = [here[0] + 0.04, *here[1:]]
+    action = Action(
+        control_mode=ControlMode.JOINT_POSITION,
+        horizon=2,
+        joint_targets=[first, [here[0] + 2.0, *here[1:]]],
+    )
+    for _ in range(_ticks(connected)):
+        connected.send_action(action)
+    assert abs(connected.read_state().position[0] - first[0]) < _TRACK_TOL_RAD
 
 
 def test_front_and_wrist_cameras_render(connected: MujocoArmHAL) -> None:

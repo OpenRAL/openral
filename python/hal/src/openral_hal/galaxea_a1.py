@@ -18,6 +18,7 @@ Example:
 from __future__ import annotations
 
 import contextlib
+import functools
 import ipaddress
 import json
 import math
@@ -25,8 +26,9 @@ import select
 import socket
 import threading
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, Unpack
 
 import structlog
 from openral_core.exceptions import (
@@ -60,11 +62,18 @@ from openral_core.schemas import (
     UrdfAsset,
 )
 
-from openral_hal._base import HALBase
+from openral_hal._base import HALBase, validate_action_dims
+from openral_hal._mujoco_arm import MujocoArmHAL
+from openral_hal.mujoco_twin import MujocoTwinRollout, TwinKwargs
 from openral_hal.protocol import EStopRecovery, HALHealthReport
 from openral_hal.ros_control import DownstreamStopReport
 
-__all__ = ["GALAXEA_A1_DESCRIPTION", "GalaxeaA1HAL"]
+__all__ = [
+    "GALAXEA_A1_DESCRIPTION",
+    "GalaxeaA1HAL",
+    "GalaxeaA1MujocoHAL",
+    "validated_a1_joint_target",
+]
 
 log = structlog.get_logger(__name__)
 
@@ -250,6 +259,7 @@ GALAXEA_A1_DESCRIPTION = RobotDescription(
     # provisional: the runner's former 30 Hz default, not measured on this rig.
     action_spec=ActionSpec(control_freq_hz=30.0),
     hal=HalEntrypoints(
+        sim="openral_hal.galaxea_a1:GalaxeaA1MujocoHAL",
         real="openral_hal.galaxea_a1:GalaxeaA1HAL",
         parameters={
             "defaults": {
@@ -606,6 +616,120 @@ def _decode_nonnegative_int(raw: dict[str, object], key: str, *, default: int | 
     return value
 
 
+def validated_a1_joint_target(
+    action: Action, current: Sequence[float], *, bound: float, first: bool
+) -> tuple[float, ...]:
+    """The A1 joint target the real HAL accepts from ``action``: its FIRST waypoint.
+
+    The one acceptance rule of ``GalaxeaA1HAL`` and its MuJoCo twin
+    (``GalaxeaA1MujocoHAL``): six finite targets inside the URDF limits, no gripper
+    payload, each within ``bound`` rad of ``current`` — the initial-alignment
+    tolerance on the first joint command (``first``), the per-command step after.
+
+    Raises:
+        ROSConfigError: Any of those is violated.
+    """
+    validate_action_dims(action, len(_JOINT_NAMES), GALAXEA_A1_DESCRIPTION.name)
+    if action.gripper:
+        raise ROSConfigError("gripper data require GRIPPER_POSITION control mode.")
+    if not action.joint_targets:
+        raise ROSConfigError("GalaxeaA1HAL requires joint_targets in JOINT_POSITION mode.")
+    target = tuple(float(v) for v in action.joint_targets[0])
+    if not all(math.isfinite(v) for v in target):
+        raise ROSConfigError("Galaxea A1 joint target contains a non-finite value.")
+    for name, value, (lower, upper) in zip(_JOINT_NAMES, target, _JOINT_LIMITS, strict=True):
+        if not lower <= value <= upper:
+            raise ROSConfigError(
+                f"Galaxea A1 joint target {name}={value:.6f} is outside [{lower:.6f}, {upper:.6f}]."
+            )
+    if any(abs(value - now) > bound for value, now in zip(target, current, strict=True)):
+        label = "initial alignment" if first else "target step"
+        raise ROSConfigError(f"Galaxea A1 {label} exceeds the configured {bound:.3f} rad limit.")
+    return target
+
+
+class _GalaxeaA1Twin(MujocoTwinRollout):
+    """The A1's MuJoCo rollout: the real HAL's joint acceptance and waypoint, on the twin.
+
+    Every composed ``JOINT_POSITION`` command passes ``validated_a1_joint_target``
+    against the twin's current joint positions (the initial-alignment bound until the
+    first accepted joint command after a load or reset, the step bound after), and the
+    twin drives the FIRST waypoint, as ``GalaxeaA1HAL`` does.
+    """
+
+    def __init__(
+        self,
+        description: RobotDescription,
+        *,
+        max_target_step_rad: float,
+        initial_alignment_tolerance_rad: float,
+        **kwargs: Unpack[TwinKwargs],
+    ) -> None:
+        """Bind the bounds; ``kwargs`` are ``MujocoTwinRollout``'s."""
+        super().__init__(description, **kwargs)
+        self._max_step = max_target_step_rad
+        self._alignment = initial_alignment_tolerance_rad
+        self._first_joint_command = True
+
+    def _on_load(self) -> None:
+        super()._on_load()
+        self._first_joint_command = True
+
+    def _compose(
+        self, actions: list[Action]
+    ) -> tuple[list[float] | None, tuple[float, float, float] | None, Action]:
+        targets, twist, applied = super()._compose(actions)
+        if targets is None:
+            return targets, twist, applied
+        assert self.data is not None
+        current = [float(self.data.qpos[self.joint_qpos_addr[n]]) for n in self.joint_names]
+        first = self._first_joint_command
+        target = validated_a1_joint_target(
+            applied, current, bound=self._alignment if first else self._max_step, first=first
+        )
+        self._first_joint_command = False
+        return list(target), twist, applied
+
+
+class GalaxeaA1MujocoHAL(MujocoArmHAL):
+    """The Galaxea A1's MuJoCo twin (``hal.sim``): ``MujocoArmHAL`` on ``_GalaxeaA1Twin``.
+
+    Built from the manifest's ``sim:`` block like every data-driven twin, with the real
+    HAL's ``max_target_step_rad`` / ``initial_alignment_tolerance_rad`` (the same
+    ``hal.parameters.defaults``), so the twin refuses what ``GalaxeaA1HAL`` refuses.
+
+    Example:
+        >>> from openral_hal.galaxea_a1 import GALAXEA_A1_DESCRIPTION, GalaxeaA1MujocoHAL
+        >>> hal = GalaxeaA1MujocoHAL(description=GALAXEA_A1_DESCRIPTION)
+        >>> hal.connect()  # fetches the vendor files on first use  # doctest: +SKIP
+    """
+
+    def __init__(
+        self,
+        *,
+        description: RobotDescription,
+        max_target_step_rad: float = 0.08,
+        initial_alignment_tolerance_rad: float = 0.05,
+        mjcf_path: str | None = None,
+        settle_steps: int | None = None,
+        gravity_enabled: bool = True,
+        staleness_limit_s: float = 0.5,
+    ) -> None:
+        """Initialise from the manifest; the MJCF is loaded at ``connect``."""
+        self._init_from_description(
+            description,
+            mjcf_path=mjcf_path,
+            settle_steps=settle_steps,
+            gravity_enabled=gravity_enabled,
+            staleness_limit_s=staleness_limit_s,
+            twin=functools.partial(
+                _GalaxeaA1Twin,
+                max_target_step_rad=max_target_step_rad,
+                initial_alignment_tolerance_rad=initial_alignment_tolerance_rad,
+            ),
+        )
+
+
 class GalaxeaA1HAL(HALBase):
     """OpenRAL real HAL for the six-axis Galaxea A1 plus parallel gripper.
 
@@ -809,30 +933,12 @@ class GalaxeaA1HAL(HALBase):
             self._first_joint_command = False
 
     def _validated_joint_target(self, action: Action, state: _Snapshot) -> tuple[float, ...]:
-        self._validate_action_dims(action, len(_JOINT_NAMES))
-        if action.gripper:
-            raise ROSConfigError("gripper data require GRIPPER_POSITION control mode.")
-        if not action.joint_targets:
-            raise ROSConfigError("GalaxeaA1HAL requires joint_targets in JOINT_POSITION mode.")
-        target = tuple(float(v) for v in action.joint_targets[0])
-        if not all(math.isfinite(v) for v in target):
-            raise ROSConfigError("Galaxea A1 joint target contains a non-finite value.")
-        for name, value, (lower, upper) in zip(_JOINT_NAMES, target, _JOINT_LIMITS, strict=True):
-            if not lower <= value <= upper:
-                raise ROSConfigError(
-                    f"Galaxea A1 joint target {name}={value:.6f} is outside "
-                    f"[{lower:.6f}, {upper:.6f}]."
-                )
-        bound = self._alignment if self._first_joint_command else self._max_step
-        if any(
-            abs(value - current) > bound
-            for value, current in zip(target, state.position, strict=True)
-        ):
-            label = "initial alignment" if self._first_joint_command else "target step"
-            raise ROSConfigError(
-                f"Galaxea A1 {label} exceeds the configured {bound:.3f} rad limit."
-            )
-        return target
+        return validated_a1_joint_target(
+            action,
+            state.position,
+            bound=self._alignment if self._first_joint_command else self._max_step,
+            first=self._first_joint_command,
+        )
 
     @staticmethod
     def _validated_gripper_target(action: Action) -> float:

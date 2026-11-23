@@ -212,7 +212,10 @@ action_spec:
   control_freq_hz: 30.0
 
 hal:
-  sim: null
+  # The MuJoCo twin: MujocoArmHAL on the `sim:` block below, plus the real HAL's
+  # joint acceptance (step / alignment bounds from `parameters.defaults`, URDF
+  # limits, no gripper payload) and its first-waypoint rule.
+  sim: openral_hal.galaxea_a1:GalaxeaA1MujocoHAL
   real: openral_hal.galaxea_a1:GalaxeaA1HAL
   parameters:
     defaults:
