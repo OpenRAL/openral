@@ -76,6 +76,7 @@ _REMOTE_ASSET_PREFIXES = (
     "unitree:",
     "makermods:",
     "galaxea:",
+    "robotwin:",
     "behavior:",
 )
 

@@ -19,6 +19,9 @@ Grammar (``resolve_asset(ref, kind)``):
 * ``galaxea:a1`` — the Galaxea A1 URDF + meshes from Galaxea's unlicensed
   public description repo at a pinned commit with per-file SHA-256 (nothing
   vendored), its ``package://mobiman`` mesh refs made relative (URDF only).
+* ``robotwin:aloha_agilex`` — the URDF RoboTwin 2.0 loads for its aloha-agilex
+  embodiment and its meshes, range-read out of the MIT ``embodiments.zip``
+  (Hugging Face dataset) at a pinned revision with per-file SHA-256 (URDF only).
 * ``behavior:r1pro`` — the BEHAVIOR-1K Galaxea R1 Pro URDF (MIT Hugging Face
   dataset at a pinned revision), with absolute mesh paths and the collision
   meshes upstream does not ship dropped (URDF only).
@@ -113,7 +116,8 @@ def resolve_asset(ref: str, kind: AssetKind, *, manifest_dir: Path | None = None
     raise AssetRefError(
         f"unrecognized asset ref {ref!r}; expected one of: rd:<module>, "
         f"file:<relpath>, gym_aloha:<scene>, openarm:<variant>, "
-        f"unitree:<model>, makermods:<variant>, galaxea:<model>, behavior:<model>, {_ROS2_DYNAMIC}"
+        f"unitree:<model>, makermods:<variant>, galaxea:<model>, robotwin:<model>, "
+        f"behavior:<model>, {_ROS2_DYNAMIC}"
     )
 
 
@@ -447,6 +451,34 @@ def _resolve_galaxea(model: str, kind: AssetKind) -> Path:
         raise AssetRefError(f"galaxea:{model} ({kind}): {exc}") from exc
 
 
+def _resolve_robotwin(model: str, kind: AssetKind) -> Path:
+    """Resolve ``robotwin:aloha_agilex`` to RoboTwin's pinned aloha-agilex URDF.
+
+    A failed download is an ``AssetFetchError``; a digest mismatch, an unknown
+    model or kind, or a missing ``openral_hal`` is an ``AssetRefError``.
+    """
+    from openral_core.exceptions import ROSConfigError
+
+    if model != "aloha_agilex" or kind != "urdf":
+        raise AssetRefError(
+            f"robotwin:{model} ({kind}): only robotwin:aloha_agilex as a urdf exists"
+        )
+    try:
+        from openral_hal import _robotwin_aloha_agilex_assets as robotwin
+    except ImportError as exc:
+        raise AssetRefError(
+            f"robotwin:{model} needs openral_hal ({type(exc).__name__}: {exc})"
+        ) from exc
+    try:
+        robotwin.fetch_aloha_agilex_files()
+    except ROSConfigError as exc:
+        raise AssetFetchError(f"robotwin:{model} ({kind}): {exc}") from exc
+    try:
+        return robotwin.ensure_aloha_agilex_urdf()
+    except ROSConfigError as exc:
+        raise AssetRefError(f"robotwin:{model} ({kind}): {exc}") from exc
+
+
 def _resolve_behavior(model: str, kind: AssetKind) -> Path:
     """Resolve ``behavior:r1pro`` to the derived BEHAVIOR-1K R1 Pro URDF.
 
@@ -481,5 +513,6 @@ _SCHEME_RESOLVERS: tuple[tuple[str, Callable[[str, AssetKind], Path]], ...] = (
     ("unitree:", _resolve_unitree),
     ("makermods:", _resolve_makermods),
     ("galaxea:", _resolve_galaxea),
+    ("robotwin:", _resolve_robotwin),
     ("behavior:", _resolve_behavior),
 )

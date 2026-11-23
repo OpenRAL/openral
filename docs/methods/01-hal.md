@@ -449,6 +449,13 @@ _Fetches Galaxea's A1 URDF + 9 STL meshes from the unlicensed `userguide-galaxea
 - `ensure_a1_urdf() -> Path` (L46) — `a1_description/` @ `72008ea9` into `$OPENRAL_CACHE_DIR/galaxea_a1/<sha>/`; returns a derived `urdf/a1.urdf` whose `package://mobiman/urdf/A1/meshes/` refs are rewritten to `../meshes/`. Raises `ROSConfigError` on a failed download or digest mismatch.
 - const `GALAXEA_DESCRIPTIONS_SHA: str` (L26) — pinned `userguide-galaxea/robot_descriptions` commit.
 
+### `python/hal/src/openral_hal/_robotwin_aloha_agilex_assets.py`
+_Range-reads RoboTwin 2.0's aloha-agilex URDF + its 34 meshes out of `embodiments.zip` (MIT HF dataset `TianxingChen/RoboTwin2.0`) at a pinned revision, per-file SHA-256 — backs the `robotwin:aloha_agilex` asset ref._
+
+- `fetch_aloha_agilex_files() -> Path` (L156) — Downloads every pinned file not yet cached into `$OPENRAL_CACHE_DIR/robotwin_aloha_agilex/<rev12>/` (the archive's own layout, so relative mesh refs resolve) and drops the `.verified` stamp; presence only. Raises `ROSConfigError` when `huggingface_hub` is missing or the archive read fails.
+- `ensure_aloha_agilex_urdf() -> Path` (L194) — Fetches, then verifies every SHA-256 (skipped once `.verified` exists) and returns `arx5_description_isaac.urdf`; a mismatching file is deleted. Raises `ROSConfigError`.
+- const `ROBOTWIN_ASSETS_REVISION: str` (L37) — pinned dataset commit.
+
 ### `python/hal/src/openral_hal/_behavior_r1pro_assets.py`
 _Fetches BEHAVIOR-1K's R1 Pro URDF and visual meshes (`behavior-1k/omnigibson-robot-assets`, MIT HF dataset) at a pinned revision and derives a loadable copy — backs the `behavior:r1pro` asset ref._
 

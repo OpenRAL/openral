@@ -6,9 +6,9 @@
 # embodiment behind `lerobot/robotwin_unified` and the public RoboTwin
 # checkpoints (e.g. `lerobot/smolvla_robotwin`).
 #
-# Like `robots/aloha_bimanual/robot.yaml`, this manifest ships NO on-disk
-# URDF/MJCF: the actual robot lives inside the SAPIEN env owned by the
-# RoboTwin sidecar, so the openral side never instantiates it.
+# The actual robot lives inside the SAPIEN env owned by the RoboTwin
+# sidecar, so the openral side never instantiates it (`assets.urdf` below is
+# the same URDF, fetched for geometry only).
 # The manifest exists only so the eval layer can resolve the 14-D
 # action/state contract and run the embodiment/sensor compatibility gate.
 # Joint kinematics are therefore approximate (sufficient for capability
@@ -19,14 +19,22 @@ embodiment_kind: "bimanual"
 
 base_frame: "world"
 
-# `assets` deliberately unset (AssetRefs default) — the sidecar's
-# SAPIEN scene owns the geometry; nothing on the openral side loads it.
+# The URDF RoboTwin's SAPIEN scene loads (`embodiments.zip`, MIT, pinned
+# Hugging Face revision; openral_hal._robotwin_aloha_agilex_assets) for geometry
+# outside the sim: renders, viewers, collision lowering. The sidecar still owns
+# the simulated robot. Its arms are `fl_*` (left) / `fr_*` (right), bridged by
+# `sim_joint_name`; its joint limits are ±10 rad placeholders, so the limits
+# below stay the authority.
+assets:
+  urdf:
+    ref: "robotwin:aloha_agilex"
 
 joints:
   # 14-DoF: 2 arms × (6 revolute joints + 1 gripper). AgileX PiPER limits
   # are approximate; the SAPIEN model is authoritative (see header note).
   - name: "left_joint1"
     joint_type: "revolute"
+    sim_joint_name: "fl_joint1"
     parent_link: "world"
     child_link: "left_link1"
     axis_xyz: [0.0, 0.0, 1.0]
@@ -36,6 +44,7 @@ joints:
     actuator_kind: "servo"
   - name: "left_joint2"
     joint_type: "revolute"
+    sim_joint_name: "fl_joint2"
     parent_link: "left_link1"
     child_link: "left_link2"
     axis_xyz: [0.0, 1.0, 0.0]
@@ -45,6 +54,7 @@ joints:
     actuator_kind: "servo"
   - name: "left_joint3"
     joint_type: "revolute"
+    sim_joint_name: "fl_joint3"
     parent_link: "left_link2"
     child_link: "left_link3"
     axis_xyz: [0.0, 1.0, 0.0]
@@ -54,6 +64,7 @@ joints:
     actuator_kind: "servo"
   - name: "left_joint4"
     joint_type: "revolute"
+    sim_joint_name: "fl_joint4"
     parent_link: "left_link3"
     child_link: "left_link4"
     axis_xyz: [1.0, 0.0, 0.0]
@@ -63,6 +74,7 @@ joints:
     actuator_kind: "servo"
   - name: "left_joint5"
     joint_type: "revolute"
+    sim_joint_name: "fl_joint5"
     parent_link: "left_link4"
     child_link: "left_link5"
     axis_xyz: [0.0, 1.0, 0.0]
@@ -72,6 +84,7 @@ joints:
     actuator_kind: "servo"
   - name: "left_joint6"
     joint_type: "revolute"
+    sim_joint_name: "fl_joint6"
     parent_link: "left_link5"
     child_link: "left_link6"
     axis_xyz: [1.0, 0.0, 0.0]
@@ -81,6 +94,7 @@ joints:
     actuator_kind: "servo"
   - name: "left_gripper"
     joint_type: "prismatic"
+    sim_joint_name: "fl_joint7"
     parent_link: "left_link6"
     child_link: "left_finger"
     axis_xyz: [1.0, 0.0, 0.0]
@@ -91,6 +105,7 @@ joints:
     role: "gripper"
   - name: "right_joint1"
     joint_type: "revolute"
+    sim_joint_name: "fr_joint1"
     parent_link: "world"
     child_link: "right_link1"
     axis_xyz: [0.0, 0.0, 1.0]
@@ -100,6 +115,7 @@ joints:
     actuator_kind: "servo"
   - name: "right_joint2"
     joint_type: "revolute"
+    sim_joint_name: "fr_joint2"
     parent_link: "right_link1"
     child_link: "right_link2"
     axis_xyz: [0.0, 1.0, 0.0]
@@ -109,6 +125,7 @@ joints:
     actuator_kind: "servo"
   - name: "right_joint3"
     joint_type: "revolute"
+    sim_joint_name: "fr_joint3"
     parent_link: "right_link2"
     child_link: "right_link3"
     axis_xyz: [0.0, 1.0, 0.0]
@@ -118,6 +135,7 @@ joints:
     actuator_kind: "servo"
   - name: "right_joint4"
     joint_type: "revolute"
+    sim_joint_name: "fr_joint4"
     parent_link: "right_link3"
     child_link: "right_link4"
     axis_xyz: [1.0, 0.0, 0.0]
@@ -127,6 +145,7 @@ joints:
     actuator_kind: "servo"
   - name: "right_joint5"
     joint_type: "revolute"
+    sim_joint_name: "fr_joint5"
     parent_link: "right_link4"
     child_link: "right_link5"
     axis_xyz: [0.0, 1.0, 0.0]
@@ -136,6 +155,7 @@ joints:
     actuator_kind: "servo"
   - name: "right_joint6"
     joint_type: "revolute"
+    sim_joint_name: "fr_joint6"
     parent_link: "right_link5"
     child_link: "right_link6"
     axis_xyz: [1.0, 0.0, 0.0]
@@ -145,6 +165,7 @@ joints:
     actuator_kind: "servo"
   - name: "right_gripper"
     joint_type: "prismatic"
+    sim_joint_name: "fr_joint7"
     parent_link: "right_link6"
     child_link: "right_finger"
     axis_xyz: [1.0, 0.0, 0.0]

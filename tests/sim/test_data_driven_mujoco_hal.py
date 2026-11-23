@@ -161,6 +161,7 @@ def test_manifest_has_sim_block(description: RobotDescription) -> None:
             "unitree:",
             "makermods:",
             "galaxea:",
+            "robotwin:",
             "behavior:",
             "file:",
         )
