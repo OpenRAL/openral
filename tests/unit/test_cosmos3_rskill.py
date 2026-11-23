@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 from openral_core import RSkillLicensePosture
-from openral_core.exceptions import ROSCapabilityMismatch
+from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from openral_rskill.loader import load_rskill_manifest, rSkill
 
 _SKILL = Path(__file__).resolve().parents[2] / "rskills" / "cosmos3-edge-libero-bf16"
@@ -45,3 +45,27 @@ def test_the_factory_refuses_a_non_libero_scene() -> None:
     )
     with pytest.raises(ROSCapabilityMismatch, match="LIBERO"):
         POLICIES.get("cosmos3")(env_cfg)
+
+
+def test_processor_uris_must_name_the_weights_snapshot() -> None:
+    """The pipelines load from the weights snapshot, so a foreign processor URI is refused."""
+    from openral_sim.policies.cosmos3 import _require_processors_in_weights_snapshot
+
+    manifest = load_rskill_manifest(str(_SKILL))
+    _require_processors_in_weights_snapshot(manifest)  # the shipped manifest matches
+    assert manifest.processors is not None
+    for field, uri in (
+        (
+            "preprocessor_uri",
+            "hf://lerobot/Cosmos3-Nano-Policy-LIBERO@abc/policy_preprocessor.json",
+        ),
+        (
+            "postprocessor_uri",
+            str(manifest.processors.postprocessor_uri).replace("9d4de43", "0000000"),
+        ),
+    ):
+        moved = manifest.model_copy(
+            update={"processors": manifest.processors.model_copy(update={field: uri})}
+        )
+        with pytest.raises(ROSConfigError, match="weights_uri"):
+            _require_processors_in_weights_snapshot(moved)
