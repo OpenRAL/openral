@@ -2733,6 +2733,9 @@ def lower_robot(
         | {j.child_link for j in robot.joints}
         | {a.parent_link for a in robot.fixed_attachments}
         | {a.child_link for a in robot.fixed_attachments}
+        # A mimic follower (the aloha_agilex mirror finger) is a modelled moving link:
+        # the producers name it a touch link, so the kernel must know it.
+        | {m.child_link for m in robot.mimic_joints}
     )
 
     geometry: list[LinkCollisionGeometry] = []
