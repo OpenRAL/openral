@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import uuid
 import zipfile
 from pathlib import Path
 
@@ -180,10 +181,13 @@ def fetch_aloha_agilex_files() -> Path:
             for rel in missing:
                 dest = root / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                tmp = dest.with_name(f".{dest.name}.{os.getpid()}.tmp")
-                with archive.open(_MEMBER_DIR + rel) as src, tmp.open("wb") as out:
-                    shutil.copyfileobj(src, out, 1 << 20)
-                os.replace(tmp, dest)
+                tmp = dest.with_name(f".{dest.name}.{uuid.uuid4().hex}.tmp")
+                try:
+                    with archive.open(_MEMBER_DIR + rel) as src, tmp.open("wb") as out:
+                        shutil.copyfileobj(src, out, 1 << 20)
+                    os.replace(tmp, dest)
+                finally:  # a failed read leaves no partial mesh behind
+                    tmp.unlink(missing_ok=True)
     except Exception as exc:  # every hub / network / archive read failure is a fetch failure
         raise ROSConfigError(
             f"Failed to read {_MEMBER_DIR} from {_ARCHIVE}: {type(exc).__name__}: {exc}"

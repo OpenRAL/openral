@@ -452,6 +452,8 @@ def _resolve_galaxea(model: str, kind: AssetKind) -> Path:
         if is_download_failure(exc):
             raise AssetFetchError(f"galaxea:{model} ({kind}): {exc}") from exc
         raise AssetRefError(f"galaxea:{model} ({kind}): {exc}") from exc
+    except OSError as exc:  # writing the derived URDF: a local cache error, not a fetch
+        raise AssetRefError(f"galaxea:{model} ({kind}): {exc}") from exc
 
 
 def _resolve_robotwin(model: str, kind: AssetKind) -> Path:
@@ -466,6 +468,8 @@ def _resolve_robotwin(model: str, kind: AssetKind) -> Path:
         raise AssetRefError(
             f"robotwin:{model} ({kind}): only robotwin:aloha_agilex as a urdf exists"
         )
+    if importlib.util.find_spec("huggingface_hub") is None:
+        raise AssetRefError(f"robotwin:{model} needs huggingface_hub")
     try:
         from openral_hal import _robotwin_aloha_agilex_assets as robotwin
     except ImportError as exc:
@@ -478,7 +482,7 @@ def _resolve_robotwin(model: str, kind: AssetKind) -> Path:
         raise AssetFetchError(f"robotwin:{model} ({kind}): {exc}") from exc
     try:
         return robotwin.ensure_aloha_agilex_urdf()
-    except ROSConfigError as exc:
+    except (ROSConfigError, OSError) as exc:
         raise AssetRefError(f"robotwin:{model} ({kind}): {exc}") from exc
 
 
@@ -500,8 +504,8 @@ def _resolve_robosuite(robot: str, kind: AssetKind) -> Path:
         ) from exc
     try:
         return compose_robot_mjcf(robot)
-    except ROSConfigError as exc:
-        raise AssetRefError(str(exc)) from exc
+    except (ROSConfigError, OSError) as exc:  # OSError: writing the composed MJCF
+        raise AssetRefError(f"robosuite:{robot} ({kind}): {exc}") from exc
 
 
 def _resolve_behavior(model: str, kind: AssetKind) -> Path:
@@ -527,6 +531,8 @@ def _resolve_behavior(model: str, kind: AssetKind) -> Path:
         return ensure_r1pro_urdf()
     except ROSConfigError as exc:
         raise AssetFetchError(f"behavior:{model} ({kind}): {exc}") from exc
+    except OSError as exc:  # writing the derived URDF: a local cache error, not a fetch
+        raise AssetRefError(f"behavior:{model} ({kind}): {exc}") from exc
 
 
 # ``<scheme>:`` → resolver for every scheme but ``file:`` (which also takes the
