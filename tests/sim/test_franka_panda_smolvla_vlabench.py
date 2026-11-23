@@ -1,10 +1,13 @@
 """Sim test: VLABench (MuJoCo + dm_control) + SmolVLA via the native backend.
 
-Two tiers:
+Three tiers:
 
 * **Unconditional wiring** — validates the ``smolvla-vlabench`` rSkill manifest, the
   ``vlabench_select_fruit`` benchmark scene, and that the scene/policy factories are
   registered. These need no simulator and run on any host (incl. CI).
+* **Env contract** — builds the native VLABench env alone (no policy, no CUDA), steps
+  it once, and asserts the raw ``pixels`` / ``agent_pos`` keys the adapter parses, so a
+  lerobot env-surface change fails here instead of in a hand-run rollout.
 * **Live end-to-end** — builds the native VLABench env + the SmolVLA policy through
   ``openral_sim.make_env`` / ``make_policy`` and runs a few real steps of
   ``vlabench/select_fruit``. Asserts the 7-D state / 7-D action / 3-camera contract and
@@ -147,6 +150,57 @@ if importlib.util.find_spec("torch") is not None:
     import torch
 
     _CUDA_AVAILABLE = torch.cuda.is_available()
+
+
+@pytest.mark.sim
+@pytest.mark.slow
+@pytest.mark.skipif(not _vlabench_ready(), reason="VLABench backend + assets not provisioned")
+def test_env_builds_and_steps_lerobot_contract() -> None:
+    """Env only, no policy/CUDA: pins the lerobot VLABenchEnv surface the adapter parses.
+
+    lerobot 0.7 renamed the config and moved ``create_envs`` to canonical
+    ``observation.*`` keys; this fails at build or on the raw-key asserts if the
+    env the adapter constructs stops emitting ``pixels`` / ``agent_pos``.
+    """
+    import openral_sim.backends  # noqa: F401
+    from openral_core.loaders import load_scene_strict
+    from openral_core.schemas import BenchmarkScene, SimEnvironment, VLASpec
+    from openral_sim.backends.vlabench import _VLABenchSim
+    from openral_sim.factory import make_env
+
+    os.environ.setdefault("MUJOCO_GL", "egl")
+    bs = load_scene_strict(
+        str(_REPO_ROOT / "scenes" / "benchmark" / "vlabench_select_fruit.yaml"), BenchmarkScene
+    )
+    env = make_env(
+        SimEnvironment(
+            robot_id=bs.robot_id,
+            scene=bs.scene,
+            task=bs.task,
+            vla=VLASpec(id="smolvla", weights_uri="rskills/smolvla-vlabench"),
+            n_episodes=1,
+        )
+    )
+    assert isinstance(env, _VLABenchSim)
+    try:
+        raw, _ = env._env.reset(seed=0)
+        assert set(raw) == {"pixels", "agent_pos"}
+        assert set(raw["pixels"]) == {"image", "second_image", "wrist_image"}
+        assert np.asarray(raw["agent_pos"]).shape == (1, 7)
+
+        obs = env._wrap_obs(raw)
+        assert set(obs["images"]) == {"camera1", "camera2", "camera3"}
+        assert all(img.ndim == 3 and img.shape[-1] == 3 for img in obs["images"].values())
+        assert obs["state"].shape == (7,)
+
+        # agent_pos and the EEF action share a frame/layout, so commanding the
+        # current state is a hold — a valid in-range step for any layout.
+        result = env.step(obs["state"])
+        assert result.observation["state"].shape == (7,)
+        assert np.isfinite(result.observation["state"]).all()
+        assert "is_success" in result.info
+    finally:
+        env.close()
 
 
 @pytest.mark.sim
