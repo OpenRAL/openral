@@ -25,7 +25,6 @@ pytest.importorskip("huggingface_hub")
 import numpy as np
 from openral_core import Action, ControlMode, RobotDescription
 from openral_core.assets import AssetFetchError, resolve_asset
-from openral_core.exceptions import ROSConfigError
 from openral_hal._mujoco_arm import MujocoArmHAL
 from openral_hal._sim_attachment_evidence import SimAttachmentEvidenceTracker
 from openral_hal.resolver import build_hal
@@ -143,14 +142,23 @@ def test_manifest_joints_name_mjcf_joints_within_range(
         assert lo - 1e-6 <= low <= high <= hi + 1e-6, f"{joint.name}: {low, high} vs {lo, hi}"
 
 
-def test_attachment_evidence_refuses_the_two_handed_robot(
+def test_attachment_evidence_arms_one_hand_per_arm(
     connected: tuple[RobotDescription, MujocoArmHAL],
 ) -> None:
-    """Sim grasp evidence is single-gripper today: r1pro is refused like openarm / aloha.
+    """Sim grasp evidence arms both R1 Pro hands, each on its own fixed gripper link.
 
-    The deploy bridge logs "automatic sim attachment evidence disabled" on this
-    refusal. Pinned here so a tracker that learns two hands flips this test.
+    ``*_gripper_link`` is no joint's child; the tracker resolves it as the MJCF body
+    of the same name, which carries both of that hand's fingers.
     """
     desc, hal = connected
-    with pytest.raises(ROSConfigError, match="needs one gripper parent link"):
-        SimAttachmentEvidenceTracker(hal._model, desc)
+    model = hal._model
+    assert model is not None
+    tracker = SimAttachmentEvidenceTracker(model, desc)
+    assert tracker.attach_links == ("left_gripper_link", "right_gripper_link")
+    for hand in tracker._hands:
+        assert model.body(hand.attach_body_id).name == hand.attach_link
+        side = hand.attach_link.split("_")[0]
+        assert {model.body(root).name for root in hand.body_groups.values()} == {
+            f"{side}_gripper_finger_link1",
+            f"{side}_gripper_finger_link2",
+        }

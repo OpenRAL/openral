@@ -489,7 +489,7 @@ def test_releasing_the_payload_ends_the_place_phase() -> None:
             break
     assert released == []
     # The place phase is over: a fresh grasp would have to declare its own.
-    assert rig.tracker._place_attested_stamp_ns is None
+    assert rig.tracker._hands[0].place_attested_stamp_ns is None
 
 
 # -- The declared target's region (ADR-0097's 2026-08-14 amendment) ----------

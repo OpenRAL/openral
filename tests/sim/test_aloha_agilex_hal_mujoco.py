@@ -99,9 +99,8 @@ def test_manifest_resolves_each_hand_and_jaw(
 ) -> None:
     """Each arm's hand and jaw resolve to twin bodies through ``sim_joint_name``.
 
-    The single-gripper ``SimAttachmentEvidenceTracker`` refuses a bimanual robot
-    (two gripper parent links), so deploy runs this twin without automatic grasp
-    evidence; this pins the per-arm wiring that a bimanual tracker would use.
+    This is the per-arm wiring ``SimAttachmentEvidenceTracker`` arms one hand on
+    each (``tests/sim/test_twin_attachment_evidence_hal_mujoco.py``).
     """
     desc, hal = connected
     model = hal._model

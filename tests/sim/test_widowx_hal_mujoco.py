@@ -120,6 +120,7 @@ def test_attachment_evidence_resolves_the_gripper(
     model = hal._model
     assert model is not None
     tracker = SimAttachmentEvidenceTracker(model, desc)
-    assert model.body(tracker._attach_body_id).name == "wx250s/gripper_link"
-    jaws = {model.body(root).name for root in tracker._gripper_body_groups.values()}
+    (hand,) = tracker._hands
+    assert model.body(hand.attach_body_id).name == "wx250s/gripper_link"
+    jaws = {model.body(root).name for root in hand.body_groups.values()}
     assert jaws == {"wx250s/left_finger_link", "wx250s/right_finger_link"}
