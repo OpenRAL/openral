@@ -367,6 +367,10 @@ def test_a_held_payload_is_never_a_candidate_for_the_other_hand() -> None:
     )
     assert right.attachment is None and right.attached_root is None
     assert root not in right.candidates
+    # ...and when the right hand is no longer even touching it.
+    right.candidates[root] = _ContactCandidate(contact_bodies=both_jaws, stable_ticks=2)
+    assert not rig.tracker._update_hand(right, {}, {root}, rig.data, stamp_ns=rig.step_ns + 2)
+    assert root not in right.candidates
 
 
 def test_a_transition_survives_a_later_hand_failing() -> None:

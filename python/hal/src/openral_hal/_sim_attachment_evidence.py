@@ -1938,11 +1938,13 @@ class SimAttachmentEvidenceTracker:
             hand.place_attested_stamp_ns = None
             return True
 
+        # One payload, one holding hand; and no stability carried over, so after the
+        # other hand releases this one must build a fresh grasp. Dropped whether or not
+        # this hand still touches it: a count kept from before would survive the hold.
+        for root in held_elsewhere:
+            hand.candidates.pop(root, None)
         for root, contact_bodies in contacts.items():
             if root in held_elsewhere:
-                # One payload, one holding hand; and no stability carried over, so after
-                # the other hand releases this one must build a fresh grasp.
-                hand.candidates.pop(root, None)
                 continue
             if classify_body_mobility(self._model, root) is not SimObjectMobility.FREE:
                 continue
