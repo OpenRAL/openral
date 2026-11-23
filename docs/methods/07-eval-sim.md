@@ -869,9 +869,12 @@ _Official BEHAVIOR-1K GR00T policy adapter. The organizer checkpoint depends on 
 _BEHAVIOR-1K / OmniGibson scene adapter. Runs the official evaluator environment in its own sidecar and registers `scene.id=behavior`, fixed to `r1pro`._
 
 - `class _BehaviorSidecar` — ZMQ-backed `SimRollout`; surfaces 61-D `state`/`policy_state`, manifest-order 22-joint positions/velocities, three RGB views, and sim time.
+- `_joint_state_from_policy_state(state) -> tuple[NDArray, NDArray]` — Manifest-order joint positions/velocities from the 61-D policy state; each leader finger (`*_gripper_finger_joint1`) reports the twin's normalised jaw channel (both fingers' sum / `_FINGER_CHANNEL_SPAN_M` = 0.1 m), the follower stays in metres.
+- `const _FINGER_CHANNEL_SPAN_M = 0.1` (L123) — both fingers' summed stroke, the r1pro manifest's `sim.grippers[].qpos_scale`.
+- `const _LEADER_FINGERS = ((11, 12), (20, 21))` (L126) — (leader, follower) manifest joint indices.
 - `step_action_group(actions) -> StepResult` — Validate six equal-tick safety-approved slots and commit them as one official 23-D action.
 - `_compose_action_group(actions) -> NDArray[float32]` — Compose base twist + torso/arm joint targets + dual grippers into the official action order.
-- `provision_behavior() -> None` — Pre-launch provisioner: locates the externally-installed OmniGibson + BEHAVIOR dataset environment (set up via upstream's `./setup.sh`) or raises the setup command. Covers provisioning only — the OmniGibson boot still runs inside the HAL's 300s-bounded `on_configure`, and the scene's boot timeout is set well past that bound. (L363)
+- `provision_behavior() -> None` — Pre-launch provisioner: locates the externally-installed OmniGibson + BEHAVIOR dataset environment (set up via upstream's `./setup.sh`) or raises the setup command. Covers provisioning only — the OmniGibson boot still runs inside the HAL's 300s-bounded `on_configure`, and the scene's boot timeout is set well past that bound. (L382)
 - `const _SCENE_ID = 'behavior'` (L27)
 - `const _ROBOT_ID = 'r1pro'` (L28)
 - `const _SIDECAR_PYTHON_ENV = 'OPENRAL_BEHAVIOR_SIDECAR_PYTHON'` (L29)

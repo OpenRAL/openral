@@ -115,9 +115,25 @@ def _locate_sidecar_script() -> Path:
     )
 
 
+# The R1 Pro manifest's leader finger joints (`*_gripper_finger_joint1`) carry the
+# twin's normalised jaw channel: both fingers summed over this span (the manifest's
+# `sim.grippers[].qpos_scale`, 2 x 0.05 m), which their `urdf_curve` maps back onto
+# each finger's slide. BEHAVIOR reports metres, so the leader is converted here; the
+# follower (`*_finger_joint2`) stays in metres, as on the twin.
+_FINGER_CHANNEL_SPAN_M = 0.1
+# Manifest joint order: torso 4, left arm 7, left fingers (11, 12), right arm 7,
+# right fingers (20, 21).
+_LEADER_FINGERS = ((11, 12), (20, 21))
+
+
 def _joint_state_from_policy_state(
     state: NDArray[np.float32],
 ) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
+    """Manifest-order joint positions/velocities from BEHAVIOR's 61-wide policy state.
+
+    Each leader finger reports the normalised jaw channel (both fingers' sum over
+    ``_FINGER_CHANNEL_SPAN_M``), as the MuJoCo twin does; everything else is native.
+    """
     positions = np.concatenate(
         [
             state[53:57],
@@ -136,6 +152,9 @@ def _joint_state_from_policy_state(
             state[51:53],
         ]
     ).astype(np.float32)
+    for leader, follower in _LEADER_FINGERS:
+        positions[leader] = (positions[leader] + positions[follower]) / _FINGER_CHANNEL_SPAN_M
+        velocities[leader] = (velocities[leader] + velocities[follower]) / _FINGER_CHANNEL_SPAN_M
     return positions, velocities
 
 

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
+import pytest
 from openral_core import Action, ControlMode, JointState, RobotDescription, VLASpec, WorldState
 from openral_core.loaders import load_scene_strict
 from openral_core.schemas import DeployScene, SimScene
@@ -55,8 +56,26 @@ def test_policy_state_extracts_manifest_order_joint_state() -> None:
     expected_velocities = np.concatenate(
         [state[57:61], state[10:17], state[26:28], state[35:42], state[51:53]]
     )
-    np.testing.assert_array_equal(positions, expected_positions)
-    np.testing.assert_array_equal(velocities, expected_velocities)
+    # The leader fingers carry the twin's normalised channel: both fingers' sum / 0.1 m.
+    for leader, follower in ((11, 12), (20, 21)):
+        for expected in (expected_positions, expected_velocities):
+            expected[leader] = (expected[leader] + expected[follower]) / 0.1
+    np.testing.assert_allclose(positions, expected_positions, rtol=1e-6)
+    np.testing.assert_allclose(velocities, expected_velocities, rtol=1e-6)
+
+
+def test_fully_open_leader_finger_reads_one_and_poses_at_its_urdf_stroke() -> None:
+    """BEHAVIOR's metres become the manifest channel; urdf_curve maps it back to 0.05 m."""
+    state = np.zeros(61, dtype=np.float32)
+    state[24:26] = 0.05  # left fingers fully open, metres
+    positions, _ = _joint_state_from_policy_state(state)
+    assert positions[11] == pytest.approx(1.0)
+    assert positions[12] == pytest.approx(0.05)  # the follower stays in metres
+    robot = RobotDescription.from_yaml(str(_ROOT / "robots" / "r1pro" / "robot.yaml"))
+    leader = robot.joints[11]
+    assert leader.name == "left_gripper_finger_joint1" and leader.urdf_curve is not None
+    xs, ys = zip(*leader.urdf_curve, strict=True)
+    assert float(np.interp(positions[11], xs, ys)) == pytest.approx(0.05)
 
 
 def test_behavior_idle_action_holds_current_pose() -> None:

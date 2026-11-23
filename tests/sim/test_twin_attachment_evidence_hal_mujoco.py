@@ -94,21 +94,6 @@ class _Rig:
         (g,) = (g for g in self.grippers if g.hand == hand)
         self.data.ctrl[g.actuator] = g.closed_ctrl if closed else g.open_ctrl
 
-    def run_tolerant(self, steps: int) -> tuple[list[list[AttachedCollisionObject]], int]:
-        """``run``, but an update that raises ``ROSConfigError`` is counted, not fatal."""
-        published, raised = [], 0
-        for _ in range(steps):
-            mujoco.mj_step(self.model, self.data)
-            self.step_ns += 1_000_000
-            try:
-                out = self.tracker.update(self.data, stamp_ns=self.step_ns)
-            except ROSConfigError:
-                raised += 1
-                continue
-            if out is not None:
-                published.append(out)
-        return published, raised
-
     def nudge_away(self, payload: int) -> None:
         """Push a released box out of the open jaws, as a lifting arm would."""
         joint = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, f"payload{payload}_free")
@@ -403,42 +388,36 @@ def test_a_held_payload_is_never_a_candidate_for_the_other_hand() -> None:
     assert root not in right.candidates
 
 
-def test_a_transition_survives_a_later_hand_failing() -> None:
-    """A release committed in an update that a later hand then failed still publishes.
+def test_an_unattachable_payload_in_one_hand_does_not_block_the_other() -> None:
+    """The right hand pinching an unnamed payload is refused for that hand alone.
 
-    The right hand grips an unnamed payload, so every update raises after the left hand
-    has been advanced. The left hand releases during those failing updates; once the
-    right hand lets go, the next update must publish the release.
+    Every update keeps publishing: the left hand's release goes out while the right
+    jaws are still closed on the unattachable body, which never attaches.
     """
     rig = _rig("aloha_agilex", unnamed=frozenset({1}))
     rig.set_gripper(0, closed=True)
     assert [[o.object_id for o in s] for s in rig.run(400)] == [["sim:payload0"]]
 
     rig.set_gripper(1, closed=True)
-    published, raised = rig.run_tolerant(200)
-    assert raised > 0 and published == [], "the right hand's unnamed payload raises"
+    assert rig.run(200) == [], "the unnamed payload never attaches (and nothing raises)"
+    assert rig.tracker._hands[1].refused, "the refusal is recorded"
 
     rig.set_gripper(0, closed=False)
-    rig.run_tolerant(100)
+    rig.run(100)
     rig.nudge_away(0)
-    published, raised = rig.run_tolerant(400)
-    assert raised > 0 and published == [], "the left release happened in failing updates"
-
-    assert rig.tracker._hands[0].attached_root is None  # committed, not yet published
-    rig.set_gripper(1, closed=False)
-    published, _ = rig.run_tolerant(400)
-    assert published and published[0] == [], f"the left release was lost: {published}"
+    published = rig.run(400)
+    assert published and published[0] == [], f"the left release was held back: {published}"
+    assert rig.tracker._hands[1].attached_root is None
 
 
 def test_construction_refuses_what_the_kernel_would_reject() -> None:
     """Links the kernel model lacks, and two hands over one finger, refuse up front."""
     desc, path = _description("aloha_agilex")
     model, _ = _compile(path, [])
-    hands = SimAttachmentEvidenceTracker(model, desc)._hands
-    names = {n for h in hands for n in (h.attach_link, *h.touch_links)}
-    SimAttachmentEvidenceTracker(model, desc, kernel_link_names=names)  # all known: arms
-    with pytest.raises(ROSConfigError, match="not in the safety kernel's collision model"):
-        SimAttachmentEvidenceTracker(model, desc, kernel_link_names=names - {"fr_link8"})
+    tracker = SimAttachmentEvidenceTracker(model, desc)
+    names = {n for h in tracker._hands for n in (h.attach_link, *h.touch_links)}
+    assert tracker.unknown_kernel_links(names) == []
+    assert tracker.unknown_kernel_links(names - {"fr_link8"}) == ["fr_link8"]
     # An end-effector entry over the left fingers as well: two hands, one gripper.
     assert desc.sim is not None
     qpos = [int(model.jnt_qposadr[model.joint(n).id]) for n in ("fl_joint7", "fl_joint8")]
@@ -448,6 +427,20 @@ def test_construction_refuses_what_the_kernel_would_reject() -> None:
     sim = desc.sim.model_copy(update={"grippers": [*desc.sim.grippers, twice]})
     with pytest.raises(ROSConfigError, match="share finger bodies"):
         SimAttachmentEvidenceTracker(model, desc.model_copy(update={"sim": sim}))
+
+
+def test_end_effector_jaws_are_only_the_listed_fingers() -> None:
+    """A hinged sibling on the A1 wrist is no jaw and no touch link."""
+    desc, path = _description("galaxea_a1")
+    spec = mujoco.MjSpec.from_file(str(path))
+    wrist = spec.body("arm_seg6")
+    guard = wrist.add_body(name="tool_guard", pos=[0.0, 0.03, 0.0])
+    guard.add_joint(name="tool_guard_hinge", type=mujoco.mjtJoint.mjJNT_HINGE, axis=[1, 0, 0])
+    guard.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, size=[0.005, 0.005, 0.005])
+    model = spec.compile()
+    (hand,) = SimAttachmentEvidenceTracker(model, desc)._hands
+    assert sorted(hand.touch_links) == ["gripper1", "gripper2"]
+    assert model.body("tool_guard").id not in hand.body_groups
 
 
 @pytest.mark.parametrize(("robot", "per_hand"), [("aloha_agilex", 8), ("galaxea_a1", 16)])

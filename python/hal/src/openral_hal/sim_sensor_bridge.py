@@ -4119,12 +4119,28 @@ class SimSensorBridge:
 
             model, _data = handles
             try:
-                self._attachment_tracker = SimAttachmentEvidenceTracker(
-                    model,
-                    self._description,
-                    stable_ticks=1,
-                    kernel_link_names=self._attachment_kernel_link_names,
+                tracker = SimAttachmentEvidenceTracker(model, self._description, stable_ticks=1)
+                unknown = (
+                    []
+                    if self._attachment_kernel_link_names is None
+                    else tracker.unknown_kernel_links(self._attachment_kernel_link_names)
                 )
+                if unknown:
+                    # The robot can grasp, but every set naming these links would be rejected.
+                    # A fresh empty heartbeat would tell the kernel "nothing carried" while the
+                    # sim holds a payload: withdraw the stream instead, so the kernel's attached
+                    # check fails closed (attachment state unavailable) until this is fixed.
+                    if self._attachment_timer is not None:
+                        self._node.destroy_timer(self._attachment_timer)
+                        self._attachment_timer = None
+                    self._attachment_pub = None
+                    self._node.get_logger().error(
+                        "automatic sim attachment evidence refused: attach/touch links "
+                        f"{unknown} are not in the safety kernel's collision model; "
+                        "/openral/attachment_state withdrawn, so the kernel fails closed"
+                    )
+                    return
+                self._attachment_tracker = tracker
                 add_observer = getattr(self._hal, "add_post_step_observer", None)
                 if callable(add_observer):
                     add_observer(self._observe_attachment_evidence)
@@ -4436,10 +4452,7 @@ class SimSensorBridge:
             from openral_hal._sim_attachment_evidence import SimAttachmentEvidenceTracker
 
             self._attachment_tracker = SimAttachmentEvidenceTracker(
-                handles[0],
-                self._description,
-                stable_ticks=1,
-                kernel_link_names=self._attachment_kernel_link_names,
+                handles[0], self._description, stable_ticks=1
             )
         update = getattr(self._hal, "update_attached_objects", None)
         read = getattr(self._hal, "read_attached_objects", None)

@@ -407,6 +407,7 @@ class _Hand:
     # transition re-publishes the set.
     attachment: AttachedCollisionObject | None = None
     place_attested_stamp_ns: int | None = None
+    refused: set[int] = field(default_factory=set)  # unattachable payloads, logged once
 
 
 def _joint_gripper_hands(
@@ -497,7 +498,10 @@ def _end_effector_gripper_hands(
                 f"End-effector gripper {gripper.end_effector!r}: no manifest link is the "
                 "sim body its fingers hang from."
             )
-        groups = _jaw_body_groups(model, jaw_bodies)
+        # Only the listed finger joints' bodies and what hangs on them: a sibling branch
+        # with its own joint (a hinged tool guard on the same wrist) is no jaw, and must
+        # neither count as a contact branch nor become a touch link.
+        groups = {body: jaw for jaw in jaw_bodies for body in _body_subtree(model, jaw)}
         touch_links = [
             mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, b) for b in sorted(groups)
         ]
@@ -1699,10 +1703,11 @@ class SimAttachmentEvidenceTracker:
     part-way still publishes, on the next update, the transitions earlier hands
     already committed.
 
-    ``kernel_link_names``: the links the safety kernel's collision model knows (the
-    deploy launch passes them). Every hand's attach and touch links must be among them,
-    or construction refuses: the kernel rejects a whole set naming an unknown link and
-    never acknowledges it, which would stall the bridge on the first grasp.
+    ``unknown_kernel_links``: the attach/touch links the safety kernel's collision
+    model lacks. The kernel rejects a whole set naming an unknown link and never
+    acknowledges it, so the bridge must not arm a tracker that would name one.
+    An unattachable payload (no MJCF name, no collision geometry) is refused for that
+    hand alone and logged; the other hands keep publishing.
     """
 
     def __init__(
@@ -1714,7 +1719,6 @@ class SimAttachmentEvidenceTracker:
         release_ticks: int = 3,
         translation_tolerance_m: float = 0.01,
         rotation_tolerance_rad: float = 0.15,
-        kernel_link_names: Collection[str] | None = None,
     ) -> None:
         self._model = model
         self._stable_ticks = stable_ticks
@@ -1795,17 +1799,6 @@ class SimAttachmentEvidenceTracker:
                     f"Sim grippers share finger bodies: {hand.attach_link!r} overlaps another hand."
                 )
             claimed |= set(hand.body_groups)
-            if kernel_link_names is not None:
-                unknown = [
-                    name
-                    for name in (hand.attach_link, *hand.touch_links)
-                    if name not in kernel_link_names
-                ]
-                if unknown:
-                    raise ROSConfigError(
-                        f"Attach/touch links {unknown} of {hand.attach_link!r} are not in the "
-                        "safety kernel's collision model; it would reject every attachment."
-                    )
         # Every record together must fit the kernel's attached-primitive cap.
         self._max_primitives_per_hand = max(
             1, load_tracking_thresholds().caps.attached_max_primitives // len(self._hands)
@@ -1832,6 +1825,15 @@ class SimAttachmentEvidenceTracker:
 
             resolved = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, base_body_name))
             self._base_body_id = resolved if resolved >= 0 else None
+
+    def unknown_kernel_links(self, kernel_link_names: Collection[str]) -> list[str]:
+        """Every attach/touch link the safety kernel's collision model does not know."""
+        return [
+            name
+            for hand in self._hands
+            for name in (hand.attach_link, *hand.touch_links)
+            if name not in kernel_link_names
+        ]
 
     @property
     def attach_links(self) -> tuple[str, ...]:
@@ -1988,25 +1990,30 @@ class SimAttachmentEvidenceTracker:
                 root,
             )
             if not body_name:
-                raise ROSConfigError(f"Attached MuJoCo body {root} has no name.")
-            attachment = self._build_attachment(
-                data,
-                hand=hand,
-                root=root,
-                translation=translation,
-                rotation=rotation,
-                stamp_ns=stamp_ns,
-                # Attested once, at attach, from the contacts that exist right
-                # now. The safety kernel latches it and kills it on separation;
-                # re-attesting mid-carry would defeat that hysteresis.
-                witness=support_contact_witness(
-                    self._model,
+                self._refuse(hand, root, "unnamed MuJoCo body")
+                continue
+            try:
+                attachment = self._build_attachment(
                     data,
-                    root_body_id=root,
-                    robot_body_ids=self._robot_body_ids,
+                    hand=hand,
+                    root=root,
+                    translation=translation,
+                    rotation=rotation,
                     stamp_ns=stamp_ns,
-                ),
-            )
+                    # Attested once, at attach, from the contacts that exist right
+                    # now. The safety kernel latches it and kills it on separation;
+                    # re-attesting mid-carry would defeat that hysteresis.
+                    witness=support_contact_witness(
+                        self._model,
+                        data,
+                        root_body_id=root,
+                        robot_body_ids=self._robot_body_ids,
+                        stamp_ns=stamp_ns,
+                    ),
+                )
+            except ROSConfigError as exc:  # e.g. a payload with no collision geometry
+                self._refuse(hand, root, str(exc))
+                continue
             self._freeze_grasp_region(
                 data, hand=hand, object_id=f"sim:{body_name}", stamp_ns=stamp_ns
             )
@@ -2022,6 +2029,20 @@ class SimAttachmentEvidenceTracker:
             hand.attachment = attachment
             return True
         return False
+
+    def _refuse(self, hand: _Hand, root: int, reason: str) -> None:
+        """Refuse one unattachable payload for one hand; the other hands keep publishing.
+
+        An update that raised here instead would hold back every other hand's
+        transition (a release included) for as long as this hand pinched the payload.
+        Logged once per (hand, payload); the payload stays unattached, so the kernel
+        keeps checking it as world occupancy.
+        """
+        if root not in hand.refused:
+            hand.refused.add(root)
+            _LOGGER.warning(
+                "sim.attachment_refused", reason=reason, body_id=root, attach_link=hand.attach_link
+            )
 
     def _build_attachment(
         self,
