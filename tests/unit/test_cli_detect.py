@@ -298,13 +298,9 @@ class TestBhDetect:
     def test_a_urdf_only_robot_with_a_depth_camera_is_also_reminded(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A robot with only a URDF, and a ``front_depth`` parented directly to
-        ``base_frame`` -- both reminders still fire.
-
-        panda_mobile gained a ``robosuite:PandaOmron`` MJCF (#726) and no other
-        manifest is URDF-only with a parented depth camera, so the test drops the
-        MJCF ref from panda_mobile's real manifest to keep covering the URDF branch.
-        """
+        """A URDF-only robot whose depth camera is parented directly to ``base_frame``
+        gets both reminders. panda_mobile is that robot with its ``robosuite:`` MJCF
+        (#726) set aside: no in-tree URDF-only manifest has a base-frame depth camera."""
         from openral_cli.main import _print_safety_fitting_reminders
         from openral_core import RobotDescription
 
