@@ -9,17 +9,31 @@ dataset and the public RoboTwin checkpoints (e.g.
 
 ## Sim-only manifest
 
-This manifest ships **no on-disk URDF/MJCF**: the robot lives inside the
-**SAPIEN** environment owned by the RoboTwin sidecar, and OpenRAL never
-instantiates it. The manifest exists only so the eval layer can:
+The robot lives inside the **SAPIEN** environment owned by the RoboTwin sidecar,
+and OpenRAL never instantiates it. The manifest exists so the eval layer can:
 
 - resolve the **14-D joint-position action/state contract**, and
 - run the embodiment / sensor compatibility gate against an rSkill.
 
-Joint kinematics are therefore **approximate** (sufficient for capability
-matching and `SafetyEnvelope` authoring); the SAPIEN model is authoritative.
-Same posture as `robots/aloha_bimanual/robot.yaml` (gym-aloha ViperX), which
-also ships no URDF.
+Joint limits are **approximate** (sufficient for capability matching and
+`SafetyEnvelope` authoring); the SAPIEN model is authoritative.
+
+## URDF (`assets.urdf: robotwin:aloha_agilex`)
+
+For geometry outside the sim (renders, viewers, collision lowering), the resolver
+fetches the URDF RoboTwin itself loads,
+`embodiments/aloha-agilex/urdf/arx5_description_isaac.urdf`, and the 34 meshes it
+references out of `embodiments.zip` in the MIT
+[`TianxingChen/RoboTwin2.0`](https://huggingface.co/datasets/TianxingChen/RoboTwin2.0)
+dataset, at a pinned revision with per-file SHA-256 (range reads, ~98 MB download,
+~430 MB on disk; `openral_hal._robotwin_aloha_agilex_assets`). Nothing is vendored.
+
+- Its arm joints are `fl_joint1..6` / `fr_joint1..6` and its grippers `fl_joint7` /
+  `fr_joint7`; the manifest's `left_*` / `right_*` joints name them in
+  `sim_joint_name`.
+- Its joint limits are ±10 rad placeholders, so the manifest's stay authoritative.
+- Most visual meshes are `.dae`, which MuJoCo cannot decode: a MuJoCo load renders
+  the STL collision meshes.
 
 ## Driving it
 

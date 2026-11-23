@@ -144,3 +144,24 @@ def test_galaxea_a1_urdf_meshes_resolve_beside_it() -> None:
     meshes = re.findall(r'filename="([^"]+)"', path.read_text(encoding="utf-8"))
     assert meshes
     assert all((path.parent / m).is_file() for m in meshes)
+
+
+def test_robotwin_rejects_unknown_model_and_kind() -> None:
+    """``robotwin:`` serves only the aloha-agilex URDF; anything else fails before any fetch."""
+    for ref, kind in (("robotwin:piper", "urdf"), ("robotwin:aloha_agilex", "mjcf")):
+        with pytest.raises(AssetRefError, match="only robotwin:aloha_agilex") as info:
+            resolve_asset(ref, kind)  # type: ignore[arg-type]  # reason: AssetKind literal from a loop
+        assert not isinstance(info.value, AssetFetchError)
+
+
+def test_robotwin_aloha_agilex_urdf_meshes_resolve_beside_it() -> None:
+    """Every mesh the fetched URDF names (bar its commented-out xacro includes) is on disk."""
+    try:
+        path = resolve_asset("robotwin:aloha_agilex", "urdf")
+    except AssetFetchError as exc:
+        pytest.skip(f"RoboTwin embodiments archive not readable on this host: {exc}")
+    assert path is not None
+    xml = re.sub(r"<!--.*?-->", "", path.read_text(encoding="utf-8"), flags=re.S)
+    meshes = re.findall(r'filename="([^"]+)"', xml)
+    assert meshes
+    assert all((path.parent / m).is_file() for m in meshes)

@@ -37,7 +37,7 @@ _OPENAMROBOT_URDF = _ROBOTS / "openamrobot_v2" / "openamrobot_v2.urdf"
 
 # robot -> route; None = select_lowering raises ROSConfigError (no lowerable asset).
 _ROUTES: dict[str, str | None] = {
-    "aloha_agilex": None,
+    "aloha_agilex": "sampling",  # robotwin:aloha_agilex URDF (#726); no assets before
     "aloha_bimanual": "mjcf",
     "anvil_openarm_v2": "mjcf",
     "droid_franka_robotiq": "srdf",

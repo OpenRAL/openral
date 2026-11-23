@@ -2291,6 +2291,7 @@ _ASSET_SCHEMES = (
     "unitree:",
     "makermods:",
     "galaxea:",
+    "robotwin:",
     "behavior:",
 )
 _ROS2_DYNAMIC = "ros2://robot_description"
