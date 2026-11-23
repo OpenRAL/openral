@@ -39,6 +39,7 @@ from openral_rskill._vla_core import (
     checkpoint_image_keys,
     image_to_chw_tensor,
     local_snapshot_dir,
+    parse_hf_file_uri,
     release_torch_modules,
     resolve_camera_keys,
     resolve_device,
@@ -139,6 +140,32 @@ class _Cosmos3Adapter:
         )
 
 
+def _require_processors_in_weights_snapshot(manifest: Any) -> None:
+    """Refuse processor URIs naming another repo or revision than ``weights_uri``.
+
+    The pipelines load from the weights snapshot itself (the tokenizer step needs the
+    snapshot's ``tokenizer/`` directory, which a per-file fetch of the two JSONs would
+    miss), so a manifest pointing its processors elsewhere would be silently ignored.
+
+    Raises:
+        ROSConfigError: A processor URI names a different repo or revision.
+    """
+    if manifest is None or manifest.processors is None:
+        return
+    weights_uri = str(manifest.weights_uri or "")
+    if not weights_uri.startswith("hf://"):
+        return
+    w_repo, _, w_rev = weights_uri.removeprefix("hf://").partition("@")
+    for uri in (manifest.processors.preprocessor_uri, manifest.processors.postprocessor_uri):
+        repo, rev, _ = parse_hf_file_uri(str(uri))
+        if repo != w_repo or (rev or "") != w_rev:
+            raise ROSConfigError(
+                f"cosmos3 loads its processor pipeline from the weights snapshot, but the "
+                f"manifest declares {uri} while weights_uri is {weights_uri}: point both "
+                "at the same repo and revision."
+            )
+
+
 def _load_policy(policy_cls: Any, ckpt: str, config: Any, *, torch: Any) -> Any:
     """``policy_cls.from_pretrained`` built in ``config.dtype``, init skipped, strict load.
 
@@ -193,6 +220,7 @@ def _build_cosmos3(env_cfg: Any) -> _Cosmos3Adapter:
             "cosmos3: real-time chunking is not verified for this family; drop policy_extras.rtc."
         )
     manifest = load_manifest_for_spec(spec)
+    _require_processors_in_weights_snapshot(manifest)
     plan = resolve_quant_plan(spec, manifest)
     require_supported_dtype(plan, frozenset({"bf16", "fp32"}), "cosmos3")
     dtypes = {"bf16": torch.bfloat16, "fp32": torch.float32}
