@@ -858,9 +858,24 @@ _Shared BEHAVIOR-1K R1Pro wire constants + option helpers — the single source 
 #### `python/sim/src/openral_sim/policies/behavior_groot.py`
 _Official BEHAVIOR-1K GR00T policy adapter. The organizer checkpoint depends on the pinned `wensi-ai/Isaac-GR00T` `behavior` branch rather than lerobot's native N1.7 loader, so it runs in an externally-provisioned Python 3.10 sidecar. The OpenRAL process carries only pyzmq/msgpack (`behavior-groot` dependency group)._
 
-- `build_behavior_groot_policy(env_cfg, manifest, extra) -> _BehaviorGrootAdapter` — Resolves the local organizer checkpoint, sidecar endpoint, task/instruction, control mode, and quantization; auto-spawns `tools/behavior_groot_sidecar.py` or connects to an operator/remote sidecar. Runs `rSkill._check_provenance` itself, since the sidecar loads the checkpoint outside the resolver. (L209)
+- `build_behavior_groot_policy(env_cfg, manifest, extra) -> PolicyAdapter` — Delegates to `behavior_groot_inprocess` when `wants_inprocess(extra)`; otherwise resolves the local organizer checkpoint, sidecar endpoint, task/instruction, control mode, and quantization; auto-spawns `tools/behavior_groot_sidecar.py` or connects to an operator/remote sidecar. Runs `rSkill._check_provenance` itself, since the sidecar loads the checkpoint outside the resolver. (L210)
 - `_BehaviorGrootAdapter` — `PolicyAdapter` implementation that preserves the official flattened evaluator observation when present, otherwise maps canonical `images.{head,left_wrist,right_wrist}` + 61-D `state` back to the R1Pro wire keys; validates a finite 23-D action.
 - `_behavior_wire_observation(observation, *, instruction) -> dict[str, object]` — Pure official-wire assembler used by the adapter and unit tests.
+
+#### `python/sim/src/openral_sim/policies/behavior_groot_inprocess.py`
+_Opt-in in-process runtime for the same BEHAVIOR-1K checkpoint (`vla.extra.runtime: inprocess` or `OPENRAL_BEHAVIOR_GROOT_RUNTIME=inprocess`), on lerobot 0.7's `GrootPolicy` under Python 3.12. lerobot reads the checkpoint's processor config (relative-action decode, percentile stats, embodiment id); this module ports the organizers' `B1KPolicyWrapper` around it. Selected inside `build_behavior_groot_policy`._
+
+- `build_behavior_groot_inprocess_policy(env_cfg, manifest, extra, checkpoint) -> _BehaviorGrootInprocessAdapter` — Loads the checkpoint with `embodiment_tag="new_embodiment"`, the 3 R1Pro cameras and the 25-D state; fp32 by default, whole-model NF4 through OpenRAL Pro. Refuses any control mode but `temporal_ensemble`. (L196)
+- `wants_inprocess(extra) -> bool` — Runtime selector; `OPENRAL_BEHAVIOR_GROOT_RUNTIME` wins over `extra["runtime"]`, which defaults to `sidecar`. (L127)
+- `r1pro_state(proprio) -> NDArray[np.float32]` — 61-D R1Pro proprio → the checkpoint's 25-D state, groups in modality order (`STATE_GROUPS`). (L71)
+- `resize_with_pad(image, height, width) -> NDArray[np.uint8]` — The wrapper's aspect-preserving `cv2.INTER_LINEAR` resize + centred zero pad. (L82)
+- `TemporalEnsemble` — The wrapper's `temporal_ensemble` for one env: last 5 chunks, each read at its age, weights `exp(0.005·slot)`, grippers from the newest chunk. (L98)
+- `TemporalEnsemble.step(chunk) -> NDArray[np.float32]` — Adds the newest `(T, 23)` chunk and returns this step's 23-D action. (L112)
+- `TemporalEnsemble.reset() -> None` — Drops the buffered chunks at an episode boundary. (L108)
+- `RUNTIME_ENV` — `"OPENRAL_BEHAVIOR_GROOT_RUNTIME"`, the runtime-selector env var. (L47)
+- `STATE_GROUPS` — R1Pro state groups `(name, start, end)` over the 61-D proprio. (L57)
+- `STATE_DIM` — `25`, the checkpoint's state width (sum of `STATE_GROUPS`). (L65)
+- `GRIPPER_ACTION_INDICES` — `(14, 22)`, the absolute gripper dims of the 23-D action that bypass the ensemble. (L68)
 
 #### `python/sim/src/openral_sim/backends/behavior.py`
 _BEHAVIOR-1K / OmniGibson scene adapter. Runs the official evaluator environment in its own sidecar and registers `scene.id=behavior`, fixed to `r1pro`._
