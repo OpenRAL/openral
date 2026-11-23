@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import uuid
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -82,7 +83,7 @@ def ensure_a1_urdf() -> Path:
     derived = upstream.with_name("a1.urdf")
     xml = upstream.read_text(encoding="utf-8").replace(_UPSTREAM_MESH_PREFIX, "../meshes/")
     if not derived.is_file() or derived.read_text(encoding="utf-8") != xml:
-        tmp = derived.with_name(f".{derived.name}.{os.getpid()}.tmp")
+        tmp = derived.with_name(f".{derived.name}.{uuid.uuid4().hex}.tmp")
         tmp.write_text(xml, encoding="utf-8")
         os.replace(tmp, derived)
     return derived
