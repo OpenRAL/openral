@@ -367,6 +367,10 @@ def _has_vlabench() -> bool:
         and _has_module("dm_control")
         and _has_module("lerobot.sim.integrations.vlabench")
         and _has_module("rrt_algorithms")
+        # VLABench/utils/utils.py (on the env-build path) imports both; probing
+        # them re-runs the plan on hosts provisioned before they were listed.
+        and _has_module("sklearn")
+        and _has_module("colorlog")
     )
 
 
@@ -1773,6 +1777,10 @@ def _vlabench_plan() -> BackendInstallPlan:
         "mediapy",
         "gdown",
         "opencv-python",
+        # Imported by VLABench/utils/utils.py on the env-build path; the
+        # --no-deps editable install skips VLABench's requirements.txt.
+        "scikit-learn",
+        "colorlog",
     ]
     return BackendInstallPlan(
         backend_id="vlabench",
@@ -1783,10 +1791,10 @@ def _vlabench_plan() -> BackendInstallPlan:
         license_note=(
             "Clones OpenMOSS/VLABench (Apache-2.0) editable + installs its "
             "numpy-2-compatible sim deps (mujoco, dm_control, open3d, mediapy, "
-            "gdown — all permissive). rrt-algorithms (a git-only data-gen dep, "
-            "MIT) is STUBBED in site-packages — imported transitively but never "
-            "run on the VLA eval path. The ~12 GB CC-BY asset bundle is fetched "
-            "separately on first env build."
+            "gdown, scikit-learn, colorlog — all permissive). rrt-algorithms "
+            "(a git-only data-gen dep, MIT) is STUBBED in site-packages — "
+            "imported transitively but never run on the VLA eval path. The "
+            "~12 GB CC-BY asset bundle is fetched separately on first env build."
         ),
         probe=_has_vlabench,
         steps=(
