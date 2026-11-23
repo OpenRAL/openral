@@ -9,14 +9,17 @@ dataset and the public RoboTwin checkpoints (e.g.
 
 ## Sim-only manifest
 
-The robot lives inside the **SAPIEN** environment owned by the RoboTwin sidecar,
-and OpenRAL never instantiates it. The manifest exists so the eval layer can:
+No real HAL is wired. Two sims run the robot:
 
-- resolve the **14-D joint-position action/state contract**, and
-- run the embodiment / sensor compatibility gate against an rSkill.
+- the **SAPIEN** environment owned by the RoboTwin sidecar (the benchmark scenes),
+  where OpenRAL never instantiates the robot and the SAPIEN model is authoritative;
+- a bare **MuJoCo twin** (`MujocoArmHAL.from_description`, the manifest's `sim:`
+  block) for `openral deploy sim` and the dashboard — see below.
 
-Joint limits are **approximate** (sufficient for capability matching and
-`SafetyEnvelope` authoring); the SAPIEN model is authoritative.
+Joint limits are **approximate** (PiPER figures, sufficient for capability matching
+and `SafetyEnvelope` authoring). `joint3` carries the ARX5 elbow's sign, `[0, 2.967]`:
+RoboTwin's URDF unfolds the elbow toward +q (`lerobot/robotwin_unified` state mean
++0.81 rad), so PiPER's `[-2.967, 0]` pinned it folded.
 
 ## URDF (`assets.urdf: robotwin:aloha_agilex`)
 
@@ -34,6 +37,37 @@ dataset, at a pinned revision with per-file SHA-256 (range reads, ~98 MB downloa
 - Its joint limits are ±10 rad placeholders, so the manifest's stay authoritative.
 - Most visual meshes are `.dae`, which MuJoCo cannot decode: a MuJoCo load renders
   the STL collision meshes.
+
+## MuJoCo twin (`assets.mjcf: robotwin:aloha_agilex`)
+
+```bash
+openral deploy sim --config scenes/deploy/aloha_agilex_twin.yaml
+```
+
+`openral_hal._robotwin_aloha_agilex_assets.ensure_aloha_agilex_mjcf` compiles the
+same URDF with `mujoco.MjSpec` into `derived-<hash>/aloha_agilex.xml` beside it:
+
+- The two **front arms** are actuated: one `<position>` actuator per manifest joint,
+  in manifest order (actuators 0–13), at the manifest's ranges; forces clamp at the
+  manifest's 30 N·m. qpos 0–7 are `fl_joint1..8`, 8–15 `fr_joint1..8`.
+- Each gripper actuator drives `joint7` (0 closed .. 0.04765 m open); an MJCF
+  equality mirrors it onto `joint8`, as RoboTwin's `config.yml` couples them. The
+  twin takes the normalised `[0, 1]` gripper (`normalized_open_unit`, 1 = open),
+  RoboTwin's own encoding.
+- The base, wheels, castors and the two **rear arms** (`lr_*` / `rr_*`) are welded
+  at zero: RoboTwin drives only the front arms.
+- COLLADA visuals are dropped; STL visuals (the base tray, the camera mast) are
+  kept. The frame columns (`box2_Link`) exist only as `.dae`, so the arm pedestals
+  render floating above the base.
+- The gains are OpenRAL's sim-only choice (kv sized so the 30 N·m clamp allows the
+  3 rad/s velocity limit), not a model of the real servos.
+- It starts at qpos 0, RoboTwin's home pose (config.yml), inside every range.
+- Cameras come from each sensor's `sim_placement`: `top` at RoboTwin's
+  `head_camera` pose (its `config.yml`, moved into the robot frame), the wrist
+  cameras on the URDF's `left_camera` / `right_camera` links.
+
+Tests: `tests/sim/test_aloha_agilex_hal_mujoco.py` (gravity-on tracking, both
+grippers, three cameras) and `test_data_driven_mujoco_hal.py`.
 
 ## Driving it
 

@@ -21,7 +21,8 @@ Grammar (``resolve_asset(ref, kind)``):
   vendored), its ``package://mobiman`` mesh refs made relative (URDF only).
 * ``robotwin:aloha_agilex`` — the URDF RoboTwin 2.0 loads for its aloha-agilex
   embodiment and its meshes, range-read out of the MIT ``embodiments.zip``
-  (Hugging Face dataset) at a pinned revision with per-file SHA-256 (URDF only).
+  (Hugging Face dataset) at a pinned revision with per-file SHA-256; as an
+  ``mjcf``, the MuJoCo twin derived from that URDF (front arms actuated).
 * ``robosuite:<robot>`` — a robosuite (>= 1.5, MIT) robot with its default base
   and grippers, composed into one MJCF as robosuite does at runtime
   (``panda_mobile`` is ``PandaOmron``) (MJCF only).
@@ -455,16 +456,17 @@ def _resolve_galaxea(model: str, kind: AssetKind) -> Path:
 
 
 def _resolve_robotwin(model: str, kind: AssetKind) -> Path:
-    """Resolve ``robotwin:aloha_agilex`` to RoboTwin's pinned aloha-agilex URDF.
+    """Resolve ``robotwin:aloha_agilex`` to RoboTwin's pinned URDF or its MuJoCo twin.
 
     A failed download is an ``AssetFetchError``; a digest mismatch, an unknown
-    model or kind, or a missing ``openral_hal`` is an ``AssetRefError``.
+    model or kind, a failed MJCF derive, or a missing ``openral_hal`` is an
+    ``AssetRefError``.
     """
     from openral_core.exceptions import ROSConfigError
 
-    if model != "aloha_agilex" or kind != "urdf":
+    if model != "aloha_agilex" or kind == "srdf":
         raise AssetRefError(
-            f"robotwin:{model} ({kind}): only robotwin:aloha_agilex as a urdf exists"
+            f"robotwin:{model} ({kind}): only robotwin:aloha_agilex as a urdf or mjcf exists"
         )
     try:
         from openral_hal import _robotwin_aloha_agilex_assets as robotwin
@@ -477,6 +479,8 @@ def _resolve_robotwin(model: str, kind: AssetKind) -> Path:
     except ROSConfigError as exc:
         raise AssetFetchError(f"robotwin:{model} ({kind}): {exc}") from exc
     try:
+        if kind == "mjcf":
+            return robotwin.ensure_aloha_agilex_mjcf()
         return robotwin.ensure_aloha_agilex_urdf()
     except ROSConfigError as exc:
         raise AssetRefError(f"robotwin:{model} ({kind}): {exc}") from exc
