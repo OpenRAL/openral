@@ -1,0 +1,32 @@
+# AgileX aloha-agilex (RoboTwin 2.0 embodiment) — bare MuJoCo twin (#740).
+#
+#     openral deploy sim --config scenes/deploy/aloha_agilex_twin.yaml
+#
+# `aloha_agilex_twin` is not an openral_sim scene id, so `deploy sim` builds the bare
+# twin (`MujocoArmHAL.from_description` on the robotwin:aloha_agilex MJCF, the
+# manifest's `sim:` block) at the manifest's 25 Hz, with the head + two wrist
+# cameras. RoboTwin task scenes (the SAPIEN sidecar) stay on scenes/sim/robotwin_*.
+#
+# Two arms, no depth camera: every runtime feature that needs a sensor the manifest
+# does not declare is off.
+scene:
+  id: aloha_agilex_twin
+robot_id: aloha_agilex
+
+runtime:
+  enable_reasoner: false
+  enable_slam: false
+  enable_nav2: false
+  enable_octomap: false
+  enable_octomap_kernel_check: true
+  enable_object_detector: false
+  object_detector_onnx: null
+  object_detector_manifest: null
+  object_detector_query: null
+  object_detector_locators: null
+  enable_reward_monitor: false
+  reward_monitor_manifest: null
+  reward_monitor_task: null
+  enable_critic: false
+  spatial_memory_ingest: false
+  approach_skill_id: null

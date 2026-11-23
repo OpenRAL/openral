@@ -147,8 +147,8 @@ def test_galaxea_a1_urdf_meshes_resolve_beside_it() -> None:
 
 
 def test_robotwin_rejects_unknown_model_and_kind() -> None:
-    """``robotwin:`` serves only the aloha-agilex URDF; anything else fails before any fetch."""
-    for ref, kind in (("robotwin:piper", "urdf"), ("robotwin:aloha_agilex", "mjcf")):
+    """``robotwin:`` serves only aloha-agilex as a URDF / MJCF; anything else fails pre-fetch."""
+    for ref, kind in (("robotwin:piper", "urdf"), ("robotwin:aloha_agilex", "srdf")):
         with pytest.raises(AssetRefError, match="only robotwin:aloha_agilex") as info:
             resolve_asset(ref, kind)  # type: ignore[arg-type]  # reason: AssetKind literal from a loop
         assert not isinstance(info.value, AssetFetchError)
@@ -165,6 +165,41 @@ def test_robotwin_aloha_agilex_urdf_meshes_resolve_beside_it() -> None:
     meshes = re.findall(r'filename="([^"]+)"', xml)
     assert meshes
     assert all((path.parent / m).is_file() for m in meshes)
+
+
+def test_robotwin_aloha_agilex_mjcf_actuates_the_manifest_joints() -> None:
+    """The derived twin has one actuator per manifest joint, in order, at the manifest's range.
+
+    Arm ranges come from the manifest (the URDF says ±10 rad); each gripper
+    spans the URDF's 0..0.04765 m finger slide, with ``joint8`` mirroring ``joint7``.
+    """
+    mujoco = pytest.importorskip("mujoco")
+    from openral_core import RobotDescription
+
+    try:
+        path = resolve_asset("robotwin:aloha_agilex", "mjcf")
+    except AssetFetchError as exc:
+        pytest.skip(f"RoboTwin embodiments archive not readable on this host: {exc}")
+    assert path is not None
+    model = mujoco.MjModel.from_xml_path(str(path))
+    manifest = Path(__file__).resolve().parents[3] / "robots" / "aloha_agilex" / "robot.yaml"
+    joints = RobotDescription.from_yaml(str(manifest)).joints
+    assert model.nu == len(joints) == 14
+    assert model.nq == 16  # 2 x (6 arm + 2 fingers); base, wheels and rear arms welded
+    for i, joint in enumerate(joints):
+        jid = model.actuator_trnid[i, 0]
+        assert model.joint(jid).name == joint.sim_joint_name
+        lo, hi = model.actuator_ctrlrange[i]
+        if joint.role == "gripper":
+            assert (lo, hi) == pytest.approx((0.0, 0.04765))
+        else:
+            assert (lo, hi) == pytest.approx(joint.position_limits)
+            assert tuple(model.jnt_range[jid]) == pytest.approx(joint.position_limits)
+    mimics = {
+        (model.joint(model.eq_obj1id[e]).name, model.joint(model.eq_obj2id[e]).name)
+        for e in range(model.neq)
+    }
+    assert mimics == {("fl_joint8", "fl_joint7"), ("fr_joint8", "fr_joint7")}
 
 
 def test_robosuite_is_mjcf_only() -> None:

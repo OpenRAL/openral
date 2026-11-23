@@ -452,9 +452,12 @@ _Fetches Galaxea's A1 URDF + 9 STL meshes from the unlicensed `userguide-galaxea
 ### `python/hal/src/openral_hal/_robotwin_aloha_agilex_assets.py`
 _Range-reads RoboTwin 2.0's aloha-agilex URDF + its 34 meshes out of `embodiments.zip` (MIT HF dataset `TianxingChen/RoboTwin2.0`) at a pinned revision, per-file SHA-256 — backs the `robotwin:aloha_agilex` asset ref._
 
-- `fetch_aloha_agilex_files() -> Path` (L156) — Downloads every pinned file not yet cached into `$OPENRAL_CACHE_DIR/robotwin_aloha_agilex/<rev12>/` (the archive's own layout, so relative mesh refs resolve) and drops the `.verified` stamp; presence only. Raises `ROSConfigError` when `huggingface_hub` is missing or the archive read fails.
-- `ensure_aloha_agilex_urdf() -> Path` (L194) — Fetches, then verifies every SHA-256 (skipped once `.verified` exists) and returns `arx5_description_isaac.urdf`; a mismatching file is deleted. Raises `ROSConfigError`.
-- const `ROBOTWIN_ASSETS_REVISION: str` (L37) — pinned dataset commit.
+- `fetch_aloha_agilex_files() -> Path` (L162) — Downloads every pinned file not yet cached into `$OPENRAL_CACHE_DIR/robotwin_aloha_agilex/<rev12>/` (the archive's own layout, so relative mesh refs resolve) and drops the `.verified` stamp; presence only. Raises `ROSConfigError` when `huggingface_hub` is missing or the archive read fails.
+- `ensure_aloha_agilex_urdf() -> Path` (L200) — Fetches, then verifies every SHA-256 (skipped once `.verified` exists) and returns `arx5_description_isaac.urdf`; a mismatching file is deleted. Raises `ROSConfigError`.
+- `ensure_aloha_agilex_mjcf() -> Path` (L405) — The MuJoCo twin MJCF (`robotwin:aloha_agilex` as an `mjcf`), compiled from the URDF via `MjSpec` and cached under `derived-<module-source hash>/`: wheels, castors and the rear `lr_`/`rr_` arms welded, COLLADA visuals dropped (STL visuals kept), one `<position>` actuator per manifest joint in manifest order at `ARM_JOINT_RANGES` (finger joint7 at the URDF's 0..0.04765 m), forces clamped at `EFFORT_LIMIT`, an `<equality>` joint8 = joint7 per gripper (RoboTwin's config.yml mimic), and base/link1 + finger contact excludes. Sim-only gains. Raises `ROSConfigError` when the fetch fails or `mujoco` is not installed.
+- const `ARM_JOINT_RANGES: tuple[tuple[float, float], ...]` (L236) — joint1..6 ranges, in lock-step with `robots/aloha_agilex/robot.yaml` (asserted by `python/core/tests/test_assets.py`).
+- const `EFFORT_LIMIT: float` (L245) — actuator force clamp, the manifest's `effort_limit`.
+- const `ROBOTWIN_ASSETS_REVISION: str` (L43) — pinned dataset commit.
 
 ### `python/hal/src/openral_hal/_robosuite_assets.py`
 _Composes a robosuite (>= 1.5, MIT) robot with its default base and grippers into one MJCF, as `robosuite.robots.Robot.load_model` does — backs the `robosuite:<robot>` asset ref (panda_mobile's `PandaOmron`)._

@@ -6,13 +6,15 @@
 # embodiment behind `lerobot/robotwin_unified` and the public RoboTwin
 # checkpoints (e.g. `lerobot/smolvla_robotwin`).
 #
-# The actual robot lives inside the SAPIEN env owned by the RoboTwin
-# sidecar, so the openral side never instantiates it (`assets.urdf` below is
-# the same URDF, fetched for geometry only).
-# The manifest exists only so the eval layer can resolve the 14-D
-# action/state contract and run the embodiment/sensor compatibility gate.
-# Joint kinematics are therefore approximate (sufficient for capability
-# matching + SafetyEnvelope authoring); the SAPIEN model is authoritative.
+# Two sims run it:
+# * the SAPIEN env owned by the RoboTwin sidecar (scenes/sim/robotwin_*), where
+#   the SAPIEN model is authoritative and the openral side never instantiates
+#   the robot;
+# * a bare MuJoCo twin (`MujocoArmHAL.from_description`, the `sim:` block
+#   below) on an MJCF derived from the same URDF, for `openral deploy sim` and
+#   the dashboard (scenes/deploy/aloha_agilex_twin.yaml).
+# Joint kinematics below are approximate (sufficient for capability matching +
+# SafetyEnvelope authoring).
 
 name: "aloha_agilex"
 embodiment_kind: "bimanual"
@@ -21,13 +23,15 @@ base_frame: "world"
 
 # The URDF RoboTwin's SAPIEN scene loads (`embodiments.zip`, MIT, pinned
 # Hugging Face revision; openral_hal._robotwin_aloha_agilex_assets) for geometry
-# outside the sim: renders, viewers, collision lowering. The sidecar still owns
-# the simulated robot. Its arms are `fl_*` (left) / `fr_*` (right), bridged by
-# `sim_joint_name`; its joint limits are ±10 rad placeholders, so the limits
-# below stay the authority.
+# outside the sim: renders, viewers, collision lowering. Its arms are `fl_*`
+# (left) / `fr_*` (right), bridged by `sim_joint_name`; its joint limits are
+# ±10 rad placeholders, so the limits below stay the authority. The MJCF is the
+# MuJoCo twin derived from it: the front arms actuated at these limits, the
+# base, wheels and rear arms welded.
 assets:
   urdf:
     ref: "robotwin:aloha_agilex"
+  mjcf: "robotwin:aloha_agilex"
 
 joints:
   # 14-DoF: 2 arms × (6 revolute joints + 1 gripper). AgileX PiPER limits
@@ -58,7 +62,9 @@ joints:
     parent_link: "left_link2"
     child_link: "left_link3"
     axis_xyz: [0.0, 1.0, 0.0]
-    position_limits: [-2.967, 0.0]
+    # Elbow unfolds toward +q on RoboTwin's ARX5 URDF (`lerobot/robotwin_unified`
+    # state mean +0.81 rad); PiPER's [-2.967, 0] magnitude with that sign.
+    position_limits: [0.0, 2.967]
     velocity_limit: 3.0
     effort_limit: 30.0
     actuator_kind: "servo"
@@ -129,7 +135,9 @@ joints:
     parent_link: "right_link2"
     child_link: "right_link3"
     axis_xyz: [0.0, 1.0, 0.0]
-    position_limits: [-2.967, 0.0]
+    # Elbow unfolds toward +q on RoboTwin's ARX5 URDF (`lerobot/robotwin_unified`
+    # state mean +0.81 rad); PiPER's [-2.967, 0] magnitude with that sign.
+    position_limits: [0.0, 2.967]
     velocity_limit: 3.0
     effort_limit: 30.0
     actuator_kind: "servo"
@@ -219,6 +227,12 @@ sensors:
     vla_feature_key: "observation.images.camera1"
     vendor: "sim"
     model: "robotwin_cam_high"
+    # MuJoCo twin only (RoboTwin renders its own): RoboTwin's `head_camera`
+    # (config.yml static_camera_list) moved from its world into the robot
+    # frame (robot_pose: y -0.65, yaw +90 deg).
+    sim_placement:
+      pos: [0.2, 0.032, 1.35]
+      target: [0.8, 0.032, 0.55]
   - name: "wrist_left"
     modality: "rgb"
     frame_id: "left_link6"
@@ -234,6 +248,11 @@ sensors:
     vla_feature_key: "observation.images.camera2"
     vendor: "sim"
     model: "robotwin_cam_left_wrist"
+    # MuJoCo twin only: on the URDF's `left_camera` link (x forward, z up).
+    sim_placement:
+      parent_body: "left_camera"
+      pos: [0.0, 0.0, 0.0]
+      target: [1.0, 0.0, 0.0]
   - name: "wrist_right"
     modality: "rgb"
     frame_id: "right_link6"
@@ -249,6 +268,11 @@ sensors:
     vla_feature_key: "observation.images.camera3"
     vendor: "sim"
     model: "robotwin_cam_right_wrist"
+    # MuJoCo twin only: on the URDF's `right_camera` link (x forward, z up).
+    sim_placement:
+      parent_body: "right_camera"
+      pos: [0.0, 0.0, 0.0]
+      target: [1.0, 0.0, 0.0]
 
 capabilities:
   locomotion: ["none"]
@@ -276,10 +300,51 @@ safety:
   max_joint_speed_factor: 0.5
   deadman_required: false
 
-# AgileX PiPER ROS 2 driver is Apache-2.0 / MIT (vendor-distributed); the
-# RoboTwin benchmark only ever drives the SAPIEN twin, so no real HAL is
-# wired here (sim-only embodiment).
+# AgileX PiPER ROS 2 driver is Apache-2.0 / MIT (vendor-distributed); no real
+# HAL is wired here (sim-only embodiment: the SAPIEN env or the MuJoCo twin).
 sdk_kind: "open"
+
+hal:
+  # null -> build_hal derives MujocoArmHAL.from_description from `sim:` below.
+  sim: null
+  real: null
+
+# MuJoCo wiring for the twin (robotwin:aloha_agilex MJCF): actuators 0-13 are
+# the joints above in order. qpos 0-7 are fl_joint1..8 and 8-15 fr_joint1..8;
+# each gripper actuator drives joint7 (0 closed .. 0.04765 m open) and an MJCF
+# equality mirrors it onto joint8 (qpos 7 / 15), as RoboTwin's config.yml
+# couples them. qpos 0 is RoboTwin's config.yml home pose and inside every range.
+sim:
+  joint_qpos_addr:
+    left_joint1: 0
+    left_joint2: 1
+    left_joint3: 2
+    left_joint4: 3
+    left_joint5: 4
+    left_joint6: 5
+    left_gripper: 6
+    right_joint1: 8
+    right_joint2: 9
+    right_joint3: 10
+    right_joint4: 11
+    right_joint5: 12
+    right_joint6: 13
+    right_gripper: 14
+  grippers:
+    - joint: "left_gripper"
+      ctrl_range: [0.0, 0.04765]
+      qpos_addrs: [6]
+      qpos_scale: 0.04765
+      read_mode: "affine_low_high"
+      write_mode: "normalised"
+      actuator_index: 6
+    - joint: "right_gripper"
+      ctrl_range: [0.0, 0.04765]
+      qpos_addrs: [14]
+      qpos_scale: 0.04765
+      read_mode: "affine_low_high"
+      write_mode: "normalised"
+      actuator_index: 13
 
 observation_spec:
   state_key: "observation.state"
