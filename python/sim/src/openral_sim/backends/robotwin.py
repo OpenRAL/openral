@@ -54,7 +54,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import NDArray
-from openral_core.exceptions import ROSConfigError
+from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 
 from openral_sim._sidecar_common import (
     ensure_pip_venv,
@@ -67,12 +67,13 @@ from openral_sim._sidecar_common import (
 from openral_sim._sidecar_common import (
     opt_num as _opt_num,
 )
-from openral_sim.registry import SCENES
+from openral_sim.backends.isaac_sim import IsaacActionLayout, pack_isaac_action
+from openral_sim.registry import ROBOTS, SCENES
 from openral_sim.rollout import DEFAULT_SUCCESS_KEY
 from openral_sim.sidecar import SidecarClient, SidecarSimRollout
 
 if TYPE_CHECKING:
-    from openral_core import SimEnvironment
+    from openral_core import Action, SimEnvironment
 
     from openral_sim.rollout import Observation
 
@@ -181,8 +182,20 @@ class _RoboTwinSimSidecar(SidecarSimRollout):
 
     Fields, ``reset``/``step``/``sim_time_ns``/``render``/``close`` live on
     ``SidecarSimRollout`` (shared verbatim with the Isaac Sim adapter); only
-    ``_wrap_obs`` and this docstring-carrying ``action_dim`` are RoboTwin-specific.
+    ``_wrap_obs``, ``action_dim`` and the HAL hooks ``pack_action`` / ``idle_action``
+    are RoboTwin-specific.
+
+    The action is RoboTwin's absolute joint vector ``[left arm, left gripper, right arm,
+    right gripper]`` — the ``aloha_agilex`` manifest's arm + gripper joints in manifest
+    order, which ``layout`` (the name-keyed ``IsaacActionLayout``) packs by name. A slot
+    no command names holds the measured pose: an absolute-target env reads a zero as
+    "drive to 0 rad", so neither the HAL's default packer (contiguous arm slots, one
+    gripper last) nor its zero idle vector is a hold here.
     """
+
+    layout: IsaacActionLayout | None = None
+    # Measured joint positions (manifest order) of the last observation.
+    _measured: NDArray[np.float32] | None = None
 
     @property
     def action_dim(self) -> int:
@@ -216,7 +229,55 @@ class _RoboTwinSimSidecar(SidecarSimRollout):
         for key in ("joint_positions", "joint_velocities"):
             if raw.get(key) is not None:
                 obs[key] = np.asarray(raw[key], dtype=np.float32).reshape(-1)
+        self._measured = obs.get("joint_positions")
         return obs
+
+    def _hold(self) -> NDArray[np.float32]:
+        """The measured pose in action-slot order: what an unnamed slot holds."""
+        layout = self._require_layout()
+        if self._measured is None or self._measured.shape != (len(layout.joints),):
+            raise ROSRuntimeError(
+                "RoboTwin: no measured joint state to hold the uncommanded slots at "
+                f"(got {None if self._measured is None else self._measured.shape}, need "
+                f"{len(layout.joints)} manifest joints); reset first."
+            )
+        return np.asarray(
+            [self._measured[layout.joints.index(n)] for n in layout.slots], dtype=np.float32
+        )
+
+    def _require_layout(self) -> IsaacActionLayout:
+        layout = self.layout
+        if layout is None:
+            raise ROSConfigError("RoboTwin rollout built without an action layout.")
+        if layout.dim != self.action_dim:
+            raise ROSConfigError(
+                f"RoboTwin: the manifest has {layout.dim} arm + gripper slots "
+                f"{list(layout.slots)}; the sidecar's action is {self.action_dim}-D."
+            )
+        return layout
+
+    def pack_action(
+        self,
+        action: Action,
+        prev: NDArray[np.float32] | None,
+        *,
+        carry_twist: bool = False,
+    ) -> NDArray[np.float32]:
+        """``SimAttachedHAL``'s packing hook: slots addressed by manifest joint name.
+
+        ``pack_isaac_action`` places the command (an arm-only, non-base or full
+        JOINT_POSITION row, a named slot row, or a GRIPPER_POSITION by ``ee_name``);
+        every slot it leaves unset (NaN) takes the measured pose (``_hold``).
+        """
+        out = pack_isaac_action(action, self._require_layout(), prev, carry_twist=carry_twist)
+        unset = np.isnan(out)
+        if unset.any():
+            out[unset] = self._hold()[unset]
+        return out
+
+    def idle_action(self) -> NDArray[np.float32]:
+        """``SimAttachedHAL``'s idle hold: the measured pose (zeros would drive to 0 rad)."""
+        return self._hold()
 
 
 # ── factory ───────────────────────────────────────────────────────────────────
@@ -608,4 +669,9 @@ def _build_robotwin_scene(env_cfg: SimEnvironment) -> _RoboTwinSimSidecar:
         expected_identity={"env": "robotwin", "task": task_name},
     )
     client.connect()
-    return _RoboTwinSimSidecar(scene=env_cfg.scene, task=env_cfg.task, _client=client)
+    return _RoboTwinSimSidecar(
+        scene=env_cfg.scene,
+        task=env_cfg.task,
+        _client=client,
+        layout=IsaacActionLayout.from_description(ROBOTS.get(_ROBOTWIN_ROBOT_ID)()),
+    )

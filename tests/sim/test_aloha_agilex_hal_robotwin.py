@@ -26,6 +26,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 _REPO = Path(__file__).resolve().parents[2]
 
@@ -111,10 +112,7 @@ def test_read_state_follows_the_arm_not_the_command(hal: Any) -> None:
     start = np.asarray(hal.read_state().position)
     target = start.copy()
     target[0] += 0.4  # left_joint1 (waist), well inside its +-2.618 rad range
-    # Only the left arm: the default packer lays the 12 arm targets into env slots
-    # 0..11, but RoboTwin's vector is [left 6, left gripper, right 6, right gripper], so
-    # the right arm's targets land one slot early (a separate actuation-path defect).
-    # The default packer takes the 12 arm joints; the grippers ride GRIPPER_POSITION.
+    # An arm-only row (12 joints, manifest order); the grippers ride GRIPPER_POSITION.
     arm = [i for i, j in enumerate(hal.description.joints) if j.role != "gripper"]
     action = Action(control_mode=ControlMode.JOINT_POSITION, joint_targets=[target[arm].tolist()])
 
@@ -127,3 +125,82 @@ def test_read_state_follows_the_arm_not_the_command(hal: Any) -> None:
     # ... but read_state is the articulation, not the drive target it was given: a
     # commanded value would equal the target to float precision.
     assert err > 1e-4, err
+
+
+def _arm_indices(hal: Any) -> list[int]:
+    return [i for i, j in enumerate(hal.description.joints) if j.role != "gripper"]
+
+
+def _step(hal: Any, action: Any, n: int) -> NDArray[np.float64]:
+    for _ in range(n):
+        hal.send_action(action)
+    return np.asarray(hal.read_state().position)
+
+
+def test_every_arm_joint_drives_its_own_manifest_joint(hal: Any) -> None:
+    """Each arm target reaches the joint it names, on both arms.
+
+    RoboTwin's action vector is ``[left 6, left gripper, right 6, right gripper]``; the
+    HAL's default packer used to lay an arm row into slots 0..11, so the right arm's
+    targets landed one slot early (``right_joint1`` on the left gripper). Distinct
+    offsets per joint, reversed on the right arm, make any mis-slot visible.
+    """
+    from openral_core import Action, ControlMode
+
+    arm = _arm_indices(hal)
+    start = np.asarray(hal.read_state().position)
+    offsets = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+    target = start.copy()
+    for k, i in enumerate(arm):
+        target[i] += offsets[k] if k < 6 else offsets[11 - k]
+    action = Action(control_mode=ControlMode.JOINT_POSITION, joint_targets=[target[arm].tolist()])
+    reached = _step(hal, action, 3)
+    names = [j.name for j in hal.description.joints]
+    print({names[i]: (round(target[i], 3), round(reached[i], 3)) for i in arm})
+    np.testing.assert_allclose(reached[arm], target[arm], atol=0.03)
+
+
+def test_each_gripper_command_reaches_its_own_gripper(hal: Any) -> None:
+    from openral_core import Action, ControlMode
+
+    names = [j.name for j in hal.description.joints]
+    left, right = names.index("left_gripper"), names.index("right_gripper")
+    arm = _arm_indices(hal)
+    before = np.asarray(hal.read_state().position)
+    close_left = Action(
+        control_mode=ControlMode.GRIPPER_POSITION, gripper=[0.0], ee_name="left_gripper"
+    )
+    after_left = _step(hal, close_left, 20)
+    print(f"close left: left {before[left]:.3f}->{after_left[left]:.3f}", end=", ")
+    print(f"right {before[right]:.3f}->{after_left[right]:.3f}")
+    # Closed: the measured fingers stop at ~0.18 of RoboTwin's gripper_scale span.
+    assert after_left[left] < 0.25 and before[left] - after_left[left] > 0.5
+    assert abs(after_left[right] - before[right]) < 0.05
+    # A gripper command holds the arms where they are, not at 0 rad.
+    np.testing.assert_allclose(after_left[arm], before[arm], atol=0.03)
+    close_right = Action(
+        control_mode=ControlMode.GRIPPER_POSITION, gripper=[0.0], ee_name="right_gripper"
+    )
+    after_right = _step(hal, close_right, 20)
+    assert after_right[right] < 0.25
+    assert after_right[left] < 0.25
+
+
+def test_idle_step_holds_the_measured_pose(hal: Any) -> None:
+    """The HAL's idle tick holds RoboTwin's absolute targets; zeros would drive to 0 rad."""
+    from openral_core import Action, ControlMode
+
+    arm = _arm_indices(hal)
+    target = np.asarray(hal.read_state().position)
+    target[arm[0]] += 0.3  # off zero, so a zero "hold" would show
+    target[arm[6]] += 0.3
+    hal.send_action(
+        Action(control_mode=ControlMode.JOINT_POSITION, joint_targets=[target[arm].tolist()])
+    )
+    before = np.asarray(hal.read_state().position)
+    assert abs(before[arm[0]]) > 0.2 and abs(before[arm[6]]) > 0.2
+    for _ in range(5):
+        assert hal.idle_step() is True
+    after = np.asarray(hal.read_state().position)
+    print(f"idle: max |delta| {np.max(np.abs(after - before)):.4f}")
+    np.testing.assert_allclose(after, before, atol=0.03)
