@@ -2791,6 +2791,10 @@ class SimAttachedHAL:
         """
         self._held_twist = None
         self._latch_twist(None)
+        # A target the stop cut short must not ride along as the next pack's ``prev``:
+        # an absolute-target env (RoboTwin) would resume it on the next gripper or twist
+        # command. Unset slots then take the measured pose, as after a reset.
+        self._last_env_action = None
         hold = getattr(self._env, "hold_present_pose", None)
         if callable(hold) and self._connected:
             hold()
