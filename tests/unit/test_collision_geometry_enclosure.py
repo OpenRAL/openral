@@ -207,7 +207,7 @@ _INTENDED_UNCOVERED_LINKS: dict[str, frozenset[str]] = {
 
 # Measured twin-vertex escapes, per robot, recorded instead of hidden behind an xfail:
 # a NON-CONSERVATIVE gap in the kernel's model that needs Safety-WG review and a
-# hazard-log row (raised in PR #741). panda_mobile's primitives and tight_geometry are fitted to
+# hazard-log row (#747). panda_mobile's primitives and tight_geometry are fitted to
 # robosuite's COLLISION meshes (tools/generate_tight_geometry.py); this test holds a
 # URDF-lowered twin to its visual CAD, measured (2026-11-23) up to 0.49 mm outside
 # the primary boxes (panda_link3) and 0.93 mm outside the tight hulls (links 2-7).
