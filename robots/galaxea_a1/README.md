@@ -9,6 +9,12 @@ vendor source, binary, or message package is distributed. See
 [`docs/methods/01-hal.md`](../../docs/methods/01-hal.md) for the HAL's public
 symbol inventory.
 
+`assets.urdf` is `galaxea:a1`: the `A1_URDF_0607_0028.urdf` the manifest was
+transcribed from and its STL meshes, which Galaxea publishes without a license in
+[`userguide-galaxea/robot_descriptions`](https://github.com/userguide-galaxea/robot_descriptions).
+They are fetched at a pinned commit with per-file SHA-256 on first use, never
+vendored (`openral_hal._galaxea_a1_assets`).
+
 ## Galaxea A1 hardware bring-up
 
 The first session is observation-only until the HAL graph is healthy. Ensure no

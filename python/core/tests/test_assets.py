@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -123,3 +124,23 @@ def test_behavior_r1pro_urdf_loads_in_mujoco_with_visuals() -> None:
     model = mujoco.MjModel.from_xml_string(xml)
     assert model.ngeom > 0
     assert "torso_joint1" in {model.joint(i).name for i in range(model.njnt)}
+
+
+def test_galaxea_rejects_unknown_model_and_kind() -> None:
+    """``galaxea:`` serves only the A1 URDF; anything else fails before any fetch."""
+    for ref, kind in (("galaxea:r1pro", "urdf"), ("galaxea:a1", "mjcf")):
+        with pytest.raises(AssetRefError, match="only galaxea:a1") as info:
+            resolve_asset(ref, kind)  # type: ignore[arg-type]  # reason: AssetKind literal from a loop
+        assert not isinstance(info.value, AssetFetchError)
+
+
+def test_galaxea_a1_urdf_meshes_resolve_beside_it() -> None:
+    """The derived A1 URDF names its meshes relative to itself, and every one is on disk."""
+    try:
+        path = resolve_asset("galaxea:a1", "urdf")
+    except AssetFetchError as exc:
+        pytest.skip(f"Galaxea A1 description not fetchable on this host: {exc}")
+    assert path is not None
+    meshes = re.findall(r'filename="([^"]+)"', path.read_text(encoding="utf-8"))
+    assert meshes
+    assert all((path.parent / m).is_file() for m in meshes)
