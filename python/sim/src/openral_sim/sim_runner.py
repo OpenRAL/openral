@@ -1308,9 +1308,6 @@ _VIEW_ENV = "OPENRAL_SIM_VIEW"
 #    `_load_unlocked`'s `sys.modules.pop` -> `KeyError:
 #    'robosuite.renderers.viewer.mjviewer_renderer'` (non-deterministic —
 #    observed on rldx-ft-robocasa but not rldx-ft-rc365 on the same scene).
-#    `vlabench` joins this class from lerobot 0.7: the env thread's
-#    `lerobot.envs.configs` import pulls `lerobot.processor` ->
-#    `tokenizer_processor` -> `from transformers import AutoProcessor`.
 #
 # 2. `maniskill3` / `simpler_env` (SAPIEN-backed): the policy factory's
 #    transient `torch.set_default_dtype(bfloat16)` window (smolvla / pi05 /

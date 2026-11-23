@@ -16,7 +16,11 @@ The env is built directly as a one-env ``gym.vector.SyncVectorEnv`` over
 ``lerobot.sim.integrations.vlabench.VLABenchEnv`` (raw ``pixels`` /
 ``agent_pos`` keys). lerobot>=0.7's ``VLABenchEnvConfig.create_envs`` instead
 returns canonical ``observation.*`` keys, which this adapter does not parse;
-we unwrap the ``n_envs=1`` batch dimension here.
+we unwrap the ``n_envs=1`` batch dimension here. The env kwargs are passed
+directly rather than through ``VLABenchEnvConfig``: from lerobot 0.7
+``lerobot.envs.configs`` imports ``lerobot.processor`` -> ``transformers``,
+which races the policy thread's transformers import under ``sim_runner``'s
+parallel init. ``lerobot.sim.integrations.vlabench`` does not import it.
 
 Task ID convention: ``"vlabench/<task-name>"`` (e.g. ``"vlabench/select_fruit"``).
 ``scene.id`` MUST be ``"vlabench"``.
@@ -271,7 +275,6 @@ def _build_vlabench_scene(env_cfg: SimEnvironment) -> _VLABenchSim:
     try:
         _resolve_vlabench_root()
         import gymnasium as gym
-        from lerobot.envs.configs import VLABenchEnvConfig
         from lerobot.sim.integrations.vlabench import VLABenchEnv
     except ImportError as exc:  # pragma: no cover
         raise ROSConfigError(
@@ -283,16 +286,17 @@ def _build_vlabench_scene(env_cfg: SimEnvironment) -> _VLABenchSim:
         ) from exc
     _check_vlabench_assets()
 
-    cfg = VLABenchEnvConfig(
-        task=task_name,
-        obs_type="pixels_agent_pos",
-        episode_length=int(env_cfg.task.max_steps or 500),
-        render_resolution=(
-            env_cfg.scene.observation_height,
-            env_cfg.scene.observation_width,
-        ),
-    )
-    env = gym.vector.SyncVectorEnv([lambda: VLABenchEnv(task=task_name, **cfg.gym_kwargs)])
+    # Same kwargs lerobot's ``VLABenchEnvConfig.gym_kwargs`` produces, minus the
+    # ``lerobot.envs.configs`` import (see module docstring).
+    gym_kwargs: dict[str, Any] = {
+        "obs_type": "pixels_agent_pos",
+        "render_mode": "rgb_array",
+        "render_resolution": [env_cfg.scene.observation_height, env_cfg.scene.observation_width],
+        "robot": "franka",
+        "max_episode_steps": int(env_cfg.task.max_steps or 500),
+        "action_mode": "eef",
+    }
+    env = gym.vector.SyncVectorEnv([lambda: VLABenchEnv(task=task_name, **gym_kwargs)])
     return _VLABenchSim(scene=env_cfg.scene, task=env_cfg.task, _env=env)
 
 
@@ -302,5 +306,4 @@ SCENES.register(
     fixed_robot="franka_panda",
     provision=provision_vlabench,
     gripper_convention="normalized_open_unit",
-    sequential_init=True,  # lerobot.envs.configs -> lerobot.processor pulls transformers
 )(_build_vlabench_scene)

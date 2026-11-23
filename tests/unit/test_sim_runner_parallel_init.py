@@ -216,6 +216,10 @@ def test_sequential_init_propagates_unknown_vla_error() -> None:
         ("simpler_env_widowx", False),
         ("libero_spatial", False),
         ("metaworld", False),
+        # vlabench builds its env without `lerobot.envs.configs` (which pulls
+        # transformers from lerobot 0.7), so it keeps the parallel init.
+        ("vlabench", False),
+        ("vlabench/select_fruit", False),
         # robocasa is race-prone: its env factory imports robosuite
         # (`ensure_backend_deps` → `_has_module` → `find_spec` executes
         # `robosuite/__init__`) concurrently with the policy thread, tripping

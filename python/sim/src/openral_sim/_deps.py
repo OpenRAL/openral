@@ -350,6 +350,12 @@ def _has_openarm_robosuite() -> bool:
     return (major, minor) >= (1, 5)
 
 
+# VLABench's dm_control integration is API-coupled to this MuJoCo pair; newer
+# loose resolution (dm_control 1.0.44 + MuJoCo 3.11) crashes at env construction
+# (`MjModel.actuator_ctrladr` missing). Shared by the plan and its probe.
+_VLABENCH_PINS = {"mujoco": "3.2.2", "dm_control": "1.0.22"}
+
+
 def _has_vlabench() -> bool:
     """VLABench needs its own package + MuJoCo/dm_control + the lerobot env config.
 
@@ -359,12 +365,18 @@ def _has_vlabench() -> bool:
     ``uv sync`` can evict that stub, so probing it re-triggers the plan to
     rewrite it — same self-healing rationale as the robosuite editable-shadow
     cleanup. ``lerobot.sim.integrations.vlabench`` carries ``VLABenchEnv`` (the
-    native env the backend drives).
+    native env the backend drives). The MuJoCo / dm_control pins are checked by
+    version, not just import: another plan's ``uv sync`` re-installs the locked
+    (newer) pair, which imports fine but crashes VLABench's env build.
     """
+    for dist, pin in _VLABENCH_PINS.items():
+        try:
+            if importlib.metadata.version(dist) != pin:
+                return False
+        except importlib.metadata.PackageNotFoundError:
+            return False
     return (
         _has_module("VLABench")
-        and _has_module("mujoco")
-        and _has_module("dm_control")
         and _has_module("lerobot.sim.integrations.vlabench")
         and _has_module("rrt_algorithms")
         # VLABench/utils/utils.py (on the env-build path) imports both; probing
@@ -1750,7 +1762,7 @@ def _vlabench_stub_rrt_step() -> InstallStep:
 
 
 def _vlabench_plan() -> BackendInstallPlan:
-    """VLABench (ICCV 2025, OpenMOSS) — native lerobot 0.6.0 env, provisioned in-tree.
+    """VLABench (ICCV 2025, OpenMOSS) — native lerobot env, provisioned in-tree.
 
     VLABench has no PyPI release: it ships as a git clone installed editable
     ``--no-deps`` (its pins conflict with the numpy-2 workspace lock), plus its
@@ -1765,14 +1777,11 @@ def _vlabench_plan() -> BackendInstallPlan:
         f"[ -d {_sh(src)}/.git ] || {_sh(git)} clone --depth=1 "
         f"https://github.com/OpenMOSS/VLABench.git {_sh(src)}"
     )
-    # VLABench's dm_control integration is API-coupled to this MuJoCo pair.
-    # Newer loose resolution currently lands dm_control 1.0.44 + MuJoCo 3.11,
-    # which crashes at env construction (`MjModel.actuator_ctrladr` missing).
-    # Keep the rendering/asset helpers loose so they can resolve Python 3.12
-    # wheels against the workspace's numpy 2.x.
+    # MuJoCo / dm_control pinned (_VLABENCH_PINS). Keep the rendering/asset
+    # helpers loose so they can resolve Python 3.12 wheels against the
+    # workspace's numpy 2.x.
     sim_deps = [
-        "mujoco==3.2.2",
-        "dm_control==1.0.22",
+        *(f"{dist}=={pin}" for dist, pin in _VLABENCH_PINS.items()),
         "open3d",
         "mediapy",
         "gdown",
@@ -1790,8 +1799,9 @@ def _vlabench_plan() -> BackendInstallPlan:
         ),
         license_note=(
             "Clones OpenMOSS/VLABench (Apache-2.0) editable + installs its "
-            "numpy-2-compatible sim deps (mujoco, dm_control, open3d, mediapy, "
-            "gdown, scikit-learn, colorlog — all permissive). rrt-algorithms "
+            "numpy-2-compatible sim deps ("
+            + ", ".join(d.split("==")[0] for d in sim_deps)
+            + " — all permissive). rrt-algorithms "
             "(a git-only data-gen dep, MIT) is STUBBED in site-packages — "
             "imported transitively but never run on the VLA eval path. The "
             "~12 GB CC-BY asset bundle is fetched separately on first env build."

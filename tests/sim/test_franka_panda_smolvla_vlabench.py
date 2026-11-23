@@ -19,20 +19,29 @@ Skip policy
 -----------
 VLABench has no PyPI release and rides a ~12 GB CC-BY asset bundle; both are externally
 provisioned (the ``vlabench`` install plan handles the Python side, the assets are a manual
-Google-Drive fetch — CLAUDE.md §1.9). The live test skips unless VLABench is
-importable, the asset bundle is unpacked, and CUDA is present. CI runners without the
-provisioned backend skip — the legitimate skip path (§1.12).
+Google-Drive fetch — CLAUDE.md §1.9). The env-contract test skips unless VLABench is
+importable, the asset bundle is unpacked, and a MuJoCo off-screen renderer (EGL) can be
+created; it needs no CUDA. The live test additionally needs CUDA for the policy. CI
+runners without the provisioned backend skip — the legitimate skip path (§1.12).
 """
 
 from __future__ import annotations
 
 import importlib.util
 import os
+import subprocess
+import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
 import yaml
+
+from tests.sim.conftest import mujoco_renderer_probe_error
+
+if TYPE_CHECKING:
+    from openral_core.schemas import BenchmarkScene, SimEnvironment
 
 _REPO_ROOT = next(
     p
@@ -84,10 +93,28 @@ def test_factories_registered() -> None:
     from openral_sim.registry import POLICIES, SCENES
 
     assert SCENES.fixed_robot("vlabench") == "franka_panda"
-    # lerobot>=0.7 env import races the policy thread on transformers.
-    assert SCENES.meta("vlabench").get("sequential_init") is True
     # raises KeyError if unregistered
     POLICIES.get("smolvla")
+
+
+@pytest.mark.skipif(importlib.util.find_spec("lerobot") is None, reason="lerobot not installed")
+def test_env_import_does_not_load_transformers() -> None:
+    """The env factory's lerobot import must stay off transformers.
+
+    ``sim_runner`` builds env and policy on parallel threads; from lerobot 0.7
+    ``lerobot.envs.configs`` pulls ``lerobot.processor`` -> transformers, which
+    races the policy thread (``cannot import name 'AutoProcessor'``). The backend
+    imports only ``lerobot.sim.integrations.vlabench``; a fresh interpreter keeps
+    other test imports from pre-loading transformers.
+    """
+    probe = (
+        "import sys, lerobot.sim.integrations.vlabench;"
+        "assert 'transformers' not in sys.modules, 'transformers loaded'"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=False
+    )
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_install_plan_registered() -> None:
@@ -131,7 +158,7 @@ def test_xiaomi_camera_order_preserves_orientation() -> None:
     assert int(cameras["camera3"][0, 0, 0]) == 50  # wrist = raw index 3
 
 
-# ── Live end-to-end (needs the provisioned VLABench backend + assets) ─────────
+# ── Live (needs the provisioned VLABench backend + assets) ───────────────────
 
 
 def _vlabench_ready() -> bool:
@@ -148,78 +175,26 @@ def _vlabench_ready() -> bool:
     return obj_dir.is_dir() and any(obj_dir.iterdir())
 
 
+_VLABENCH_READY = _vlabench_ready()
+# Only probe the renderer (a ~1 s subprocess) when VLABench could run at all.
+_RENDERER_ERROR = mujoco_renderer_probe_error() if _VLABENCH_READY else None
+
 _CUDA_AVAILABLE = False
 if importlib.util.find_spec("torch") is not None:
     import torch
 
     _CUDA_AVAILABLE = torch.cuda.is_available()
 
-
-@pytest.mark.sim
-@pytest.mark.slow
-@pytest.mark.skipif(not _vlabench_ready(), reason="VLABench backend + assets not provisioned")
-def test_env_builds_and_steps_lerobot_contract() -> None:
-    """Env only, no policy/CUDA: pins the lerobot VLABenchEnv surface the adapter parses.
-
-    lerobot 0.7 renamed the config and moved ``create_envs`` to canonical
-    ``observation.*`` keys; this fails at build or on the raw-key asserts if the
-    env the adapter constructs stops emitting ``pixels`` / ``agent_pos``.
-    """
-    import openral_sim.backends  # noqa: F401
-    from openral_core.loaders import load_scene_strict
-    from openral_core.schemas import BenchmarkScene, SimEnvironment, VLASpec
-    from openral_sim.backends.vlabench import _VLABenchSim
-    from openral_sim.factory import make_env
-
-    os.environ.setdefault("MUJOCO_GL", "egl")
-    bs = load_scene_strict(
-        str(_REPO_ROOT / "scenes" / "benchmark" / "vlabench_select_fruit.yaml"), BenchmarkScene
-    )
-    env = make_env(
-        SimEnvironment(
-            robot_id=bs.robot_id,
-            scene=bs.scene,
-            task=bs.task,
-            vla=VLASpec(id="smolvla", weights_uri="rskills/smolvla-vlabench"),
-            n_episodes=1,
-        )
-    )
-    assert isinstance(env, _VLABenchSim)
-    try:
-        raw, _ = env._env.reset(seed=0)
-        assert set(raw) == {"pixels", "agent_pos"}
-        assert set(raw["pixels"]) == {"image", "second_image", "wrist_image"}
-        assert np.asarray(raw["agent_pos"]).shape == (1, 7)
-
-        obs = env._wrap_obs(raw)
-        assert set(obs["images"]) == {"camera1", "camera2", "camera3"}
-        assert all(img.ndim == 3 and img.shape[-1] == 3 for img in obs["images"].values())
-        assert obs["state"].shape == (7,)
-
-        # agent_pos and the EEF action share a frame/layout, so commanding the
-        # current state is a hold — a valid in-range step for any layout.
-        result = env.step(obs["state"])
-        assert result.observation["state"].shape == (7,)
-        assert np.isfinite(result.observation["state"]).all()
-        assert "is_success" in result.info
-    finally:
-        env.close()
-
-
-@pytest.mark.sim
-@pytest.mark.slow
-@pytest.mark.skipif(
-    not (_vlabench_ready() and _CUDA_AVAILABLE),
-    reason="VLABench backend + assets not provisioned, or no CUDA",
+_skip_unless_vlabench = pytest.mark.skipif(
+    not _VLABENCH_READY or _RENDERER_ERROR is not None,
+    reason=f"VLABench backend + assets not provisioned, or no renderer ({_RENDERER_ERROR})",
 )
-def test_select_fruit_live_episode() -> None:
-    import openral_sim.backends
-    import openral_sim.policies  # noqa: F401
+
+
+def _select_fruit_env_cfg() -> tuple[SimEnvironment, BenchmarkScene]:
     from openral_core.loaders import load_scene_strict
     from openral_core.schemas import BenchmarkScene, SimEnvironment, VLASpec
-    from openral_sim.factory import make_env, make_policy
 
-    os.environ.setdefault("MUJOCO_GL", "egl")
     bs = load_scene_strict(
         str(_REPO_ROOT / "scenes" / "benchmark" / "vlabench_select_fruit.yaml"), BenchmarkScene
     )
@@ -230,6 +205,66 @@ def test_select_fruit_live_episode() -> None:
         vla=VLASpec(id="smolvla", weights_uri="rskills/smolvla-vlabench"),
         n_episodes=1,
     )
+    return env_cfg, bs
+
+
+@pytest.mark.sim
+@pytest.mark.slow
+@_skip_unless_vlabench
+def test_env_builds_and_steps_lerobot_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Env only, no policy/CUDA: pins the lerobot VLABenchEnv surface the adapter parses.
+
+    lerobot 0.7 renamed the config and moved ``create_envs`` to canonical
+    ``observation.*`` keys; this fails at build or on the raw-key asserts if the
+    env the adapter constructs stops emitting ``pixels`` / ``agent_pos``, or if the
+    adapter loses its raw four-camera path (``envs[0]._env.get_observation()``).
+    """
+    import openral_sim.backends  # noqa: F401
+    from openral_sim.backends.vlabench import _VLABenchSim
+    from openral_sim.factory import make_env
+
+    monkeypatch.setenv("MUJOCO_GL", "egl")
+    env_cfg, _ = _select_fruit_env_cfg()
+    env = make_env(env_cfg)
+    try:
+        assert isinstance(env, _VLABenchSim)
+        raw, _ = env._env.reset(seed=0)
+        assert set(raw) == {"pixels", "agent_pos"}
+        assert set(raw["pixels"]) == {"image", "second_image", "wrist_image"}
+        assert np.asarray(raw["agent_pos"]).shape == (1, 7)
+
+        obs = env._wrap_obs(raw)
+        # The fallback to lerobot's 3-camera ``pixels`` drops the wrist view; the
+        # adapter must have read the raw 4-camera tuple instead.
+        assert env._camera_fallback_warned is False
+        assert set(obs["images"]) == {"camera1", "camera2", "camera3"}
+        assert all(img.ndim == 3 and img.shape[-1] == 3 for img in obs["images"].values())
+        assert obs["state"].shape == (7,)
+
+        # A contract step, not a behaviour check: target the current EEF pose
+        # (state xyz + euler share the action's robot-base frame) with the gripper
+        # open (action convention 1 = open). The euler part can sit outside the
+        # declared [-1, 1] action Box; VLABenchEnv converts it via IK unclipped.
+        action = np.concatenate([obs["state"][:6], [1.0]]).astype(np.float32)
+        result = env.step(action)
+        assert result.observation["state"].shape == (7,)
+        assert np.isfinite(result.observation["state"]).all()
+        assert "is_success" in result.info
+    finally:
+        env.close()
+
+
+@pytest.mark.sim
+@pytest.mark.slow
+@_skip_unless_vlabench
+@pytest.mark.skipif(not _CUDA_AVAILABLE, reason="no CUDA for the SmolVLA policy")
+def test_select_fruit_live_episode(monkeypatch: pytest.MonkeyPatch) -> None:
+    import openral_sim.backends
+    import openral_sim.policies  # noqa: F401
+    from openral_sim.factory import make_env, make_policy
+
+    monkeypatch.setenv("MUJOCO_GL", "egl")
+    env_cfg, bs = _select_fruit_env_cfg()
     env = make_env(env_cfg)
     policy = make_policy(env_cfg)
     try:
