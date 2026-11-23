@@ -153,7 +153,10 @@ over the full suite populates `eval/`.
 Peak GPU memory 14.1 GiB. This is a smoke check of the port, not a benchmark claim;
 `eval/` is empty until a full suite run. The run used the workspace's MuJoCo 3.x; the
 model card warns that contact-rich LIBERO tasks differ under MuJoCo 3.x versus the
-2.3.7 it was measured with.
+2.3.7 it was measured with. The card's numbers also ran the preprocessor's video-canvas
+step on the CPU; this adapter runs the whole preprocessor on the policy device, which the
+card notes shifts the inputs and the sampling by small numerical amounts. The 1500 ms
+`per_chunk_ms` budget is an estimate from the mean step time, not a timed chunk.
 
 ## License
 

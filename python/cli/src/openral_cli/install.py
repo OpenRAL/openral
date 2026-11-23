@@ -49,11 +49,11 @@ from rich.table import Table
 # ``uv pip install`` so PEP 508 markers are honoured.
 _GROUPS: Final[dict[str, list[str]]] = {
     "vla": [
-        "lerobot[pi,smolvla,xvla,molmoact2,timm-dep]",
+        "lerobot[pi,smolvla,xvla,molmoact2,timm-dep,cosmos3]",
         "transformers>=5.22.0,<5.23.0",
     ],
     "sim": [
-        "lerobot[pi,smolvla,xvla,molmoact2,timm-dep]",  # the `vla` group (include-group)
+        "lerobot[pi,smolvla,xvla,molmoact2,timm-dep,cosmos3]",  # the `vla` group (include-group)
         "transformers>=5.22.0,<5.23.0",
         "gym-aloha>=0.1.3",
         "gym-pusht>=0.1.6",
@@ -64,19 +64,19 @@ _GROUPS: Final[dict[str, list[str]]] = {
         "lerobot[diffusion]",
     ],
     "libero": [
-        "lerobot[pi,smolvla,xvla,molmoact2,timm-dep]",  # the `vla` group (include-group)
+        "lerobot[pi,smolvla,xvla,molmoact2,timm-dep,cosmos3]",  # the `vla` group (include-group)
         "transformers>=5.22.0,<5.23.0",
         "lerobot[libero]",
     ],
     "metaworld": [
-        "lerobot[pi,smolvla,xvla,molmoact2,timm-dep]",  # the `vla` group (include-group)
+        "lerobot[pi,smolvla,xvla,molmoact2,timm-dep,cosmos3]",  # the `vla` group (include-group)
         "transformers>=5.22.0,<5.23.0",
         "lerobot",
         "gymnasium[mujoco]>=1.3.0",
         "mujoco>=3.8.0",
     ],
     "maniskill3": [
-        "lerobot[pi,smolvla,xvla,molmoact2,timm-dep]",  # the `vla` group (include-group)
+        "lerobot[pi,smolvla,xvla,molmoact2,timm-dep,cosmos3]",  # the `vla` group (include-group)
         "transformers>=5.22.0,<5.23.0",
         "mani-skill>=3.0.0b9",
         "gymnasium>=1.0.0",
@@ -87,7 +87,7 @@ _GROUPS: Final[dict[str, list[str]]] = {
         "gymnasium>=1.0.0",
     ],
     "robocasa": [
-        "lerobot[pi,smolvla,xvla,molmoact2,timm-dep]",  # the `vla` group (include-group)
+        "lerobot[pi,smolvla,xvla,molmoact2,timm-dep,cosmos3]",  # the `vla` group (include-group)
         "transformers>=5.22.0,<5.23.0",
         "robosuite>=1.5.2",
         "h5py>=3.10",

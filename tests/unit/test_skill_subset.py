@@ -532,6 +532,7 @@ def test_operator_ask_is_offered_on_the_tick_that_drains_it(franka_palette: Tool
 _ACT = "OpenRAL/rskill-act-franka_panda-libero-fp32"
 _SMOLVLA = "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"
 _XVLA = "OpenRAL/rskill-xvla-franka_panda-libero_spatial-bf16"
+_COSMOS3 = "OpenRAL/rskill-cosmos3-franka_panda-libero-bf16"
 _PI05 = "OpenRAL/rskill-pi05-franka_panda-libero_spatial-int8"
 _BOWL_TASK = "pick up the black bowl and place it on the plate"
 
@@ -546,11 +547,11 @@ def test_palette_carries_the_manifest_run_dtype(franka_palette: ToolPalette) -> 
 
 
 def test_equal_scores_prefer_higher_precision(franka_palette: ToolPalette) -> None:
-    """The 7 LIBERO skills tie on a bowl task; full-precision ones win the slots."""
+    """The 8 LIBERO skills tie on a bowl task; full-precision ones win the slots (by id)."""
     from openral_reasoner.skill_subset import PRECISION_RANK
 
     subset = select_skill_subset(franka_palette, query=_BOWL_TASK, k=4)
-    assert set(subset.offered) == {_LOOK_AT, _ACT, _SMOLVLA, _XVLA}
+    assert set(subset.offered) == {_LOOK_AT, _ACT, _COSMOS3, _SMOLVLA}
     by_id = {e.rskill_id: e for e in franka_palette.skills}
     tied = [i for i, s in subset.scores if s == subset.max_score]
     ranks = [PRECISION_RANK[by_id[i].quantization_dtype] for i in tied]
@@ -574,12 +575,13 @@ def test_substitute_skill_rotates_beyond_the_top_k(franka_palette: ToolPalette) 
     mission = renderer.mission
     assert mission is not None
     first = core.offered_palette(franka_palette, renderer).execute_rskill_ids
-    assert first == {_LOOK_AT, _ACT, _SMOLVLA, _XVLA}
+    assert first == {_LOOK_AT, _ACT, _COSMOS3, _SMOLVLA}
     seen: set[str] = set(first)
     # look-at and the retry slot hold 2 of the 4 slots, so each failure brings in
-    # 2 untried skills: 5 attempts reach all 7 tied LIBERO skills.
+    # 2 untried skills: 6 attempts reach all 8 tied LIBERO skills.
     attempts = (
         _ACT,
+        _COSMOS3,
         _SMOLVLA,
         _XVLA,
         _PI05,

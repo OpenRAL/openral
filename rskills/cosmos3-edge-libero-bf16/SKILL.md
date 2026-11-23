@@ -1,7 +1,7 @@
 ---
 name: cosmos3-edge-libero-bf16
 description: >-
-  S1 Vision-Language-Action policy. Capabilities: pick, place, open, close, push on bowl, plate, drawer, object, stove. NVIDIA Cosmos 3 Edge world action model fine-tuned on all four LIBERO suites, run in-process through lerobot's Cosmos3Policy as an action policy. From the task instruction and the third-person + wrist views it samples (UniPC, 30 steps) a 16-step chunk of end-effector deltas for the Franka Panda together with the future video, which is discarded. Model card: 97.95 % average over LIBERO Spatial / Object / Goal / 10 (MuJoCo 2.3.7). bf16. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
+  S1 Vision-Language-Action policy. Capabilities: pick, place, open, close on bowl, cup, drawer, object. NVIDIA Cosmos 3 Edge world action model fine-tuned on all four LIBERO suites, run in-process through lerobot's Cosmos3Policy as an action policy. From the task instruction and the third-person + wrist views it samples (UniPC, 30 steps) a 16-step chunk of end-effector deltas for the Franka Panda together with the future video, which is discarded. Model card: 97.95 % average over LIBERO Spatial / Object / Goal / 10 (MuJoCo 2.3.7). bf16. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
 metadata:
   openral_rskill: true            # generated discovery view of an rSkill
   schema_version: 0.1
@@ -11,8 +11,8 @@ metadata:
   kind: vla
   model_family: cosmos3
   embodiment_tags: [franka_panda]
-  actions: [pick, place, open, close, push]
-  objects: [bowl, plate, drawer, object, stove]
+  actions: [pick, place, open, close]
+  objects: [bowl, cup, drawer, object]
   scenes: [tabletop, kitchen]
   sensors_required: ['rgb:observation.images.camera1', 'rgb:observation.images.camera2']
   state_dim: 8
@@ -25,7 +25,7 @@ metadata:
   n_action_steps: 16
   latency_budget: {per_chunk_ms: 1500.0}
   license_code: Apache-2.0
-  license_weights: openmdw-1.1   # NOT permissive — see License section
+  license_weights: openmdw-1.1
   weights_uri: hf://lerobot/Cosmos3-Edge-Policy-LIBERO@9d4de4350e416c12babc9a42db01ab0c5df9f82f
   source_repo: hf://nvidia/Cosmos3-Edge
   paper_url: https://arxiv.org/abs/2606.02800
@@ -45,8 +45,8 @@ An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). NVIDIA C
 
 ## Capabilities
 
-- **Verbs:** pick · place · open · close · push
-- **Objects:** bowl · plate · drawer · object · stove
+- **Verbs:** pick · place · open · close
+- **Objects:** bowl · cup · drawer · object
 - **Scenes:** tabletop · kitchen
 - **Embodiments:** franka_panda
 
@@ -61,7 +61,7 @@ this file. Execution always goes through the OpenRAL loader and the robot HAL.
 ## License
 
 - **Code:** Apache-2.0.
-- **Weights:** `openmdw-1.1` — **NOT** fully permissive. The loader surfaces this posture and enforces the non-commercial guard (`OPENRAL_ALLOW_NONCOMMERCIAL=1`) where applicable. Commercial use may require a separate upstream agreement. This is third-party weight lineage; OpenRAL's own code is Apache-2.0.
+- **Weights:** `openmdw-1.1` — permissive / commercial-use OK
 
 ## How to actually run it (not via an agent harness)
 

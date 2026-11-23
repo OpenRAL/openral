@@ -87,8 +87,14 @@ state_contract:
 # ── Execution semantics ────────────────────────────────────────────────────
 chunk_size: 16
 n_action_steps: 16
+policy_extras:
+  # Each chunk is sampled from the observation at its own boundary, as evaluated. The
+  # deploy runner otherwise pre-fetches (prefetch_at clamps to 15 of 16 steps), which
+  # would sample each next chunk from an observation ~15 steps old.
+  chunk_prefetch: false
 latency_budget:
-  # RTX 5090, bf16: 50 ms mean step over 16-step replay (one UniPC-30 chunk ≈ 0.8 s).
+  # ESTIMATE, not a per-chunk measurement: RTX 5090 bf16 runs averaged 50 ms per step
+  # (sim stepping included) over 16-step replay, i.e. <= 0.8 s per UniPC-30 chunk.
   per_chunk_ms: 1500.0
 
 # ── Provenance ─────────────────────────────────────────────────────────────
@@ -106,18 +112,18 @@ description: >
 
 evaluated_tasks: ["libero_spatial", "libero_object", "libero_goal", "libero_10"]
 
+# Same vocabulary as the other LIBERO skills (xvla-libero, smolvla-libero) so the
+# reasoner's ranking ties them on a LIBERO task instead of favouring one by wording.
 actions:
   - "pick"
   - "place"
   - "open"
   - "close"
-  - "push"
 objects:
   - "bowl"
-  - "plate"
+  - "cup"
   - "drawer"
   - "object"
-  - "stove"
 scenes:
   - "tabletop"
   - "kitchen"
