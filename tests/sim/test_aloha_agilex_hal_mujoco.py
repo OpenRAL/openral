@@ -24,7 +24,7 @@ import numpy as np
 from openral_core import Action, ControlMode, RobotDescription
 from openral_core.assets import AssetFetchError, resolve_asset
 from openral_hal._mujoco_arm import MujocoArmHAL
-from openral_hal._sim_attachment_evidence import _resolve_gripper_body_groups, _sim_joint_body_id
+from openral_hal._sim_attachment_evidence import SimAttachmentEvidenceTracker
 
 pytestmark = pytest.mark.sim
 
@@ -105,11 +105,7 @@ def test_manifest_resolves_each_hand_and_jaw(
     desc, hal = connected
     model = hal._model
     assert model is not None
-    grippers = [j for j in desc.joints if j.role == "gripper"]
-    by_child = {j.child_link: j for j in desc.joints}
-    hands = {model.body(_sim_joint_body_id(model, by_child[g.parent_link])).name for g in grippers}
-    assert hands == {"fl_link6", "fr_link6"}
-    jaws = {
-        model.body(root).name for root in _resolve_gripper_body_groups(model, grippers).values()
-    }
+    hands = SimAttachmentEvidenceTracker(model, desc)._hands
+    assert {model.body(h.attach_body_id).name for h in hands} == {"fl_link6", "fr_link6"}
+    jaws = {model.body(root).name for h in hands for root in h.body_groups.values()}
     assert jaws == {"fl_link7", "fl_link8", "fr_link7", "fr_link8"}  # + mimic fingers

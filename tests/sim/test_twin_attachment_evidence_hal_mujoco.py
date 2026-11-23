@@ -40,6 +40,8 @@ import mujoco
 import numpy as np
 from openral_core import AttachedCollisionObject, RobotDescription
 from openral_core.assets import AssetFetchError, resolve_asset
+from openral_core.exceptions import ROSConfigError
+from openral_core.tracking_thresholds import load_tracking_thresholds
 from openral_hal._sim_attachment_evidence import (
     SimAttachmentEvidenceTracker,
     _ContactCandidate,
@@ -68,8 +70,8 @@ class _Rig:
     data: Any
     tracker: SimAttachmentEvidenceTracker
     grippers: list[_Gripper]
-    #: ``(qpos address, held value)`` of the R1 Pro's planar base joints, which the HAL's
-    #: ``_PlanarBaseTwin`` pins before every physics step; this rig pins them the same way.
+    #: ``(qpos address, dof address, held value)`` of the R1 Pro's planar base joints: the
+    #: HAL's ``_PlanarBaseTwin`` pins them before every physics step, and so does this rig.
     pinned: list[tuple[int, int, float]]
     step_ns: int = 0
 
@@ -87,9 +89,25 @@ class _Rig:
                 published.append(out)
         return published
 
-    def set_gripper(self, index: int, *, closed: bool) -> None:
-        g = self.grippers[index]
+    def set_gripper(self, hand: int, *, closed: bool) -> None:
+        """Drive the gripper of tracker hand ``hand`` (the hand whose payload is ``hand``)."""
+        (g,) = (g for g in self.grippers if g.hand == hand)
         self.data.ctrl[g.actuator] = g.closed_ctrl if closed else g.open_ctrl
+
+    def run_tolerant(self, steps: int) -> tuple[list[list[AttachedCollisionObject]], int]:
+        """``run``, but an update that raises ``ROSConfigError`` is counted, not fatal."""
+        published, raised = [], 0
+        for _ in range(steps):
+            mujoco.mj_step(self.model, self.data)
+            self.step_ns += 1_000_000
+            try:
+                out = self.tracker.update(self.data, stamp_ns=self.step_ns)
+            except ROSConfigError:
+                raised += 1
+                continue
+            if out is not None:
+                published.append(out)
+        return published, raised
 
     def nudge_away(self, payload: int) -> None:
         """Push a released box out of the open jaws, as a lifting arm would."""
@@ -109,7 +127,11 @@ def _description(robot: str) -> tuple[RobotDescription, Path]:
 
 
 def _compile(
-    path: Path, boxes: list[tuple[Any, Any, list[float]]], *, support: bool = True
+    path: Path,
+    boxes: list[tuple[Any, Any, list[float]]],
+    *,
+    support: bool = True,
+    unnamed: frozenset[int] = frozenset(),
 ) -> tuple[Any, Any]:
     """The twin plus one free box per hand, each on a mocap pad.
 
@@ -121,7 +143,10 @@ def _compile(
     spec = mujoco.MjSpec.from_file(str(path))
     spec.option.gravity = [0.0, 0.0, 0.0]
     for i, (pos, quat, half) in enumerate(boxes):
-        body = spec.worldbody.add_body(name=f"payload{i}", pos=pos, quat=quat)
+        # An unnamed payload is one the tracker refuses to attach (it raises).
+        body = spec.worldbody.add_body(
+            name="" if i in unnamed else f"payload{i}", pos=pos, quat=quat
+        )
         body.add_freejoint(name=f"payload{i}_free")
         body.add_geom(
             type=mujoco.mjtGeom.mjGEOM_BOX, size=half, mass=0.05, friction=[2.0, 0.05, 0.01]
@@ -175,9 +200,15 @@ def _settle(model: Any, data: Any) -> None:
         mujoco.mj_step(model, data)
 
 
+def _payload_body(model: Any, index: int) -> int:
+    """Payload ``index``'s body, found through its (always named) free joint."""
+    joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, f"payload{index}_free")
+    return int(model.jnt_bodyid[joint])
+
+
 def _payload_clear(model: Any, data: Any, n_boxes: int) -> bool:
     """No payload touches anything but its own platform."""
-    payloads = {model.body(f"payload{i}").id for i in range(n_boxes)}
+    payloads = {_payload_body(model, i) for i in range(n_boxes)}
     platforms = {model.body(f"platform{i}").id for i in range(n_boxes)}
     for contact in data.contact[: data.ncon]:
         pair = {int(model.geom_bodyid[contact.geom1]), int(model.geom_bodyid[contact.geom2])}
@@ -186,7 +217,7 @@ def _payload_clear(model: Any, data: Any, n_boxes: int) -> bool:
     return True
 
 
-def _rig(robot: str, *, support: bool = True) -> _Rig:
+def _rig(robot: str, *, support: bool = True, unnamed: frozenset[int] = frozenset()) -> _Rig:
     """The twin with one box between each hand's open jaws, touching nothing but its platform.
 
     The box spans the line between the jaw roots, centred on their midpoint and slid
@@ -232,7 +263,7 @@ def _rig(robot: str, *, support: bool = True) -> _Rig:
         placements.append((middle, approach, quat, half))
     for slide in np.arange(0.0, 0.08, 0.005):
         boxes = [(m + slide * a, q, h) for m, a, q, h in placements]
-        model, data = _compile(path, boxes, support=support)
+        model, data = _compile(path, boxes, support=support, unnamed=unnamed)
         data.qpos[: len(qpos)] = qpos
         data.ctrl[: len(ctrl)] = ctrl
         mujoco.mj_forward(model, data)
@@ -291,7 +322,8 @@ def test_each_hand_attaches_and_releases_independently(
     assert held_left == left, "the right hand's attach re-measured the left hand's record"
     assert (right.object_id, right.attach_link) == ("sim:payload1", attach_links[1])
     assert set(right.touch_links) == set(rig.tracker._hands[1].touch_links)
-    # The slot-shift rule below only means something when there is a witness to drop.
+    # The kernel keys witness re-arming by (object, support, stamp) across slots, so a
+    # record that moves slot keeps its witness; aloha_agilex proves it on a real one.
     assert (right.support_contact is not None) == witnessed
 
     rig.set_gripper(0, closed=False)
@@ -300,11 +332,9 @@ def test_each_hand_attaches_and_releases_independently(
     sets = rig.run(400)
     released = [s for s in sets if [o.object_id for o in s] == ["sim:payload1"]]
     assert released, f"left release never left the right payload alone: {sets}"
-    survivor = released[0][0]
-    # The right record moved from slot 1 to slot 0: it travels without a witness,
-    # and is otherwise the record the kernel already holds.
-    assert survivor.support_contact is None
-    assert survivor == right.model_copy(update={"support_contact": None})
+    # The right record moved from slot 1 to slot 0 unchanged, witness included: the
+    # kernel recognises its key in the new slot (no re-arm, no loss).
+    assert released[0][0] == right
 
     rig.set_gripper(1, closed=False)
     rig.run(100)
@@ -374,13 +404,58 @@ def test_a_held_payload_is_never_a_candidate_for_the_other_hand() -> None:
 
 
 def test_a_transition_survives_a_later_hand_failing() -> None:
-    """A set change committed before a later hand raised still publishes next update."""
-    rig = _rig("aloha_agilex")
+    """A release committed in an update that a later hand then failed still publishes.
+
+    The right hand grips an unnamed payload, so every update raises after the left hand
+    has been advanced. The left hand releases during those failing updates; once the
+    right hand lets go, the next update must publish the release.
+    """
+    rig = _rig("aloha_agilex", unnamed=frozenset({1}))
     rig.set_gripper(0, closed=True)
-    (held,) = rig.run(400)[-1]
-    assert rig.run(5) == []  # nothing changes while it is held
-    # As if the left hand had just committed a transition and the right hand then
-    # raised (``update`` never reached its publish): the flag is all that survives.
-    rig.tracker._set_changed = True
-    assert rig.tracker.update(rig.data, stamp_ns=rig.step_ns + 1) == [held]
-    assert rig.tracker.update(rig.data, stamp_ns=rig.step_ns + 2) is None
+    assert [[o.object_id for o in s] for s in rig.run(400)] == [["sim:payload0"]]
+
+    rig.set_gripper(1, closed=True)
+    published, raised = rig.run_tolerant(200)
+    assert raised > 0 and published == [], "the right hand's unnamed payload raises"
+
+    rig.set_gripper(0, closed=False)
+    rig.run_tolerant(100)
+    rig.nudge_away(0)
+    published, raised = rig.run_tolerant(400)
+    assert raised > 0 and published == [], "the left release happened in failing updates"
+
+    assert rig.tracker._hands[0].attached_root is None  # committed, not yet published
+    rig.set_gripper(1, closed=False)
+    published, _ = rig.run_tolerant(400)
+    assert published and published[0] == [], f"the left release was lost: {published}"
+
+
+def test_construction_refuses_what_the_kernel_would_reject() -> None:
+    """Links the kernel model lacks, and two hands over one finger, refuse up front."""
+    desc, path = _description("aloha_agilex")
+    model, _ = _compile(path, [])
+    hands = SimAttachmentEvidenceTracker(model, desc)._hands
+    names = {n for h in hands for n in (h.attach_link, *h.touch_links)}
+    SimAttachmentEvidenceTracker(model, desc, kernel_link_names=names)  # all known: arms
+    with pytest.raises(ROSConfigError, match="not in the safety kernel's collision model"):
+        SimAttachmentEvidenceTracker(model, desc, kernel_link_names=names - {"fr_link8"})
+    # An end-effector entry over the left fingers as well: two hands, one gripper.
+    assert desc.sim is not None
+    qpos = [int(model.jnt_qposadr[model.joint(n).id]) for n in ("fl_joint7", "fl_joint8")]
+    twice = desc.sim.grippers[0].model_copy(
+        update={"joint": None, "end_effector": "left_gripper", "qpos_addrs": qpos}
+    )
+    sim = desc.sim.model_copy(update={"grippers": [*desc.sim.grippers, twice]})
+    with pytest.raises(ROSConfigError, match="share finger bodies"):
+        SimAttachmentEvidenceTracker(model, desc.model_copy(update={"sim": sim}))
+
+
+@pytest.mark.parametrize(("robot", "per_hand"), [("aloha_agilex", 8), ("galaxea_a1", 16)])
+def test_every_hand_gets_a_share_of_the_kernel_primitive_cap(robot: str, per_hand: int) -> None:
+    """N hands' records together never exceed the kernel's ``attached_max_primitives``."""
+    desc, path = _description(robot)
+    model, _ = _compile(path, [])
+    tracker = SimAttachmentEvidenceTracker(model, desc)
+    cap = load_tracking_thresholds().caps.attached_max_primitives
+    assert tracker._max_primitives_per_hand == per_hand
+    assert tracker._max_primitives_per_hand * len(tracker._hands) <= cap

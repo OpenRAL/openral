@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import os
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -361,14 +361,6 @@ def _sim_joint_body_id(
     return int(model.jnt_bodyid[joint_id])
 
 
-def _resolve_gripper_body_groups(
-    model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
-    gripper_joints: list[JointSpec],
-) -> dict[int, int]:
-    """Map every physical finger body to its independently contacting jaw."""
-    return _jaw_body_groups(model, [_sim_joint_body_id(model, joint) for joint in gripper_joints])
-
-
 def _jaw_body_groups(
     model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
     jaw_body_ids: Sequence[int],
@@ -412,22 +404,9 @@ class _Hand:
     attached_translation: NDArray[np.float64] | None = None
     attached_rotation: NDArray[np.float64] | None = None
     # The record this hand last published, re-sent unchanged while another hand's
-    # transition re-publishes the set, and its slot in that set.
+    # transition re-publishes the set.
     attachment: AttachedCollisionObject | None = None
-    slot: int | None = None
     place_attested_stamp_ns: int | None = None
-
-
-def _is_ancestor_or_self(
-    model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
-    ancestor: int,
-    body_id: int,
-) -> bool:
-    while body_id > 0:
-        if body_id == ancestor:
-            return True
-        body_id = int(model.body_parentid[body_id])
-    return ancestor == body_id
 
 
 def _joint_gripper_hands(
@@ -455,7 +434,7 @@ def _joint_gripper_hands(
         # The attach frame must carry the jaws: a same-named body elsewhere would pose the
         # payload in the wrong frame.
         if attach_body_id < 0 or not all(
-            _is_ancestor_or_self(model, attach_body_id, int(model.body_parentid[body]))
+            int(model.body_parentid[body]) in _body_subtree(model, attach_body_id)
             for body in jaw_bodies
         ):
             raise ROSConfigError(f"Cannot resolve sim body for attach link {attach_link!r}.")
@@ -519,14 +498,19 @@ def _end_effector_gripper_hands(
                 "sim body its fingers hang from."
             )
         groups = _jaw_body_groups(model, jaw_bodies)
+        touch_links = [
+            mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, b) for b in sorted(groups)
+        ]
+        if not all(touch_links):
+            raise ROSConfigError(
+                f"End-effector gripper {gripper.end_effector!r}: a finger body has no MJCF name, "
+                "so it cannot be named as a touch link."
+            )
         hands.append(
             _Hand(
                 attach_link=attach_link,
                 attach_body_id=attach_body_id,
-                touch_links=[
-                    mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body)
-                    for body in sorted(groups)
-                ],
+                touch_links=[str(name) for name in touch_links],
                 body_groups=groups,
             )
         )
@@ -1703,14 +1687,22 @@ class SimAttachmentEvidenceTracker:
     One hand per gripper (``_Hand``): the ``role: gripper`` joints grouped by their
     parent link, or a ``sim.grippers`` entry driving an end effector with no manifest
     joint. Each hand attaches and releases on its own jaws exactly as a single
-    gripper does. Across hands only conservative rules apply: a payload held by one
-    hand is never a candidate for another, hands publish in a fixed order, a record
-    whose slot in the published set moves loses its support witness (the safety
-    kernel keys witness re-arming by slot), and a place declaration licenses one
-    attestation per carry with at most one attested carry at a time across hands (a
-    release ends its carry, as with a single gripper, whose re-grasp starts a new place
-    phase). An update that fails part-way still publishes, on the next update, the
-    transitions earlier hands already committed.
+    gripper does. Across hands only conservative rules apply: hands may share no jaw
+    body; a payload held by one hand is never a candidate for another; hands publish
+    in a fixed order, each record carrying a 1/N share of the kernel's attached
+    primitive budget (``attached_max_primitives`` over N hands), so a full set always
+    fits; and a place declaration licenses one attestation per carry with at most one
+    attested carry at a time across hands (a release ends its carry, as with a single
+    gripper, whose re-grasp starts a new place phase). The safety kernel keys witness
+    re-arming by (object, support, stamp) across slots, so a record moving slot when
+    another hand attaches or releases keeps its witness state. An update that fails
+    part-way still publishes, on the next update, the transitions earlier hands
+    already committed.
+
+    ``kernel_link_names``: the links the safety kernel's collision model knows (the
+    deploy launch passes them). Every hand's attach and touch links must be among them,
+    or construction refuses: the kernel rejects a whole set naming an unknown link and
+    never acknowledges it, which would stall the bridge on the first grasp.
     """
 
     def __init__(
@@ -1722,6 +1714,7 @@ class SimAttachmentEvidenceTracker:
         release_ticks: int = 3,
         translation_tolerance_m: float = 0.01,
         rotation_tolerance_rad: float = 0.15,
+        kernel_link_names: Collection[str] | None = None,
     ) -> None:
         self._model = model
         self._stable_ticks = stable_ticks
@@ -1787,6 +1780,7 @@ class SimAttachmentEvidenceTracker:
         self._required_contact_groups = (
             2 if strict.kind in {"parallel_gripper", "dexterous_hand"} else 1
         )
+        claimed: set[int] = set()
         for hand in self._hands:
             found = len(set(hand.body_groups.values()))
             if found < self._required_contact_groups:
@@ -1794,6 +1788,28 @@ class SimAttachmentEvidenceTracker:
                     f"Sim {strict.kind} on {hand.attach_link!r} needs "
                     f"{self._required_contact_groups} physical contact branches, found {found}."
                 )
+            # Two hands over the same fingers (a gripper split across parent links, or a
+            # joint and an end-effector entry for one gripper) would both claim a payload.
+            if claimed & set(hand.body_groups):
+                raise ROSConfigError(
+                    f"Sim grippers share finger bodies: {hand.attach_link!r} overlaps another hand."
+                )
+            claimed |= set(hand.body_groups)
+            if kernel_link_names is not None:
+                unknown = [
+                    name
+                    for name in (hand.attach_link, *hand.touch_links)
+                    if name not in kernel_link_names
+                ]
+                if unknown:
+                    raise ROSConfigError(
+                        f"Attach/touch links {unknown} of {hand.attach_link!r} are not in the "
+                        "safety kernel's collision model; it would reject every attachment."
+                    )
+        # Every record together must fit the kernel's attached-primitive cap.
+        self._max_primitives_per_hand = max(
+            1, load_tracking_thresholds().caps.attached_max_primitives // len(self._hands)
+        )
 
         robot_bodies = _resolve_robot_bodies(model, description.joints)
         for hand in self._hands:
@@ -1870,20 +1886,7 @@ class SimAttachmentEvidenceTracker:
         if not self._set_changed:
             return None
         self._set_changed = False
-        published: list[AttachedCollisionObject] = []
-        for hand in self._hands:
-            if hand.attachment is None:
-                hand.slot = None
-                continue
-            slot = len(published)
-            if hand.slot is not None and hand.slot != slot and hand.attachment.support_contact:
-                # The kernel arms a witness when the (object, support, stamp) key in a
-                # SLOT changes; a record moved into another slot would re-arm a witness
-                # the kernel had killed on separation. It travels without one.
-                hand.attachment = hand.attachment.model_copy(update={"support_contact": None})
-            hand.slot = slot
-            published.append(hand.attachment)
-        return published
+        return [hand.attachment for hand in self._hands if hand.attachment is not None]
 
     def _update_hand(  # noqa: PLR0912, PLR0915  # reason: the single-gripper state machine, per hand
         self,
@@ -1986,7 +1989,7 @@ class SimAttachmentEvidenceTracker:
             )
             if not body_name:
                 raise ROSConfigError(f"Attached MuJoCo body {root} has no name.")
-            hand.attachment = self._build_attachment(
+            attachment = self._build_attachment(
                 data,
                 hand=hand,
                 root=root,
@@ -2007,6 +2010,8 @@ class SimAttachmentEvidenceTracker:
             self._freeze_grasp_region(
                 data, hand=hand, object_id=f"sim:{body_name}", stamp_ns=stamp_ns
             )
+            # The hand's state and its record change together, after everything that can
+            # raise: a half-recorded attach would publish a payload no release can retract.
             hand.attached_root = root
             hand.attached_translation = translation.copy()
             hand.attached_rotation = rotation.copy()
@@ -2014,6 +2019,7 @@ class SimAttachmentEvidenceTracker:
             # still-live declaration already licensed for the previous payload
             # does not carry over.
             hand.place_attested_stamp_ns = None
+            hand.attachment = attachment
             return True
         return False
 
@@ -2045,6 +2051,7 @@ class SimAttachmentEvidenceTracker:
                 data,
                 root_body_id=root,
                 object_id=object_id,
+                max_primitives=self._max_primitives_per_hand,
             ),
             pose_in_link=Pose6D(
                 xyz=(float(translation[0]), float(translation[1]), float(translation[2])),

@@ -346,6 +346,11 @@ def urdf_joint_curves(
     return out
 
 
+def _kernel_link_names(names: Sequence[str]) -> list[str] | None:
+    """The ``attachment_kernel_link_names`` parameter: ``["*"]`` (its default) is "not given"."""
+    return None if list(names) == ["*"] else list(names)
+
+
 def sim_attachment_heartbeat(*, hal_mode: str, vision_attachment_enabled: bool) -> bool:
     """Whether ``SimSensorBridge`` may heartbeat "nothing attached, fresh".
 
@@ -2468,7 +2473,17 @@ if _ROS2_AVAILABLE:
 
             from openral_hal.vision_attachment_bridge import DEFAULT_SEGMENT_SERVICE
 
-            self.declare_parameter("vision_attachment_enabled", False)
+            # ``attachment_kernel_*``: set by the deploy launch from the safety kernel's own
+            # configuration: whether it checks attached payloads, and its collision-model
+            # link names (["*"]: not given, unchecked; other launches keep the old behaviour).
+            self.declare_parameters(
+                "",
+                [
+                    ("vision_attachment_enabled", False),
+                    ("attachment_kernel_checked", True),
+                    ("attachment_kernel_link_names", ["*"]),
+                ],
+            )
             self.declare_parameter("vision_attachment_camera", "")
             self.declare_parameter("vision_attachment_depth_topic", "")
             # Empty → the camera's conventional depth/camera_info topic. The
@@ -3023,6 +3038,16 @@ if _ROS2_AVAILABLE:
                     vision_attachment_enabled=self.get_parameter("vision_attachment_enabled")
                     .get_parameter_value()
                     .bool_value,
+                ),
+                attachment_kernel_checked=self.get_parameter("attachment_kernel_checked")
+                .get_parameter_value()
+                .bool_value,
+                attachment_kernel_link_names=_kernel_link_names(
+                    list(
+                        self.get_parameter("attachment_kernel_link_names")
+                        .get_parameter_value()
+                        .string_array_value
+                    )
                 ),
                 camera_rate_hz=self.get_parameter("camera_publish_rate_hz")
                 .get_parameter_value()

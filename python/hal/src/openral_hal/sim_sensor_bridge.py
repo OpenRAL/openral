@@ -2876,6 +2876,8 @@ class SimSensorBridge:
         depth_pixel_stride: int = 4,
         idle_hold_ms: float = 2000.0,
         attachment_heartbeat: bool = True,
+        attachment_kernel_checked: bool = True,
+        attachment_kernel_link_names: Sequence[str] | None = None,
         on_step: Any = None,
         on_attachment_perception_ready: Any = None,
     ) -> None:
@@ -2905,6 +2907,13 @@ class SimSensorBridge:
         self._on_step = on_step
         self._on_attachment_perception_ready = on_attachment_perception_ready
         self._attachment_heartbeat = attachment_heartbeat
+        # What the deploy launch told the HAL about the safety kernel's attached check:
+        # whether it runs at all, and the collision-model link names it resolves. Without
+        # the check nothing ever acknowledges an attachment revision.
+        self._attachment_kernel_checked = attachment_kernel_checked
+        self._attachment_kernel_link_names = (
+            None if attachment_kernel_link_names is None else tuple(attachment_kernel_link_names)
+        )
         self._hal = hal
         self._description = description
         self._viewer_enabled = viewer_enabled
@@ -4093,7 +4102,17 @@ class SimSensorBridge:
             voxel_qos,
         )
         handles = getattr(self._hal, "mujoco_handles", lambda: None)()
-        if handles is not None and self._attachment_heartbeat:
+        if (
+            handles is not None
+            and self._attachment_heartbeat
+            and not self._attachment_kernel_checked
+        ):
+            self._node.get_logger().warning(
+                "automatic sim attachment evidence disabled: the safety kernel does not check "
+                "attached payloads on this robot (no collision model), so nothing would "
+                "acknowledge an attachment"
+            )
+        elif handles is not None and self._attachment_heartbeat:
             from openral_core.exceptions import ROSConfigError
 
             from openral_hal._sim_attachment_evidence import SimAttachmentEvidenceTracker
@@ -4104,6 +4123,7 @@ class SimSensorBridge:
                     model,
                     self._description,
                     stable_ticks=1,
+                    kernel_link_names=self._attachment_kernel_link_names,
                 )
                 add_observer = getattr(self._hal, "add_post_step_observer", None)
                 if callable(add_observer):
@@ -4416,7 +4436,10 @@ class SimSensorBridge:
             from openral_hal._sim_attachment_evidence import SimAttachmentEvidenceTracker
 
             self._attachment_tracker = SimAttachmentEvidenceTracker(
-                handles[0], self._description, stable_ticks=1
+                handles[0],
+                self._description,
+                stable_ticks=1,
+                kernel_link_names=self._attachment_kernel_link_names,
             )
         update = getattr(self._hal, "update_attached_objects", None)
         read = getattr(self._hal, "read_attached_objects", None)
