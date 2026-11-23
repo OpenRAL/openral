@@ -197,23 +197,23 @@ _Lazy auto-install helpers for sim backends with bespoke install chains that go 
 
 - `class InstallStep` — One subprocess step in a backend install plan: `description`, `argv`, `env`, `cwd`. (L82)
 - `class BackendInstallPlan` — A backend's "what to install + how to check it's there" recipe: `backend_id`, `display_name`, `license_note`, `probe`, plus its install `steps`. (L106)
-- `const _STEP_DEFAULT_CWD = _OPEN_ROOT if (_OPEN_ROOT / 'uv.lock').is_file() else None` — Where an install step with no `cwd` of its own runs: this module's open checkout, so `uv sync` never syncs the caller's repo. A relative `$OPENRAL_CACHE_HOME` is made absolute against the caller's cwd first, so every step of a plan sees the same cache root. (L451)
-- `const _STEP_TAIL_BYTES = 8192` — Cap on a failed step's captured stdout/stderr tail. (L460)
-- `const _STEP_TAIL_LINES = 25` (L463)
+- `const _STEP_DEFAULT_CWD = _OPEN_ROOT if (_OPEN_ROOT / 'uv.lock').is_file() else None` — Where an install step with no `cwd` of its own runs: this module's open checkout, so `uv sync` never syncs the caller's repo. A relative `$OPENRAL_CACHE_HOME` is made absolute against the caller's cwd first, so every step of a plan sees the same cache root. (L467)
+- `const _STEP_TAIL_BYTES = 8192` — Cap on a failed step's captured stdout/stderr tail. (L476)
+- `const _STEP_TAIL_LINES = 25` (L479)
 - `const _AUTO_INSTALL_ENV = 'OPENRAL_AUTO_INSTALL_DEPS'` (L48)
 - `const _DEFAULT_CACHE_HOME = Path.home() / '.cache' / 'openral'` (L47)
 - `const _INSTALL_LOCK = threading.Lock()` — Serializes concurrent `ensure_backend_deps` calls (e.g. the parallel `_build_env_and_policy` env/policy construction) so two threads never race the same install plan. (L50)
 - `const _ROBOCASA_RUNTIME_DEPS` — Import probes for the RoboCasa kitchen plan (`lxml`, `h5py`, `llvmlite`, `numba`, `robosuite`, `robosuite.examples`, `robocasa`, …). (L181)
 - `const _ROBOCASA_GR1_RUNTIME_DEPS` — `_ROBOCASA_RUNTIME_DEPS` minus `robosuite.examples` (the GR1 fork ships no examples package). (L193)
-- `const _ROBOSUITE_PIN = '5ce6643f3092639d08f7b0f90ed1c6a84f50552c'` — Pinned robosuite fork commit for the RoboCasa plans. (L635)
-- `const _SIMPLER_ENV_GIT_URL` — `pip`-installable git spec for the SimplerEnv maniskill3 branch. (L1164)
-- `const _VLABENCH_RRT_STUB_SYMBOLS` — `(module, symbol)` pairs VLABench's motion-planning stub must provide when the real RRT deps are absent. (L1701)
-- `const _RLDX_SIDECAR_REPO_URL = 'https://github.com/RLWRLD/RLDX-1.git'` (L1412)
-- `const _RLDX_SIDECAR_HOME = _DEFAULT_CACHE_HOME / 'rldx-sidecar'` (L1417)
-- `const _PLANS: dict[str, Callable[[], BackendInstallPlan]]` — Backend id → lazy plan-builder registry (`robocasa_kitchen`, `robocasa_gr1`, …). (L1880)
-- `get_plan(backend_id) -> BackendInstallPlan` — Resolve a backend id to its install plan, building lazily. (L1899)
-- `remediation(manual_hint) -> str` — Return `manual_hint`, plus a runnable equivalent when `just` is absent. (L1964)
-- `ensure_backend_deps(backend_id) -> None` — Install `backend_id` deps if missing, after the user confirms. (L2025)
+- `const _ROBOSUITE_PIN = '5ce6643f3092639d08f7b0f90ed1c6a84f50552c'` — Pinned robosuite fork commit for the RoboCasa plans. (L651)
+- `const _SIMPLER_ENV_GIT_URL` — `pip`-installable git spec for the SimplerEnv maniskill3 branch. (L1180)
+- `const _VLABENCH_RRT_STUB_SYMBOLS` — `(module, symbol)` pairs VLABench's motion-planning stub must provide when the real RRT deps are absent. (L1717)
+- `const _RLDX_SIDECAR_REPO_URL = 'https://github.com/RLWRLD/RLDX-1.git'` (L1428)
+- `const _RLDX_SIDECAR_HOME = _DEFAULT_CACHE_HOME / 'rldx-sidecar'` (L1433)
+- `const _PLANS: dict[str, Callable[[], BackendInstallPlan]]` — Backend id → lazy plan-builder registry (`robocasa_kitchen`, `robocasa_gr1`, …). (L1898)
+- `get_plan(backend_id) -> BackendInstallPlan` — Resolve a backend id to its install plan, building lazily. (L1917)
+- `remediation(manual_hint) -> str` — Return `manual_hint`, plus a runnable equivalent when `just` is absent. (L1982)
+- `ensure_backend_deps(backend_id) -> None` — Install `backend_id` deps if missing, after the user confirms. (L2043)
 
 ### Eval adapters
 
@@ -268,8 +268,8 @@ _VLABench (ICCV 2025) Franka adapter. Pins the upstream-tested MuJoCo 3.2.2 + dm
 - `class _VLABenchSim` — `SimRollout` over lerobot's `VLABenchEnv`; emits three RGB cameras, 7-D EE/gripper state, and `info["is_success"]`.
 - `_parse_task_id(task_id) -> str` — Validate `vlabench/<task-name>`.
 - `_select_policy_cameras(raw_rgb) -> dict[str, NDArray[np.uint8]]` — Select raw camera indices `(2,0,3)` into `camera1/2/3`; normalize HWC channels without vertical/horizontal flips.
-- `provision_vlabench() -> None` — Pre-launch provisioner: `ensure_backend_deps("vlabench")` + resolves the root + checks assets. The ~12 GB CC-BY bundle is a Google-Drive pull deliberately never automated, so this verifies it and raises the recipe when absent. Registered as `provision=` on the `vlabench` scene. (L238)
-- `_build_vlabench_scene(env_cfg) -> _VLABenchSim` — Verify assets, build the single-env vector wrapper, and register `scene.id="vlabench"` with fixed robot `franka_panda` (and `provision=provision_vlabench`).
+- `provision_vlabench() -> None` — Pre-launch provisioner: `ensure_backend_deps("vlabench")` + resolves the root + checks assets. The ~12 GB CC-BY bundle is a Google-Drive pull deliberately never automated, so this verifies it and raises the recipe when absent. Registered as `provision=` on the `vlabench` scene. (L242)
+- `_build_vlabench_scene(env_cfg) -> _VLABenchSim` — Verify assets, build the single-env vector wrapper, and register `scene.id="vlabench"` with fixed robot `franka_panda` (and `provision=provision_vlabench`). Passes the `VLABenchEnv` gym kwargs directly instead of through lerobot's `VLABenchEnvConfig`, whose `lerobot.envs.configs` module pulls transformers (lerobot ≥0.7) and would race the policy thread; so the scene keeps the parallel env/policy init (no `sequential_init`).
 
 #### `python/sim/src/openral_sim/policy_deps.py`
 
