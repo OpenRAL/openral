@@ -69,7 +69,7 @@ Severity = Literal["error", "warning"]
 # Asset-ref prefixes that download a package or need a sim-only dep; skipped by
 # default so the check runs offline in CI. ``file:`` / ``ros2://`` resolve
 # locally and are always checked.
-_REMOTE_ASSET_PREFIXES = ("rd:", "gym_aloha:", "openarm:", "unitree:", "makermods:")
+_REMOTE_ASSET_PREFIXES = ("rd:", "gym_aloha:", "openarm:", "unitree:", "makermods:", "behavior:")
 
 _SCENE_TIERS: dict[str, type[DeployScene]] = {
     "deploy": DeployScene,

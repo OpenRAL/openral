@@ -443,6 +443,13 @@ _Fetches Unitree's official H2 description files at pinned commits, each beside 
 - const `UNITREE_ROS_SHA: str` (L41) — pinned `unitreerobotics/unitree_ros` commit.
 - const `UNITREE_MUJOCO_SHA: str` (L43) — pinned `unitreerobotics/unitree_mujoco` commit.
 
+### `python/hal/src/openral_hal/_behavior_r1pro_assets.py`
+_Fetches BEHAVIOR-1K's R1 Pro URDF and visual meshes (`behavior-1k/omnigibson-robot-assets`, MIT HF dataset) at a pinned revision and derives a loadable copy — backs the `behavior:r1pro` asset ref._
+
+- `ensure_r1pro_urdf() -> Path` (L65) — Derived URDF at `$OPENRAL_CACHE_DIR/behavior_r1pro/<rev12>/r1pro.urdf`; downloads `models/r1pro/urdf/{r1pro.urdf,meshes/*}` on first use. Raises `ROSConfigError` when `huggingface_hub` is missing or the download fails.
+- `derive_urdf(urdf_xml, urdf_dir) -> str` (L45) — Mesh `filename`s made absolute (joined, not resolved: HF snapshot files are extension-less blob symlinks) and every `<collision>` whose mesh is absent dropped (upstream references unshipped `meshes/collision/*-col-*.obj`).
+- const `BEHAVIOR_ASSETS_REVISION: str` (L32) — pinned dataset commit, the one the r1pro manifest's limits came from.
+
 ### `python/hal/src/openral_hal/_floating_base.py`
 _Shared planar-base helpers for the sim HAL shell and the MuJoCo twins: the one planar-twist rule and tolerance, the one holonomic integrator, and the ADR-0087 pin read/write (the glide twin itself is `mujoco_twin._GlideTwin`). Sim-only._
 

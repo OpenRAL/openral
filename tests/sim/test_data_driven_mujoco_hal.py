@@ -154,7 +154,7 @@ def test_manifest_has_sim_block(description: RobotDescription) -> None:
     assert description.sim is not None
     assert description.assets.mjcf is not None
     assert description.assets.mjcf.startswith(
-        ("rd:", "gym_aloha:", "openarm:", "unitree:", "makermods:", "file:")
+        ("rd:", "gym_aloha:", "openarm:", "unitree:", "makermods:", "behavior:", "file:")
     ), f"unexpected mjcf ref scheme: {description.assets.mjcf!r}"
 
 
