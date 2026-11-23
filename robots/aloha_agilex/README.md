@@ -66,9 +66,21 @@ same URDF with `mujoco.MjSpec` into `derived-<hash>/aloha_agilex.xml` beside it:
   `head_camera` pose (its `config.yml`, moved into the robot frame), the wrist
   cameras on the URDF's `left_camera` / `right_camera` links.
 
-Automatic sim grasp evidence (`SimAttachmentEvidenceTracker`) is off on this twin: the
-tracker takes a single gripper parent link and refuses the two hands, as for every
-bimanual twin; deploy logs `automatic sim attachment evidence disabled`.
+Automatic sim grasp evidence (`SimAttachmentEvidenceTracker`) arms one hand per arm
+(attach links `fl_link6` / `fr_link6`); deploy logs `automatic sim attachment evidence
+armed`.
+
+**Kernel self-collision model.** The manifest's links carry the URDF's names
+(`fl_*` / `fr_*`) and every joint's origin and axis is the URDF's, so the kernel, `/tf`
+and the camera frames use one set of frames (the old `left_link*` names existed nowhere
+in the URDF, and the joint 4/5/gripper axes were wrong). `fixed_attachments` mount the
+arm bases on `world` (the URDF root `footprint`, at the MJCF world origin);
+`mimic_joints` pose each gripper's second finger (`*_joint8`, MJCF equality
+coefficient 1), and each gripper's `urdf_curve` maps the normalised channel onto the
+URDF slide (0-0.04765 m). `collision_geometry` / `allowed_collision_pairs` are
+`openral collision lower` output, every link a box plus its exact hull
+(`--tight-link`); the ACM is adjacent pairs plus pairs the tool proves always collide.
+Safety-WG review owed.
 
 Tests: `tests/sim/test_aloha_agilex_hal_mujoco.py` (gravity-on tracking, both
 grippers, three cameras, each hand and jaw resolving through `sim_joint_name`) and `test_data_driven_mujoco_hal.py`.

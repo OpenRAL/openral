@@ -41,10 +41,20 @@ The manifest has no `base_joints`, so `deploy sim` attaches no
 `MobileBaseBridge`: the twin's base moves by `BODY_TWIST` from the HAL, not from
 `/cmd_vel`, and there is no `/odom`.
 
-Every manifest joint names its MJCF joint (`sim_joint_name`). Automatic sim grasp
-evidence (`SimAttachmentEvidenceTracker`) stays off on this robot: it handles one
-gripper parent link, and the R1 Pro has two, as the OpenArm and ALOHA do. Deploy
-logs "automatic sim attachment evidence disabled".
+Every manifest joint names its MJCF joint (`sim_joint_name`) and carries the URDF's
+origin and axis; `fixed_attachments` hang the arm bases on `torso_link4` and the
+gripper links on `*_arm_link7`, and each `*_finger_joint1` has a `urdf_curve`
+(normalised channel → 0-0.05 m per finger). Automatic sim grasp evidence
+(`SimAttachmentEvidenceTracker`) arms one hand per arm (attach links
+`*_gripper_link`); deploy logs "automatic sim attachment evidence armed".
+
+**Kernel self-collision model.** `openral collision lower` output, each link a box plus
+its exact hull (the wrists `*_arm_link5` / `*_arm_link7` and `torso_link4` in three
+slabs: one hull over-claimed the wrist). `*_arm_link1` is a capsule: against
+`torso_link4` its meshes overlap by 5.6 mm at every `arm_joint1` angle, which the tool
+proves always-colliding only for a capsule. The ACM is adjacent pairs, those proofs,
+and the two rows of the hand-written `r1pro.srdf`: each gripper's two fingers, whose
+meshes interpenetrate by ~49 mm when closed. Safety-WG review owed (every SRDF row).
 
 The robot is **simulation-only** in OpenRAL. `hal.real` remains null; no physical
 R1 Pro safety or transport claim is made.

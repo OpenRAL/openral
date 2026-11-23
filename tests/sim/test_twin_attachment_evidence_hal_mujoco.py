@@ -243,7 +243,7 @@ def _rig(robot: str) -> _Rig:
 @pytest.mark.parametrize(
     ("robot", "attach_links"),
     [
-        ("aloha_agilex", ("left_link6", "right_link6")),
+        ("aloha_agilex", ("fl_link6", "fr_link6")),
         ("r1pro", ("left_gripper_link", "right_gripper_link")),
     ],
 )

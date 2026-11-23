@@ -13,6 +13,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import numpy as np
+import numpy.typing as npt
 import pytest
 from openral_core import (
     Action,
@@ -172,10 +174,33 @@ def test_manifest_and_hal_pin_official_a1_joint_transforms() -> None:
         ((0.0, -0.1575, -0.00023266), (1.5708, 0.0, 0.0), (0.0, 0.0, 1.0)),
     ]
 
+    # Compared as transforms: `openral collision lower` writes the manifest's origins at the
+    # vendor URDF's full precision (e.g. yaw -3.1415853 for the SDK's 3.1416), the same frame.
     for description in (manifest, GALAXEA_A1_DESCRIPTION):
-        assert [
-            (joint.origin_xyz, joint.origin_rpy, joint.axis_xyz) for joint in description.joints
-        ] == expected
+        got = [(j.origin_xyz, j.origin_rpy, j.axis_xyz) for j in description.joints]
+        assert len(got) == len(expected)
+        for (xyz, rpy, axis), (want_xyz, want_rpy, want_axis) in zip(got, expected, strict=True):
+            assert np.allclose(xyz, want_xyz, atol=1e-6)
+            assert np.allclose(_rpy_matrix(rpy), _rpy_matrix(want_rpy), atol=1e-4)
+            assert axis == want_axis
+
+
+def _rpy_matrix(rpy: tuple[float, float, float]) -> npt.NDArray[np.float64]:
+    """URDF fixed-axis roll-pitch-yaw as a rotation matrix (Rz @ Ry @ Rx)."""
+    roll, pitch, yaw = rpy
+    cr, sr, cp, sp, cy, sy = (
+        np.cos(roll),
+        np.sin(roll),
+        np.cos(pitch),
+        np.sin(pitch),
+        np.cos(yaw),
+        np.sin(yaw),
+    )
+    rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]], dtype=np.float64)
+    ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]], dtype=np.float64)
+    rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]], dtype=np.float64)
+    out: npt.NDArray[np.float64] = rz @ ry @ rx
+    return out
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.20", "sidecar.example", "::1"])

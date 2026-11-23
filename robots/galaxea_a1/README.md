@@ -32,6 +32,14 @@ choices, not the RealSense extrinsics.
 openral deploy sim --config scenes/deploy/galaxea_a1_twin.yaml
 ```
 
+Automatic sim grasp evidence (`SimAttachmentEvidenceTracker`) arms one hand on the
+end-effector gripper: attach link `arm_seg6`, touch links the finger bodies `gripper1`
+/ `gripper2`. The kernel's self-collision model (`openral collision lower`, each arm
+link a box plus its exact hull) has the fingers as `fixed_attachments` at the URDF's
+closed pose, as capsules: rigid on `arm_seg6`, they overlap by 30 mm, which the tool
+proves always-colliding. **The fingers' 30 mm opening stroke is not in the kernel's
+model** (Safety-WG item).
+
 Still to confirm on the bench: whether the A1's normalised gripper position maps
 to the same 0-60 mm finger opening as the URDF's two 0-30 mm slides (the HAL's
 `gripper_stroke_max_mm` default is 104 mm), and that 1 is open on the real G2
