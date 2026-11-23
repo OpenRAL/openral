@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
-from openral_core.exceptions import ROSConfigError
+from openral_core import VLASpec
+from openral_core.exceptions import ROSConfigError, ROSRuntimeError
+from openral_rskill.loader import load_rskill_manifest
+from openral_sim import _behavior_wire
+from openral_sim._quantization import QUANTIZATION_DTYPE_ENV
+from openral_sim.policies import behavior_groot
 from openral_sim.policies import behavior_groot_inprocess as bgi
+
+_RSKILL = Path(__file__).resolve().parents[2] / "rskills" / "gr00t-n17-b1k-turning-on-radio"
 
 
 def test_r1pro_state_slices_groups_in_modality_order() -> None:
@@ -36,7 +46,7 @@ def test_temporal_ensemble_reads_each_chunk_at_its_age() -> None:
     reads = np.array([chunks[k][6 - k] for k in range(2, 7)])
     w = np.exp(0.005 * np.arange(5))
     expected = (reads * (w / w.sum())[:, None]).sum(axis=0)
-    for idx in bgi.GRIPPER_ACTION_INDICES:
+    for idx in _behavior_wire.GRIPPER_ACTION_INDICES:
         expected[idx] = chunks[6][0, idx]
     np.testing.assert_allclose(action, expected, rtol=1e-6)
     ens.reset()
@@ -52,3 +62,37 @@ def test_runtime_selection(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(bgi.RUNTIME_ENV)
     with pytest.raises(ROSConfigError):
         bgi.wants_inprocess({"runtime": "bogus"})
+
+
+def test_temporal_ensemble_refuses_short_or_flat_chunks() -> None:
+    with pytest.raises(ROSRuntimeError, match="T>=5"):
+        bgi.TemporalEnsemble().step(np.zeros((4, 23), dtype=np.float32))
+    with pytest.raises(ROSRuntimeError, match="T>=5"):
+        bgi.TemporalEnsemble().step(np.zeros(23 * 16, dtype=np.float32))
+
+
+def _build(extra: dict[str, object]) -> object:
+    manifest = load_rskill_manifest(str(_RSKILL))
+    env_cfg = SimpleNamespace(vla=VLASpec(id="gr00t_b1k", weights_uri=str(_RSKILL)))
+    return behavior_groot.build_behavior_groot_policy(env_cfg, manifest, extra)
+
+
+def test_inprocess_routing_refuses_before_loading(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """runtime=inprocess reaches the in-process builder, whose pre-load gates refuse."""
+    monkeypatch.delenv(bgi.RUNTIME_ENV, raising=False)
+    monkeypatch.setenv(behavior_groot._CHECKPOINT_ENV, str(tmp_path / "missing"))
+    with pytest.raises(ROSConfigError, match="only temporal_ensemble"):
+        _build({"runtime": "inprocess", "control_mode": "receding_horizon"})
+    with pytest.raises(ROSConfigError, match="checkpoint not found"):
+        _build({"runtime": "inprocess"})
+
+    monkeypatch.setenv(behavior_groot._CHECKPOINT_ENV, str(tmp_path))
+    # bf16 has no in-process load path (unquantized GrootPolicy runs fp32).
+    monkeypatch.setenv(QUANTIZATION_DTYPE_ENV, "bf16")
+    with pytest.raises(ROSConfigError, match="cannot load dtype 'bf16'"):
+        _build({"runtime": "inprocess"})
+    monkeypatch.setenv("OPENRAL_REQUIRE_SIGNED_SKILLS", "1")
+    with pytest.raises(ROSConfigError, match="OPENRAL_REQUIRE_SIGNED_SKILLS"):
+        _build({"runtime": "inprocess"})

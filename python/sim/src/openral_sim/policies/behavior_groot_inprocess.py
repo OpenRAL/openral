@@ -19,6 +19,11 @@ here, to the line (fork ``wensi-ai/Isaac-GR00T@ace36d9``):
 
 The output is the same 23-D wire action the sidecar returns, so the scene side
 is unchanged.
+
+Precision follows the manifest like every family (``int4`` → NF4, OpenRAL Pro);
+``OPENRAL_QUANTIZATION_DTYPE=fp32`` (or ``none``) loads the open fp32 path.
+bf16 is refused, as for the ``gr00t`` family: an unquantized ``GrootPolicy``
+load casts every param to fp32.
 """
 
 from __future__ import annotations
@@ -40,6 +45,7 @@ from openral_sim import _behavior_wire
 if TYPE_CHECKING:
     from openral_core import RSkillManifest, VLASpec
 
+    from openral_sim.policies.behavior_groot import _EnvCfg
     from openral_sim.rollout import Observation
 
 _log = structlog.get_logger(__name__)
@@ -51,21 +57,12 @@ _OBS_SIZE = (224, 224)
 # B1KPolicyWrapper's temporal-ensemble constants.
 _ENSEMBLE_MAX = 5
 _ENSEMBLE_K = 0.005
+_CHUNK_NDIM = 2  # (T, D)
 
-# R1Pro modality split (the sidecar's ``_register_r1pro_modality``), in the
-# checkpoint's state modality order: proprio slice per group.
-STATE_GROUPS: tuple[tuple[str, int, int], ...] = (
-    ("base_qvel", 0, 3),
-    ("torso", 53, 57),
-    ("left_arm", 3, 10),
-    ("left_gripper", 24, 26),
-    ("right_arm", 28, 35),
-    ("right_gripper", 49, 51),
-)
-STATE_DIM = sum(end - start for _, start, end in STATE_GROUPS)
-# Absolute grippers in the 23-D action: B1KPolicyWrapper takes them from the
-# newest chunk instead of the ensemble.
-GRIPPER_ACTION_INDICES = (14, 22)
+# Pro's ``quantize_groot_nf4`` packs Linears of at least this many params.
+_PRO_NF4_MIN_PARAMS = 4_000_000
+
+STATE_DIM = sum(end - start for _, start, end in _behavior_wire.R1PRO_STATE_GROUPS)
 
 
 def r1pro_state(proprio: NDArray[np.floating[Any]]) -> NDArray[np.float32]:
@@ -76,7 +73,8 @@ def r1pro_state(proprio: NDArray[np.floating[Any]]) -> NDArray[np.float32]:
             f"BEHAVIOR GR00T proprio must have {_behavior_wire.STATE_DIM} values, "
             f"got {flat.shape[0]}."
         )
-    return np.concatenate([flat[start:end] for _, start, end in STATE_GROUPS])
+    groups = _behavior_wire.R1PRO_STATE_GROUPS
+    return np.concatenate([flat[start:end] for _, start, end in groups])
 
 
 def resize_with_pad(image: NDArray[np.uint8], height: int, width: int) -> NDArray[np.uint8]:
@@ -111,14 +109,20 @@ class TemporalEnsemble:
 
     def step(self, chunk: NDArray[np.float32]) -> NDArray[np.float32]:
         """Add the newest ``(T, 23)`` chunk and return this step's 23-D action."""
-        self._chunks.append(np.asarray(chunk, dtype=np.float32))
+        chunk = np.asarray(chunk, dtype=np.float32)
+        if chunk.ndim != _CHUNK_NDIM or chunk.shape[0] < _ENSEMBLE_MAX:
+            raise ROSRuntimeError(
+                f"BEHAVIOR GR00T temporal ensemble needs (T>={_ENSEMBLE_MAX}, D) chunks, "
+                f"got {chunk.shape}."
+            )
+        self._chunks.append(chunk)
         n = len(self._chunks)
         # Slot i (oldest first) was added n-1-i steps ago, so it is read there.
         current = np.stack([c[n - 1 - i] for i, c in enumerate(self._chunks)])
         weights = np.exp(_ENSEMBLE_K * np.arange(n))
         action = (current * (weights / weights.sum())[:, None]).sum(axis=0)
         newest = self._chunks[-1][0]
-        for idx in GRIPPER_ACTION_INDICES:
+        for idx in _behavior_wire.GRIPPER_ACTION_INDICES:
             action[idx] = newest[idx]
         out: NDArray[np.float32] = action.astype(np.float32)
         return out
@@ -140,6 +144,7 @@ class _BehaviorGrootInprocessAdapter:
 
     spec: VLASpec
     device: str
+    # reason: lerobot / torch objects are imported lazily inside the builder.
     _policy: Any
     _preprocessor: Any
     _postprocessor: Any
@@ -149,21 +154,31 @@ class _BehaviorGrootInprocessAdapter:
 
     def reset(self) -> None:
         self._ensemble.reset()
-        self._policy.reset()
+        if self._policy is not None:  # None after close()
+            self._policy.reset()
 
     def step(self, observation: Observation, instruction: str) -> NDArray[np.float32]:
+        from openral_rskill._vla_core import image_to_chw_tensor
+
         from openral_sim.policies.behavior_groot import _behavior_wire_observation
 
         wire = _behavior_wire_observation(observation, instruction=instruction)
+        missing = [
+            key
+            for key in (*_behavior_wire.CAMERA_RGB_KEYS.values(), _behavior_wire.STATE_KEY)
+            if key not in wire
+        ]
+        if missing:
+            raise ROSRuntimeError(f"BEHAVIOR GR00T observation is missing {missing}.")
         torch = self._torch
-        batch: dict[str, Any] = {"task": str(wire.get("openral_instruction", instruction))}
+        batch: dict[str, Any] = {"task": instruction}
         for role, key in _behavior_wire.CAMERA_RGB_KEYS.items():
             rgb = np.asarray(wire[key])[..., :3].astype(np.uint8)
             img = resize_with_pad(rgb, *_OBS_SIZE)
             if role == "head":
                 self._last_input = img
-            batch[f"observation.images.{role}"] = (
-                torch.from_numpy(img).permute(2, 0, 1).float().div(255.0).to(self.device)
+            batch[f"observation.images.{role}"] = image_to_chw_tensor(
+                img, torch=torch, device=self.device
             )
         state = r1pro_state(np.asarray(wire[_behavior_wire.STATE_KEY]))
         batch["observation.state"] = torch.from_numpy(state).to(self.device)
@@ -171,7 +186,14 @@ class _BehaviorGrootInprocessAdapter:
         with inference_span(kind="single", engine="pytorch"), torch.inference_mode():
             raw = self._policy.predict_action_chunk(self._preprocessor(batch))
             chunk = self._postprocessor(raw)
-        chunk_np = chunk.detach().to("cpu").float().numpy().reshape(-1, _behavior_wire.ACTION_DIM)
+        chunk_np = chunk.detach().to("cpu").float().numpy()
+        if chunk_np.ndim == _CHUNK_NDIM + 1 and chunk_np.shape[0] == 1:  # batch of one
+            chunk_np = chunk_np[0]
+        if chunk_np.ndim != _CHUNK_NDIM or chunk_np.shape[1] != _behavior_wire.ACTION_DIM:
+            raise ROSRuntimeError(
+                f"BEHAVIOR GR00T in-process policy returned a {chunk_np.shape} chunk; "
+                f"expected (T, {_behavior_wire.ACTION_DIM})."
+            )
         action = self._ensemble.step(chunk_np)
         if not np.isfinite(action).all():
             raise ROSRuntimeError("BEHAVIOR GR00T in-process policy produced a non-finite action.")
@@ -194,7 +216,7 @@ class _BehaviorGrootInprocessAdapter:
 
 
 def build_behavior_groot_inprocess_policy(
-    env_cfg: Any,
+    env_cfg: _EnvCfg,
     manifest: RSkillManifest,
     extra: dict[str, object],
     checkpoint: Path,
@@ -226,20 +248,25 @@ def build_behavior_groot_inprocess_policy(
     device = resolve_device(spec)
     plan = resolve_quant_plan(spec, manifest, default="nf4")
     require_supported_dtype(plan, frozenset({"nf4", "fp32", "none"}), "gr00t_b1k (inprocess)")
-    if plan.quantize:
-        # ponytail: Pro's quantize_groot_nf4 packs Linears >= 4M params; the
-        # sidecar's manifest asks for 1M. Add a min_params knob to Pro if the
-        # in-process NF4 run needs it.
+    quantize_scope = str(plan.extra.get("quantize_scope", "model")).lower()
+    requested_min = plan.extra.get("nf4_min_params")
+    if plan.quantize and requested_min is not None and requested_min != _PRO_NF4_MIN_PARAMS:
+        # ponytail: Pro's quantize_groot_nf4 has no min-params knob; add one if
+        # the in-process NF4 run needs to match the sidecar's packing.
         _log.warning(
             "behavior_groot.inprocess.nf4_min_params_ignored",
-            requested=plan.extra.get("nf4_min_params"),
-            used=4_000_000,
+            requested=requested_min,
+            used=_PRO_NF4_MIN_PARAMS,
         )
 
-    torch, make_processors = lazy_import_lerobot(
-        "GR00T", install_hint="just sync --all-packages --group gr00t"
-    )
-    from lerobot.policies.groot.modeling_groot import GrootPolicy
+    install_hint = "just sync --all-packages --group gr00t"
+    torch, make_processors = lazy_import_lerobot("GR00T", install_hint=install_hint)
+    try:
+        from lerobot.policies.groot.modeling_groot import GrootPolicy
+    except ImportError as exc:
+        raise ROSConfigError(
+            f"The in-process BEHAVIOR GR00T runtime needs lerobot's groot policy: {install_hint}"
+        ) from exc
 
     _patch_groot_dtype_property(torch)
     _redirect_groot_backbone_processor()
@@ -256,7 +283,9 @@ def build_behavior_groot_inprocess_policy(
     try:
         policy = GrootPolicy.from_pretrained(str(checkpoint), config=config)
         if plan.quantize:
-            pro_quantization(what="gr00t_b1k").quantize_groot_nf4(policy, torch, scope="model")
+            pro_quantization(what="gr00t_b1k").quantize_groot_nf4(
+                policy, torch, scope=quantize_scope
+            )
         policy = policy.to(device)
     finally:
         torch.set_default_dtype(prev_default_dtype)
@@ -280,7 +309,7 @@ def build_behavior_groot_inprocess_policy(
 
 __all__ = [
     "RUNTIME_ENV",
-    "STATE_GROUPS",
+    "STATE_DIM",
     "TemporalEnsemble",
     "build_behavior_groot_inprocess_policy",
     "r1pro_state",
