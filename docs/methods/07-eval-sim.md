@@ -867,15 +867,15 @@ _Official BEHAVIOR-1K GR00T policy adapter. The organizer checkpoint depends on 
 #### `python/sim/src/openral_sim/policies/behavior_groot_inprocess.py`
 _Opt-in in-process runtime for the same BEHAVIOR-1K checkpoint (`vla.extra.runtime: inprocess` or `OPENRAL_BEHAVIOR_GROOT_RUNTIME=inprocess`), on lerobot 0.7's `GrootPolicy` under Python 3.12. lerobot reads the checkpoint's processor config (relative-action decode, percentile stats, embodiment id); this module ports the organizers' `B1KPolicyWrapper` around it. Selected inside `build_behavior_groot_policy`._
 
-- `build_behavior_groot_inprocess_policy(env_cfg, manifest, extra, checkpoint) -> _BehaviorGrootInprocessAdapter` — Loads the checkpoint with `embodiment_tag="new_embodiment"`, the 3 R1Pro cameras and the 25-D state. Precision follows `resolve_quant_plan` like every family: the manifest's `int4` packs NF4 through OpenRAL Pro (`quantization.extra.quantize_scope`, default `model`); `OPENRAL_QUANTIZATION_DTYPE=fp32`/`none` is the open fp32 path; bf16 is refused (an unquantized `GrootPolicy` load runs fp32). Refuses any control mode but `temporal_ensemble`. (L218)
-- `wants_inprocess(extra) -> bool` — Runtime selector; `OPENRAL_BEHAVIOR_GROOT_RUNTIME` wins over `extra["runtime"]`, which defaults to `sidecar`. (L131)
-- `r1pro_state(proprio) -> NDArray[np.float32]` — 61-D R1Pro proprio → the checkpoint's 25-D state, groups in modality order (`_behavior_wire.R1PRO_STATE_GROUPS`). (L68)
-- `resize_with_pad(image, height, width) -> NDArray[np.uint8]` — The wrapper's aspect-preserving `cv2.INTER_LINEAR` resize + centred zero pad. (L80)
-- `TemporalEnsemble` — The wrapper's `temporal_ensemble` for one env: last 5 chunks, each read at its age, weights `exp(0.005·slot)`, grippers from the newest chunk. (L96)
-- `TemporalEnsemble.step(chunk) -> NDArray[np.float32]` — Adds the newest `(T, 23)` chunk (T ≥ 5, else `ROSRuntimeError`) and returns this step's 23-D action. (L110)
-- `TemporalEnsemble.reset() -> None` — Drops the buffered chunks at an episode boundary. (L106)
-- `RUNTIME_ENV` — `"OPENRAL_BEHAVIOR_GROOT_RUNTIME"`, the runtime-selector env var. (L53)
-- `STATE_DIM` — `25`, the checkpoint's state width (sum of `_behavior_wire.R1PRO_STATE_GROUPS`). (L65)
+- `build_behavior_groot_inprocess_policy(env_cfg, manifest, extra, checkpoint) -> _BehaviorGrootInprocessAdapter` — Loads the checkpoint with `embodiment_tag="new_embodiment"`, the 3 R1Pro cameras and the 25-D state. Precision follows `resolve_quant_plan` like every family: the manifest's `int4` packs NF4 through OpenRAL Pro (`quantization.extra.quantize_scope`, default `model`), and refuses an `nf4_min_params` other than Pro's 4M before loading; `OPENRAL_QUANTIZATION_DTYPE=fp32`/`none` is the open fp32 path; bf16 is refused (an unquantized `GrootPolicy` load runs fp32). Refuses any control mode but `temporal_ensemble`. (L220)
+- `wants_inprocess(extra) -> bool` — Runtime selector; `OPENRAL_BEHAVIOR_GROOT_RUNTIME` wins over `extra["runtime"]`, which defaults to `sidecar`. (L133)
+- `r1pro_state(proprio) -> NDArray[np.float32]` — 61-D R1Pro proprio → the checkpoint's 25-D state, groups in modality order (`_behavior_wire.R1PRO_STATE_GROUPS`). (L70)
+- `resize_with_pad(image, height, width) -> NDArray[np.uint8]` — The wrapper's aspect-preserving `cv2.INTER_LINEAR` resize + centred zero pad. (L82)
+- `TemporalEnsemble` — The wrapper's `temporal_ensemble` for one env: last 5 chunks, each read at its age, weights `exp(0.005·slot)`, grippers from the newest chunk. (L98)
+- `TemporalEnsemble.step(chunk) -> NDArray[np.float32]` — Adds the newest `(T, 23)` chunk (T ≥ 5, else `ROSRuntimeError`) and returns this step's 23-D action. (L112)
+- `TemporalEnsemble.reset() -> None` — Drops the buffered chunks at an episode boundary. (L108)
+- `RUNTIME_ENV` — `"OPENRAL_BEHAVIOR_GROOT_RUNTIME"`, the runtime-selector env var. (L55)
+- `STATE_DIM` — `25`, the checkpoint's state width (sum of `_behavior_wire.R1PRO_STATE_GROUPS`). (L67)
 
 #### `python/sim/src/openral_sim/backends/behavior.py`
 _BEHAVIOR-1K / OmniGibson scene adapter. Runs the official evaluator environment in its own sidecar and registers `scene.id=behavior`, fixed to `r1pro`._
