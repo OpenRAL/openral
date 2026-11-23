@@ -69,6 +69,9 @@ joints:
     joint_type: "revolute"
     parent_link: "upper_forearm_link"
     child_link: "lower_forearm_link"
+    # wx250s.xml: lower_forearm_link pos="0.175 0 0", joint axis="1 0 0".
+    axis_xyz: [1.0, 0.0, 0.0]
+    origin_xyz: [0.175, 0.0, 0.0]
     position_limits: [-3.14, 3.14]
     velocity_limit: 3.14
     effort_limit: 2.0

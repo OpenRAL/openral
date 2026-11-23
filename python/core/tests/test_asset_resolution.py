@@ -20,7 +20,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from openral_core.assets import AssetRefError, resolve_asset
+from openral_core.assets import AssetFetchError, AssetRefError, resolve_asset
 from openral_core.schemas import RobotDescription
 
 # Anchor ``robots/`` to the repo root so the suite is cwd-independent. This file
@@ -58,6 +58,20 @@ def test_manifest_glob_is_nonempty() -> None:
     )
 
 
+def _skippable(exc: AssetRefError) -> bool:
+    """Whether ``exc`` is an absent optional dependency or an unreachable upstream.
+
+    ``AssetRefError`` also means a malformed or unresolvable ref, which must fail:
+    only an ``AssetFetchError`` or an ``ImportError`` in the cause chain skips.
+    """
+    err: BaseException | None = exc
+    while err is not None:
+        if isinstance(err, (AssetFetchError, ImportError)):
+            return True
+        err = err.__cause__
+    return False
+
+
 @pytest.mark.parametrize("mf", MANIFESTS, ids=lambda p: p.parent.name)
 def test_declared_assets_resolve_to_files(mf: Path) -> None:
     """Every declared static asset ref resolves to an on-disk file.
@@ -73,6 +87,8 @@ def test_declared_assets_resolve_to_files(mf: Path) -> None:
         try:
             p = resolve_asset(a.mjcf, "mjcf", manifest_dir=mf.parent)
         except AssetRefError as exc:
+            if not _skippable(exc):
+                raise
             pytest.skip(f"optional sim dep absent for {a.mjcf}: {exc}")
         assert p is not None and p.is_file()
     if a.srdf:
@@ -135,6 +151,8 @@ def test_declared_mjcf_loads(mf: Path) -> None:
     try:
         path = resolve_asset(a.mjcf, "mjcf", manifest_dir=mf.parent)
     except AssetRefError as exc:
+        if not _skippable(exc):
+            raise
         pytest.skip(f"optional sim dep absent for {a.mjcf}: {exc}")
     assert path is not None
     mujoco.MjModel.from_xml_path(str(path))  # raises on malformed

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import uuid
 from pathlib import Path
 
 from openral_core.exceptions import ROSConfigError
@@ -56,7 +57,7 @@ def compose_robot_mjcf(name: str) -> Path:
             gripper_factory(model.default_gripper[arm], idn=f"0_{arm}"), model.eef_name[arm]
         )
     out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_name(f".{out.name}.{os.getpid()}.tmp")
+    tmp = out.with_name(f".{out.name}.{uuid.uuid4().hex}.tmp")
     tmp.write_text(model.get_xml(), encoding="utf-8")
     os.replace(tmp, out)
     return out
