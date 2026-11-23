@@ -15,8 +15,8 @@ Constructs LeRobot's native ``robotwin`` gym env (``lerobot-eval
 RoboTwin/SAPIEN/LeRobot import lazily inside ``main`` so `--help` doesn't
 need the heavy venv.
 
-Licensing: RoboTwin (MIT), SAPIEN (MIT), LeRobot (Apache-2.0). CUDA-12.1-pinned,
-so this is an externally-provisioned sidecar venv, never vendored (CLAUDE.md §1.9).
+Licensing: RoboTwin (MIT), SAPIEN (MIT), LeRobot (Apache-2.0). Large and
+CUDA-bound, so this is an externally-provisioned sidecar venv, never vendored (CLAUDE.md §1.9).
 """
 
 from __future__ import annotations
@@ -214,7 +214,6 @@ class _RoboTwinEnv:
             obs_width=obs_width,
             episode_length=episode_length,
         )
-        self._is_vector_env = hasattr(self._env, "single_action_space")
         self._action_dim = int(np.prod(self._env.action_space.shape))
         self._fallback_dt_ns = round(fallback_dt_s * 1_000_000_000)
         self._fallback_time_ns = 0
@@ -227,68 +226,47 @@ class _RoboTwinEnv:
         episode_length: int,
     ) -> Any:
         """Construct LeRobot's robotwin gym env for ``self._task`` (single env)."""
+        # lerobot 0.7 moved the env from ``lerobot.envs.robotwin``; the venv pins 0.7.0.
         try:
-            from lerobot.envs.robotwin import (
-                RoboTwinEnv,  # type: ignore[import-not-found,import-untyped,unused-ignore]
+            from lerobot.sim.integrations.robotwin import (  # type: ignore[import-not-found,import-untyped,unused-ignore]  # reason: lives only in the sidecar venv, untyped upstream
+                RoboTwinEnv,
             )
+        except ModuleNotFoundError as exc:
+            from importlib.metadata import PackageNotFoundError, version
 
-            return RoboTwinEnv(
-                self._task,
-                camera_names=_ENV_CAMERA_NAMES,
-                observation_height=obs_height,
-                observation_width=obs_width,
-                episode_length=episode_length,
-            )
-        except ImportError:
-            pass
+            try:
+                found = version("lerobot")
+            except PackageNotFoundError:
+                found = "not installed"
+            raise ModuleNotFoundError(
+                f"RoboTwin sidecar needs lerobot 0.7 (lerobot.sim.integrations.robotwin); "
+                f"this venv ({sys.executable}) has lerobot {found}. Re-provision it with "
+                "OPENRAL_ROBOTWIN_AUTO_PROVISION=1."
+            ) from exc
 
-        # Older LeRobot builds expose RoboTwin only through EnvConfig + make_env.
-        from lerobot.envs.configs import (
-            RoboTwinEnvConfig,  # type: ignore[import-not-found,import-untyped,unused-ignore]
-        )
-        from lerobot.envs.factory import (
-            make_env,  # type: ignore[import-not-found,import-untyped,unused-ignore]
-        )
-
-        cfg = RoboTwinEnvConfig(
-            task=self._task,
-            obs_type="pixels_agent_pos",
-            camera_names=",".join(_ENV_CAMERA_NAMES),
+        return RoboTwinEnv(
+            self._task,
+            camera_names=_ENV_CAMERA_NAMES,
             observation_height=obs_height,
             observation_width=obs_width,
             episode_length=episode_length,
         )
-        # Current LeRobot normalizes env factories to {suite: {task_id: vec_env}};
-        # older builds returned the vector env directly. Accept both so the sidecar
-        # stays pinned to the runtime env contract instead of a specific LeRobot SHA.
-        envs = make_env(cfg, n_envs=1, use_async_envs=False)
-        if isinstance(envs, dict):
-            suite_envs = envs.get("robotwin") or next(iter(envs.values()))
-            if isinstance(suite_envs, dict):
-                return suite_envs.get(0) or next(iter(suite_envs.values()))
-            return suite_envs
-        return envs
 
     @property
     def action_dim(self) -> int:
         return self._action_dim
 
     def _unwrap_obs(self, obs: Any) -> dict[str, Any]:
-        # Vectorised envs return batched obs (leading dim 1); squeeze it.
-        def _first(x: Any) -> Any:
-            arr = np.asarray(x)
-            return arr[0] if arr.ndim and arr.shape[0] == 1 else arr
-
         images: dict[str, npt.NDArray[np.uint8]] = {}
         pixels = obs.get("pixels") if isinstance(obs, dict) else None
         if isinstance(pixels, dict):
             for cam, frame in pixels.items():
                 out_key = self._cam_remap.get(str(cam), str(cam))
-                frame_np = np.asarray(_first(frame), dtype=np.uint8)
+                frame_np = np.asarray(frame, dtype=np.uint8)
                 images[out_key] = self._resize_frame(frame_np)
         agent_pos = obs.get("agent_pos") if isinstance(obs, dict) else None
         state = (
-            np.asarray(_first(agent_pos), dtype=np.float32).reshape(-1)
+            np.asarray(agent_pos, dtype=np.float32).reshape(-1)
             if agent_pos is not None
             else np.zeros((self._action_dim,), dtype=np.float32)
         )
@@ -310,10 +288,9 @@ class _RoboTwinEnv:
 
     def step(self, action: npt.NDArray[np.float32]) -> dict[str, Any]:
         action_arr: npt.NDArray[np.float32] = np.asarray(action, dtype=np.float32).reshape(-1)
-        if self._is_vector_env:
-            action_arr = action_arr.reshape(1, -1)
         obs, reward, terminated, truncated, info = self._env.step(action_arr)
-        if _sapien_sim_time_ns(self._env) is None:
+        sim_ns = _sapien_sim_time_ns(self._env)
+        if sim_ns is None:
             self._fallback_time_ns += self._fallback_dt_ns
         success = bool(np.asarray(info.get(self._success_key, False)).any())
         return {
@@ -322,7 +299,7 @@ class _RoboTwinEnv:
             "terminated": bool(np.asarray(terminated).reshape(-1)[0]),
             "truncated": bool(np.asarray(truncated).reshape(-1)[0]),
             "info": {self._success_key: success},
-            "sim_time_ns": self.sim_time_ns(),
+            "sim_time_ns": sim_ns or self._fallback_time_ns,
         }
 
     def sim_time_ns(self) -> int | None:
