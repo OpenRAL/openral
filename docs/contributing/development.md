@@ -606,3 +606,8 @@ Use `just install-hooks`, not `pre-commit install`: the repo pins
 `core.hooksPath=.githooks` (for DCO sign-off), and `pre-commit install` refuses
 to run while it is set. `just install-hooks` wires the committed `.githooks/`
 wrappers (which call `pre-commit run`) and pre-builds the hook environments.
+
+The hooks never sync `.venv`: the wrappers export `UV_NO_SYNC=1`, so they run
+against the environment you last synced. A commit therefore cannot revert an
+uncommitted `uv.lock` bump, which pre-commit stashes while the hooks run.
+Run `just sync` before your first commit on a fresh clone.
