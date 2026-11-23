@@ -154,7 +154,13 @@ def _require_processors_in_weights_snapshot(manifest: Any) -> None:
         return
     weights_uri = str(manifest.weights_uri or "")
     if not weights_uri.startswith("hf://"):
-        return
+        # Processor URIs are hf:// file pointers; non-Hub weights cannot hold them.
+        raise ROSConfigError(
+            f"cosmos3 loads its processor pipeline from the weights snapshot, but weights_uri "
+            f"{weights_uri!r} is not on the Hub while the manifest declares processors "
+            f"{manifest.processors.preprocessor_uri}: drop the processors block for local "
+            "weights (the snapshot directory carries the pipeline)."
+        )
     w_repo, _, w_rev = weights_uri.removeprefix("hf://").partition("@")
     for uri in (manifest.processors.preprocessor_uri, manifest.processors.postprocessor_uri):
         repo, rev, _ = parse_hf_file_uri(str(uri))

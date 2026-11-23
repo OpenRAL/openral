@@ -69,3 +69,15 @@ def test_processor_uris_must_name_the_weights_snapshot() -> None:
         )
         with pytest.raises(ROSConfigError, match="weights_uri"):
             _require_processors_in_weights_snapshot(moved)
+
+
+def test_local_weights_with_hub_processors_are_refused() -> None:
+    """Local weights cannot hold the declared hf:// processors, which would be ignored."""
+    from openral_sim.policies.cosmos3 import _require_processors_in_weights_snapshot
+
+    manifest = load_rskill_manifest(str(_SKILL))
+    local = manifest.model_copy(update={"weights_uri": "local:///opt/cosmos3-edge-libero"})
+    with pytest.raises(ROSConfigError, match="not on the Hub"):
+        _require_processors_in_weights_snapshot(local)
+    # Local weights without a processors block load from their own directory.
+    _require_processors_in_weights_snapshot(local.model_copy(update={"processors": None}))
