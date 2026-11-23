@@ -12331,7 +12331,7 @@ class PhysicsBackend(str, Enum):
         PYBULLET: PyBullet (legacy adapters, contact-rich tabletop).
         SAPIEN: SAPIEN (Hillbot/UCSD physics + ray-traced rendering). The
             engine under ManiSkill3 and RoboTwin 2.0; the RoboTwin dual-arm
-            benchmark backend runs it out-of-process via a py3.10 sidecar.
+            benchmark backend runs it out-of-process via a py3.12 sidecar.
             ManiSkill3 scenes predate this slot and historically
             declared ``MUJOCO`` — new SAPIEN backends use this value.
         ISAACSIM: NVIDIA Isaac Sim (Omniverse + PhysX + RTX, GPU) — the

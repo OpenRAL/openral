@@ -7,7 +7,7 @@
 # Run the suite:
 #   openral benchmark run --suite robotwin --rskill rskills/smolvla-robotwin
 #
-# Setup: provision the py3.10 SAPIEN+RoboTwin sidecar venv and
+# Setup: provision the py3.12 SAPIEN+RoboTwin sidecar venv and
 # `just sync --all-packages --group robotwin --inexact` for the openral-side wire.
 #
 # Official protocol: 100 episodes/task, seed 0 (single seed here; the paper

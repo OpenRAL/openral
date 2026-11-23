@@ -54,7 +54,7 @@ a message pointing at the bare-list format. Use YAML anchors (`&scene` /
 | `simpler_env_widowx.yaml`          | widowx         | simpler_env / Bridge V2 (SAPIEN via ManiSkill)                          |  4 |  5 | `success`    |  60 |  20 |
 | `robocasa_pnp.yaml`                | panda_mobile   | robocasa/PickPlaceCounterToCabinet (MuJoCo via robosuite + kitchen fork) |  1 | 10 | `is_success` | 500 |  10 |
 | `gr1_tabletop.yaml`                | gr1            | robocasa/gr1/PnPCupToDrawerClose (MuJoCo via robosuite + GR1 fork)       |  1 | 10 | `is_success` | 720 |  10 |
-| `robotwin.yaml`                    | aloha_agilex   | robotwin (SAPIEN via lerobot, py3.10 sidecar)                           |  5 | 100 | `is_success` | 300 | 500 |
+| `robotwin.yaml`                    | aloha_agilex   | robotwin (SAPIEN via lerobot, py3.12 sidecar)                           |  5 | 100 | `is_success` | 300 | 500 |
 | `rlbench.yaml`                     | franka_panda   | RLBench PerAct subset: open_drawer / meat_off_grill / close_jar (CoppeliaSim/PyRep, py3.10 sidecar) |  3 | 25 | `is_success` | 25 |  75 |
 | `behavior.yaml`                    | r1pro          | BEHAVIOR-1K 2026 challenge, all 100 public tasks (OmniGibson / Isaac Sim, sidecar) | 100 |  1 | `is_success` | 3224–39090 | 100 |
 | `makermods_metal_pick_place.yaml`  | makermods_metal | metal_pick_place (MuJoCo sim twin of `HappyEthan/metal_pick_place`), 3 scenes in the dataset's layout A (a showcase; the checkpoint never reaches the cube in B/C/D), positions jittered ±1.5 cm and baked in; graded complete / partial / semi / fail |  3 |  3 | `is_success` | 900 |  30 |
@@ -83,10 +83,11 @@ uv pip install "simpler-env @ git+https://github.com/simpler-env/SimplerEnv.git@
 ```
 
 `robotwin.yaml` is the first **dual-arm** suite (RoboTwin 2.0, SAPIEN). It runs
-out-of-process through a py3.10 sidecar (`tools/robotwin_sidecar.py`) because
-RoboTwin's SAPIEN/CuRobo/pytorch3d stack is incompatible with the py3.12 workspace;
+out-of-process through a py3.12 sidecar (`tools/robotwin_sidecar.py`) because
+RoboTwin needs mplib 0.2.1 (ManiSkill pins mplib==0.1.1 in the workspace), puts its
+checkout on `sys.path` as a top-level `envs` package and ships multi-GB assets;
 `just sync --group robotwin --inexact` installs only the openral-side wire (pyzmq +
-msgpack). The heavy lerobot-main + RoboTwin + asset venv is externally provisioned
+msgpack). The heavy lerobot + RoboTwin + asset venv is externally provisioned
 (`OPENRAL_ROBOTWIN_AUTO_PROVISION=1` or the manual sidecar-provisioning recipe). Task-matched
 rSkill: [`rskills/smolvla-robotwin`](../rskills/smolvla-robotwin) (the official
 `lerobot/smolvla_robotwin` checkpoint). The 5-task slice is a representative

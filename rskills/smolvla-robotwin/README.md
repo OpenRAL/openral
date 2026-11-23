@@ -99,8 +99,8 @@ position commands.
 
 ## How to run it
 
-RoboTwin runs on **SAPIEN** out-of-process via a Python 3.10 sidecar —
-its stack is incompatible with the openral 3.12 venv. Provision the
+RoboTwin runs on **SAPIEN** out-of-process via a Python 3.12 sidecar (its
+`mplib==0.2.1` clashes with ManiSkill's pin in the openral venv). Provision the
 sidecar venv, then:
 
 ```bash
@@ -116,8 +116,10 @@ openral benchmark scene \
 openral benchmark run --suite robotwin --rskill rskills/smolvla-robotwin
 ```
 
-The SAPIEN+RoboTwin sidecar provisioning recipe uses
-`OPENRAL_ROBOTWIN_AUTO_PROVISION=1` or the manual conda recipe.
+Provision the SAPIEN+RoboTwin sidecar with `OPENRAL_ROBOTWIN_AUTO_PROVISION=1`
+(installs the hash lock `tools/sidecar_requirements/robotwin.lock`, clones RoboTwin
+at the tested commit and fetches its assets), or follow the manual `uv` recipe the
+backend prints when the venv is missing.
 
 ## Provenance
 

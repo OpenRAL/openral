@@ -46,7 +46,7 @@ _openral schema v0 — normative Pydantic v2 contracts for all layers._
 - `class RSkillRuntime(str, Enum)` — Manifest runtime hint. (L7471)
   `PYTORCH, ONNX, TENSORRT, TRT_LLM, VLLM, GGUF, MLX, JAX`
 - `class PhysicsBackend(str, Enum)` — Sim backend. (L12324)
-  `MUJOCO, MUJOCO_MJX, PYBULLET, SAPIEN, ISAACSIM, COPPELIASIM, GENESIS, MOCK` (SAPIEN = ManiSkill3 / RoboTwin engine; RoboTwin uses it via a py3.10 sidecar; `COPPELIASIM` = CoppeliaSim/PyRep RLBench backend, out-of-process py3.10 sidecar)
+  `MUJOCO, MUJOCO_MJX, PYBULLET, SAPIEN, ISAACSIM, COPPELIASIM, GENESIS, MOCK` (SAPIEN = ManiSkill3 / RoboTwin engine; RoboTwin uses it via a py3.12 sidecar; `COPPELIASIM` = CoppeliaSim/PyRep RLBench backend, out-of-process py3.10 sidecar)
 
 **Pydantic models — robot manifest hierarchy**
 
