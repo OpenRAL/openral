@@ -231,3 +231,31 @@ def test_only_referenced_meshes_are_served_and_parent_paths_work(
     (other / "a.stl").write_bytes(b"")
     _, local2 = module._robot_mesh_package('<mesh filename="a.stl"/>', other)
     assert set(local2) != set(local)
+
+
+def test_ancestor_package_meshes_reach_the_bridge_as_a_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """panda_mobile's ``rd:panda_description`` names its meshes
+    ``package://example-robot-data/...``, a package on no ament index; the clone it
+    lives in is a folder of that name, so every mesh is served (#726)."""
+    from openral_core.assets import AssetRefError, resolve_asset
+
+    try:
+        urdf = resolve_asset("rd:panda_description", "urdf")
+    except AssetRefError as exc:
+        pytest.skip(f"robot_descriptions example-robot-data clone unavailable: {exc}")
+    assert urdf is not None
+    module: Any = _load_launch("deploy_e2e_launch_ancestor_package")  # loaded by path
+    monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path / "cache"))
+    xml = urdf.read_text(encoding="utf-8")
+    assert "package://example-robot-data/" in xml
+
+    out, local = module._robot_mesh_package(xml, urdf.parent)
+    [(pkg, root)] = local.items()
+    meshes = re.findall(rf'filename="package://{pkg}/([^"]+)"', out)
+    assert meshes
+    assert "example-robot-data" not in out
+    assert all((root / m).is_file() for m in meshes)
+    # Only the referenced meshes are served, never the whole clone.
+    assert len(list(root.rglob("*.*"))) == len(set(meshes))
