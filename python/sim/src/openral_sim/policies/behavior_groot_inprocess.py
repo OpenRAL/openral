@@ -290,6 +290,9 @@ def build_behavior_groot_inprocess_policy(
     finally:
         torch.set_default_dtype(prev_default_dtype)
     policy.eval()
+    # lerobot builds its preprocessing device step from config.device, which it
+    # auto-selected; pin it to the resolved device.
+    policy.config.device = device
     preprocessor, postprocessor = make_processors(policy.config, pretrained_path=str(checkpoint))
     _log.info(
         "behavior_groot.inprocess.loaded",
