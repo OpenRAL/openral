@@ -984,6 +984,11 @@ def lower_link_geometry(
     per missing mesh (the openarm URDF's deliberately unresolvable refs, which
     route it to the MJCF lowering).
 
+    A link with no ``<collision>`` is lowered only when ``extra_meshes`` carries
+    geometry for it (then from its ``<visual>`` and that geometry); without, it
+    is skipped as before, so the routing (``_urdf_has_collision_geometry``) is
+    unchanged.
+
     Raises:
         ROSConfigError: If a link's geometry resolves only partially.
     """
@@ -1023,7 +1028,11 @@ def _link_clouds(
         collisions = list(getattr(link, "collisions", None) or [])
         visuals = list(getattr(link, "visuals", None) or [])
         elements = collisions + visuals
-        if not collisions:
+        # A link the URDF gives no <collision> is still lowered when the twin carries
+        # CAD for it (``extra_meshes``): H2.urdf ships 11 links with <visual> only,
+        # the forearm among them, and leaving them out hid them from the kernel
+        # (robots/h2). Its <visual> joins the twin's meshes, as for every link.
+        if not collisions and link_name not in extra:
             continue
         if (
             link_name not in tight
