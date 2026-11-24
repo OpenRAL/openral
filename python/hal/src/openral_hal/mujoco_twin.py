@@ -895,15 +895,19 @@ class MujocoTwinRollout:
         """
         name = action.ee_name
         if self.grippers_by_end_effector:
-            if name is None and len(self.grippers_by_end_effector) == 1:
+            only_ee = len(self.grippers_by_end_effector) == 1 and not self.grippers_by_joint
+            if name is None and only_ee:
                 name = next(iter(self.grippers_by_end_effector))
             gripper = self.grippers_by_end_effector.get(name or "")
-            if gripper is None:
+            if gripper is not None:
+                return gripper
+            # A twin may carry joint grippers too (`sim.grippers` mixes both): a name that is
+            # no end-effector gripper is resolved as a joint gripper below, not refused here.
+            if not self.grippers_by_joint:
                 raise ROSConfigError(
                     f"{self.backend}: GRIPPER_POSITION ee_name={action.ee_name!r} names no "
                     f"end-effector gripper (have: {sorted(self.grippers_by_end_effector)})."
                 )
-            return gripper
         if not lone:
             return None
         joint = self._gripper_joint_named(name)

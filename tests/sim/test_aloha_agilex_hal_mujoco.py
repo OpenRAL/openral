@@ -154,3 +154,37 @@ def test_a_named_gripper_action_drives_only_that_hand(
         want = 0.0 if joint.name == "left_gripper" else was
         tol = _GRIPPER_TOL if joint.role == "gripper" else _TRACK_TOL_RAD
         assert abs(now - want) < tol, f"{joint.name}: expected {want:.3f}, settled {now:.3f}"
+
+
+def test_a_twin_mixing_gripper_kinds_resolves_each_by_name() -> None:
+    """`sim.grippers` may mix an end-effector gripper and a joint gripper: each name resolves.
+
+    The left hand rewired as an end-effector gripper (same actuator and finger), the right
+    hand kept as a joint gripper. A lone command naming the right hand used to be refused
+    by the end-effector lookup alone.
+    """
+    desc = RobotDescription.from_yaml(str(_ROOT / "robots" / "aloha_agilex" / "robot.yaml"))
+    assert desc.sim is not None and desc.assets.mjcf is not None
+    try:
+        resolve_asset(desc.assets.mjcf, "mjcf")
+    except AssetFetchError as exc:
+        pytest.skip(f"RoboTwin embodiments archive not readable on this host: {exc}")
+    left, right = desc.sim.grippers
+    left_ee = left.model_copy(update={"joint": None, "end_effector": "left_gripper"})
+    mixed = desc.model_copy(
+        update={"sim": desc.sim.model_copy(update={"grippers": [left_ee, right]})}
+    )
+    hal = MujocoArmHAL.from_description(mixed, gravity_enabled=True)
+    hal.connect()
+    try:
+        tick_s = hal.sim_dt_per_tick_s
+        assert tick_s is not None
+        for name in ("right_gripper", "left_gripper"):
+            close = Action(control_mode=ControlMode.GRIPPER_POSITION, gripper=[0.0], ee_name=name)
+            for _ in range(round(_SETTLE_SIM_S / tick_s)):
+                hal.send_action(close)
+        state = dict(zip(hal.read_state().name, hal.read_state().position, strict=True))
+        assert state["right_gripper"] < _GRIPPER_TOL
+        assert float(hal.health().fields["left_gripper_position_normalized"]) < _GRIPPER_TOL
+    finally:
+        hal.disconnect()

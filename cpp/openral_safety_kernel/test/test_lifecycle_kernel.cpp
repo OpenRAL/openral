@@ -6032,8 +6032,23 @@ TEST_F(LifecycleKernelTest, AWitnessKeepsItsStateWhenItsRecordMovesSlot) {
   auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_witness_slot_move", opts);
   rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
   ASSERT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  // Scope-owned teardown from here on: an ASSERT that returns early still deactivates (when
+  // active) and cleans up, so the node is never destroyed mid-lifecycle (as GraspRig does).
+  struct Teardown {
+    std::shared_ptr<osk::SafetyKernelLifecycleNode> node;
+    bool active{false};
+    ~Teardown() {
+      if (active) {
+        node->on_deactivate(
+            rclcpp_lifecycle::State(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "ac"));
+      }
+      node->on_cleanup(
+          rclcpp_lifecycle::State(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in"));
+    }
+  } teardown{node};
   rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
   ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  teardown.active = true;
   rclcpp::Node helper("kernel_witness_slot_move_helper");
   rclcpp::QoS reliable(rclcpp::KeepLast(1));
   reliable.reliable();
@@ -6089,9 +6104,6 @@ TEST_F(LifecycleKernelTest, AWitnessKeepsItsStateWhenItsRecordMovesSlot) {
   publish(3, {payload("sim:obj_other", 0.05, 0), payload("sim:obj_main", 0.30, 2)});
   EXPECT_EQ(logs.count(armed), 2U) << logs.joined();
   exec.remove_node(node->get_node_base_interface());
-  rclcpp_lifecycle::State active(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "ac");
-  node->on_deactivate(active);
-  node->on_cleanup(inactive);
 }
 
 TEST_F(LifecycleKernelTest, APayloadOnItsWitnessedSupportStillLeavesTheChunkScaled) {
