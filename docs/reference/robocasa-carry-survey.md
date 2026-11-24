@@ -1,5 +1,9 @@
 # Which RoboCasa task drives the base while carrying?
 
+!!! note "Dated study"
+    One-off measurement that justified a test scene. Kept as a record; it is not maintained against master.
+
+
 **`DeliverStraw` does — 3.16–3.80 m of it, and it is already inside XR-1's
 evaluated set.** This page records how that was measured, and why the obvious
 way of answering the question gives the opposite, wrong answer.

@@ -5,618 +5,166 @@ so "does OpenRAL run on ARM?" is answered per sidecar. This page gives that
 answer, plus the wheel-index facts behind it.
 
 Scope: **Linux aarch64 with an NVIDIA CUDA GPU** — NVIDIA GB10 (DGX Spark),
-GB200/GH200 SBSA, Jetson Thor. It does not cover Apple Silicon (no CUDA) or
-aarch64 hosts without a GPU.
+GB200/GH200 SBSA, Jetson Thor. Apple Silicon (no CUDA) and GPU-less aarch64
+hosts are out of scope.
 
-## The torch 2.8.0 gap
+## Current routing
 
-PyTorch's `cu128` index publishes an aarch64 wheel for every recent release
-**except 2.8.0**, and the `triton` version that torch 2.8.0 requires has no
-aarch64 wheel on any index either. Both gaps close at torch 2.9:
-
-| package | aarch64 Linux wheel | notes |
+| layer | aarch64 | x86_64 |
 |---|---|---|
-| `torch==2.7.1+cu128` | ✅ `manylinux_2_28_aarch64` | but requires `triton==3.3.1` ❌ |
-| `torch==2.8.0+cu128` | ❌ x86_64 + win_amd64 only | requires `triton==3.4.0` ❌ |
-| `torch==2.9.0/2.9.1+cu128` | ✅ `manylinux_2_28_aarch64` | requires `triton==3.5.x` ✅ |
-| `torch==2.9.0/2.9.1+cu130` | ✅ `manylinux_2_28_aarch64` | requires `triton==3.5.x` ✅; 2.9.1+cu130's arch list is `sm_80 sm_90 sm_100 sm_110 sm_120 compute_120` (read from its `libtorch_python.so`, 2026-10-15) |
-| `torchvision==0.24.x` on `cu130` | ✅ `manylinux_2_28_aarch64` | untagged like the `cu128` one, but a different file (`89743dce…`) that links `libcudart.so.13`; tagged `+cu130` aarch64 builds start at 0.25.0 |
-| `triton` ≤ `3.4.0` | ❌ x86_64 only | |
-| `triton` ≥ `3.5.0` | ✅ `manylinux_2_28_aarch64` | |
-| `torchvision` / `torchaudio` on `cu128` | ✅ `manylinux_2_28_aarch64` | **but the filename carries no `+cu128` local tag**, unlike the x86_64 wheel — grepping the index for `+cu128` misses it entirely |
-| `torchvision` on **PyPI**, aarch64 | ⚠️ CPU-only | different file from the index build (`7fb7590c…`, 2.39 MB vs `bd33a7cc…`, 8.49 MB). `readelf -d` shows the index build links `libtorch_cuda.so` / `libc10_cuda.so` / `libcudart.so.12` and the PyPI one does not; on the PyPI build `torchvision.ops.nms` on CUDA tensors raises `NotImplementedError: Could not run 'torchvision::nms' with arguments from the 'CUDA' backend` |
-| `torchcodec` < `0.11.0` | ❌ x86_64 + darwin-arm64 only | first aarch64 wheel is 0.11.0 |
-| `decord` (all versions) | ❌ x86_64 + win only | use `decord2`, which ships aarch64 and installs the same `decord` module |
-| `open3d` | ❌ no `cp312` aarch64 build exists | 0.19.0 is x86_64/macOS/win; ≤0.18.0 stops at `cp311` |
+| CUDA index (`openral_sim._sidecar_common.torch_backend()`) | `cu130` | `cu128` |
+| workspace venv (`pyproject.toml` overrides) | `torch>=2.13,<2.14`, `torchvision>=0.28,<0.29`; lock resolves `2.13.0+cu130` / `0.28.0+cu130`, `torchcodec 0.11.1` | `torch<2.10`; lock resolves `2.9.1` / `0.24.1`, `torchcodec 0.9.1` |
+| policy sidecars | `torch==2.9.1+cu130` (XR-1: `2.10.0`) | `torch==2.9.1+cu128` |
+| Cosmos 3 reasoner sidecar | vLLM's own PyPI torch stack | same |
 
-So torch 2.8.0 is a single-release hole in an otherwise continuous series, and
-it is the version several upstream VLA projects happen to pin. Every policy
-sidecar this repo controls the pins for targets **`torch==2.9.1`** for exactly
-this reason, on the CUDA index `openral_sim._sidecar_common.torch_backend()`
-picks: **`cu130` on aarch64** (Jetson Thor `sm_110` — see below), `cu128` on
-x86_64. XR-1 is the one exception: it takes `torch==2.10.0` on aarch64 (see the table).
-The Cosmos 3 reasoner sidecar instead takes vLLM's own PyPI torch stack, and the
-workspace venv uses `cu130` on aarch64 too. Reproduce the gap with:
+`torchvision` is ABI-locked to a torch minor, so the root pins both.
+`uv sync` resolves PyPI torch, whose aarch64 wheel is CPU-only; the root
+`pyproject.toml` therefore binds torch and torchvision to the `cu130` index
+under an `aarch64 and linux` marker (`--torch-backend` exists only on
+`uv pip`). A venv synced under an older routing can hold a CPU-only
+`torchvision`; if `torchvision.ops.nms` on a CUDA tensor raises
+`NotImplementedError`, run `just sync --frozen --reinstall-package torchvision`.
 
-```bash
-uv venv --python 3.12 /tmp/probe && \
-uv pip install --dry-run --python /tmp/probe/bin/python \
-  --torch-backend=cu128 torch==2.8.0     # fails: no matching platform tag
-uv pip install --dry-run --python /tmp/probe/bin/python \
-  --torch-backend=cu128 torch==2.9.1     # resolves
-```
+## Wheel-index facts
+
+PyTorch's `cu128` index has an aarch64 wheel for every recent release
+**except 2.8.0**, and the `triton` that 2.8.0 needs has no aarch64 wheel
+anywhere. Both gaps close at torch 2.9, which is why every sidecar whose pins
+we control targets `2.9.1`.
+
+| package | aarch64 Linux status |
+|---|---|
+| `torch` 2.7.1 | wheel exists, but needs `triton==3.3.1` (x86_64 only) |
+| `torch` 2.8.0 | no wheel (needs `triton==3.4.0`, x86_64 only) |
+| `torch` 2.9.x on `cu128` / `cu130` | wheel exists; `triton>=3.5` has aarch64 wheels |
+| `torchvision` / `torchaudio` on `cu128` | wheel exists, but the filename has no `+cu128` tag, so grepping the index for it misses it |
+| `torchvision` on PyPI | CPU-only build; CUDA `torchvision::nms` raises `NotImplementedError` |
+| `torchcodec` < 0.11.0 | x86_64 and macOS only |
+| `decord` | x86_64 and Windows only; use `decord2` (same `decord` module) |
+| `open3d` | no `cp312` aarch64 build |
 
 ## Compute capability: GB10 `sm_121`, Thor `sm_110`
-
-GB10 is **`sm_121`**. No PyTorch build ships `sm_121` SASS today, so torch
-warns at first CUDA call:
-
-```
-Found GPU0 NVIDIA GB10 which is of cuda capability 12.1.
-Minimum and Maximum cuda capability supported by this version of PyTorch is (8.0) - (12.0)
-```
 
 | index | `torch.cuda.get_arch_list()` |
 |---|---|
 | `cu128` | `sm_80 sm_90 sm_100 sm_120` |
 | `cu130` | `sm_80 sm_90 sm_100 sm_110 sm_120 compute_120` |
 
-**That warning is only half the story, and the benign half.** It is about
-*precompiled* SASS, and there it really is harmless — `sm_120` cubins run on
-`sm_121`. Verified live on a GB10 (CUDA 13.0) with `torch==2.9.1+cu128`: bf16
-matmul, `torchvision.ops.nms`, a `bitsandbytes` NF4 `Linear4bit` forward and a
-`flash_attn_func` bf16 forward all succeed.
+The two parts need opposite readings of the same torch warning
+("capability 12.1 / 11.0 is not in the supported range"):
 
-**On Jetson Thor that reading does not hold, and the failure is total.** Thor
-is **`sm_110`** — a different Blackwell family, not a near-neighbour of
-`sm_120`. The `cu128` arch list above has no `sm_110` SASS *and* no `compute_*`
-entry to JIT from, so there is nothing to fall back to and the warning is not
-about a corner case:
+- **GB10 (`sm_121`):** the warning is about precompiled SASS and is harmless.
+  `sm_120` cubins run on `sm_121`. The risk is *runtime compilation*: the
+  `cu128` wheels bundle CUDA 12.8 compilers that do not know `sm_121`.
+- **Thor (`sm_110`):** a different Blackwell family. The `cu128` arch list has
+  no `sm_110` SASS and no `compute_*` entry to JIT from, so every CUDA op
+  fails with `no kernel image is available for execution on the device`. Only
+  `cu130` works, which is why the workspace and sidecars route aarch64 there.
 
-```
-torch 2.9.1+cu128   arch_list: ['sm_80', 'sm_90', 'sm_100', 'sm_120']
->>> a @ b   ->  CUDA error: no kernel image is available for execution on the device
-```
+Check `torch.cuda.get_arch_list()` on any new aarch64 part instead of treating
+the warning as advisory.
 
-Every CUDA op fails — matmul, `sum`, `softmax`, `conv2d`, SDPA. Not the
-jiterator subset below: all of it. Measured on a Jetson Thor (JetPack 7,
-CUDA 13.0).
+### Runtime compilers (GB10 on `cu128`)
 
-So the same warning text means "harmless, precompiled SASS is fine" on GB10 and
-"this GPU cannot run torch at all" on Thor, and the two are told apart only by
-whether `torch.cuda.get_arch_list()` contains a usable entry for the device.
-Check that list on any new aarch64 part rather than reading the warning as
-advisory. `cu130` carries `sm_110` and both parts work there — which is why the
-workspace root now routes aarch64 torch to that index (see below).
-
-The dangerous half on GB10 is silent: anything compiled at *runtime* for the live
-device fails, because the `cu128` wheels bundle CUDA 12.8 compilers that do
-not know `sm_121`. Two separate compilers, two separate failures:
-
-| compiler | shipped by | ceiling | symptom on GB10 |
+| compiler | shipped by | ceiling | symptom |
 |---|---|---|---|
-| `nvrtc` | `nvidia-cuda-nvrtc-cu12==12.8.93` (torch's exact pin) | `sm_120` | `nvrtc: error: invalid value for --gpu-architecture (-arch)` |
-| `ptxas` | bundled inside `triton==3.5.1` | `sm_120a` | `ptxas fatal: Value 'sm_121a' is not defined for option 'gpu-name'` |
+| `nvrtc` | `nvidia-cuda-nvrtc-cu12==12.8.93` (torch's pin) | `sm_120` | `nvrtc: error: invalid value for --gpu-architecture (-arch)` |
+| `ptxas` | bundled in `triton==3.5.1` | `sm_120a` | `ptxas fatal: Value 'sm_121a' is not defined for option 'gpu-name'` |
 
-This is not theoretical, and it does not fail cleanly:
+This fails late and unevenly: `torch.sum` is precompiled and works, while the
+jiterator op `torch.prod` (used by Qwen's vision grid) dies; a
+`@torch.jit.script` function only fuses once the profiler warms up, so DA3
+depth failed on request #2, not #1; every Triton kernel failed on LingBot-VLA 2.
 
-- **Every** Qwen scene-VLM query died — `modeling_qwen3_5.py` reduces the vision
-  grid with `image_grid_thw.prod(-1)`, and `prod` is a jiterator op. `torch.sum`
-  is precompiled and works; `torch.prod` is not and does not.
-- **DA3 depth failed on request #2, not #1** — its `@torch.jit.script
-  affine_inverse` only gets NVRTC-fused once the profiling executor warms up.
-  The worst possible shape for a provider streaming frames.
-- **LingBot-VLA v2** hit nvrtc first, then ptxas: *every* Triton kernel failed,
-  down to a three-line `tl.store`.
-
-### The fix
-
-Both compilers are swappable without touching the torch build:
+Two shims fix it without changing the torch build:
 
 - `tools/sidecar_requirements/aarch64-nvrtc-override.txt` — a uv `--overrides`
-  file raising nvrtc to **12.9.86**, whose arch list is
-  `[50 … 100, 101, 103, 120, **121**]`. It must carry *both* marker branches
-  (`== "aarch64"` and `!= "aarch64"`): a uv override replaces every requirement
-  for the package it names, so a lone aarch64 line leaves x86_64 with no nvrtc
-  at all instead of falling back to torch's pin. Passed at **install** time as
-  well as compile time — torch pins `nvidia-cuda-nvrtc-cu12==12.8.93` exactly,
-  so uv otherwise rejects the lock's aarch64 line as a conflict.
-- `nvidia-cuda-nvcc==13.0.88` — a pip-installable `ptxas` (wheel path
-  `nvidia/cu13/bin/ptxas`) that lists `sm_110 sm_110a` (Thor) and
-  `sm_121 sm_121a` (GB10). `openral_sim._sidecar_common.make_isolated_env`
-  points `TRITON_PTXAS_PATH` at the venv-local copy (`venv_ptxas`, which also
-  still finds the older `nvidia-cuda-nvcc-cu12` layout
-  `nvidia/cuda_nvcc/bin/ptxas`), so no host CUDA toolkit is required. Installed
-  only by sidecars that run Triton kernels. It replaced
-  `nvidia-cuda-nvcc-cu12==12.9.86`, whose `ptxas` knows `sm_121` but not
-  `sm_110` (CUDA 12.x calls Thor `sm_101`).
-
-Moving aarch64 to the `cu130` index fixes both too (nvrtc 13.0 and its ptxas
-know `sm_121`) and was verified working end-to-end. For GB10 it was not chosen:
-it swaps the whole stack onto a parallel `nvidia-*-cu13` package set and,
-because `--torch-backend` is one global choice per compile, would force a
-per-architecture lockfile. Replacing two compiler shims keeps the torch build,
-the CUDA runtime and all of x86_64 byte-identical.
-
-**That trade-off does not survive Jetson Thor.** The two compiler shims fix
-*runtime compilation* on a GPU whose precompiled SASS already works; on Thor
-there is no working SASS to begin with (see above), so no shim helps and
-`cu130` stops being an alternative and becomes the only option.
-
-So the workspace root routes aarch64 `torch`/`torchvision` to `cu130` and
-lifts the `torch<2.10` cap there to `torch>=2.13,<2.14` /
-`torchvision>=0.28,<0.29` (torchvision is ABI-locked to a torch minor and does
-not float with it); the lock resolves `2.13.0+cu130` / `0.28.0+cu130` on
-linux-aarch64. The sidecars follow the same routing through
-`torch_backend()` (`cu130` on aarch64, `cu128` on x86_64), keeping their own
-`torch==2.9.1` pin — `2.9.1+cu130` publishes aarch64 wheels and carries
-`sm_110` — except XR-1, which moves to `torch==2.10.0` there (see the table below). On `cu130` the shared nvrtc
-override is a no-op on aarch64: torch then requires `nvidia-cuda-nvrtc==13.0.48`
-(CUDA 13 dropped the `-cu12` suffix), which already knows `sm_110` and
-`sm_121`. `qwen_vlm` and `locateanything` install from hash-locked files, and
-`--torch-backend` is one global choice per compile, so they now ship a second,
-aarch64-only lock (`*-aarch64.lock`, compiled with `--torch-backend=cu130`);
-against the universal lock only the CUDA stack differs.
+  file raising nvrtc to 12.9.86 (knows `sm_121`). It carries both marker
+  branches (`== "aarch64"` and `!= "aarch64"`), because an override replaces
+  every requirement for the package it names. It is passed at install time as
+  well, since torch pins nvrtc exactly. On `cu130` it is a no-op: torch then
+  requires `nvidia-cuda-nvrtc==13.0.48`, which knows `sm_110` and `sm_121`.
+- `nvidia-cuda-nvcc==13.0.88` — a pip-installable `ptxas` that knows `sm_110`
+  and `sm_121`. `make_isolated_env` points `TRITON_PTXAS_PATH` at the venv copy
+  (`venv_ptxas`), so no host CUDA toolkit is needed. Only sidecars that run
+  Triton kernels install it.
 
 ## Per-sidecar status
 
-**GB10** means verified live on a GB10 — all of those runs were on the earlier
-`cu128` routing. **Thor** is the `cu130` routing: "resolves" there means a
+GB10 columns were verified live on a GB10, on the `cu128` routing, then
+spot-checked on `cu130` (bf16 matmul, the nvrtc `prod` op and a CUDA `nms` at
+capability `(12, 1)`; no model forward re-run). "resolves" under Thor means a
 `uv pip install --dry-run --python-platform aarch64-manylinux_2_28
---torch-backend=cu130` resolution (2026-10-15) to `torch 2.9.1+cu130`, not a run
-on Thor hardware, unless the row says "run". GB10 is aarch64 too, so it now provisions the `cu130` stack
-as well; the GB10 runs below have not been repeated on it.
+--torch-backend=cu130` resolution, not a run on Thor hardware.
 
-| sidecar | GB10 | Thor | notes |
+| sidecar | GB10 | Thor | aarch64 handling |
 |---|---|---|---|
-| `tools/qwen_vlm_sidecar.py` | ✅ | ⚠️ resolves, not run | `torch==2.9.1` + the nvrtc override in `sidecar_requirements/qwen_vlm.lock` (`qwen_vlm-aarch64.lock` on aarch64). Live-verified on GB10: 3.29 GB VRAM, 90.7 s load. Without the override every query dies in `image_grid_thw.prod(-1)` (the nvrtc ceiling). **GB10 on cu130 (2026-10-15):** `ensure_venv` provisions from the repo root and the venv's `torch 2.9.1+cu130` passes a bf16 matmul and the nvrtc `prod` op at capability `(12, 1)`, plus torchvision's CUDA `nms`; the model forward was not re-run. |
-| `tools/locateanything_sidecar.py` | ✅ | ⚠️ resolves, not run | `torch==2.9.1` in `sidecar_requirements/locateanything.lock` (`locateanything-aarch64.lock` on aarch64). `decord` (x86_64-only) is required by the checkpoint's `trust_remote_code` processor, so aarch64 marker-swaps in `decord2`, an Apache-2.0 fork with `manylinux_2_28_aarch64` wheels that installs the same top-level package. **GB10 on cu130 (2026-10-15):** `ensure_venv` provisions from the repo root and the venv's `torch 2.9.1+cu130` passes a bf16 matmul and the nvrtc `prod` op at capability `(12, 1)`, plus torchvision's CUDA `nms`; the model forward was not re-run. |
-| `tools/da3_depth_sidecar.py` | ✅ | ⚠️ resolves, not run | `open3d` and `pycolmap` have no aarch64 wheel, so aarch64 uses a `--no-deps` install recipe plus the shared nvrtc override. Live-verified on GB10 (below). **GB10 on cu130 (2026-10-15):** DA3METRIC-LARGE returns finite `(378, 504)` depth for 6 frames, 987 ms cold, 64–66 ms warm. |
-| `tools/depth_pro2_sidecar.py` | ❌ not run | ❌ not run | x86_64 only so far (RTX 5070 Laptop, 2026-11-24). Installs `depth_pro_2` from GitHub at a pinned commit with the plain torch backend; no aarch64 recipe or override yet. |
-| `tools/lingbot_vla2_sidecar.py` (v2) | ✅ | ✅ run | Upstream pins torch 2.8.0 / triton 3.4.0 / torchcodec 0.6.0; the boot helper overrides to torch 2.9.1 / triton 3.5.1 (`_V2_OVERRIDES`) with torchcodec marker-scoped off aarch64, installs with `uv pip install --no-config` (from the repo root uv otherwise applies the workspace's aarch64 `torch>=2.13` override and the resolve fails), and on aarch64 installs `nvidia-cuda-nvcc==13.0.88` (`_AARCH64_PTXAS`) for a `ptxas` that knows `sm_110` and `sm_121` (the only sidecar compiling its own Triton kernels). Live-verified on GB10 (with the earlier CUDA 12.9 `ptxas`): real `(50, 14)` chunk bit-identical to the x86 baseline, 6.97 GB VRAM, 6.2 s warmed chunk. **Thor (2026-10-15, run):** venv provisioned by `_ensure_venv` (`torch 2.9.1+cu130`, arch list `sm_80…sm_110, sm_120`, capability `(11, 0)`); triton 3.5.1's bundled CUDA 12.8 `ptxas` fails on a three-line kernel with `Value 'sm_110a' is not defined for option 'gpu-name'`, the venv's CUDA 13.0 one compiles it. NF4 checkpoint served from the HF snapshot in 74 s boot (6.86 GB on the GPU); `tests/sim/test_aloha_agilex_lingbot_vla2_robotwin.py` passes the finite 14-D action and multi-step chunk tests (its `nvidia-smi` 8 GiB check cannot read memory on Thor: `[N/A]`); `sample_actions` 7.3 s cold, 4.7 s warmed per chunk; the Triton cache holds `robby_moe`'s `_moe_gate_up_grouped_kernel` / `_moe_down_grouped_kernel` / `_moe_pack_selected_kernel` compiled for `arch: 110`, and no `robby_moe_forward failed` fallback warning was logged. Re-run offline (`HF_HUB_OFFLINE=1`) without `OPENRAL_QWEN3VL_PATH`: same 2 passed / 1 skip. transformers 4.57.3's tokenizer load calls `huggingface_hub.model_info` for a Hub id and raises offline, so the server resolves the default `Qwen/Qwen3-VL-4B-Instruct` to its cached snapshot when offline (`_offline_snapshot`). **GB10 on cu130 (2026-10-15):** `torch 2.9.1+cu130`, the venv's CUDA 13.0 `ptxas` lists `sm_121`; the sim test passes (2 passed / 1 skip, same `[N/A]` memory read), the `robby_moe` kernels compile for `arch: 121` with no fallback, 3.0 s warm per step. |
-| `tools/xr1_sidecar.py` | ✅ run | ✅ run | x86_64 unchanged (`torch 2.9.1+cu128`, flash-attn sdist). aarch64 takes `torch 2.10.0` / `torchvision 0.25.0` / `torchaudio 2.10.0` on `cu130` plus flash-attn 2.8.3's `cu13torch2.10cxx11abiTRUE-cp312` aarch64 release wheel, named by URL (the sdist's `setup.py` maps CUDA 13 to a `cu12` asset name and would build from source). That wheel has no `sm_110` SASS or PTX, so on Thor `_xr1_server.py` probes flash-attn and loads with `attn_implementation="eager"`. Run on Thor — see below. **GB10 on the 2.10 stack (2026-10-15):** flash-attn's `sm_120` SASS runs on `sm_121` (no eager-fallback line); the VLABench NF4 pack returns finite `(10, 7)` chunks, 0.39–0.40 s warm. |
-| `tools/lingbot_vla2_sidecar.py --variant v1` | ❌ | ❌ | `lerobot==0.4.2` caps `torch<2.8.0`; every torch with aarch64 wheels is outside that cap, and the matching `torchcodec==0.5` is x86-only. Lifting this means moving v1 off lerobot 0.4.2. |
-| `tools/rldx_sidecar.py` | ✅ | ⚠️ not resolved | `uv sync` dies on `torchcodec==0.4.0`, so aarch64 takes an override-driven `uv pip install -e <source>`: `torchcodec` and `flash-attn` marker-dropped, torch moved to 2.9.1. Live-verified on GB10 with real `RLWRLD/RLDX-1-FT-LIBERO` weights (below). **Thor:** `cu130` has `torch 2.9.1` / `torchvision 0.24.1` cp310 aarch64 wheels, but the full `-e <source>` resolve needs the upstream checkout and was not run. **GB10 on cu130 (2026-10-15):** the upstream-clone override path provisions and the venv's `torch 2.9.1+cu130` passes a bf16 matmul and the nvrtc `prod` op at capability `(12, 1)`; the model forward was not re-run. |
-| `tools/internvla_n1_sidecar.py` | ✅ | ⚠️ resolves, not run | Plain-PyPI `torch==2.6.0` is the CPU build on aarch64, and nothing upstream actually caps torch, so `_PINNED_DEPS` moved to `torch==2.9.1` / `torchvision==0.24.1` on the `torch_backend()` index with the shared nvrtc override. Live-verified on GB10 (below). **GB10 on cu130 (2026-10-15):** provisions via its own code path and the venv's `torch 2.9.1+cu130` passes a bf16 matmul and the nvrtc `prod` op at capability `(12, 1)`; the model forward was not re-run. |
+| `tools/qwen_vlm_sidecar.py` | run | resolves | `qwen_vlm-aarch64.lock` (hash-locked, `cu130`) + nvrtc override. |
+| `tools/locateanything_sidecar.py` | run | resolves | `locateanything-aarch64.lock`; `decord2` replaces `decord` (needed by the checkpoint's `trust_remote_code` processor). |
+| `tools/da3_depth_sidecar.py` | run | resolves | `open3d` / `pycolmap` have no aarch64 wheel, so a `--no-deps` install recipe plus the nvrtc override. DA3METRIC-LARGE: finite `(378, 504)` depth, 64-66 ms warm on GB10. |
+| `tools/depth_estimator_sidecar.py` | not run | not run | no aarch64 handling. |
+| `tools/depth_pro2_sidecar.py` | not run | not run | x86_64 only; installs `depth_pro_2` from a pinned GitHub commit with the plain torch backend. |
+| `tools/ovb_sidecar.py` | not run | not run | selects `ovb-aarch64.lock` when `torch_backend()` is `cu130`; plus the nvrtc override. |
+| `tools/lingbot_vla2_sidecar.py` (v2) | run | run | Overrides upstream's torch 2.8.0 / triton 3.4.0 to 2.9.1 / 3.5.1, marker-drops `torchcodec`, installs with `uv pip install --no-config` (the root's `torch>=2.13` override would otherwise break the resolve) and adds `nvidia-cuda-nvcc==13.0.88` as `ptxas`. Thor: NF4 checkpoint boots in 74 s, `robby_moe` Triton kernels compile for `arch: 110`. |
+| `tools/lingbot_vla2_sidecar.py --variant v1` | no | no | `lerobot==0.4.2` caps `torch<2.8.0`; no such torch has aarch64 wheels, and `torchcodec==0.5` is x86-only. |
+| `tools/xr1_sidecar.py` | run | run | `torch 2.10.0` / `torchvision 0.25.0` / `torchaudio 2.10.0` on `cu130` plus flash-attn 2.8.3's `cu13torch2.10` aarch64 wheel, named by URL. That wheel has no `sm_110` SASS or PTX, so on Thor `_xr1_server.py` probes flash-attn and loads with `attn_implementation="eager"`. |
+| `tools/rldx_sidecar.py` | run | not resolved | `uv sync` fails on `torchcodec==0.4.0`, so aarch64 runs `uv pip install -e <source>` under `rldx-aarch64-override.txt` (torch 2.9.1; `torchcodec` and `flash-attn` dropped) plus the nvrtc override. The wrapper sets `RLDX_ATTN_IMPL=sdpa` only when `flash_attn` is not importable. x86_64 keeps upstream's `uv sync`. |
+| `tools/internvla_n1_sidecar.py` | run | resolves | PyPI `torch==2.6.0` is CPU-only on aarch64, so `_PINNED_DEPS` uses `torch==2.9.1` / `torchvision==0.24.1` on the `torch_backend()` index plus the nvrtc override. |
+| `tools/cosmos3_reasoner_sidecar.py` | not run | not run | vLLM's own PyPI torch stack (`cosmos3_reasoner.lock`). |
+| `tools/robotwin_sidecar.py`, `rlbench_sidecar.py`, `rlbench_3dda_sidecar.py`, `behavior_groot_sidecar.py`, `behavior_scene_sidecar.py` | not run | not run | no aarch64 handling in the sidecar; treat as x86_64 only. |
 
-### RLDX-1 verified live on GB10
+`isaac_sidecar.py` and `galaxea_a1_ros1_sidecar.py` are not torch-policy
+sidecars and are not covered here.
 
-Three claims looked like blockers. Re-tested on this host, one held, one was
-half-true, and one was backwards:
+## The workspace venv
 
-| claim | verdict |
-|---|---|
-| `uv sync` fails on `torchcodec==0.4.0` | **True, still.** The wheel exists only for `manylinux_2_28_x86_64` and macOS. But torchcodec is a video *dataset* decoder used on the training/replay path; the sidecar receives decoded frames over ZMQ, so marker-dropping it costs nothing at inference. |
-| `flash-attn` has "no wheel anywhere" | **Half-true, and not the blocker.** The GitHub release ships `linux_aarch64` wheels, but only cp312, and `rldx` pins Python 3.10. It never matters: nothing in `rldx` imports `flash_attn` directly, and upstream ships the opt-out (`RLDX_ATTN_IMPL`, default `flash_attention_2`) for hosts that cannot build it. |
-| upstream's Blackwell path (`pixi.toml`) is `platforms = ["linux-64"]`, so it's irrelevant | **Backwards.** pixi is x86_64-only, but its contents show upstream itself moves to torch 2.8.0+cu128 / 2.10.0+cu130, torchcodec 0.7.0 and source-built flash-attn for Blackwell while keeping every other pin. Moving torch off the 2.7.0 pin is upstream's own posture on new hardware. |
+The root `pyproject.toml` expresses the CUDA routing two ways (see
+[Current routing](#current-routing)):
 
-So the aarch64 branch replaces `uv sync` (which cannot succeed) with
-`uv pip install -e <source> --torch-backend=cu128` (now `cu130`, via
-`torch_backend()`) under two `--overrides`
-files — `sidecar_requirements/rldx-aarch64-override.txt` (torch 2.9.1 /
-torchvision 0.24.1; `torchcodec` and `flash-attn` marker-dropped) and the shared
-`aarch64-nvrtc-override.txt`. Same `<source>/.venv`, same Python 3.10, same
-wrapper. x86_64 still runs upstream's `uv sync` against upstream's `uv.lock`,
-byte-identical. The boot wrapper sets `RLDX_ATTN_IMPL=sdpa` only when
-`flash_attn` is genuinely not importable, so the x86_64 venv keeps
-FlashAttention-2.
+- an `explicit = true` `[[tool.uv.index]]` for `download.pytorch.org/whl/cu130`,
+  with `[tool.uv.sources]` binding **torch and torchvision** to it on
+  `aarch64 and linux`. torchvision must also be a direct dependency; otherwise
+  it is purely transitive, `[tool.uv.sources]` skips it, and a CPU vision stack
+  lands under a CUDA torch;
+- `[tool.uv] override-dependencies` raising `nvidia-cuda-nvrtc-cu12` to 12.9.86
+  on aarch64 (the `sm_121` jiterator ceiling above).
 
-Upstream's full `[project] dependencies` set resolves and installs on aarch64
-cp310 — 126 packages, including `deepspeed==0.17.6` from sdist:
-
-```
-python 3.10.20   torch 2.9.1+cu128   torchvision 0.24.1   transformers 4.57.0
-numpy 1.26.4     triton 3.5.1        bitsandbytes 0.50.0  rldx 1.0.1
-nvidia-cuda-nvrtc-cu12 12.9.86       flash_attn: absent   torchcodec: absent
-```
-
-Verified end-to-end on GB10 with real `RLWRLD/RLDX-1-FT-LIBERO` weights (13 GiB
-on disk, NF4 backbone), booted through `tools/rldx_sidecar.py` and driven over
-the real ZMQ REQ/REP + msgpack ndarray wire the `rldx` adapter uses —
-`ping` → `reset` → four `get_action` calls with the LIBERO-flat obs contract
-(two `(1, 4, 256, 256, 3)` uint8 camera stacks + seven `state.*` scalars +
-`annotation.human.action.task_description`):
-
-```
-ping   {'status': 'ok', 'message': 'Server is running'}
-reset  {'cleared_sessions': []}
-action keys: action.{x,y,z,roll,pitch,yaw,gripper}  →  (16, 7) chunk
-all four chunks finite; values change with the observation
-first request 9.1 s, warmed 8.4-8.6 s;  VRAM 6335 MiB process
-```
-
-Run on the exact shipped configuration — `nvidia-cuda-nvcc-cu12` uninstalled,
-`flash_attn` and `torchcodec` absent — after `ensure_pip_venv` repaired the
-existing venv off the changed sentinel (`repairing stale (dependency spec
-changed) venv`), which also exercises the self-repair path.
-
-That is the sidecar's contract satisfied, not a rollout: LIBERO success rate
-under sdpa attention has not been measured here. Two caveats worth carrying:
-
-- **Latency.** ~8 s per 16-action chunk is far above the manifest's
-  `latency_budget.per_chunk_ms: 1500`. Some of that is the host — three other
-  CUDA processes were resident throughout — and some is sdpa instead of
-  FlashAttention-2 on an 8 B backbone with a 4-frame × 2-camera video stack.
-  Treat the number as "finite and sane", not as a budget measurement.
-- **No `ptxas` shim.** Unlike LingBot, this sidecar does *not* install
-  `nvidia-cuda-nvcc-cu12`: `~/.triton/cache` gained no entries across the four
-  real inferences, so no Triton kernel is compiled on the serving path and the
-  `sm_121` assembler ceiling is never reached. The nvrtc override is still
-  carried — that one is torch's own jiterator and is not opt-in.
-
-### XR-1 verified live on GB10
-
-XR-1 is the only sidecar needing `flash-attn`, which publishes no wheels on
-PyPI (only `flash_attn-<v>.tar.gz`), so its `--no-build-isolation` pass is the
-one most likely to break on a new platform. It does not: all three passes
-complete on aarch64 against torch 2.9.1, and the resulting stack runs on the
-GPU.
-
-```
-torch 2.9.1+cu128   transformers 4.57.1   bitsandbytes 0.49.2   flash_attn 2.8.3
-bitsandbytes Linear4bit (NF4, bf16 compute) forward   → ok
-flash_attn.flash_attn_func  bf16 (1,8,4,64)           → ok
-```
-
-That is the dependency stack, not an end-to-end XR-1 rollout — the checkpoint
-itself has not been run on this host.
-
-### XR-1 run on Jetson Thor
-
-Provisioned on Thor through `xr1_sidecar._ensure_venv` (2026-10-15), then the
-sidecar CLI served `OpenRAL/rskill-xr1-franka_panda-vlabench-nf4@b41e564`
-(`prequantized_nf4`, profile `vlabench_choice`) to a client sending the
-manifest's shapes: three 480×480 RGB views, 7-D state. The RoboCasa pack
-(`OpenRAL/rskill-xr1-panda_mobile-robocasa-nf4@5e6c1ea`, profile `robocasa_mg`)
-ran the same way with its manifest's shapes: three 256×256 views, 8-D state,
-`crop_ratio` 0.95. Both served offline (`HF_HUB_OFFLINE=1`) from the manifest's
-`hf://…@sha` ref.
-
-```
-torch 2.10.0+cu130  arch_list sm_80 sm_90 sm_100 sm_110 sm_120 compute_120
-transformers 4.57.1  bitsandbytes 0.49.2 (NF4 Linear4bit fwd ok on sm_110)
-flash_attn 2.8.3+cu13torch2.10: cubins sm_80/90/100/120, no PTX → "no kernel image"
-[xr1-sidecar] flash-attn has no kernel for sm_110; attn_implementation=eager
-shards loaded in ~4 s; get_action (10, 7) finite; 1.42 s cold, 0.81 s warm
-robocasa_mg: get_action (10, 7) finite; 1.07 s cold, 0.44 s warm (budget 120 s)
-```
-
-Three things this turned up. The repo root's `[tool.uv]` overrides
-(`torch>=2.13` on aarch64) leak into any `uv pip install` run from the repo,
-which put torch 2.13.0 beside torchaudio 2.10.0 and broke flash-attn's
-extension load until the installs got `--no-config`. MiBoT declares no SDPA
-support, so `eager` is the only fallback transformers accepts. And
-transformers 4.57.1's `AutoProcessor` drops `revision` from its config probes,
-so a repo id plus `revision=<sha>` looks the processor up on `main`. A pack
-fetched by sha has no `refs/main`, so offline it found nothing and silently fell
-back to the bare Qwen2 tokenizer; the forward then failed on missing `state` /
-`action_mask`. (The VLABench pack only worked because an earlier online call had
-cached `refs/main`.) Online it read `main`'s processor config, not the pinned
-one. `_xr1_server.py` now resolves the ref to its local snapshot directory
-first, and fails at load if the processor has no `decode_action`. None of this is
-Thor-specific.
-
-### DA3 depth verified live on GB10
-
-The DA3 depth sidecar hit three separate aarch64 walls, none of them the torch
-version. The first two are packaging:
-
-| dependency | aarch64 wheel | used by | resolution |
-|---|---|---|---|
-| `open3d` | ❌ the only cp312 release (0.19.0) is `manylinux_2_31_x86_64` / macOS / win; aarch64 builds stop at 0.18.0 / cp311 | `depth_anything_3.bench.*` only (DTU / ETH3D / ScanNet++ / 7-Scenes evaluators) | dropped — never on the inference path |
-| `pycolmap` | ❌ **every** release ever published is x86_64-linux / macOS-arm64 / win_amd64, and there is no sdist to build from | `depth_anything_3/utils/export/colmap.py`, which `api.py` pulls in eagerly via `utils/export/__init__` | import deferred (see below) |
-
-Open3D *does* publish `manylinux_2_35_aarch64` cp312 wheels on its rolling
-`main-devel` GitHub release, so that one was solvable two ways; dropping it is
-the cheaper of the two. `pycolmap` has a conda-forge `linux-aarch64` build but
-no pip route to it, and building it means building COLMAP itself from source.
-
-So `tools/da3_depth_sidecar.py` installs `depth-anything-3` with `--no-deps` on
-aarch64 against an explicit pin set (upstream's dependency list minus `open3d`,
-`pycolmap`, `xformers` — x86-only and already optional upstream — and
-`pre-commit`, plus `addict`, an undeclared upstream dependency that `--no-deps`
-stops arriving transitively), then rewrites the one module-level `import
-pycolmap` into a deferred proxy.
-
-That is a deferred import, not a stub: `export_to_colmap` still raises the
-real `ModuleNotFoundError` if anyone calls it. The rewrite is anchored to
-`depth-anything-3==0.1.1` and raises rather than patching blind if upstream
-moves.
-
-The third wall was the sm_121 nvrtc ceiling described above, and DA3 is where it
-first surfaced — in its nastiest form, because the failure starts at request #2:
-
-```
-[0] OK    shape=(378,504) min=0.6887 max=1.3081
-[1] FAIL  RuntimeError: nvrtc: error: invalid value for --gpu-architecture (-arch)
-[2] FAIL  ... and every request after it
-```
-
-`@torch.jit.script affine_inverse` (`utils/geometry.py`) is a 4×4 affine inverse
-whose two `torch.cat`s the TensorExpr fuser hands to NVRTC — but only once the
-profiling executor has warmed up, which is why the first frame is clean. So the
-aarch64 install pass also carries `--overrides
-sidecar_requirements/aarch64-nvrtc-override.txt`, raising nvrtc to 12.9.86.
-Nothing about DA3 is disabled: TorchScript and the fuser stay on and the kernel
-is compiled, correctly, for the live device.
-
-Confirmed inside the provisioned sidecar venv — the fuser is not merely
-tolerated, it runs:
-
-```
-nvrtc supported archs : [50 … 90, 100, 101, 103, 120, 121]   # 121 present
-device capability     : (12, 1)  NVIDIA GB10
-texpr_fuser_enabled   : True
-affine_inverse        : ScriptFunction
-TensorExprGroup in last optimized graph : True   # the fused kernel really built
-```
-
-Re-enabling the fuser does **not** perturb the output. Same image, same
-checkpoint, fuser on vs `PYTORCH_JIT=0`, comparing raw bytes:
-
-```
-sha256 fuser ON  = d65b2af66c10a787f6272bd178dbd6bd36ca399131db8e48f68a2396ad09e9d0
-sha256 fuser OFF = d65b2af66c10a787f6272bd178dbd6bd36ca399131db8e48f68a2396ad09e9d0
-max |Δ| = 0.0        intrinsics byte-identical
-```
-
-Verified end-to-end on GB10 — real `depth-anything/DA3-SMALL` weights, real
-image, real ZMQ REQ/REP + msgpack wire, **10 consecutive requests, all ok**
-(the old failure mode would have killed #2):
-
-```
-depth-anything/DA3-SMALL   torch 2.9.1+cu128   nvidia-cuda-nvrtc-cu12 12.9.86
-VRAM 0.14 GB   582 MiB process
-input 640×480 RGB → depth (378, 504) float32, all finite
-min 0.6886822 m   max 1.3080868 m   mean 0.9340287 m   median 0.9099 m
-intrinsics fx 466.7730  fy 467.9905  cx 252.0  cy 189.0
-load 5.3 s;  first request 1227 ms, warmed 95–134 ms (~9 Hz over the wire)
-in-process, no PNG/ZMQ overhead: warmed median 89.6 ms (fuser on) vs
-94.6 ms (fuser off) — within run-to-run noise on a contended GPU
-```
-
-Latency is *not* a reason to prefer either setting: this host was running four
-other CUDA processes throughout, and the fused kernel is 12 elements. The reason
-to keep the fuser on is that leaving it off is a permanent behavioural change to
-dodge a stale assembler.
-
-As noted [above](#compute-capability-gb10-sm_121-thor-sm_110), the `cuda capability
-12.1` warning is about SASS and says nothing about this: the nvrtc/ptxas ceiling
-logs nothing until a runtime-compiled op throws.
-
-### InternVLA-N1 verified live on GB10
-
-This sidecar was the last ⚠️ row. `_PINNED_DEPS` carried `torch==2.6.0` with a
-plain `uv pip install` (no `--torch-backend`), so on aarch64 uv resolved PyPI's
-CPU-only wheel. The ⚠️ ("runs, on CPU") was in fact generous: the server's
-default `--device cuda:0` becomes `device_map={"": "cuda:0"}`, and that venv
-cannot honour it —
-
-```
-$ <old-venv>/bin/python -c "import torch; torch.zeros(1).to('cuda:0')"
-torch 2.6.0+cpu   cuda_avail False
-AssertionError: Torch not compiled with CUDA enabled
-```
-
-— so on this host the pre-fix sidecar could not serve the checkpoint at all
-without also being forced onto `--device cpu`. Note also that `torch==2.6.0`
-predates the `cu128` index entirely (`--torch-backend=cu128 torch==2.6.0` →
-"no version of torch==2.6.0"), so the flag alone would not have been a fix.
-
-The pin's own comment claimed torch was "the newest release transformers 4.51.0
-supports". That is not a real constraint — checked against the published
-metadata, `transformers==4.51.0` declares `torch>=2.0`, `diffusers==0.32.2`
-declares `torch>=1.4`, and `accelerate==1.4.0` declares `torch>=2.0.0`; none of
-the three has an upper bound. So the pin moved to the repo-standard
-`torch==2.9.1` / `torchvision==0.24.1` on `cu128` (now `cu130` on aarch64, via
-`torch_backend()`), with the shared nvrtc override on **every** uv pass (this sidecar has four). The `diffusers==0.32.2`
-pin is untouched — it is a checkpoint-compatibility pin, not a torch one.
-
-Verified from a **fresh** `--home` (clone, submodule, venv, four install passes,
-no manual intervention) with the real `InternRobotics/InternVLA-N1-DualVLN`
-weights, real head-camera frames from this rSkill's own recorded run, real DA3
-metric depth, over the real ZMQ REQ/REP + msgpack wire, driven by the real
-`_InternVLAN1Adapter`:
-
-```
-py3.11   torch 2.9.1+cu128   torchvision 0.24.1   transformers 4.51.0
-diffusers 0.32.2   bitsandbytes 0.50.0   triton 3.5.1   numpy 1.26.4
-nvidia-cuda-nvrtc-cu12 12.9.86   nvrtc archs [50 … 120, 121]
-
-torch.cuda.is_available() True   NVIDIA GB10 (12, 1)
-load 106.5 s   VRAM 6.06 GB allocator / 8499 MiB process (nvidia-smi)
-21 real steps, every reply finite:
-  BODY_TWIST [0, 0, 0, 0, 0, ±0.261799]  = 15.00 deg/s yaw, vx 0.0
-  1.0–2.7 s per System-2 replan (budget 2500 ms)
-```
-
-The `±0.261799` rad/s turn is the same output the pre-existing x86_64 8 GB
-RTX 4070 validation recorded on this frame, and 6.06 GB matches its 6.02 GB —
-the bump changed the device, not the model.
-
-The System-1 NextDiT was checked separately, because a torch/diffusers bump is
-exactly how a DiT silently loads at the wrong width (the `LuminaFeedForward`
-SwiGLU trap this sidecar already pins `diffusers==0.32.2` for).
-
-Built standalone under the new stack and compared against the checkpoint's
-real tensors: **330 / 330 parameters present, zero missing, zero extra, zero
-shape mismatches**, with `layers.0.feed_forward.linear_{1,3}` at the
-checkpoint's `(1024, 384)` — the reduced SwiGLU width, not 1536. It also
-*runs*: a real S2 latent `(1, 4, 3584)` from a real frame through
-`generate_traj` gives a finite `(22, 3)` trajectory in 0.36 s.
-
-> **Unrelated pre-existing gap found while doing that.** Under `--quantization
-> nf4` the System-1 branch cannot run at all: `llm_int8_skip_modules` skips
-> `traj_dit` / `navdp` / `action_{encoder,decoder}` but not `memory_encoder`,
-> whose `nn.TransformerEncoder` self-attention gets bitsandbytes-quantized.
-> `F.multi_head_attention_forward` then calls plain `linear()` on the packed
-> weight and raises `RuntimeError: self and mat2 must have the same dtype, but
-> got BFloat16 and Byte`. The same call succeeds at `--quantization none`, and
-> nothing in the failing path is torch-version-dependent, so this is not a
-> regression from the bump — but the NF4 rSkill would hit it the first time
-> System-2 emits a pixel goal instead of a discrete action.
-
-## The workspace venv itself
-
-The sidecars each pass `--torch-backend` (`torch_backend()`; originally a
-hard-coded `cu128`) to their own `uv pip install`, so they always got real CUDA
-builds. The **workspace** venv did not: `uv sync`
-resolved torch from PyPI, whose aarch64 wheel is CPU-only, and a freshly synced
-DGX Spark reported `torch.__version__ == '2.9.1+cpu'`. Every *in-process*
-policy — SmolVLA, ACT, diffusion, pi05, GR00T N1.7, MolmoAct2, the Robometer
-reward model — ran on CPU.
-
-`--torch-backend` is a `uv pip`-only flag; it does not exist on `uv sync` or
-`uv lock`. So the root `pyproject.toml` expresses the same intent two ways:
-
-- an `explicit = true` `[[tool.uv.index]]` for `download.pytorch.org/whl/cu130`
-  (originally `cu128`; moved for Thor, see above), with `[tool.uv.sources]`
-  pinning **torch and torchvision** to it under
-  `platform_machine == 'aarch64' and sys_platform == 'linux'`. torchvision must
-  be pinned too, and must additionally be named as a direct dependency — it is
-  otherwise purely transitive (lerobot / timm / open-clip), and
-  `[tool.uv.sources]` only binds direct requirements, so the pin would be a
-  silent no-op and you would get a CPU vision stack under a CUDA torch;
-- an `[tool.uv] override-dependencies` pair raising `nvidia-cuda-nvrtc-cu12` to
-  12.9.86 on aarch64 — the workspace hits the same sm_121 jiterator ceiling as
-  the sidecars, so without it an in-process policy dies the moment it touches a
-  jitted op.
-
-Verified on the GB10 after `just sync`, on the earlier `cu128` routing:
-
-```
-torch       2.9.1+cu128
-torchvision 0.24.1
-cuda avail  True
-device      NVIDIA GB10 (12, 1)
-tv nms cuda [0]        # torchvision CUDA op
-jit prod    24         # the nvrtc jiterator path
-```
-
-The current lock resolves `torch 2.13.0+cu130` / `torchvision 0.28.0+cu130` /
-`torchcodec 0.11.1` on linux-aarch64. x86_64 resolution is unchanged — still PyPI
-`torch==2.9.1`, `torchcodec==0.9.1`, `torchvision==0.24.1`,
-`nvidia-cuda-nvrtc-cu12==12.8.93`.
-
-> **A venv synced under the old `cu128` routing** could hold a CPU-only
-> `torchvision 0.24.1`: the CPU and `cu128` wheels shared that version string,
-> so `uv sync` did not swap it. If `torchvision.ops.nms` on a CUDA tensor raises
-> `NotImplementedError`, force it once:
->
-> ```bash
-> just sync --frozen --reinstall-package torchvision
-> ```
-
-### No `expandable_segments` on Tegra
+## No `expandable_segments` on Tegra
 
 `openral deploy sim` / `deploy run` default the CUDA caching allocator to
-`expandable_segments:True` for every node in the graph, because on an 8 GiB
-discrete card the default allocator fragments and OOMs a VLA that otherwise
-fits. On a Jetson the CLI leaves it unset (`openral_core.is_tegra_host()`): the integrated
-GPU shares system RAM, so there is no fragmentation headroom to recover — and
+`expandable_segments:True` for every node, because on an 8 GiB discrete card
+the default allocator fragments and OOMs a VLA that otherwise fits. On a
+Jetson the setting is left unset (`openral_core.is_tegra_host()`): the iGPU
+shares system RAM, so there is no fragmentation headroom to recover, and
 torch's expandable path queries NVML GPU-fabric info, which the iGPU cannot
-answer. Observed on the lab AGX Orin (torch 2.13+cu130, 2026-09-22): the
-`runtime_node` raised
+answer. On an AGX Orin that raised `Expected NVML_SUCCESS ==
+DriverAPI::get()->nvmlDeviceGetGpuFabricInfoV_(...)` mid-load of π0.5.
 
-```
-RuntimeError: Expected NVML_SUCCESS == DriverAPI::get()->nvmlDeviceGetGpuFabricInfoV_( nvml_device, &fabricInfo) to be true, but got false.
-```
-
-363 s into loading the OpenArm pick-and-place π0.5, while the identical load in the
-same venv without the variable succeeded (371 s, 7.8 GiB). An explicit
-`PYTORCH_ALLOC_CONF` in the operator's environment still passes through.
-Every place that turns the setting on goes through
-`openral_sim._sidecar_common.default_expandable_segments()`, which applies
-this Jetson check: `deploy`, the sidecar env builder and launchers, the
-in-process TOPReward, MolmoAct2 and OpenVLA loaders, and the validation matrix.
-Scripts that run inside an isolated sidecar venv cannot import it, so they
-repeat the same `/etc/nv_tegra_release` check inline, as does
-`tools/_demo_env.sh`.
-
-GB10 / DGX Spark keeps the default. It is unified-memory too, but it runs DGX
-OS rather than L4T, and expandable segments are reported to work there and to
-be the fix for a unified-memory exhaustion
-([vllm-project/vllm#55569](https://github.com/vllm-project/vllm/issues/55569));
-unsloth-zoo excludes Jetson boards from expandable segments but carves GB10 out
-of that exclusion by name
-([unslothai/unsloth-zoo#1235](https://github.com/unslothai/unsloth-zoo/pull/1235)).
-PyTorch's allocator docs list no platform restriction. This is community
-evidence, not an NVIDIA statement, and has not been reproduced on our GB10
-host; whether DGX OS ships `/etc/nv_tegra_release` is also unverified — if it
-does, the probe would conservatively skip the default there.
-
-### NF4 reward loaders verified on Jetson Orin and Thor
-
-`tests/sim/test_reward_nf4_buffer_equivalence.py` (issue #304) checks that the
-Robometer and TOPReward NF4 loaders leave no buffer uninitialised. Robometer's
-meta-device load must match a real-init reference in `named_buffers()` and in
-per-frame scores on a real LIBERO clip. TOPReward's load is compared on
-`named_buffers()` only; its scores on the clip are checked separately by
-`tests/sim/test_topreward_reward.py`. Run 2026-10-10 on master `3c63d226`,
-in a fresh `just sync --group libero` venv (torch 2.13.0+cu130,
-bitsandbytes 0.49.2, transformers 5.5.4, lerobot 0.6.0):
-
-| host | GPU | result | wall time |
-|---|---|---|---|
-| lab AGX Orin | `sm_87` | 3 passed | 76 s |
-| lab Jetson Thor | `sm_110` | 3 passed | 46 s |
-
-The three tests are the two equivalence tests plus the TOPReward clip test.
-Robometer progress on the 8-frame
-success demo was 0.25 to 0.85 and success 0.05 to 0.83 on both hosts. Played
-reversed, progress fell 0.74 to 0.24. That matches the x86 RTX 5070 run in
-PR #305 to two decimals. Replacing the rotary `inv_freq` buffers with
-`torch.empty_like` on the meta build made the Robometer test fail on Orin, so
-the check bites on Tegra too.
-
-The Orin's torch warns that `sm_87` is not in its build list. bf16 matmul and
-a `Linear4bit` NF4 forward still run, and so does everything above. In that
-run the tests still set `expandable_segments:True`, and neither 3 GB model
-tripped the NVML fabric-info error described above. The setting is now
-skipped on Jetson everywhere, as described in the section above.
-
-The `datasets` package these tests need comes only with the `libero` or `gr00t`
-group; without it they skip. Let the first run reach the Hub: on Orin, an HF
-cache copied in from another host still failed lerobot's offline dataset load.
-On Thor that means forcing IPv4, because its IPv6 route is dead and Hub calls
-stall.
+An explicit `PYTORCH_ALLOC_CONF` in the operator's environment still passes
+through. Every place that enables the setting goes through
+`openral_sim._sidecar_common.default_expandable_segments()`; scripts inside an
+isolated sidecar venv, and `tools/_demo_env.sh`, repeat the
+`/etc/nv_tegra_release` check inline. GB10 keeps the default: its OS is DGX OS,
+not L4T. Whether DGX OS ships `/etc/nv_tegra_release` is unverified.
 
 ## GStreamer colour conversion on plain L4T
 
 Jetson Thor images ship the L4T multimedia stack (`nvvidconv`) but **not**
-DeepStream (`nvvideoconvert`), and the two elements do not advertise the same
-system-memory src caps. On a Jetson AGX Thor:
+DeepStream (`nvvideoconvert`). `nvvideoconvert` lists packed 3-byte `BGR` on
+its system-memory src pad; `nvvidconv` lists `BGRx` and no `BGR`, so a leg that
+pins `format=BGR` directly on `nvvidconv` never links.
 
-```console
-$ gst-inspect-1.0 --exists nvvideoconvert; echo $?
-1
-$ gst-inspect-1.0 --exists nvvidconv; echo $?
-0
-$ gst-inspect-1.0 nvvidconv          # SRC template, video/x-raw
-format: { I420, UYVY, YUY2, YVYU, NV12, NV16, NV24, GRAY8, BGRx, RGBA, Y42B, Y444 }
-```
-
-`nvvideoconvert` lists packed 3-byte `BGR`; `nvvidconv` lists `BGRx` and no
-`BGR`. So a leg that pins `format=BGR` directly on `nvvidconv` never links:
-
-```console
-$ gst-launch-1.0 videotestsrc ! nvvidconv ! video/x-raw,format=BGR ! fakesink
-WARNING: erroneous pipeline: could not link nvvconv0 to fakesink0,
-  nvvconv0 can't handle caps video/x-raw, format=(string)BGR
-```
-
-`openral_runner.backends.gstreamer.pipeline.bgr_convert_chain` owns this
-distinction for every leg the builder emits: `nvvidconv` is bridged as
+`openral_runner.backends.gstreamer.pipeline.bgr_convert_chain` handles this for
+every leg the builder emits: `nvvidconv` is bridged as
 `nvvidconv ! video/x-raw,format=BGRx ! videoconvert`, while `nvvideoconvert`
-(and stock `videoconvert`) stay direct-to-`BGR` so DeepStream hosts pay no
-extra CPU colour conversion. The choice is made on the resolved **element
-name**, not on a platform guess.
+and stock `videoconvert` stay direct-to-`BGR`. The choice is made on the
+resolved element name, not on a platform guess.
 
-The NVMM policy leg itself (`video/x-raw(memory:NVMM)` caps, the
-default for `PipelineSpec.enable_nvmm`) still needs the private
-`openral-pro-trt` package to consume the `NvBufSurface`; without it the reader
-reports a bus error by design (no silent fallback — CLAUDE.md §1.4). Pass
-`enable_nvmm: false` in `backend_params` for a system-memory-only Jetson host.
+The NVMM policy leg (`video/x-raw(memory:NVMM)` caps, the default for
+`PipelineSpec.enable_nvmm`) needs the private OpenRAL Pro TensorRT/NVMM runtime
+to consume the `NvBufSurface`; without it the reader reports a bus error by
+design (CLAUDE.md §1.4, no silent fallback). Pass `enable_nvmm: false` in
+`backend_params` for a system-memory-only Jetson host.
 
 ## Related
 

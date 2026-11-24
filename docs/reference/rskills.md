@@ -69,7 +69,7 @@ The same `SKILL.md` is mirrored to each `OpenRAL/rskill-*` Hub repo.
 
 All entries are published under `OpenRAL/rskill-*` on HuggingFace Hub and exercised end-to-end by a config in [`scenes/`](https://github.com/OpenRAL/openral/tree/master/scenes/).
 
-| rSkill | Backbone / family | Targets | License |
+| rSkill | Backbone / family | Embodiment | License |
 |---|---|---|---|
 | [`smolvla-libero`](https://github.com/OpenRAL/openral/tree/master/rskills/smolvla-libero/) | SmolVLA fine-tuned | `franka_panda` | Apache-2.0 |
 | [`smolvla-metaworld`](https://github.com/OpenRAL/openral/tree/master/rskills/smolvla-metaworld/) | SmolVLA fine-tuned | `sawyer` | Apache-2.0 |
@@ -91,19 +91,22 @@ All entries are published under `OpenRAL/rskill-*` on HuggingFace Hub and exerci
 | [`xr1-vlabench`](https://github.com/OpenRAL/openral/tree/master/rskills/xr1-vlabench/) | Xiaomi Robotics XR-1 VLABench | `franka_panda` | Apache-2.0 — NF4 sidecar, live-validated at 3.66 GiB VRAM |
 | [`rldx1-ft-simpler-widowx-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/rldx1-ft-simpler-widowx-nf4/) | RLDX-1 (SimplerEnv WidowX fine-tune) | `widowx` | RLWRLD non-commercial — sidecar runtime |
 | [`openvla-oft-simpler-widowx-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/openvla-oft-simpler-widowx-nf4/) | OpenVLA-OFT (RLinf PPO ManiSkill3 PutOnPlateInScene25; NF4) | `widowx` | MIT — transformers custom-code; validated 2/5 on SimplerEnv carrot |
-| [`gr00t-n17-libero`](https://github.com/OpenRAL/openral/tree/master/rskills/gr00t-n17-libero/) | NVIDIA Isaac GR00T N1.7 (3B, Cosmos-Reason2-2B VLM backbone) | `franka_panda` | NVIDIA Open Model License (commercial OK) — in-process lerobot 0.6.0 `GrootPolicy`, backbone-only NF4 |
-| [`gr00t-n17-b1k-turning-on-radio`](https://github.com/OpenRAL/openral/tree/master/rskills/gr00t-n17-b1k-turning-on-radio/) | Official 2026 BEHAVIOR-1K GR00T N1.7 `turning_on_radio` checkpoint | `r1pro` | NVIDIA Open Model License, commercial OK (per the organizers' pinned runtime); evaluator bridge + deploy-sim, pinned Isaac-GR00T Python 3.10 sidecar, 61-D state / atomic 23-D mixed action |
+| [`gr00t-n17-libero`](https://github.com/OpenRAL/openral/tree/master/rskills/gr00t-n17-libero/) | NVIDIA Isaac GR00T N1.7 (3B, Cosmos-Reason2-2B VLM backbone) | `franka_panda` | NVIDIA Open Model License (commercial OK) — in-process lerobot `GrootPolicy`, backbone-only NF4 |
+| [`gr00t-n17-b1k-turning-on-radio`](https://github.com/OpenRAL/openral/tree/master/rskills/gr00t-n17-b1k-turning-on-radio/) | Official 2026 BEHAVIOR-1K GR00T N1.7 `turning_on_radio` checkpoint | `r1pro` | NVIDIA Open Model License, commercial OK (per the organizers' pinned runtime); evaluator bridge + deploy-sim, pinned Isaac-GR00T Python 3.10 sidecar by default (in-process via `OPENRAL_BEHAVIOR_GROOT_RUNTIME=inprocess`), 61-D state / atomic 23-D mixed action |
 | [`rskill-smolvla-so101-eraser_place-bf16`](https://github.com/OpenRAL/openral/tree/master/rskills/rskill-smolvla-so101-eraser_place-bf16/) | SmolVLA SO-101 "place the erase on the blue square" checkpoint (makermods, 25 real teleop episodes) | `so101_follower` | Apache-2.0 — weights stay upstream; chunk verified against the training data |
 | [`smolvla-so101-leisaac-pick-orange`](https://github.com/OpenRAL/openral/tree/master/rskills/smolvla-so101-leisaac-pick-orange/) | SmolVLA SO-101 LeIsaac PickOrange (60 Isaac Sim teleop episodes, three oranges onto a plate) | `so101_follower` | Apache-2.0 — weights stay upstream; LeIsaac motor-unit `joint_calibration`, 60 Hz, Isaac Sim 6.x scene |
-| [`pi05-droid-jointpos-arena`](https://github.com/OpenRAL/openral/tree/master/rskills/pi05-droid-jointpos-arena/) | π0.5 DROID joint-position (openpi `pi05_droid_jointpos`, the checkpoint Isaac Lab-Arena evaluates; lerobot port) | `droid_franka_robotiq` | permissive research — weights stay upstream; 7 joint deltas + absolute gripper, 15 Hz, Isaac Sim 6.1 Arena `banana_in_bowl` scene; not yet run |
-| [`pi05-metal-pick-place`](https://github.com/OpenRAL/openral/tree/master/rskills/pi05-metal-pick-place/) | π0.5 + MakerMods' LoRA (`makermods/pi05_metal_pick_place_lora`, r=16, merged into `lerobot/pi05_base` at load via `base_weights_uri`), cube pick-and-place, 100 real teleop episodes | `makermods_metal` | permissive research (π0.5 base; LoRA + dataset Apache-2.0) — degrees + gripper stroke, 30 Hz, 50-step chunks; open-loop dataset replay 1.1° joint MAE (base alone 10.1°), no closed-loop result yet |
-| [`act-pen-holder-bi`](https://github.com/OpenRAL/openral/tree/master/rskills/act-pen-holder-bi/) | ACT (`makermods/act_pen_holder_bi`, lerobot 0.6.0, chunk 100), two-arm pen into pen cup, 41 real teleop episodes; top + two wrist views (`wrist_left` / `wrist_right` aliased to `left_wrist` / `right_wrist`) | `makermods_metal_station` | Apache-2.0 — degrees + gripper stroke, 30 Hz, 100-step chunks; on real dataset frames the composed `sim run` path tracks the recorded actions (1.4–1.5° MAE over 10 steps); in the `metal_pen_holder` MuJoCo twin it does not transfer: 6 closed-loop episodes, 0 grasps (sim/real image mixes: all-sim frames 5.2–7.2° vs 1.4–1.5° on real; see its README's honest-scope section) |
+| [`pi05-droid-jointpos-arena`](https://github.com/OpenRAL/openral/tree/master/rskills/pi05-droid-jointpos-arena/) | π0.5 DROID joint-position (openpi `pi05_droid_jointpos`, the checkpoint Isaac Lab-Arena evaluates; lerobot port) | `droid_franka_robotiq` | permissive research — weights stay upstream; 7 joint deltas + absolute gripper, 15 Hz, Isaac Sim Arena `banana_in_bowl` scene |
+| [`pi05-metal-pick-place`](https://github.com/OpenRAL/openral/tree/master/rskills/pi05-metal-pick-place/) | π0.5 + MakerMods' LoRA (`makermods/pi05_metal_pick_place_lora`, r=16, merged into `lerobot/pi05_base` at load via `base_weights_uri`), cube pick-and-place, 100 real teleop episodes | `makermods_metal` | permissive research (π0.5 base; LoRA + dataset Apache-2.0) — degrees + gripper stroke, 30 Hz, 50-step chunks |
+| [`act-pen-holder-bi`](https://github.com/OpenRAL/openral/tree/master/rskills/act-pen-holder-bi/) | ACT (`makermods/act_pen_holder_bi`, trained on lerobot 0.6.0, chunk 100), two-arm pen into pen cup, 41 real teleop episodes; top + two wrist views (`wrist_left` / `wrist_right` aliased to `left_wrist` / `right_wrist`) | `makermods_metal_station` | Apache-2.0 — degrees + gripper stroke, 30 Hz, 100-step chunks; closed-loop transfer to the MuJoCo twin is not demonstrated (see its README) |
 | [`smolvla-robotwin`](https://github.com/OpenRAL/openral/tree/master/rskills/smolvla-robotwin/) | SmolVLA finetuned on RoboTwin 2.0 (50 bimanual SAPIEN tasks) | `aloha_agilex` | Apache-2.0 — py3.12 SAPIEN sidecar |
 | [`lingbot-vla-4b-robotwin`](https://github.com/OpenRAL/openral/tree/master/rskills/lingbot-vla-4b-robotwin/) | LingBot-VLA 1.0 (4 B, Qwen2.5-VL-3B + flow-matching expert), RoboTwin post-train | `aloha_agilex` | Apache-2.0 |
-| [`lingbot-vla2-robotwin`](https://github.com/OpenRAL/openral/tree/master/rskills/lingbot-vla2-robotwin/) | LingBot-VLA 2.0 (6.38 B, Qwen3-VL-4B + sparse-MoE expert), RoboTwin | `aloha_agilex` | Apache-2.0 |
+| [`lingbot-vla2-robotwin`](https://github.com/OpenRAL/openral/tree/master/rskills/lingbot-vla2-robotwin/) | LingBot-VLA 2.0 (6.38 B, Qwen3-VL-4B + sparse-MoE expert), RoboTwin; sidecar runtime (in-process variant: `lingbot-vla-v2-robotwin-bf16`) | `aloha_agilex` | Apache-2.0 |
 | [`lingbot-va-galaxea-a1-fruit-placement`](https://github.com/OpenRAL/openral/tree/master/rskills/lingbot-va-galaxea-a1-fruit-placement/) | LingBot-VA fruit placement | `galaxea_a1` | Apache-2.0 |
 | [`rskill-internvla_n1-mobile_base-vln-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/rskill-internvla_n1-mobile_base-vln-nf4/) | InternVLA-N1 / DualVLN navigation (Qwen2.5-VL-7B + NavDP; bf16, NF4 with Pro) | `mobile_base` | CC-BY-NC-SA-4.0 weights (non-commercial) |
 | [`smolvla-vlabench`](https://github.com/OpenRAL/openral/tree/master/rskills/smolvla-vlabench/) | SmolVLA finetuned on VLABench (`lerobot/vlabench_unified`, 97 tasks) — integration baseline, 0% on current tasks | `franka_panda` | Apache-2.0 |
+| [`cosmos3-edge-libero-bf16`](https://github.com/OpenRAL/openral/tree/master/rskills/cosmos3-edge-libero-bf16/) | NVIDIA Cosmos 3 Edge world action model, LIBERO finetune (`lerobot/Cosmos3-Edge-Policy-LIBERO`); in-process lerobot `Cosmos3Policy` as an action policy (not the `cosmos3-edge` reasoner) | `franka_panda` | OpenMDW-1.1 (commercial OK); LIBERO scenes only |
+| [`lingbot-vla-v2-robotwin-bf16`](https://github.com/OpenRAL/openral/tree/master/rskills/lingbot-vla-v2-robotwin-bf16/) | LingBot-VLA 2.0 (6.38 B), LeRobot-format RoboTwin checkpoint; in-process on lerobot, no sidecar | `aloha_agilex` | Apache-2.0 |
+| [`nat-vla-so101-pretrained-bf16`](https://github.com/OpenRAL/openral/tree/master/rskills/nat-vla-so101-pretrained-bf16/) | NaT VLA (450 M, LFM2-VL-450M writing NAT action tokens), multi-robot pretrained checkpoint, zero-shot on SO-101; in-process (lerobot `nat_vla`) | `so101_follower` | LFM Open License v1.0 (`lfm1.0`; commercial only under $10M revenue, treated as not commercial-allowed) |
 
 `XiaomiRobotics/Xiaomi-Robotics-1-5B` is intentionally absent: its only model
 artifact is a raw `model_states.pt` post-training seed with no processor or
@@ -129,9 +132,7 @@ The RT-DETR rSkills are Apache-2.0 and runnable on any camera-equipped embodimen
 
 LocateAnything is NVIDIA non-commercial and ships as an NF4 PyTorch/custom-code artifact. Its executable `weights_uri` must pin an immutable HF revision; the sidecar rejects unpinned custom code. Because its custom code needs `transformers==4.57.1` (incompatible with the runtime's `transformers>=5`), it runs **out-of-process** in an isolated venv (`tools/locateanything_sidecar.py`) and is driven by the `LocateAnythingDetector` backend over ZMQ — the `DetectorTier.VLM_SIDECAR` path selected for `runtime: pytorch` detector manifests. The detector-node side needs the `pyzmq` + `msgpack` client from the `locateanything` dependency group.
 
-`omdet-turbo-indoor` is the commercially-permissive open-vocabulary alternative. OmDet-Turbo is a first-class `transformers` architecture (`AutoModelForZeroShotObjectDetection`), so it loads under the runtime's own `transformers>=5` and runs in-process (no sidecar, no ZMQ) via the `OmDetTurboDetector` backend.
-
-Unlike LocateAnything it is not query-driven: the backend exposes `set_query`, but a `continuous` detector node does not subscribe it to `/openral/perception/detector_query`, so its fixed vocabulary (manifest `labels`) is evaluated on every frame. `torch` + `transformers` ship in the `omdet` dependency group (`just sync --group omdet`); without them the in-process backend fails on first `detect()`.
+`omdet-turbo-indoor` / `omdet-turbo-locator` run in-process under the runtime's own `transformers` (no sidecar). `torch` + `transformers` come from the `omdet` group (`just sync --group omdet`). The continuous detector evaluates its fixed manifest `labels` on every frame; it does not subscribe to `/openral/perception/detector_query`.
 
 ### Invocation mode: continuous vs on-demand
 
@@ -160,7 +161,7 @@ One RGB frame in, one depth raster out. The depth provider (`openral_perception_
 |---|---|---|
 | [`qwen35-4b-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/qwen35-4b-nf4/) | Qwen3.5-4B NF4 (natively-multimodal, hybrid linear attention) | Apache-2.0; pre-quantized NF4 checkpoint (~3.3 GB, fits 8 GB); runs out-of-process via `tools/qwen_vlm_sidecar.py` + the `QwenSceneVlm` backend over ZMQ; served by `openral_perception_ros.scene_vlm_node` on `/openral/perception/query_scene`; drives the reasoner's read-only `query_scene` tool |
 
-Like the LocateAnything detector, the Qwen scene VLM runs in an **isolated sidecar venv** (its bitsandbytes / `qwen-vl-utils` / Gated-DeltaNet stack would perturb the lerobot-pinned `transformers>=5.4.0,<5.14.0` runtime, and a 4B model + CUDA context should not share the `rclpy` process). The node-side ZMQ + msgpack client ships in the `qwen-vlm` dependency group (`just sync --group qwen-vlm`).
+Like the LocateAnything detector, the Qwen scene VLM runs in an **isolated sidecar venv** (its bitsandbytes / `qwen-vl-utils` / Gated-DeltaNet stack would perturb the workspace's pinned `transformers>=5.22.0,<5.23.0` runtime, and a 4B model + CUDA context should not share the `rclpy` process). The node-side ZMQ + msgpack client ships in the `qwen-vlm` dependency group (`just sync --group qwen-vlm`).
 
 The rSkill's `weights_uri` is a **pre-quantized** NF4 checkpoint (transformers-native `save_pretrained` layout with an embedded `quantization_config`) built by `tools/build_qwen_vlm_nf4_checkpoint.py`; it loads directly as 4-bit with no bf16 load spike. `source_repo` records the SHA-pinned upstream Apache-2.0 Qwen model (provenance). The reasoner offers `query_scene` when launched with `scene_query_available:=true`.
 
@@ -171,14 +172,9 @@ The rSkill's `weights_uri` is a **pre-quantized** NF4 checkpoint (transformers-n
 | rSkill | Backbone | Notes |
 |---|---|---|
 | [`robometer-4b`](https://github.com/OpenRAL/openral/tree/master/rskills/robometer-4b/) | Robometer-4B (Qwen3-VL-4B reward foundation model, arXiv 2603.02115) | **Apache-2.0**; pre-quantized NF4 at `hf://OpenRAL/rskill-robometer_4b-any-general-nf4`, meta-loaded directly as 4-bit (~3.3 GB resident, fits 8 GB alongside a small VLA); runtime is in-process inside `openral_perception_ros.reward_monitor_node` via `RobometerInProcessReward`; served on `/openral/perception/query_task_progress`; drives the reasoner's read-only `query_task_progress` tool. |
-| [`topreward-qwen3vl-4b-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/topreward-qwen3vl-4b-nf4/) | TOPReward (arXiv 2602.19313) — **zero-shot** reward on `Qwen/Qwen3-VL-4B-Instruct` via lerobot 0.6.0's first-party `lerobot.rewards.topreward` | **Apache-2.0** packaging (method MIT; Qwen3-VL weights keep the Qwen license). Zero-shot: no fine-tuned checkpoint — the model reads `log P("True" \| video, instruction)`; **per-frame progress (0–1)** comes from lerobot's native prefix sweep + per-episode min-max normalization. NF4 (bitsandbytes) on the base VLM to fit 8 GB — **measured 3.13 GB peak** on RTX 4070 Laptop, live-validated on LIBERO `libero_object` ep0 (first-20% 0.41 → last-20% 0.92). Runs in-process in `reward_monitor_node` via `TOPRewardMonitor` (`reward.backend: topreward`) |
+| [`topreward-qwen3vl-4b-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/topreward-qwen3vl-4b-nf4/) | TOPReward (arXiv 2602.19313) — **zero-shot** reward on `Qwen/Qwen3-VL-4B-Instruct` via lerobot's first-party `lerobot.rewards.topreward` | **Apache-2.0** packaging (method MIT; Qwen3-VL weights keep the Qwen license). Zero-shot: no fine-tuned checkpoint — the model reads `log P("True" \| video, instruction)`; **per-frame progress (0–1)** comes from lerobot's native prefix sweep + per-episode min-max normalization. NF4 (bitsandbytes) on the base VLM to fit 8 GB — 3.13 GB peak measured. Runs in-process in `reward_monitor_node` via `TOPRewardMonitor` (`reward.backend: topreward`) |
 
-Robometer runs in-process inside the reward-monitor ROS node: out of the VLA runner, reasoner, and HAL processes used by `deploy-sim` / `deploy-run`, but with no extra ZMQ boundary, since lerobot 0.6.0 ships `lerobot.rewards.robometer.RobometerRewardModel` (Apache-2.0, first-party, so no untrusted third-party package runs). No pinned `robometer` package, no `transformers==4.57.1` force-pin, no dedicated venv.
-
-- The rolling frame buffer (`RollingFrameBuffer`, fed by the selected `sensor_msgs/Image` topic) lives node-side; `deploy-sim` selects the first RGB camera from `robot.yaml` and falls back to `agentview_left`. `weights_uri` accepts the published pre-quantized OpenRAL repo or `local:///abs/dir`.
-- The pre-quantized path (built by `tools/build_robometer_nf4_checkpoint.py`) loads the packed NF4 weights directly on the `meta` device — no bf16 materialization, no requantize (~25 s process→ready vs ~110 s + a 19 GB CPU spike), bit-identical to the bf16+quantize path with determinism pinned (math SDP + `use_deterministic_algorithms` + `CUBLAS_WORKSPACE_CONFIG`).
-- Activation memory scales with frame count × resolution, so the backend evenly subsamples the window to `max_frames` (8) to stay co-resident with the sim (and a small NF4 VLA) on 8 GB.
-- `openral deploy sim --enable-reward-monitor` brings the monitor up parallel to the VLA and sets `task_progress_available:=true` so the reasoner is offered `query_task_progress` (validated live on LIBERO deploy-sim with SmolVLA).
+Robometer runs in-process inside the reward-monitor ROS node, using lerobot's first-party `lerobot.rewards.robometer.RobometerRewardModel` (Apache-2.0): no extra ZMQ boundary, no dedicated venv. Frames come from a node-side `RollingFrameBuffer` on the first RGB camera of `robot.yaml` (fallback `agentview_left`) and are evenly subsampled to `max_frames` (8) to fit beside the sim on 8 GB. `weights_uri` accepts the published pre-quantized OpenRAL repo or `local:///abs/dir`. `openral deploy sim --enable-reward-monitor` starts the monitor and offers the reasoner `query_task_progress`. Build and determinism notes: [`rskills/robometer-4b/README.md`](https://github.com/OpenRAL/openral/tree/master/rskills/robometer-4b/README.md).
 
 ## Playbook rSkills (`kind: playbook`)
 
@@ -211,7 +207,7 @@ The reasoner also maintains a self-written **`MEMORY.md`** — a persistent sema
 ## Manifest format
 
 ```yaml
-# rskills/smolvla-libero/rskill.yaml (excerpt)
+# rskills/smolvla-libero/rskill.yaml (excerpt; full schema: openral_core.RSkillManifest)
 name: "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"
 version: "0.1.0"
 license: "apache-2.0"
@@ -220,7 +216,7 @@ embodiment_tags: ["franka_panda"]
 sensors_required:
   - modality: "rgb"
     vla_feature_key: "observation.images.camera1"
-  # … second RGB stream + proprioception
+  # ... second RGB stream + proprioception
 ```
 
 ## License notes
@@ -230,6 +226,8 @@ See [CLAUDE.md §3](https://github.com/OpenRAL/openral/blob/master/CLAUDE.md) fo
 - **LocateAnything-3B** — NVIDIA License, non-commercial research/evaluation; private HF rSkill, requires `OPENRAL_ALLOW_NONCOMMERCIAL=1` and remote-code acceptance.
 - **π0 / π0.5 weights** — permissive research (not full Apache-2.0 for commercial deployment).
 - **RLDX-1** — RLWRLD non-commercial; runs as an out-of-process sidecar.
+- **NaT VLA** — LFM Open License v1.0 (`lfm1.0`): commercial use only under $10M annual revenue; treated as not commercial-allowed.
+- **Cosmos 3 Edge** — OpenMDW-1.1 (`openmdw-1.1`), commercial OK.
 - **Depth Pro 2** — Apple Machine Learning Research Model license (`apple-amlr`): research only, revocable; requires `OPENRAL_ALLOW_NONCOMMERCIAL=1`. Weights are pulled from `apple/DepthPro2-*`, never re-hosted.
 
 Provenance signing via sigstore is planned but not yet implemented — the loader emits an `rskill.unverified_provenance` warning on every load. Set `OPENRAL_REQUIRE_SIGNED_SKILLS=1` to fail closed.

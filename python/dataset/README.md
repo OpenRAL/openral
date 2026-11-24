@@ -58,9 +58,8 @@ with RolloutRecorder(
 Dataset-bridge PR series status:
 
 - **PR2** *(partial)* — `SensorRosPublisher` in `python/sensors/`
-  (`ros_publisher.py`) ships and is tested; the wrapping
-  `packages/openral_sensors_ros/` lifecycle node from the dataset-bridge design
-  is not built. The deploy recorder does not need it: `DatasetRecorderBridge`
+  (`ros_publisher.py`) ships and is tested; no wrapping lifecycle node
+  package exists. The deploy recorder does not need it: `DatasetRecorderBridge`
   reads camera frames from the aggregator snapshot the runner feeds the policy.
 - **PR3** ✅ — `Rosbag2Sink` (mcap, daemon writer thread) + `openral_msgs/Tick`
   / `openral_msgs/Episode` IDLs + explicit `episode_start` / `episode_end`

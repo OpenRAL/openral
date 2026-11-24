@@ -1,5 +1,9 @@
 # Object tracking implementation plan
 
+!!! note "Superseded plan"
+    The tracker shipped and the open/Pro tracking-mode split changed its shape; see [decisions](../decisions.md). Kept as a record; it is not maintained against master.
+
+
 Agreed with the maintainer on 2026-10-19. Applies to issue #418 on
 `feat/418-object-tracking`. Research: [mapping survey](object-centric-mapping-survey.md).
 This plan records intended behavior; entries below are not claims of implementation.

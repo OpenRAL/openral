@@ -1,5 +1,9 @@
 # What the kernel's link boxes actually enclose — in pictures
 
+!!! note "Dated measurement"
+    Pictures of the shipped link boxes before the kernel's tight-geometry refinement. Kept as a record; it is not maintained against master.
+
+
 > **Status: measurement only.** No kernel, manifest or schema change. The boxes
 > measured here are still the shipped `collision_geometry` boxes; since #166 the
 > kernel refines them with `tight_geometry` (26-DOP + exact hull), see

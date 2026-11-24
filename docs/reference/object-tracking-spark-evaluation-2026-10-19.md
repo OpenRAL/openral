@@ -1,5 +1,9 @@
 # Object tracking: Spark evaluation, 2026-10-19
 
+!!! note "Dated evaluation"
+    Evaluation log of a feature-branch snapshot; it concluded with no production change. Kept as a record; it is not maintained against master.
+
+
 ## Scope and status
 
 Evaluate the #418 source snapshot using plain `sim run` as the policy benchmark

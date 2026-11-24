@@ -9,11 +9,10 @@ subdirectory is one rSkill: a `rskill.yaml` manifest, `README.md`, a
 discovery-only `SKILL.md`, and an `eval/` folder. No model weights: the
 manifest's `weights_uri` points at the Hub repo, pulled on first load.
 
-> **One rSkill ⇄ one HF repo.** Every entry below maps 1:1 to an
-> `OpenRAL/rskill-<name>` repo on the Hub. The in-tree manifest is the
-> source of truth; `tools/generate_rskill_skillmd.py` mirrors the
-> discovery `SKILL.md` to each HF repo, and the org card counts are
-> derived from this directory.
+> **One rSkill is one HF repo.** A published skill maps 1:1 to an
+> `OpenRAL/rskill-<name>` repo on the Hub. The in-tree manifest is the source of
+> truth, and `tools/generate_rskill_skillmd.py` mirrors the discovery `SKILL.md`
+> to each HF repo.
 
 ## Find rSkills on the Hub
 
@@ -23,10 +22,10 @@ matches your query locally and case-insensitively against the repo id,
 manifest name/description, family, kind, role, embodiment tags, and Hub tags:
 
 ```bash
-openral rskill search libero                                   # any field mentioning "libero"
-openral rskill search --embodiment so101_follower               # facet filter, no query
-openral rskill search --kind detector --license apache-2.0      # combine facets
-openral rskill search --family pi05 --json                      # scriptable output
+uv run openral rskill search libero                                   # any field mentioning "libero"
+uv run openral rskill search --embodiment so101_follower               # facet filter, no query
+uv run openral rskill search --kind detector --license apache-2.0      # combine facets
+uv run openral rskill search --family pi05 --json                      # scriptable output
 ```
 
 Each row's `local` column tells you what's already on this machine:
@@ -36,8 +35,8 @@ Each row's `local` column tells you what's already on this machine:
 skill:
 
 ```bash
-openral rskill install OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16
-openral sim run --config scenes/sim/libero_spatial.yaml \
+uv run openral rskill install OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16
+uv run openral sim run --config scenes/sim/libero_spatial.yaml \
   --rskill OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16
 ```
 
@@ -48,92 +47,22 @@ repo id interchangeably; a Hub skill needs no local manifest.
 
 | `weights_uri` scheme | Where the weights live | Example |
 | --- | --- | --- |
-| `hf://OpenRAL/...` | Hugging Face Hub, fetched + cached on first load | every VLA / detector / VLM / reward skill |
-| `local://rskills/...` | An ONNX file inside the rSkill dir, **gitignored** and reproduced via a `tools/export_*.py` script (also mirrored to HF) | `rtdetr-coco-r18` |
+| `hf://<owner>/<repo>[@<revision>]` | Hugging Face Hub, fetched and cached on first load. The owner is the upstream publisher (`lerobot`, `robbyant`, `makermods`, ...), not always `OpenRAL`. | most VLA, VLM and reward skills |
+| `local://rskills/...` | An ONNX file inside the rSkill directory, **gitignored** and rebuilt by a `tools/export_*.py` script | `rtdetr-coco-r18`, `rtdetr-v2-r50vd` |
 
-`rtdetr-coco-r18` is the deliberate `local://` exception: the GStreamer
+The two RT-DETR detectors are the deliberate `local://` exceptions: the GStreamer
 perception path is ONNX-file-based, and `openral deploy sim` uses
-`rskills/rtdetr-coco-r18/model.onnx` as its offline detector fallback. The
-binary is gitignored (`model.onnx`, `model.onnx.data`) and regenerated locally
-on demand. The heavier `rtdetr-v2-r50vd` variant ships the same way (fp32 ONNX,
-`runtime: onnx`); with OpenRAL Pro installed, its NVMM aggregator tier builds a
-TensorRT engine from the same `model.onnx`.
+`rskills/rtdetr-coco-r18/model.onnx` as its offline detector fallback. With
+OpenRAL Pro installed, the NVMM aggregator tier builds a TensorRT engine from the
+same `model.onnx`.
 
-## Catalog
+## Catalogue
 
-**Policies (`kind: vla`) — task skills.** Embodiment must match the scene's
-`RobotCapabilities.embodiment_tags`.
-
-| rSkill | family | embodiment |
-| --- | --- | --- |
-| `act-aloha` / `act-aloha-insertion` | act | aloha |
-| `act-libero` | act | franka_panda |
-| `diffusion-pusht` | diffusion | pusht |
-| `3d-diffuser-actor-rlbench` | diffuser_actor | franka_panda |
-| `gr00t-n17-libero` | gr00t | franka_panda |
-| `gr00t-n17-b1k-turning-on-radio` | gr00t_b1k | r1pro |
-| `rskill-internvla_n1-mobile_base-vln-nf4` | internvla_n1 | mobile_base |
-| `lingbot-va-galaxea-a1-fruit-placement` | lingbot_va_a1 | galaxea_a1 |
-| `lingbot-vla-4b-robotwin` | lingbot_vla | aloha_agilex |
-| `lingbot-vla2-robotwin` | lingbot_vla2 | aloha_agilex |
-| `molmoact2-libero-nf4` | molmoact2 | franka_panda |
-| `molmoact2-so101-nf4` | molmoact2 | so100/so101_follower |
-| `openvla-oft-simpler-widowx-nf4` | openvla | widowx |
-| `pi05-libero-int8` | pi05 | franka_panda |
-| `rldx1-ft-gr1-nf4` | rldx | gr1 |
-| `rldx1-ft-libero-nf4` | rldx | franka_panda |
-| `rldx1-ft-rc365-nf4` | rldx | panda_mobile |
-| `xr1-robocasa` | xr1 | panda_mobile |
-| `xr1-robocasa365` | xr1 | panda_mobile |
-| `xr1-vlabench` | xr1 | franka_panda |
-| `rldx1-ft-simpler-widowx-nf4` | rldx | widowx |
-| `smolvla-libero` | smolvla | franka_panda |
-| `smolvla-maniskill-franka` | smolvla | franka_panda |
-| `smolvla-metaworld` | smolvla | sawyer |
-| `smolvla-robotwin` | smolvla | aloha_agilex |
-| `rskill-smolvla-so101-eraser_place-bf16` | smolvla | so101_follower |
-| `smolvla-so101-leisaac-pick-orange` | smolvla | so101_follower |
-| `smolvla-vlabench` | smolvla | franka_panda |
-| `xvla-libero` | xvla | franka_panda |
-
-**Auxiliary skills — run alongside a policy or on deploy scenes,
-embodiment-agnostic.**
-
-| rSkill | kind |
-| --- | --- |
-| `locateanything-3b-nf4` | detector (open-vocab VLM) |
-| `omdet-turbo-indoor` / `omdet-turbo-locator` | detector (open-vocab) |
-| `rtdetr-coco-r18` | detector (ONNX, `local://`) |
-| `rtdetr-v2-r50vd` | detector (ONNX, `local://`) |
-| `qwen35-4b-nf4` | vlm |
-| `robometer-4b` / `topreward-qwen3vl-4b-nf4` | reward |
-| `rskill-sam2_1-any-grasped_object_mask-bf16` | segmenter (SAM 2.1) |
-| `rskill-moveit-eef-pose` / `rskill-moveit-joints` / `rskill-moveit-look-at` | ros_action (MoveIt) |
-| `rskill-nav2-navigate-to-pose` | ros_action (Nav2) |
-| `clarify-ambiguity` / `decompose-mission` / `find-object` / `preflight-reach` / `stage-for-manipulation` / `verify-outcome` | playbook (S2 reasoner) |
-
-> The full, verified scene↔rSkill compatibility matrix lives in the team's
-> `sim_rskill_matches.xlsx` tracker.
-
-### Not on the Hub yet
-
-Four in-tree manifests have no `OpenRAL/rskill-*` repo on the Hub, so
-`openral rskill search` cannot see them and they cannot be installed by repo id
-(loading by in-tree name still works wherever their weights resolve). Each needs
-only the wrapper repo published; their weights are third-party public
-checkpoints, as with `act-aloha` and `smolvla-libero`:
-
-| in-tree skill | weights | to publish |
-| --- | --- | --- |
-| `lingbot-vla-4b-robotwin` | `robbyant/lingbot-vla-4b-posttrain-robotwin` | wrapper only |
-| `lingbot-vla2-robotwin` | `robbyant/lingbot-vla-v2-6b` | wrapper only |
-| `rskill-internvla_n1-mobile_base-vln-nf4` | `InternRobotics/InternVLA-N1-DualVLN` | wrapper only |
-| `rskill-sam2_1-any-grasped_object_mask-bf16` | `facebook/sam2.1-hiera-small` | wrapper only |
-
-Two OpenRAL-hosted NF4 prequant mirrors are also unpublished
-(`lingbot-vla-4b-robotwin-nf4`, `lingbot-vla-v2-6b-nf4`). Both LingBot manifests
-point at the fp32 upstreams and pack NF4 at load; republishing the mirrors would
-shrink the download and needs only a `weights_uri` repoint.
+The in-tree skills, their kind, family, embodiment and quantization are listed in
+the [rSkills reference](../docs/reference/rskills.md). `ls rskills/` is the
+authority for what exists; each subdirectory's `rskill.yaml` is its source of
+truth. A manifest here does not imply a published Hub repo: check with
+`openral rskill search`.
 
 ## Add your own rSkill
 
@@ -142,9 +71,9 @@ repo at load time. To scaffold a new local rSkill from
 [`template/`](template/):
 
 ```bash
-openral rskill new my-skill --family pi05 --embodiment-tag franka_panda
+uv run openral rskill new my-skill --family pi05 --embodiment-tag franka_panda
 # or wrap an existing HF checkpoint:
-openral rskill new my-skill --from-hf <owner>/<repo>
+uv run openral rskill new my-skill --from-hf <owner>/<repo>
 ```
 
 Then edit `rskills/my-skill/rskill.yaml` and `README.md` (the publish

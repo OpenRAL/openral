@@ -1,5 +1,9 @@
 # The live world map, measured
 
+!!! note "Dated measurement"
+    Its dominant error term (octree-to-grid dilation) no longer exists; read for method, not current numbers. Kept as a record; it is not maintained against master.
+
+
 What is actually in `/openral/world_voxels`, how it differs from the
 geometrically ideal grid the collision studies score against, and how the three
 world-side terms apportion once the real map is in the loop.

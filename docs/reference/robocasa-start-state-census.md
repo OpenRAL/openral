@@ -1,5 +1,9 @@
 # RoboCasa start-state collision census
 
+!!! note "Dated measurement"
+    One census at pinned seeds; companion to the [validation ledger](collision-validation-evidence.md). Kept as a record; it is not maintained against master.
+
+
 Which limb makes the safety kernel refuse a RoboCasa kitchen before the robot
 has been commanded, what it is touching, and whether the start pose or the base
 placement is responsible.

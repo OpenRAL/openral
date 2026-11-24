@@ -1,45 +1,42 @@
 # Roadmap
 
-Live status of OpenRAL development. Per-module status and cross-layer dependencies: [repo state map](../architecture/repo-state-map.html).
+Live status of OpenRAL development, one line per area. Per-module status and dependencies: [repo state map](../architecture/repo-state-map.html). Released versions: [CHANGELOG.md](https://github.com/OpenRAL/openral/blob/master/CHANGELOG.md).
 
----
+Legend: ✅ done, 🟡 in flight, 🔵 planned, 🔴 blocked.
 
 ## Snapshot
 
 | Area | Status |
 |---|---|
-| Schemas (`openral_core`) | ✅ shipped — Pydantic v2, hypothesis fuzz, JSON Schema export, CI drift check |
-| HAL Protocol + ROS bridge | ✅ shipped — `RosControlHAL`, mock unit tests, exception hierarchy |
-| LeRobot SO-100/SO-101 HAL | ✅ shipped — real + MuJoCo `SO100FollowerHAL`, `SO100_DESCRIPTION`, `openral connect` |
-| Franka / UR5e / UR10e HALs | ✅ sim shipped over `MujocoArmHAL`; real-HW adapters landed (UR5e/UR10e via `ur_robot_driver`, Franka via FCI, Sawyer, ALOHA) — HIL files exist but none has met a physical rig (M3) |
-| Humanoid + bimanual HALs (sim) | ✅ shipped — `G1MujocoHAL`, `H1MujocoHAL`, `H2MujocoHAL`, `AlohaMujocoHAL`, `OpenArmMujocoHAL`, `Rizon4MujocoHAL`, `PandaMobileHAL` with lifecycle nodes |
-| Enactic OpenArm v2 real HW | 🟡 in flight — `OpenArmRealHAL` fans a 16-DoF action across `openarm_bringup`'s four ros2_control controllers; Damiao CAN FD at 750 Hz stays in C++. `tests/hil/test_openarm_can_live.py` passes both transport gates and the motor round-trip on the wired arm, but that round-trip is a read: it never energises. The command→motion gate is written (`tests/hil/test_openarm_slot_group_motion.py`, double-gated on `OPENRAL_OPENARM_ALLOW_MOTION=1` + `OPENRAL_OPENARM_ATTENDED=1`) and has no recorded run; real motion has run through attended deploys instead, which have driven the motors on the wired arms. Run by hand on the lab host — nothing in CI runs `tests/hil/`. Real-HW OpenArm deploy scenes in-tree: `openarm_bench.yaml`, `openarm_real_world_voxels.yaml` (the attended world-voxel-check evaluation, [runbook](../tutorials/deploy/openarm-real-world-voxel-check.md); its launcher refuses without a declared ZED mount in the unit overlay) and `openarm_real_autonomous.yaml` (the same cell with the reasoner) |
-| Sensor adapters | 🟡 in flight — `openral_sensors` catalog (RealSense D435/D435i/D415, Logitech UVC, Luxonis OAK-D Pro, Robotiq FT 300-S) + launch-gen + ROS image publisher; full perception-head ROS package still planned |
-| World State aggregator | ✅ shipped — 30 Hz tf2-aware snapshot, stale-sensor diagnostics, detected-objects lift |
-| Persistent spatial memory (scene graph) | 🟡 in flight — durable advisory object/place/room/agent graph the S2 reasoner queries (recall/resolve) + CLIP open-vocab match; sqlite-vec persistence pending (ROS feeder shipped) |
-| Skill base + runtimes | ✅ shipped — lifecycle node, `PyTorchRuntime`, `ONNXRuntime`, quantization registry, engine cache |
-| rSkill manifest + loader | ✅ shipped — HF Hub packaging, `rSkill.from_pretrained`, license surface; sigstore provenance not yet implemented (unverified-provenance warning + `OPENRAL_REQUIRE_SIGNED_SKILLS` fail-closed gate) |
-| SmolVLA, π0.5, xVLA, ACT, DP, MolmoAct2, RLDX-1 adapters | ✅ shipped — loaded, tested, embodiment-tag gated; GR00T N1.7 in-process (lerobot 0.6.0 `GrootPolicy`, NF4 backbone) — ✅ live LIBERO-spatial 5/5 |
-| End-to-end sim demo (SO-100 + SmolVLA) | ✅ shipped — smoketest + GIF; full LIBERO rollout verified |
-| Configurable sim/eval harness | ✅ shipped — `openral sim run` + `benchmark run`, three-tier scene registry; LIBERO / MetaWorld / gym-aloha / gym-pusht / ManiSkill3 / SimplerEnv / RoboCasa backends + Isaac Sim sidecar |
-| OpenTelemetry instrumentation | ✅ shipped — OTel SDK + OTLP exporter, `rskill_span` / `inference_span` / `safety_span`, `openral dashboard` live OTLP receiver |
-| rosbag2 ↔ LeRobotDataset v3 bridge | ✅ shipped — `RolloutRecorder`, `LeRobotDatasetSink`, `openral dataset {push,from-bag}` |
-| Reasoner (S2 LLM supervisor) | ✅ shipped — `openral_reasoner` core + `openral_reasoner_ros` node + `openral_prompt_router`; provider-selected LLM, typed tool dispatch, event-driven ticks; bounded-retry replanning live (full substitute/replan ladder partial) |
-| Deploy ROS graph | ✅ shipped — `openral deploy {run,sim}` with HAL + safety + reasoner + world_state; dynamic skill dispatch + `/clock` publisher |
-| Navigation stack (SLAM + Nav2) | ✅ shipped — `openral_slam_bringup` (slam_toolbox) + `openral_nav2_bringup` as reasoner-managed background services; `cmd_vel` → mobile-base HAL |
-| Object detection + spatial lift | ✅ shipped — `RosImageObjectDetectorNode`, 2D→3D object lift, RT-DETR + OmDet-Turbo detector rSkills, GStreamer perception bus; LocateAnything-3B wired via VLM sidecar + `locate_in_view` on-demand tool; scene-VLM `kind:vlm` |
-| Geometric safety + watchdog | 🟡 in flight — chunk-rate safety pass-through + envelope checks (✅), deadman/E-stop forwarders + human-estop (✅ `openral_safety_watchdog` / `openral_human_estop`, now launched by the deploy graph, which refuses to start if the deadman cannot arm; the hardware pendant needs a per-vendor driver and reports not-ready without one); self/world/voxel collision + the OctoMap→voxel bridge (`openral_octomap_bridge`) run in the C++ kernel on the deploy graph |
-| C++ safety kernel | ✅ deny-by-default allocation-free validator landed (n_dof / position / velocity / torque / cartesian / ee-speed + geometric collision), OTel spans; geometric collision verified end-to-end through the real kernel in the sim tier; LTTng + formal proofs remain out of scope |
-| Org / publishing | 🟡 in flight — public repo + `master` branch protection ✅; lockstep SemVer computed from Conventional Commits by `release-please.yml` ✅ ([releasing](../contributing/releasing.md)); PyPI trusted-publishing live — 0.1.0 and 0.2.0 published for all 14 packages ✅. `release.yml` was dropped; the GHCR release-image path returns as a purpose-built `release-image.yml` once ROS-in-CI infra exists |
-
-Legend: ✅ done, 🟡 in flight, 🔵 planned, 🔴 blocked / outstanding.
-
----
+| Schemas (`openral_core`) | ✅ Pydantic v2, hypothesis fuzz, JSON Schema export, CI drift check |
+| HAL Protocol and ROS bridge | ✅ `RosControlHAL`, one manifest-driven lifecycle node for every robot |
+| Sim HALs (arms, humanoids, bimanual, mobile) | ✅ SO-100/101, Franka, UR5e/UR10e, ALOHA, OpenArm, Rizon4, Metal, H1/H2/G1, OpenAMRobot 2.0, panda_mobile, Galaxea A1 and R1 Pro twins; per robot in [Robots](../reference/robots.md) |
+| Real-hardware HALs | 🟡 adapters landed for SO-100/101, Franka, UR5e/UR10e, Sawyer, ALOHA, OpenArm, Galaxea A1, Flexiv Rizon and Unitree hg; only OpenArm and Galaxea A1 have run on hardware |
+| Enactic OpenArm v2 real | 🟡 attended deploys have driven the arms; the commanded-motion HIL gate (double-gated on `OPENRAL_OPENARM_ALLOW_MOTION=1` and `OPENRAL_OPENARM_ATTENDED=1`) has no recorded run; [runbook](../tutorials/deploy/openarm-real-world-voxel-check.md) |
+| Sensor adapters | 🟡 RealSense D435/D435i/D415, ZED mini, Arducam B0495, UVC (C920), OAK-D Pro, Robotiq FT-300; lidar, tactile and a perception-head package are planned |
+| World State aggregator | ✅ 30 Hz tf2-aware snapshot, staleness latching, detected-object lift |
+| Persistent spatial memory | 🟡 object/place/room graph with recall and resolve tools; sqlite-vec persistence pending |
+| Skill base and runtimes | ✅ lifecycle node, PyTorch and ONNX runtimes, engine cache |
+| rSkill manifest and loader | ✅ HF Hub packaging, license surface; sigstore provenance not implemented (unverified-provenance warning, `OPENRAL_REQUIRE_SIGNED_SKILLS` gate) |
+| Policy adapters | ✅ SmolVLA, pi0.5, xVLA, ACT, Diffusion Policy, MolmoAct2, RLDX-1, GR00T N1.7, OpenVLA, NaT VLA, Cosmos 3, LingBot-VLA 1/2 and VA, XR-1, InternVLA-N1, 3D Diffuser Actor |
+| Sim and eval harness | ✅ `openral sim run`, `benchmark run`, three-tier scene registry; [backends](../reference/sim-environments.md) |
+| Multi-robot deploy sim | ✅ several robots in one scene, each with its own domain and dashboard |
+| Observability | ✅ OTel spans and metrics, `openral dashboard`, compliance recorder ([Telemetry](../reference/telemetry.md)) |
+| Dashboard remote link | ✅ `openral robot link` to openral.com; console is a prebuilt bundle ([ADR-0131](../decisions.md)) |
+| ROS graph security | ✅ SROS2 enclaves via `openral security init` ([guide](../reference/ros-graph-security.md)) |
+| Dataset bridge | ✅ `RolloutRecorder`, `LeRobotDatasetSink`, `openral dataset {push,from-bag}` |
+| Reasoner (S2) | ✅ provider-selected LLM, typed tool dispatch, event-driven ticks; bounded retry live, full substitute/replan ladder partial |
+| Deploy ROS graph | ✅ `openral deploy {run,sim}` with HAL, safety, reasoner, world state |
+| Navigation (SLAM, Nav2) | ✅ reasoner-managed `slam_toolbox` and Nav2; `cmd_vel` to mobile-base HAL |
+| Object detection and spatial lift | ✅ RT-DETR and OmDet-Turbo detectors, 2D to 3D lift, LocateAnything-3B on demand, scene VLM |
+| Safety supervisor and watchdog | 🟡 envelope checks, deadman and human E-stop launched by the deploy graph (✅); hardware pendant needs a per-vendor driver |
+| C++ safety kernel | ✅ deny-by-default validator with geometric collision, OTel spans; LTTng and formal proofs out of scope |
+| Weight quantization | ✅ open runs fp32/fp16/bf16; 8-bit and below is OpenRAL Pro ([ADR-0123](../decisions.md)) |
+| Publishing | ✅ lockstep SemVer by `release-please.yml` ([releasing](../contributing/releasing.md)); PyPI trusted publishing live (0.4.0 latest) |
 
 ## Next phases
 
-- **M2** — Unitree G1 real-HW HAL (`unitree_sdk2`) + cerebellar (S0) C++ controller; `rt_bridge` shared-memory ring.
-  - *Progress (2026-11):* the G1 real-HW HAL reuses NVIDIA's Isaac ROS stack instead of a hand-rolled `unitree_sdk2` bridge — `packages/openral_hal_unitree` + `openral_hal.unitree_real.UnitreeHgRealHAL`. S0 is NVIDIA's `InferenceController` running GR00T Decoupled WBC (default; WBC-AGILE selectable) at 200 Hz / 50 Hz policy inside `ros2_control`; OpenRAL commands the upper body and base twist only. Not yet run on a G1; the 500–1000 Hz S0 target and `rt_bridge` remain open.
-- **M3** — HIL bring-up on lab runners. Exercised on real hardware today, by hand on a lab host: **OpenArm v2** (`tests/hil/test_openarm_can_live.py` — CAN transport + a read-only motor round-trip; its commanded-motion gate is unrun, though attended deploys have driven the motors) and **Galaxea A1** (`tests/hil/test_galaxea_a1*.py` — observation, hold, bounded joint and gripper round trips, and `candidate_action` → C++ kernel → `safe_action` → real HAL). Adapters and `tests/hil/` files landed but never met a physical arm: UR5e/UR10e/Franka/Sawyer/ALOHA — there is no physical Franka, Sawyer or ALOHA to validate against, and the UR pair is gated on `UR5E_HOST` / `UR10E_HOST` with no recorded run. Blocked on runners: no workflow runs `tests/hil/` at all, so no HIL gate is enforced in CI. SO-101 has a serial-bus HIL gate (`tests/hil/test_so101_serial_live.py`, bench in `scenes/deploy/so101_bench.yaml`); the RealSense (D435) HIL gate was removed until matching lab hardware exists.
-- **v0.3** — spatial-memory ROS feeder + sqlite-vec persistence.
-- **v1.0** — Failure-anticipation as first-class; C++ safety-kernel sim/HIL hardening + LTTng; certifiable build.
+- **M2: Unitree real hardware.** `packages/openral_hal_unitree` and `openral_hal.unitree_real.UnitreeHgRealHAL` reuse NVIDIA's Isaac ROS stack (S0 runs in `ros2_control`; OpenRAL commands the upper body and base twist). Not yet run on a physical G1 or H2. The 500-1000 Hz S0 target remains open.
+- **M3: HIL bring-up on lab runners.** OpenArm v2 and Galaxea A1 have run by hand on a lab host. UR5e/UR10e, Franka, Sawyer and ALOHA adapters have HIL files but never met a physical arm. No CI workflow runs `tests/hil/`, so no HIL gate is enforced in CI.
+- **Spatial memory.** sqlite-vec persistence for the scene graph.
+- **v1.0.** Failure anticipation as a first-class feature; safety-kernel hardening and LTTng; a certifiable build.

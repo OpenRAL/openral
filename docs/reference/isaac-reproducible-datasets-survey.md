@@ -1,5 +1,9 @@
 # Isaac-reproducible datasets survey — which public checkpoints can we re-run in our Isaac Sim 6.1 backend?
 
+!!! note "Dated survey"
+    Its rank-1 candidate is packaged as `robots/droid_franka_robotiq` + `rskills/pi05-droid-jointpos-arena`. Kept as a record; it is not maintained against master.
+
+
 > **Status: research survey (2026-10-15).** Rank 1 is packaged (2026-10-16), not yet run:
 > `robots/droid_franka_robotiq`, `scenes/{sim,deploy}/isaac_arena_droid_banana_in_bowl.yaml`,
 > `rskills/pi05-droid-jointpos-arena`. Corrections found while packaging it: Isaac Lab 3

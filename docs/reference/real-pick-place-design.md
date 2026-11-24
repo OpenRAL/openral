@@ -1,5 +1,9 @@
 # Pick and place on the real OpenArm cell with the world-voxel check on
 
+!!! note "Historical design note"
+    Default-off design for real pick and place. The relaxing exemptions it relies on now sit behind the OpenRAL Pro exemption provider ([decisions](../decisions.md)). Kept as a record; it is not maintained against master.
+
+
 Status: **implemented, default-off, pending Safety-WG review**, 2026-10-03. Developed on
 `feat/real-pick-place-attachment` (draft PR #332), landed on `master` via #289. Every step of §3 except 5 (the attended
 position-stall measurement) and 9 (enabling the Thor scene) is implemented and committed off; the

@@ -1,97 +1,75 @@
 # Your first sim rollout
 
-A trained policy driving a simulated robot, in one command, on a laptop with
-no GPU.
+**Goal:** run a trained policy in a simulated robot with one command, on a laptop with no GPU.
 
-The pairing is [Diffusion Policy](https://arxiv.org/abs/2303.04137) × PushT,
-the lightest one: gym-pusht is 2-D `pymunk` with no MuJoCo render context,
-the checkpoint runs on CPU, and both ship in the `sim` dependency group.
-For the GPU flagship pairing, skip to [Step 6](#6-where-to-go-next).
+The pairing is [Diffusion Policy](https://arxiv.org/abs/2303.04137) on PushT, the lightest one. gym-pusht is 2-D `pymunk` with no MuJoCo render context, the checkpoint runs on CPU, and both ship in the `sim` dependency group. For the GPU flagship pairing, jump to [Move to a MuJoCo scene](#move-to-a-mujoco-scene).
 
----
-
-## 1. Install
+## Prerequisites
 
 ```bash
 git clone https://github.com/OpenRAL/openral && cd openral
 just bootstrap                # uv + ROS 2 + system deps
 just sync --group sim         # workspace + the sim group
-```
-
-`just sync` wraps `uv sync --all-packages` plus a repair step. **Never run bare
-`uv sync`**: it trips on the `hf-libero` metadata and leaves the venv
-half-built. Rules: [Managing the Python environment & dependency
-groups](../../contributing/toolchain.md#managing-the-python-environment-dependency-groups).
-Installed via the one-liner instead of a clone? Use `openral install sim`
-instead of `just sync --group sim`.
-
-Check the host:
-
-```bash
 uv run openral doctor
 ```
 
-A GPU row reading `absent` is fine here. Row meanings: [quickstart](../../quickstart/index.md).
+Never run bare `uv sync`: it trips on the `hf-libero` metadata and leaves the venv half-built. Rules: [Managing the Python environment & dependency groups](../../contributing/toolchain.md#managing-the-python-environment-dependency-groups). If you installed with the one-liner instead of a clone, use `openral install sim` in place of `just sync --group sim`.
+
+A GPU row reading `absent` in the doctor output is fine here. Row meanings: [quickstart](../../quickstart/index.md).
 
 ---
 
-## 2. Pick the two halves
+## 1. Pick the two halves
 
-Every `openral sim run` composes exactly two things: a **scene** (`--config`, a
-`SimScene` YAML carrying robot × scene × task) and an **rSkill** (`--rskill`,
-the policy). Both are required. To list them:
+Every `openral sim run` composes a **scene** (`--config`, a `SimScene` YAML carrying robot × scene × task) and an **rSkill** (`--rskill`, the policy). Both are required.
 
 ```bash
-openral sim list        # scene configs — paste into --config
-openral rskill list     # rSkills, in-tree and installed — paste into --rskill
+uv run openral sim list        # scene configs, paste into --config
+uv run openral rskill list     # rSkills, in-tree and installed, paste into --rskill
 ```
 
-Neither builds a sim, touches the GPU, or emits telemetry. This page uses:
+Neither builds a sim or touches the GPU. This page uses:
 
 | Half | Value | What it is |
 | --- | --- | --- |
-| `--config` | `scenes/sim/pusht.yaml` | The PushT scene + the `pusht/0` task, 300 steps |
-| `--rskill` | `rskills/diffusion-pusht` | Diffusion Policy, ~263 M params, fp32 |
+| `--config` | `scenes/sim/pusht.yaml` | The PushT scene and the `pusht/0` task, 300 steps |
+| `--rskill` | `rskills/diffusion-pusht` | Diffusion Policy, about 263 M parameters, fp32 |
 
-The scene hard-fixes its robot to `pusht_2d` (a synthetic 2-DoF pusher, not a
-physical embodiment), so there is no `--robot` to pass.
+The scene fixes its robot to `pusht_2d` (a synthetic 2-DoF pusher), so there is no `--robot` to pass.
 
----
+## 2. Dry-run it
 
-## 3. Dry-run it first
-
-`--dry-run` resolves the config and the rSkill and runs the same embodiment /
-sensor compatibility gate a real rollout hits, without building the sim or
-downloading weights:
-
-```bash
-uv run openral sim run \
-  --config scenes/sim/pusht.yaml \
-  --rskill rskills/diffusion-pusht \
-  --dry-run
-```
-
-It prints the resolved plan and exits `0`. An incompatible pairing exits
-non-zero here instead of after a multi-gigabyte download, e.g. a skill for
-another embodiment:
+`--dry-run` resolves the config and the rSkill and runs the embodiment and sensor compatibility gate a real rollout hits, without building the sim or downloading weights:
 
 ```bash
 uv run openral sim run --config scenes/sim/pusht.yaml \
-  --rskill rskills/smolvla-libero --dry-run    # exits 1: embodiment mismatch
+  --rskill rskills/diffusion-pusht --dry-run
 ```
 
----
+You should see the resolved header (the same block as in step 3), then:
 
-## 4. Run it
+```
+  max_ticks: 301
+  dry-run: resolved config + rSkill, compatibility checked; sim not built
+```
+
+and exit `0`. An incompatible pairing prints `compat error: ...` and exits `1` before any download:
 
 ```bash
-uv run openral sim run \
-  --config scenes/sim/pusht.yaml \
-  --rskill rskills/diffusion-pusht
+uv run openral sim run --config scenes/sim/pusht.yaml \
+  --rskill rskills/smolvla-libero --dry-run     # exits 1: embodiment mismatch
 ```
 
-The first run downloads the checkpoint (~1 GB) into your HF cache. The run
-prints a resolved header, one line per episode, then the success rate:
+## 3. Run it
+
+On CPU, cap the episode. The scene's default is 300 steps, and Diffusion Policy runs 100 denoising steps per chunk, so a full episode takes a long time without a GPU:
+
+```bash
+uv run openral sim run --config scenes/sim/pusht.yaml \
+  --rskill rskills/diffusion-pusht --max-steps 16
+```
+
+With a GPU, add `--device cuda:0` and drop `--max-steps`. The first run downloads the checkpoint (about 1 GB) into your HF cache. You should see a header, one line per episode, then the success rate:
 
 ```
 ============================================================
@@ -108,99 +86,58 @@ prints a resolved header, one line per episode, then the success rate:
   success_rate: 0/1 = 0%
 ```
 
-That episode line is a real CPU run capped at `--max-steps 16`, short enough to
-fail. Reading it:
+Real CPU timings, so yours will differ. A run with tracing active also prints a `trace_id:` line, and one with `--save-dir` prints `wrote .../summary.json`.
 
-- **`vla`** is the *adapter* id, taken from the manifest's `model_family`. It is
-  not the rSkill name; several rSkills share one adapter.
-- **`[mujoco]`** is the scene's declared `PhysicsBackend`, and for PushT it is
-  cosmetic (gym-pusht is `pymunk`); it is carried for schema uniformity, not
-  dispatch.
-- **`mean_lat`** is mean per-step latency. Diffusion Policy runs 100 DDPM
-  denoising steps per chunk, so it is the slowest adapter in the tree by
-  design: the manifest records 1756 ms for a warm full chunk on its
-  reference host (RTX 4070 Laptop, CUDA 12.8, PyTorch 2.10). The 6684 ms
-  above is the same work on CPU only.
-- **`budget_viol`** counts steps that blew the manifest's
-  `latency_budget.per_chunk_ms`. Expect some on any host: the first chunk of an
-  episode pays warm-up, so a 137-step GPU rollout still logged 18. A signal,
-  not a failure.
-- The exit code is **not** gated on success rate. A failed episode still
-  exits `0`; you decide the threshold.
-
-### Budget your patience on CPU
-
-The scene's default episode is 300 steps: roughly half an hour on CPU at the
-latency above. Cap it:
-
-```bash
-uv run openral sim run --config scenes/sim/pusht.yaml \
-  --rskill rskills/diffusion-pusht --max-steps 16
-```
-
-That took about two minutes end to end on a 20-core laptop CPU, including a
-~10 s policy load from a warm cache. With a GPU, add `--device cuda:0` and use
-the full episode.
+- **`vla`** is the policy adapter id, taken from the manifest's `model_family`. Several rSkills can share one adapter.
+- **`[mujoco]`** is the scene's declared `PhysicsBackend`. For PushT it is cosmetic: gym-pusht is `pymunk`.
+- **`mean_lat`** is mean per-step latency. The manifest records 1756 ms for a warm full chunk on its reference GPU; the figure above is the same work on CPU.
+- **`budget_viol`** counts steps over the manifest's `latency_budget.per_chunk_ms`. Some are normal because the first chunk of an episode pays warm-up. It is a signal, not a failure.
+- The exit code does not depend on success. A failed episode still exits `0`; you set the threshold.
 
 ---
 
-## 5. Get something back from it
+## 4. Get something back from it
 
 ### A JSON summary
 
 ```bash
 uv run openral sim run --config scenes/sim/pusht.yaml \
-  --rskill rskills/diffusion-pusht --save-dir out/
+  --rskill rskills/diffusion-pusht --max-steps 16 --save-dir out/
 ```
 
-Writes `out/summary.json`: the fully-resolved `config`, an `episodes` array
-(`success`, `steps`, `total_reward`, `mean_step_latency_ms`,
-`max_step_latency_ms`) and the aggregate `success_rate`. This is the file to
-assert on in CI.
+`out/summary.json` holds the resolved `config`, an `episodes` array (`success`, `steps`, `total_reward`, `mean_step_latency_ms`, `max_step_latency_ms`, `contact_stats`) and the aggregate `success_rate`. `contact_stats` is filled by Isaac scenes only. Assert on this file in CI.
 
-> This is a rollout summary, not an eval result, and it does **not** write into
-> the rSkill package. `eval/<benchmark>.json` comes from the benchmark tier; see
-> [Write & publish an rSkill §5](../rskill/write-and-publish-an-rskill.md).
+It is a rollout summary, not an eval result, and it never writes into the rSkill package. `eval/<benchmark>.json` comes from the benchmark tier: [Run a benchmark](../benchmark/run-a-benchmark.md).
 
 ### A video
 
 ```bash
 uv run openral sim run --config scenes/sim/pusht.yaml \
-  --rskill rskills/diffusion-pusht --save-video example_videos
+  --rskill rskills/diffusion-pusht --max-steps 16 --save-video example_videos
 ```
 
-The default `--video-style debug` stacks two bands per episode: an image band
-on top, and an `observation state` line plot underneath. The top band shows the
-policy's stitched camera grid when the policy has more than one input camera;
-otherwise, as on PushT, the rollout and policy views are the same picture and it
-is labelled `rollout / policy view`. The flag also switches on per-step frame
-capture. `--video-style world` gives a clean single-view render.
+The default `--video-style debug` stacks two bands per episode: an image band on top and an `observation state` line plot below. The top band is the policy's stitched camera grid when it has several cameras; on PushT the rollout and policy views are the same picture and it is labelled `rollout / policy view`. `--video-style world` writes a clean single-view render.
 
 ### A live dashboard
 
 ```bash
 uv run openral sim run --config scenes/sim/pusht.yaml \
-  --rskill rskills/diffusion-pusht --dashboard
+  --rskill rskills/diffusion-pusht --max-steps 16 --dashboard
 ```
 
-Boots `openral dashboard` as a child process, points OpenTelemetry at it, and
-shuts it down on exit. Open <http://localhost:4318> for live spans, latency
-histograms and camera thumbnails ([dashboard quickstart](../../quickstart/dashboard.md)).
+This boots `openral dashboard` as a child process, points OpenTelemetry at it and stops it on exit. Open <http://localhost:4318> for live spans, latency histograms and camera thumbnails ([dashboard quickstart](../../quickstart/dashboard.md)).
 
 ### A live viewer
 
-MuJoCo-backed scenes open a passive viewer window automatically when a display
-is available. PushT is `pymunk`, so it has none; `--view` is for the MuJoCo
-scenes below.
+MuJoCo-backed scenes open a passive viewer window when a display is available. PushT is `pymunk`, so it has none. On a MuJoCo scene use `--view`, and do not set `MUJOCO_GL=egl`: the two are incompatible.
 
 ---
 
-## 6. Where to go next
+## Next
 
 ### Sweep the same pairing
 
-`--task`, `--instruction`, `--max-steps`, `--n-episodes`, `--seed` and
-`--device` overlay the YAML, so one config drives many runs:
+`--task`, `--instruction`, `--max-steps`, `--n-episodes`, `--seed` and `--device` overlay the YAML:
 
 ```bash
 for s in 0 1 2; do
@@ -211,33 +148,30 @@ done
 
 ### Move to a MuJoCo scene
 
-LIBERO with SmolVLA is the flagship pairing: a 7-DoF Franka Panda, real MuJoCo
-physics, a language-conditioned VLA. It needs a GPU, the `libero` group, and an
-offscreen GL backend:
+LIBERO with SmolVLA is the flagship pairing: a 7-DoF Franka Panda, real MuJoCo physics and a language-conditioned VLA. It needs a GPU, the `libero` group and an offscreen GL backend. Use the recipe; it adds two workarounds (a duplicate `hf-libero` egg-info and LIBERO's stale absolute-path config):
 
 ```bash
 just sync --group libero
-MUJOCO_GL=egl uv run openral sim run \
-  --config scenes/sim/libero_spatial.yaml \
-  --rskill rskills/smolvla-libero
+just sim-libero
 ```
 
-Prefer `just sim-libero`: it wraps that plus two workarounds (a duplicate
-`hf-libero` egg-info, and LIBERO's stale absolute-path config).
+The recipe runs `MUJOCO_GL=egl uv run --all-packages --group libero openral sim run --config scenes/sim/libero_spatial.yaml --rskill rskills/smolvla-libero --save-video example_videos`. Keep `--all-packages`: without it `uv run --group libero` evicts the `openral` script.
 
-> **LIBERO and RoboCasa cannot share a venv**: they pin conflicting robosuite
-> versions, and `[tool.uv].conflicts` refuses the mix. Swap with
-> `just sync --group libero` / `just sync --group robocasa` per task.
+LIBERO and RoboCasa cannot share a venv because they pin conflicting robosuite versions. Swap with `just sync --group libero` or `just sync --group robocasa` per task.
 
-### Further reading
+## Troubleshooting
 
-- **[Create a sim environment](create-a-sim-environment.md)** — author your own
-  `SimScene` YAML, add a robot manifest, or write a scene / policy adapter.
-- **[Write & publish an rSkill](../rskill/write-and-publish-an-rskill.md)** —
-  package your own policy so `--rskill` can load it.
-- **[Sim environments reference](../../reference/sim-environments.md)** — the
-  full scene catalogue across all three tiers.
-- **[VLA × Robot × Sim compatibility](../../reference/vla_compatibility.md)** —
-  which policy runs on which robot in which simulator.
-- **[`scenes/README.md`](https://github.com/OpenRAL/openral/blob/master/scenes/README.md)**
-  — the cookbook, including the scene-fixed-robot table.
+| Symptom | Fix |
+| --- | --- |
+| `compat error: ...`, exit 1 | The rSkill's embodiment or sensors do not match the scene's robot. Pick another rSkill or scene. |
+| `--view` errors out | Unset `MUJOCO_GL=egl`, or drop `--view` |
+| First run is slow | It is downloading the checkpoint; later runs read the HF cache |
+| Run takes very long | CPU inference. Add `--max-steps 16`, or use `--device cuda:0` |
+| `Failed to spawn: openral` | A `uv run --group` without `--all-packages`; use the `just` recipe |
+
+## Further reading
+
+- [Create a sim environment](create-a-sim-environment.md): write your own scene, robot manifest or adapter.
+- [Write & publish an rSkill](../rskill/write-and-publish-an-rskill.md): package your own policy for `--rskill`.
+- [Sim environments reference](../../reference/sim-environments.md): every scene across the three tiers.
+- [VLA × Robot × Sim compatibility](../../reference/vla_compatibility.md): which policy runs on which robot in which simulator.

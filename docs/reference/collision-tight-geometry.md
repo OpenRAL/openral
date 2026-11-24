@@ -1,5 +1,9 @@
 # Tight link geometry in the safety kernel — can it stop being the binding constraint?
 
+!!! note "Superseded design"
+    Implemented; the change record is the [staged hull narrow phase](collision-hull-narrow-phase.md). Kept as a record; it is not maintained against master.
+
+
 > **Status: design investigation, since implemented.** PR #166 shipped §12.2's
 > staged design for `check_voxel_collision`, scoped to `link1` + `link2`, and
 > [issue #191](https://github.com/OpenRAL/openral/issues/191) extended it to

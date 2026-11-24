@@ -14,50 +14,44 @@ anyone on the same network as the robot host can:
 | publish `ActionChunk` on `/openral/safe_action` | the HAL executes it; the safety kernel is bypassed |
 | call `/openral/estop_reset` | clears a latched E-stop once the cooldown has passed |
 | `ros2 param set` on the safety kernel | relaxed `joint_velocity_max`, `workspace_box_*`, … would apply on the next configure |
-| `ros2 param set /safety_controller blend_ratio` (Unitree G1) | blends the S0 locomotion policy in, up to 1.0 at ≤ 1 /s (`max_blend_ratio_speed` is refused at runtime since #548); see below |
+| `ros2 param set /safety_controller blend_ratio` (Unitree G1) | blends the S0 locomotion policy in, up to 1.0 at ≤ 1 /s (`max_blend_ratio_speed` is refused at runtime); see below |
 | publish `/openral/prompt` | instructs the reasoner |
 | publish `/joint_states`, the deadman heartbeat | the kernel checks against a fake state; a dead operator looks alive |
 
 ## What `openral deploy run` does
 
 **Host confinement (default).** A real deploy (`hal_mode=real`) runs with
-`ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` and a per-robot `ROS_DOMAIN_ID`,
-a stable hash of the `robot_id` into 10–101 (above 101 collides with Linux
-ephemeral ports) that never lands on a reserved domain
-(`openral_cli._dds_scope.RESERVED_DOMAINS`): 0, 42 (`tools/_demo_env.sh`), 77
-(the sim), 50–99 (per-PID test domains, which also cover the lab harnesses'
-76/80–92) and 100–101 (package test conftests). That leaves 39 domains, 10–49
-minus 42. A hash that lands on a reserved domain is re-hashed into the free
-ones; every other `robot_id` keeps the domain it had before the reservations
-(`openarm` stays 43; `so101_follower` moved from 52 to 39). The chosen scope is printed
-as `ros scope:` before launch, followed by the `export` line another terminal
-needs: `openral prompt` and `openral estop reset` run `rclpy` on their own
-shell's environment, so they reach the robot only on the same domain and
-range. Pass them `--robot <robot_id>` instead and they derive that scope
-themselves with the same `confine_real_scope` (`openral_cli._dds_scope.join_robot_scope`,
-#557), printing the domain they used and where it came from; an exported
-`ROS_DOMAIN_ID` still wins there too, and a mismatch with the robot's domain is
-named in that line. They then act only if `openral_hal_<robot_id>` is on the
-joined graph (`require_robot_on_graph`, exit 3 otherwise), because 39 free
-domains are shared by every robot id: `openarm`, `makermods_metal` and
-`openamrobot_v2` all derive 43. The deploy prints the `--robot` hint only when
-its graph is on the derived domain with LOCALHOST discovery. An exported non-empty `ROS_DOMAIN_ID` wins; an exported empty value of
-either variable counts as unset. Simulations get the same range rule, on domain 77
-(`openral_cli._dds_scope.confine_sim_scope`). Implementation:
-`openral_cli._dds_scope.confine_real_scope`.
+`ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` and a per-robot `ROS_DOMAIN_ID`
+(`openral_cli._dds_scope.confine_real_scope`):
+
+- The domain is a stable hash of the `robot_id` into 10-101 (above 101 collides
+  with Linux ephemeral ports), re-hashed if it lands on a reserved domain
+  (`RESERVED_DOMAINS`): 0, 42 (`tools/_demo_env.sh`), 77 (the sim), 50-99
+  (per-PID test domains and lab harnesses) and 100-101 (package test conftests).
+  39 domains remain free (10-49 minus 42), so several robot ids can share one
+  (`openarm`, `makermods_metal` and `openamrobot_v2` all derive 43).
+- An exported non-empty `ROS_DOMAIN_ID` wins; an exported empty value of either
+  variable counts as unset. Simulations use the same range rule on domain 77
+  (`confine_sim_scope`).
+- The chosen scope is printed as `ros scope:` before launch, followed by the
+  `export` line another terminal needs. `openral prompt` and `openral estop
+  reset` run `rclpy` on their own shell's environment, so they reach the robot
+  only on the same domain and range. Pass `--robot <robot_id>` instead and they
+  derive the scope themselves (`join_robot_scope`), print the domain and where
+  it came from, and act only if `openral_hal_<robot_id>` is on the joined graph
+  (`require_robot_on_graph`, exit 3 otherwise).
+- Before starting, the deploy refuses a graph that is already occupied
+  (`assert_graph_unoccupied`; no env var overrides that). The separate refusal
+  for a graph that cannot be *read* (`rclpy` fails to import) can be bypassed
+  with `OPENRAL_ALLOW_UNVERIFIED_GRAPH=1`.
 
 **An exported `SUBNET` is ROS's default, not a choice.** `source
 /opt/ros/jazzy/setup.bash` exports `ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET`
-whenever it is unset (`ros_environment`'s `1.ros_discovery.dsv` is
-`set-if-unset;ROS_AUTOMATIC_DISCOVERY_RANGE;SUBNET`), so every freshly sourced
-shell carries it. Until 2026-11-12 the deploy read it as an operator's choice:
-`deploy sim` ran on the LAN and the host confinement of #227 never applied, and
-`deploy run` refused a real robot as networked unless `LOCALHOST` was exported
-by hand. Both now treat `SUBNET` like an unset range — replaced by `LOCALHOST` —
+whenever it is unset, so every freshly sourced shell carries it. The deploy
+therefore treats `SUBNET` like an unset range and replaces it with `LOCALHOST`,
 unless `OPENRAL_ALLOW_NETWORK_ROS=1` says the LAN is wanted. Any other exported
-range (`LOCALHOST`, `OFF`, `SYSTEM_DEFAULT`) is one ROS never sets, so it is the
-operator's and wins as before. The decision is
-`openral_core.ros_graph_scope.discovery_range_is_ros_default`.
+range (`LOCALHOST`, `OFF`, `SYSTEM_DEFAULT`) is the operator's and wins
+(`openral_core.ros_graph_scope.discovery_range_is_ros_default`).
 
 **Networked graphs need an explicit opt-in.** If `ROS_STATIC_PEERS` or a Fast DDS
 `ROS_DISCOVERY_SERVER` is set, `RMW_IMPLEMENTATION=rmw_zenoh_cpp` (Zenoh reads
@@ -121,22 +115,16 @@ cannot raise `safe_action_deadline_s` / `first_chunk_deadline_s` on a running
 cell. A set before the first configure still works (nothing is supervised yet);
 see `packages/openral_safety_watchdog/README.md`.
 
-**Unitree G1: the blend parameters.** NVIDIA's `SafetyController`
-(`isaac_ros_deploy` v4.6-0 `3e84f85a`, `deps.repos`) declares `blend_ratio` and
-`max_blend_ratio_speed` with `read_only = false`, applies a runtime set on the next tick
-(range 0–10 /s), and on activation snaps the applied blend to its target with no ramp.
-The G1 bringup runs it as `openral_hal_unitree/GuardedSafetyController` (issue #548),
-which refuses to configure with `max_blend_ratio_speed` outside (0, 1.0] /s, refuses
-every runtime change to it, and resets `blend_ratio` to 0.0 on activation so the
-policy always starts blended out (a refusal there would leave a strict controller swap
-half-done, with the joints unclaimed). Its
-`out_of_domain_detection.*` parameters already refuse a runtime set, and the rest are
-read at configure. `blend_ratio` itself stays writable because it is the operator's
-gantry blend-in: a participant that can reach `/safety_controller`'s parameter services
-can still blend the policy in, at the operator's ≤ 1 /s ramp. Under SROS2
-([below](#sros2-enclaves-adr-0130)) only the operator enclave may set it; without
-SROS2, host confinement is the only control on who that is, and a networked graph
-cannot start without SROS2.
+**Unitree G1: the blend parameters.** The G1 bringup runs NVIDIA's
+`SafetyController` as `openral_hal_unitree/GuardedSafetyController`: it refuses
+to configure with `max_blend_ratio_speed` outside (0, 1.0] /s, refuses every
+runtime change to it, and resets `blend_ratio` to 0.0 on activation so the
+policy starts blended out. `blend_ratio` itself stays writable (it is the
+operator's gantry blend-in, at <= 1 /s), so under SROS2
+([below](#sros2-enclaves-adr-0130)) only the operator enclave may set it;
+without SROS2, host confinement is the only control on who that is, and a
+networked graph cannot start without SROS2. Controller details are in
+`packages/openral_hal_unitree/README.md`.
 
 Host confinement limits *discovery*; it is not a firewall. Combine it with a
 host firewall that drops inbound DDS ports (UDP 7400+) on interfaces the robot
@@ -248,7 +236,7 @@ bringup that defers a process (the Unitree `switch_controllers` step) pins the
 enclave on it itself. A hand-run secured launch must export
 `ROS_SECURITY_ENCLAVE_OVERRIDE=/openral/launch` or it is refused.
 
-**Cyclone DDS quirk.** Cyclone DDS 0.10 (Jazzy's default) refuses to create a topic
+**Cyclone DDS quirk.** Cyclone DDS 0.10 (the version in Jazzy, and the RMW the OpenRAL images set; a bare Jazzy host defaults to Fast DDS) refuses to create a topic
 that any deny rule names, even a publish-only rule: the HAL could not subscribe to
 `safe_action` and the watchdog could not serve its own `set_parameters`. Fast DDS
 does not have this problem. The keystore therefore lists an allow rule for the

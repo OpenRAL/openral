@@ -1,69 +1,59 @@
 # Repository map
 
-The canonical visual map is [`repo-state-map.html`](repo-state-map.html). This page is the textual companion — the directory layout and the external-repo boundaries.
-
-## Layout
+The visual map is [`repo-state-map.html`](repo-state-map.html). This page is the textual companion: where each thing lives. Directory names use short forms (`core/`, `cli/`, `msgs/`); Python modules and PyPI packages keep the `openral_` / `openral-` prefix.
 
 ```
-openral/                      ← THIS monorepo
-├─ python/                        ← uv workspace; pure-Python libs
-│  ├─ core/         (openral_core)        ← Pydantic v2 schemas (normative) ✓
-│  ├─ cli/          (openral_cli)         ← `openral` entry point (bare → REPL, with args → one-shot) ✓
-│  ├─ detect/       (openral_detect)      ← `openral detect` auto-provisioning → robot.yaml ✓
-│  ├─ hal/          (openral_hal)         ← `HAL` Protocol + manifest-driven `MujocoArmHAL` sim adapters (each a `SimAttachedHAL` — the one sim HAL shell — over a `MujocoTwinRollout` or a robot's subclass of it; SO-100/101, Franka, UR5e/10e, ALOHA, OpenArm, Anvil-OpenArm-v2, Rizon4, Makermods Metal, H1, H2, G1, OpenAMRobot 2.0) + the standalone `PandaMobileHAL` (panda_mobile) + real-HW adapters (SO-100/101, Franka, UR, Sawyer, ALOHA, OpenArm, Galaxea A1) ✓
-│  ├─ sensors/      (openral_sensors)     ← Sensor catalog + vendor adapters ✓
-│  ├─ world_state/  (openral_world_state) ← `WorldStateAggregator` (30 Hz snapshot, staleness latching, detected-objects fold-in) ✓
-│  ├─ rskill/       (openral_rskill)      ← `rSkillBase` ABC, `rSkill` loader, runtime adapters (PyTorch/ONNX; TensorRT is an OpenRAL Pro plugin), VLA + detector adapters ✓
-│  ├─ state_adapter/ (openral_state_adapter) ← rSkill state-contract bindings ✓
-│  ├─ sim/          (openral_sim)         ← `SimRunner` + `openral sim run` / `openral benchmark run` registry; LIBERO/MetaWorld/RoboCasa/ManiSkill3/SimplerEnv/gym-aloha/gym-pusht/IsaacSim (sidecar) adapters ✓
-│  ├─ runner/       (openral_runner)      ← `InferenceRunner` Protocol + `DeployRunner` + `GStreamerSensorReader` + `NullSafetyClient` ✓
-│  ├─ reasoner/     (openral_reasoner)    ← S2 LLM reasoner/supervisor core — `ReasonerCore`, `ReasonerToolCall` palette, bounded replanning ladder ✓
-│  ├─ dataset/      (openral_dataset)     ← rosbag2 ↔ LeRobotDataset v3 bridge ✓
-│  └─ observability/ (openral_observability) ← OTel SDK + OTLP exporter, span helpers, structlog↔OTel bridge, robot dashboard (ADR-0129; serves the pinned prebuilt robot console, whose source is not in this repo, ADR-0131) ✓
-│  World Action Model (WAM) implementations: removed (ADR-0104) — they live in the private OpenRAL Pro monorepo, not this repo
-│  Planned: dispatcher (edge/cloud/split)
-├─ packages/                      ← ROS 2 packages (colcon build)
-│  ├─ msgs/         (openral_msgs)        ← IDL (.msg, .srv, .action) — normative; WorldStateStamped carries detected_objects ✓
-│  ├─ world_state/  (openral_world_state_ros) ← lifecycle node wrapping the aggregator ✓
-│  ├─ openral_hal_node/       ← the one manifest-driven HAL lifecycle node, every robot (`robot_yaml` picks it; node name `openral_hal_<robot_id>`) ✓
-│  ├─ openral_hal_openarm/    ← OpenArm real-HW bringup only (`real_bringup.launch.py`, via `hal.real_bringup`) ✓
-│  ├─ openral_hal_rizon/      ← dual Flexiv Rizon 4s real-HW bringup only (upstream `flexiv_hardware`, via `hal.real_bringup`)
-│  ├─ openral_reasoner_ros/   ← reasoner_node (LLM ReasonerToolCall dispatch) ✓
-│  ├─ openral_prompt_router/  ← prompt fan-in lifecycle node ✓
-│  ├─ openral_rskill_ros/      ← rskill_runner_node + ExecuteRskill action server ✓
-│  ├─ openral_safety/         ← Python pass-through `SafetyPassthroughNode` + configure-time helpers for the C++ kernel (URDF/MJCF collision lowering, envelope loading) ✓
-│  ├─ openral_safety_watchdog/ · openral_human_estop/ ← deadman watchdog + human E-stop forwarders ✓
-│  ├─ openral_perception_ros/ ← RosImageObjectDetectorNode (Image → ObjectsMetadata → 2D→3D lift) + segmenter_node (srv/SegmentInView) ✓
-│  ├─ openral_octomap_bridge/ ← OctoMap → safety-kernel OccupancyVoxels lowering + robot_self_filter (depth-cloud self-filter on the real octomap path) ✓
-│  ├─ openral_nav2_bringup/ · openral_slam_bringup/ ← reasoner-managed Nav2 / slam_toolbox services ✓
-│  └─ openral_foxglove_bringup/ ← read-only Foxglove live-scene bridge + Bucket-2 converter + MCAP ✓
-│  Planned: core_ros, sensors_ros, dispatcher_ros, launch
-├─ cpp/                           ← openral_safety_kernel — C++ deny-by-default kernel (implemented + tested, certification pending) ✓
-├─ rskills/                       ← rSkill packages (manifest + weights + eval/) — VLA + detector kinds ✓
-├─ scenes/                        ← {deploy,sim,benchmark}/ — DeployScene / SimScene / BenchmarkScene YAMLs (+ deploy/drivers/) ✓
-├─ benchmarks/                    ← benchmark suite definitions ✓
-├─ deployments/                   ← retired; deploy configs live in scenes/deploy ✓
-├─ robots/                        ← canonical RobotDescription manifests + per-host units/<unit>.yaml sensor overlays (RobotUnit) ✓
-├─ tests/{unit,integration,sim,hil}/  ← all four trees ✓
-├─ docs/                          ← mkdocs-material; decision log lives in the private OpenRAL/management repo ✓
-├─ tools/                         ← schema_export.py, rskill_publisher.py, gen_ros_topic_graph.py ✓
-├─ scripts/                       ← install.sh (Tier-0 curl-bash) + repair/dev helpers ✓
-│  Note: bootstrap_ubuntu.sh / bootstrap_macos.sh live in
-│  python/cli/src/openral_cli/bootstrap/ so they ship in the openral-cli
-│  wheel — `openral install ros` must work without a clone.
-├─ Justfile                       ← canonical task runner ✓
-├─ pyproject.toml + uv.lock       ← ✓
-└─ .github/workflows/             ← CI ✓
+openral/
+├─ python/                  uv workspace, 13 pure-Python packages
+│  ├─ core/           openral_core            Pydantic v2 schemas (normative)
+│  ├─ cli/            openral_cli             the `openral` command (bare = REPL)
+│  ├─ detect/         openral_detect          hardware probing, robot.yaml wizard
+│  ├─ hal/            openral_hal             HAL Protocol; sim and real adapters (see reference/robots.md)
+│  ├─ sensors/        openral_sensors         sensor catalog and vendor adapters
+│  ├─ world_state/    openral_world_state     30 Hz WorldStateAggregator
+│  ├─ rskill/         openral_rskill          rSkill loader, runtimes, quantization gate
+│  ├─ state_adapter/  openral_state_adapter   per-checkpoint state-vector layouts
+│  ├─ sim/            openral_sim             SimRunner, scene registry, policy adapters
+│  ├─ runner/         openral_runner          InferenceRunner, DeployRunner
+│  ├─ reasoner/       openral_reasoner        S2 ReasonerCore, tool palette, replanning
+│  ├─ dataset/        openral_dataset         rosbag2 / LeRobotDataset v3 bridge
+│  └─ observability/  openral_observability   OTel, dashboard server
+├─ packages/                ROS 2 packages (colcon)
+│  ├─ msgs/                   openral_msgs IDL (.msg, .srv, .action)
+│  ├─ world_state/            world-state lifecycle node
+│  ├─ openral_hal_node/       the one manifest-driven HAL lifecycle node
+│  ├─ openral_hal_openarm/    OpenArm real-hardware bringup
+│  ├─ openral_hal_rizon/      dual Flexiv Rizon 4s real-hardware bringup
+│  ├─ openral_hal_unitree/    Unitree hg (G1, H2) real-hardware bringup
+│  ├─ openral_reasoner_ros/   reasoner node
+│  ├─ openral_prompt_router/  operator-prompt fan-in node
+│  ├─ openral_rskill_ros/     rskill_runner_node, ExecuteRskill action server
+│  ├─ openral_safety/         safety supervisor, collision lowering helpers
+│  ├─ openral_safety_watchdog/  deadman watchdog, hardware E-stop bridge
+│  ├─ openral_human_estop/    human E-stop forwarder
+│  ├─ openral_compliance/     compliance recorder (OTLP log records)
+│  ├─ openral_perception_ros/ detector and segmenter nodes
+│  ├─ openral_octomap_bridge/ OctoMap to safety-kernel voxels, self-filter
+│  ├─ openral_nav2_bringup/ · openral_slam_bringup/   reasoner-managed Nav2, slam_toolbox
+│  └─ openral_foxglove_bringup/  read-only Foxglove live-scene bridge
+├─ cpp/                     openral_safety_kernel (C++ kernel), opentelemetry_cpp_vendor
+├─ rskills/                 example rSkill packages (manifest, eval/); the catalog is on the Hub
+├─ scenes/                  {deploy,sim,benchmark}/ scene YAMLs
+├─ robots/                  RobotDescription manifests + per-host units/<unit>.yaml overlays
+├─ benchmarks/              benchmark suite definitions
+├─ docker/                  inference/ (deploy image), otelcol/, galaxea_a1_sidecar/
+├─ tests/{unit,integration,sim,hil}/
+├─ docs/                    mkdocs-material site
+├─ tools/ · scripts/        schema export, publisher, topic-graph generator; install.sh
+├─ Justfile · pyproject.toml · uv.lock
+└─ .github/workflows/       CI
 ```
 
-Convention: directory names use short forms (`core/`, `cli/`, `msgs/`); Python module names and PyPI package names keep the `openral_` / `openral-` prefix. ✓ = shipped; ◐ = scaffold / planned; items without a mark are planned — see [`repo-state-map.html`](repo-state-map.html) for the per-module canvas.
+The bootstrap scripts live in `python/cli/src/openral_cli/bootstrap/` so `openral install ros` works from the wheel without a clone.
 
-## External, separate repos
+## Outside this repo
 
-Don't put their code in this monorepo:
-
-- `huggingface.co/openral/skill-*` — skill weights & manifests.
-- `huggingface.co/openral/dataset-*` — LeRobotDatasets.
-- `openral/cloud` — hosted observability/fleet control plane (separate repo).
-- `openral/contrib-closed-shims` — adapters for closed third-party vendor SDKs (the SDK is closed, not OpenRAL).
-- `openral/awesome-ros` — community curation.
+- `huggingface.co/OpenRAL`: rSkill repos (`OpenRAL/rskill-*`) and datasets.
+- `OpenRAL/openral-pro` (private): Pro runtimes, see [Design decisions](../decisions.md).
+- `OpenRAL/platform` (private): the robot console source and openral.com ([ADR-0131](../decisions.md)).
+- `OpenRAL/management` (private): the ADR log and safety hazard log.

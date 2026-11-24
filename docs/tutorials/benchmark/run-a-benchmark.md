@@ -1,10 +1,13 @@
 # Run a benchmark and publish the number
 
-`openral sim run` answers "does this pairing work?". The **benchmark** tier
-answers "how well, under a protocol someone else can repeat?", and it is the
-only tier that writes a result back into an rSkill package.
+**Goal:** run a benchmark suite against an rSkill and write the result into the rSkill package.
 
-Prerequisite: [your first sim rollout](../sim/first-rollout.md).
+`openral sim run` answers "does this pairing work?". The benchmark tier answers "how well, under a protocol someone else can repeat?", and it is the only tier that writes a result into an rSkill package.
+
+## Prerequisites
+
+- [Your first sim rollout](../sim/first-rollout.md), and `just sync --group sim`.
+- A GPU for anything beyond a smoke run. Diffusion Policy on CPU takes seconds per step, so the 50-episode PushT suite is impractical there. Use `--n-episodes 2` to try the flow.
 
 ---
 
@@ -15,154 +18,110 @@ DeployScene  ⊆  SimScene  ⊆  BenchmarkScene
  deploy sim      sim run      benchmark scene  →  benchmark run --suite
 ```
 
-A `BenchmarkScene` is a `SimScene` plus the two things a claim needs: a
-non-`None` `seed` and `n_episodes`, and a `metadata` block naming the `paper`
-and an `honest_scope` statement. Per-tier loaders reject a wrong-tier YAML at
-parse time, so you cannot accidentally publish a number from an ad-hoc config.
+A `BenchmarkScene` is a `SimScene` plus a non-`None` `seed` and `n_episodes`, and a `metadata` block with the `paper` and an `honest_scope` statement. Per-tier loaders reject a wrong-tier YAML at parse time, so an ad-hoc config cannot produce a published number.
 
 | Command | Input | Writes |
 | --- | --- | --- |
-| `openral sim run` | `scenes/sim/*.yaml` | a summary to `--save-dir`; **never** the rSkill package |
+| `openral sim run` | `scenes/sim/*.yaml` | a summary to `--save-dir`; never the rSkill package |
 | `openral benchmark scene` | `scenes/benchmark/*.yaml` | `rskills/<dir>/eval/scene_<scene_id>.json` |
-| `openral benchmark run --suite` | `benchmarks/*.yaml` | `rskills/<dir>/eval/<suite_id>.json` |
-| `openral benchmark report` | `rskills/*/eval/*.json` | nothing — reads and validates |
+| `openral benchmark run --suite` | `benchmarks/*.yaml` | `rskills/<dir>/eval/<suite_id>.json`, plus episodes and videos (step 4) |
+| `openral benchmark report` | `rskills/*/eval/*.json` | nothing; it reads and validates |
 
-A **suite** aggregates N scenes under uniform protocol invariants; a **scene**
-is one of them. The suite id is the YAML filename stem.
-
----
+A suite aggregates N scenes under uniform protocol invariants. The suite id is the YAML filename stem. The 17 shipped suites are tabulated in [Sim environments: benchmark suites](../../reference/sim-environments.md#benchmark-suites).
 
 ## 2. Find a suite
 
 ```bash
-openral benchmark list        # suite ids from benchmarks/*.yaml
-openral rskill list           # paste-able --rskill names
+uv run openral benchmark list       # suite ids from benchmarks/*.yaml
+uv run openral rskill list          # paste-able --rskill names
 ```
 
-The rSkill is a suite's only free axis; robot, scene, task, seed and episode
-count are pinned by the YAML, so two rSkills on one suite are directly
-comparable.
-
----
+The rSkill is a suite's only free axis. Robot, scene, task, seed and episode count are pinned by the YAML, so two rSkills on one suite are comparable.
 
 ## 3. Dry-run the matrix
 
 ```bash
-openral benchmark run --suite pusht --rskill rskills/diffusion-pusht --dry-run
+uv run openral benchmark run --suite pusht --rskill rskills/diffusion-pusht --dry-run
 ```
 
-Prints the planned (task × seed) matrix and exits without a rollout: confirms
-wiring in CI and shows the episode count (`benchmarks/pusht.yaml` pins 50).
-`benchmark scene` has the same flag.
+It resolves the suite and the rSkill, applies the task filter, prints the plan and exits without a rollout:
 
----
+```
+suite pusht — robot=pusht_2d scene=pusht tasks=1 n_episodes=50
+vla   id=diffusion weights=rskills/diffusion-pusht
+plan  50 episodes (1 tasks x 50 reps)
+```
+
+`benchmark scene` has the same flag. `--suite` also accepts a path to a suite YAML, so you can run a new suite before moving it into `benchmarks/`.
 
 ## 4. Run the suite
 
 ```bash
-openral benchmark run --suite pusht --rskill rskills/diffusion-pusht
+uv run openral benchmark run --suite pusht --rskill rskills/diffusion-pusht
 ```
 
-The runner iterates `scenes × range(seed, seed + n_episodes)`, delegating each
-rollout to the same `SimRunner` that backs `openral sim run`, so the
-compatibility gate, OpenTelemetry spans and latency-budget reporting are
-identical. Two tracked files change on success; review the diff before
-committing:
+The runner iterates `scenes × range(seed, seed + n_episodes)` through the same `SimRunner` as `sim run`, so the compatibility gate, spans and latency-budget reporting are identical. On success it prints `wrote .../eval/pusht.json — avg success = 0.xxx over N episodes` and writes:
 
-- **`rskills/diffusion-pusht/eval/pusht.json`** — the full
-  `RSkillEvalResult`.
-- **`rskills/diffusion-pusht/rskill.yaml`** — the aggregate written back to
-  `benchmarks.pusht`, as a surgical edit that preserves comments.
+| File | Tracked | Content |
+| --- | --- | --- |
+| `rskills/diffusion-pusht/eval/pusht.json` | yes | the full `RSkillEvalResult` |
+| `rskills/diffusion-pusht/rskill.yaml` | yes | the aggregate, written back to `benchmarks.pusht` as a comment-preserving edit |
+| `rskills/diffusion-pusht/eval/episodes/pusht.json` | no | one record per episode |
+| `rskills/diffusion-pusht/eval/videos/pusht/` | no (git-ignored) | one MP4 per episode plus `videos.json` |
 
-### When you do not want either write
+Review the tracked diffs before you commit.
+
+Videos are on by default and slow the run. There is no flag that writes nothing; these narrow it:
+
+| Flag | Effect |
+| --- | --- |
+| `--no-update-manifest` | Leave `rskill.yaml` alone (the eval JSON, episodes and videos are still written) |
+| `--no-video` | Skip the MP4s, for allocation-light runs |
+| `--out PATH` | Write the eval JSON elsewhere (episodes go in an `episodes/` folder beside it) |
+| `--video-dir PATH` | Write the MP4s elsewhere |
+| `--n-episodes N` | Override every scene's count |
+| `--task ID` | Run one task of the suite |
+| `--device`, `--save-dir`, `--benchmarks-dir`, `--dashboard`, `--dashboard-port` | As in `sim run` |
+
+`--n-episodes` is for iteration. A number produced under it is not paper-comparable, because the published protocol is the count in the YAML.
 
 ```bash
-# Read-only: still write the eval JSON, leave the manifest alone.
-openral benchmark run --suite pusht --rskill rskills/diffusion-pusht \
-  --no-update-manifest
-
-# Fast iteration: 2 episodes instead of the suite's 50.
-openral benchmark run --suite pusht --rskill rskills/diffusion-pusht \
-  --n-episodes 2 --no-update-manifest
+# Fast iteration: 2 episodes, leave the manifest alone.
+uv run openral benchmark run --suite pusht --rskill rskills/diffusion-pusht \
+  --n-episodes 2 --no-update-manifest --no-video
 ```
+
+`benchmark scene` adds `--no-write-eval`: it prints the score and writes nothing, and implies `--no-update-manifest`.
 
 ### One task, as a plain sim run
 
-`openral sim run` takes a suite file too: `--task` picks the entry, which runs
-as that task's own sim scene would (relative asset paths resolve beside the
-suite file; the suite's `metadata` is dropped, and nothing is written to the
-rSkill package).
+`openral sim run` accepts a suite file too. `--task` picks the entry, which runs as that task's own sim scene. Relative asset paths resolve beside the suite file, the suite's `metadata` is dropped and nothing is written to the rSkill package:
 
 ```bash
-openral sim run --config benchmarks/libero_10.yaml --task libero_10/3 \
+uv run openral sim run --config benchmarks/libero_10.yaml --task libero_10/3 \
   --rskill smolvla-libero --n-episodes 1
 ```
-
-So a suite needs no `scenes/sim/` copy of each task.
-
-`--n-episodes` overrides every scene in the suite. It is for iteration only: a
-number produced under it is **not** paper-comparable, because the published
-protocol is the count in the YAML.
-
-`benchmark scene` adds a third opt-out, `--no-write-eval`: the rollout prints
-its score and nothing is written to the package. It implies
-`--no-update-manifest`.
 
 ---
 
 ## 5. The two guardrails
 
-### The suite must be internally consistent
+**The suite must be consistent.** `raise_on_invalid_suite` rejects a suite unless every scene shares one non-`None` `robot_id`, the same `n_episodes` and `seed`, and a byte-identical `metadata` block, and every `task.id` is unique. Otherwise an "aggregate" would average across protocols. `task.success_key` and `max_steps` may differ per scene.
 
-`openral_core.raise_on_invalid_suite` rejects a suite unless every scene shares
-one non-`None` `robot_id`, the same `n_episodes` and `seed`, and a
-byte-identical `metadata` block, and every `task.id` is unique. Otherwise an
-"aggregate" would average across different protocols.
-
-`task.success_key` and `max_steps` **may** differ per scene, because suites like
-ManiSkill3 legitimately span tasks with different step budgets.
-
-### The rSkill must have been trained for the task
-
-A suite is auto-filtered to the tasks the rSkill declares in
-`evaluated_tasks`; scenes it does not cover are skipped with a logged
-`benchmark_suite_task_filter` summary. Pick a task explicitly with `--task`
-that the manifest does not cover and the filter leaves nothing to run, so you
-get a typed `ROSCapabilityMismatch` instead of a rollout. `benchmark scene`
-applies the same gate to its single scene, and its message says why:
-
-> the checkpoint was trained/validated for a different task; running it here
-> yields a plausible-looking rollout that cannot succeed
-
-A policy on the wrong task still emits smooth, confident actions but can never
-satisfy the success condition, so the 0% reads like a bad model rather than a
-mispairing. If the checkpoint genuinely covers the task, add it to
-`evaluated_tasks`.
-
-A manifest with an **empty** `evaluated_tasks` skips the gate and logs
-`rskill_task_compat_undeclared`. Declare the field.
+**The rSkill must be trained for the task.** A suite is auto-filtered to the tasks the rSkill lists in `evaluated_tasks`; skipped scenes appear in a `benchmark_suite_task_filter` log line. If you pick a task with `--task` that the manifest does not cover, nothing is left to run and you get a typed `ROSCapabilityMismatch`. A policy on the wrong task emits smooth actions but cannot satisfy the success condition, so the 0% would read like a bad model. If the checkpoint does cover the task, add it to `evaluated_tasks`. A manifest with an empty `evaluated_tasks` skips the gate and logs `rskill_task_compat_undeclared`; declare the field.
 
 ---
 
 ## 6. Read the result
 
 ```bash
-openral benchmark report              # rich table across every rSkill
-openral benchmark report --json       # same rows, machine-readable
+uv run openral benchmark report            # table across every rSkill
+uv run openral benchmark report --json     # same rows, machine-readable
 ```
 
-It validates every `rskills/<id>/eval/*.json` against `RSkillEvalResult` (the
-schema the loader uses at install time), so a rotted file **fails the command**
-rather than being skipped. Rows carry the
-benchmark, robot, simulator, `model_variant`, `status`, the results block, and
-`reproduced_locally`.
+It validates every `rskills/<id>/eval/*.json` against `RSkillEvalResult`, the schema the loader uses at install time, so a rotted file fails the command instead of being skipped.
 
-### `reproduced_locally` is the honesty switch
-
-A result you produced carries `reproduced_locally: true`. A paper number you
-have not reproduced is allowed but must carry `reproduced_locally: false`
-**plus** a `reproduction_cli` so a reader can run it. The in-tree
-`rskills/diffusion-pusht/eval/pusht.json` shows the reproduced shape:
+`reproduced_locally` is the honesty switch. A result you produced carries `reproduced_locally: true`. A paper number you have not reproduced is allowed, but it must carry `reproduced_locally: false` and a `reproduction_cli` so a reader can run it. `rskills/diffusion-pusht/eval/pusht.json` shows the reproduced shape:
 
 ```json
 "source": {
@@ -175,23 +134,15 @@ have not reproduced is allowed but must carry `reproduced_locally: false`
 }
 ```
 
-`RSkillEvalResult` also carries a `trace_id` that deep-links a number to the
-trace that produced it (paste it into the dashboard's `/api/spans/<id>`, Jaeger
-or Tempo). It is the run's `cli.command` root span, so it resolves to the whole
-tree, `sim.run` and every tick underneath. A run with nowhere to send spans
-leaves it `null`; pass `--dashboard` or point `OTEL_EXPORTER_OTLP_ENDPOINT` at
-your own collector. Older eval files predate the field and carry `null`.
+The result also carries a `trace_id` that links the number to the run's `cli.command` root span (dashboard `/api/spans/<id>`, Jaeger or Tempo). It is `null` when the run had nowhere to send spans; pass `--dashboard` or set `OTEL_EXPORTER_OTLP_ENDPOINT`.
 
-Never hand-edit a success rate into a manifest or an eval JSON; the commands
-write both, and the number must be reproducible from the trace alone.
+Never hand-edit a success rate into a manifest or an eval JSON. The commands write both, and the number must be reproducible from the trace alone.
 
 ---
 
 ## 7. Add a new suite
 
-A suite YAML is a **bare list** of `BenchmarkScene`s at the document root; a
-`{id, tasks, metadata}` wrapper is rejected with a redirect. YAML anchors keep
-per-scene fields DRY:
+A suite YAML is a bare list of `BenchmarkScene`s at the document root. A `{id, tasks, metadata}` wrapper is rejected with a redirect. YAML anchors keep per-scene fields short:
 
 ```yaml
 - scene: &scene
@@ -216,19 +167,20 @@ per-scene fields DRY:
       Diffusion Policy paper's protocol.
 ```
 
-`honest_scope` is required: it states what the number does **not** cover. A
-suite that ships its own assets names them relative to the suite file. A
-file at `benchmarks/<id>.yaml` is suite `<id>`; see [`benchmarks/README.md`](https://github.com/OpenRAL/openral/blob/master/benchmarks/README.md)
-for the full invariant list.
+`honest_scope` is required: it states what the number does not cover. A suite that ships its own assets names them relative to the suite file. A file at `benchmarks/<id>.yaml` is suite `<id>`. The full invariant list is in [`benchmarks/README.md`](https://github.com/OpenRAL/openral/blob/master/benchmarks/README.md).
 
----
+## Troubleshooting
+
+| Symptom | Fix |
+| --- | --- |
+| `ROSCapabilityMismatch` before any rollout | The rSkill's `evaluated_tasks` cover no task in the suite; see step 5 |
+| `--task ... is not in suite` | The message lists the suite's task ids |
+| Unexpected `eval/episodes/` and `eval/videos/` files | Expected; pass `--no-video` to skip the videos |
+| `rskill.yaml` changed | Pass `--no-update-manifest` next time |
+| `benchmark report` fails | An eval JSON no longer validates; fix or regenerate it |
 
 ## See also
 
-- [Your first sim rollout](../sim/first-rollout.md) — the ad-hoc tier.
-- [Write & publish an rSkill](../rskill/write-and-publish-an-rskill.md) — §5
-  covers producing eval results as part of publishing.
-- [Sim environments reference](../../reference/sim-environments.md) — the
-  BenchmarkScene catalogue.
-- [`scenes/README.md`](https://github.com/OpenRAL/openral/blob/master/scenes/README.md)
-  — the three-tier cookbook.
+- [Your first sim rollout](../sim/first-rollout.md): the ad-hoc tier.
+- [Write & publish an rSkill](../rskill/write-and-publish-an-rskill.md): section 5 covers eval results as part of publishing.
+- [Sim environments reference](../../reference/sim-environments.md): the scene catalogue and the suite table.

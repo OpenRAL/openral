@@ -19,8 +19,7 @@ It decides *what to do next*; it never drives motors itself.
 
 ## Cadence & event model
 
-The reasoner calls the LLM when something happens, never on a fixed timer
-(issue #620):
+The reasoner calls the LLM when something happens, never on a fixed timer:
 
 - **Events** force a tick at once (table below), plus the reasoner's own: an
   `execute_rskill` result (`skill_result`), a tool result republished as a
@@ -58,7 +57,7 @@ Every `reasoner.tick` span carries `reasoner.tick.trigger`,
 |---|---|---|
 | **A — safety** | `/openral/failure/safety` | `severity ≥ SEVERITY_WARN` |
 | **B — execution** | `/openral/failure/{hal,sensor,rskill,wam}` | `severity ≥ SEVERITY_FAIL` |
-| **B — object query recovery** (issue #418) | `/openral/failure/world_state` (`KIND_OBJECT_QUERY`) | matching failure cancels the active manipulation; reobserve and re-ground within the persisted task dispatch cap, then stay blocked until a new operator goal. No human handoff. |
+| **B — object query recovery** | `/openral/failure/world_state` (`KIND_OBJECT_QUERY`) | matching failure cancels the active manipulation; reobserve and re-ground within the persisted task dispatch cap, then stay blocked until a new operator goal. No human handoff. |
 | **C — critic** | `/openral/failure/critic` | `severity ≥ SEVERITY_FAIL` |
 | **D — operator** | `/openral/prompt` | always |
 
@@ -86,7 +85,8 @@ matching dispatch in `reasoner_node` (CLAUDE.md §3).
 | `ExecuteRskillTool` (`execute_rskill`) | action goal on `/openral/execute_rskill` | `rskill_id`, `prompt`, `goal_params_json`, `deadline_s`. Emits a `FailureTrigger` on rejection/abort/timeout. |
 | `LifecycleTransitionTool` (`lifecycle_transition`) | `<node>/change_state` service | `configure` / `activate` / `deactivate` / `cleanup` only — `shutdown` is reserved for the safety supervisor. |
 | `EmitPromptTool` (`emit_prompt`) | publish on a `PromptStamped` topic | Stamps the active OTel `traceparent` into `metadata_json`. Used to stage multi-step plans / cascade prompts. |
-| `ReloadGstPipelineTool` (`reload_gst_pipeline`) | `/openral/sensors/<id>/reload_pipeline` service | ⚠️ **log-and-acknowledge stub** today — the F6 sensor-service IDL is not yet on disk ([GH-126](https://github.com/OpenRAL/openral/issues/126)). |
+| `ReloadGstPipelineTool` (`reload_gst_pipeline`) | `/openral/sensors/<id>/reload_pipeline` service | Log-and-acknowledge stub: the sensor-service IDL is not on disk yet. |
+| `WaitTool` (`wait`) | none (deliberate no-op) | Sets the wait condition: `until` = `next_event` / `skill_result` / `operator` / `timeout`; `timeout_s` ≤ 300 (default 30). |
 
 ### Read-only query tools
 
@@ -148,6 +148,23 @@ robot; no actuation authority.
 
 ---
 
+## Node behaviour
+
+Rules the ROS node applies on top of the core (parameters and wiring are in the [`openral_reasoner_ros` README](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md)).
+
+- **Retry cap.** It is keyed on the identical tool call (same tool and arguments): a healthy navigate, pick, place sequence never trips it, a verbatim repeat does. After a capped streak, unchanged-context ticks are held before the LLM call (`retry_cap_hold`) until new context arrives.
+- **Stale plans.** An `execute_rskill` or `decompose_mission` planned for a task that ended while its LLM call was in flight is not sent; a `not sent` line in `## EXECUTION` says so.
+- **Mission prompts.** An operator prompt rebuilds the mission only when none is in progress. Mid-flight it is guidance, unless `metadata_json` has `{"new_goal": true}` (`openral prompt --new-goal`). The next prompt is also a new goal when the last task succeeded with no verifier and nothing is queued, until the reasoner itself asks the operator a question.
+- **Completion without a verifier.** A task normally completes on a reward or VLM verdict. A wrapped ROS rSkill with `ros_integration.completes_task_on_success: true` (the Nav2 skill) completes it when its goal succeeds, unless the goal was sent with `final_step: false`.
+- **Attempt caps.** `TaskState.failures` counts failed dispatches (aborted, cancelled on patience, or scored not done by the reward gate) against `DEFAULT_MAX_ATTEMPTS` (3). A success nobody can judge is not a failure. `TaskState.attempts` counts dispatches of any outcome against `DEFAULT_MAX_TASK_DISPATCHES` (10), checked before each goal is sent. Either cap abandons through the usual path: one subdivision offer, then handoff. The dashboard's `reasoner.mission_json` carries `failures`, `attempts` and `max_dispatches`.
+- **Task outcome.** When the runner's result names a source, the `## EXECUTION` line carries `task_outcome=<succeeded|failed|unknown> (<source>): <reason>`, so a run that missed its deadline with the object placed reads differently from one that never grasped it.
+- **Grasp and place targets.** `ExecuteRskillTool` takes an optional `grasp_target` (`label`, `object_id?`, `contact_links`) and `place_target` (a hint, normally unset). The reasoner names; perception grounds; the HAL producers measure. A grasp target grounds into a `GraspDeclaration` whose `contact_links` are all gripper links of one hand and whose `search_box` comes from the recalled memory node or the one live lifted detection carrying the label, padded by `grasp_target_voxel_m` + `grasp_target_extrinsic_error_m`. It never carries a `region`. A target that grounds to nothing, to several instances without an `object_id`, or to a box outside the base frame refuses the dispatch: no goal is sent and the LLM is told to disambiguate. Naming a target arms nothing: the runner strips any region and the kernel trusts only the measured one.
+- **Object tracking.** With tracking on, declarations also carry `ObjectQuery`s for the Layer-2 tracker, and an ambiguous label grounds as one `count="all"` query instead of being refused. A manipulation skill must then name a `grasp_target` (the runner refuses the goal otherwise, as `ROSReasonerInvalidPlan`, and the skill stays in the palette). The deploy passes the scene hand as `grasp_contact_links`, so the LLM never guesses which hand a policy grasps with. The padded box is the whole match tolerance: a recalled node further off than the padding stays unmatched and the reasoner looks again.
+- **Detector failures.** A missing service, failed request or non-empty `failure_reason` on `locate_in_view` produces a prompt that says visibility is unknown and counts against the bounded locate budget. Only a completed `found=false` reply reads "not visible".
+- **Collision evidence.** Typed collision evidence on `/openral/failure/safety` keeps the kernel's link and object ids, the signed distance and whether the check was measured or predicted. A predicted collision is not a measured contact. A voxel's coordinates render as `cell_center_m[<base_frame>]` and `grid_origin_m[<base_frame>]`.
+
+---
+
 ## Tool palette & gating
 
 The palette ([`openral_reasoner.palette.ToolPalette`](https://github.com/OpenRAL/openral/blob/master/python/reasoner/src/openral_reasoner/palette.py))
@@ -175,27 +192,36 @@ capability-matched, and licensed.
 
 ## Reasoner model selection
 
-Selection is model-first (ADR-0088): `OPENRAL_REASONER_MODEL` names a curated
-`openral_core.REASONER_MODELS` entry (registry membership means the model
-cleared OpenRAL's robotics tool-calling contract), and the orthogonal
-`OPENRAL_REASONER_ENDPOINT` overrides where it runs. The library has no
-default.
+Selection is model-first (ADR-0088): `OPENRAL_REASONER_MODEL` names an entry of
+`openral_core.REASONER_MODELS` and the orthogonal `OPENRAL_REASONER_ENDPOINT`
+overrides where it runs. The library has no default.
 
 ```bash
 export OPENRAL_REASONER_MODEL=gpt-5.5
-export OPENRAL_REASONER_API_KEY=sk-or-...
+export OPENRAL_REASONER_API_KEY=sk-...
 ```
 
-Models that refuse forced tool use (the Claude 5 generation 400s on
-`tool_choice` `any`) run `tool_choice: auto`: a prose reply is nudged once and
-then fed back to the model as an invalid plan, and any other model whose 400
-refuses forced tool use is downgraded to `auto` at runtime
-(`reasoner.tool_choice_downgraded`).
+The registry has 39 entries in two tiers:
 
-Full model/endpoint matrix, named endpoints, the dialect rule, the legacy
-migration table, and what `openral doctor`'s `Reasoner LLM` row checks:
-[`openral_reasoner_ros` README §Reasoner model
-registry](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md#reasoner-model-registry).
+| Tier | Models | Meaning |
+|---|---|---|
+| Measured (9) | `claude-opus-4-8`, `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`, `gpt-5.5`, `gpt-5.6`, `cosmos3-edge`, `qwen3.5-4b`, `qwen3.5-9b` | cleared OpenRAL's robotics tool-calling contract |
+| Unmeasured (30) | 16 `*-openrouter` (OpenRouter key), 14 `*-cloud` (ollama.com key) | offered on declared tools + vision capability; the client logs `reasoner.model.unmeasured` and `openral doctor` warns |
+
+`OPENRAL_REASONER_ENDPOINT` also takes a named endpoint (`anthropic`, `openai`,
+`openrouter`, `gemini`, `xai`, `deepseek`, `huggingface`, `ollama`,
+`ollama_cloud`, `vllm`) carrying its own base URL, dialect, auth and
+`tool_choice` quirk. An uncurated model id needs an explicit endpoint and dialect
+and emits a warning.
+
+Models that refuse forced tool use (the Claude 5 generation 400s on `tool_choice`
+`any`) run `tool_choice: auto`: a prose reply is nudged once, then fed back as an
+invalid plan. Any other model whose 400 refuses forced tool use is downgraded to
+`auto` at runtime (`reasoner.tool_choice_downgraded`).
+
+Per-model timeouts, token budgets, the dialect rule and what `openral doctor`'s
+`Reasoner LLM` row checks:
+[`openral_reasoner_ros` README](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md#reasoner-model-registry).
 
 ---
 
@@ -232,7 +258,7 @@ human-handoff, CLAUDE.md §3) is partially realized — the substitute/replan ru
 are still being built out.
 
 The param-tweak rung gets a crisp input for the most common manipulation failure, a
-missed grasp (issue #353): the HAL publishes `KIND_GRASP_OUTCOME` on
+missed grasp: the HAL publishes `KIND_GRASP_OUTCOME` on
 `/openral/failure/hal` when a gripper close ends without an ATTACH, and
 `ContextRenderer` renders one `[grasp_miss] hand=<jaw link> target=<id>` line per hand
 in `## EXECUTION` with a `reflect_on_grasp_miss` hint naming the levers `execute_rskill`
@@ -248,23 +274,17 @@ own re-dispatch recovers.
 
 ## Observability
 
-Every `ReasonerCore.tick` opens an OTel span `reasoner.tick` (via
-`openral_observability.reasoner_span`) with attributes including `reasoner.tick.idx`,
-`reasoner.model`, `reasoner.force`, `reasoner.tool`, `reasoner.rskill_id`,
-`reasoner.tier` (`A`/`B`/`C`/`D`/`heartbeat`), `reasoner.suppressed_reason` (on the span
-only `palette_empty` and `retry_cap`; `min_interval` / `retry_cap_hold` / `mission_finished` /
-`heartbeat_idle` suppress the tick before a span opens and appear only on the returned
-`ReasonerTickResult`), `reasoner.error_kind`, `reasoner.llm_s`, `reasoner.inflight_skill` and
-`reasoner.inflight_state` (the skill in flight and whether it is `dispatching` or `running`, if
-any) and `reasoner.rationale` (the model's stated why, capped at 500 chars, stamped only when
-the OTLP endpoint is on the deployer's own network or `OPENRAL_TELEMETRY_TEXT_CONSENT=1`,
-CLAUDE.md §3). The dashboard store folds the in-flight skill and state, tier, LLM latency,
-suppressed reason, error kind and rationale into `topics.reasoner.detail`, one line such as
-`stocking running · heartbeat · 2.3s — The stocking skill is running…`, and appends the same
-line to each `reasoner.tick` row of the event log (the `topics.reasoner` slot keeps only the
-latest tick). The pinned robot console bundle does not render `detail` yet. The captured `traceparent` is
-threaded onto outbound `emit_prompt` payloads so the bag↔OTel correlator can join a
-published prompt back to the producing tick. Watch it live on `openral dashboard`.
+Every `ReasonerCore.tick` opens an OTel span `reasoner.tick` carrying the tick
+index, model, tool, trigger, tier, suppressed reason, error kind, LLM latency,
+in-flight skill and the model's rationale (capped at 500 chars, stamped only when
+the OTLP endpoint is on the deployer's own network or
+`OPENRAL_TELEMETRY_TEXT_CONSENT=1`). Ticks suppressed before a span opens
+(`min_interval`, `retry_cap_hold`, `mission_finished`, `heartbeat_idle`) appear
+only on the returned `ReasonerTickResult`. The attribute table is in the
+[`openral_reasoner_ros` README](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md);
+the dashboard folds the same fields into `topics.reasoner.detail`. The captured
+`traceparent` rides on outbound `emit_prompt` payloads so the bag-to-OTel
+correlator can join a prompt to the tick that produced it.
 
 ---
 

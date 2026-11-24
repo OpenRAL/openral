@@ -1,80 +1,41 @@
-# `openral dashboard` — the robot's own page
+# `openral dashboard`: the robot's own page
 
-One process per robot serves the **robot UI**, its API, and an embedded OTLP/HTTP
-receiver. Locally and offline you open it on the robot; online, the same UI runs on
-**openral.com/dashboard** and reaches the robot through its own Cloudflare Tunnel
-(ADR-0129). The UI is robot-agnostic: it draws only the panels and actions the robot
-declares in its **manifest**.
+Goal: open the live page for a robot, know who may do what on it, and reach it remotely if you want.
+
+One process per robot serves the **robot UI**, its API and an embedded OTLP/HTTP receiver. Locally and offline you open it on the robot. Online, the same UI runs on [openral.com](https://openral.com) and reaches the robot through its own Cloudflare Tunnel (ADR-0129). The UI is robot-agnostic: it draws only the panels and actions the robot declares in its manifest.
 
 ## Run it
 
-One port serves everything. The default is **4318** (the OTLP/HTTP standard; `8000`
-collided with `mkdocs serve` and most FastAPI demos).
+One port serves everything: **4318** by default.
 
 ```bash
-openral dashboard            # 127.0.0.1:4318
-# → OpenRAL dashboard: http://localhost:4318/ …
+uv run openral dashboard            # 127.0.0.1:4318
 ```
 
-`openral deploy sim|run` starts it for you (opt out with `--no-dashboard`), together
-with the read-only `foxglove_bridge` for the 3D view (opt out with `--no-foxglove`).
+You should see `OpenRAL dashboard: http://localhost:4318/ ...`.
 
-Point any other workload at it. **Sim does not emit OTel by default**:
+`openral deploy sim|run` starts it for you (opt out with `--no-dashboard`), plus the read-only `foxglove_bridge` for the 3D view (opt out with `--no-foxglove`).
+
+Point other workloads at it. Sim does not emit OTel by default:
 
 ```bash
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 \
 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
-  openral sim run --config scenes/sim/libero_spatial.yaml --rskill smolvla-libero
+  uv run openral sim run --config scenes/sim/libero_spatial.yaml --rskill smolvla-libero
 ```
 
-or let either side spawn the other: `openral dashboard --inprocess "openral sim run …"`,
-or `--dashboard` on `openral sim run`, `deploy run` and `benchmark run` (the child
-dashboard exits with the workload).
+Or let one side spawn the other: `openral dashboard --inprocess "openral sim run ..."`, or pass `--dashboard` to `sim run`, `deploy run` and `benchmark run` (the child dashboard exits with the workload).
 
 ## The page
 
-`/` serves the robot UI (the robot console), a prebuilt web bundle the dashboard
-downloads once (url + sha256 + size pinned in
-`openral_observability.dashboard.ui_assets.ROBOT_UI`) into
-`$OPENRAL_CACHE_DIR/dashboard_assets/` (default `~/.cache/openral`). To serve another
-build instead, set `OPENRAL_DASHBOARD_UI_DIR` to a directory holding its `index.html`.
-At start the dashboard logs one `dashboard.ui_source` line saying what `/` serves: the
-pinned bundle with its URL, a local directory, or the fallback page.
+`/` serves the robot UI, a prebuilt Apache-2.0 web bundle (source private, ADR-0131). The dashboard downloads it once, pinned by url and sha256 in `openral_observability.dashboard.ui_assets.ROBOT_UI`, into `$OPENRAL_CACHE_DIR/dashboard_assets/` (default `~/.cache/openral`), and logs one `dashboard.ui_source` line saying what `/` serves. Set `OPENRAL_DASHBOARD_UI_DIR` to a directory with an `index.html` to serve another build. With no console available (an offline first start, or a directory without `index.html`), `/` serves a built-in fallback page: robot status and an **E-STOP** button.
 
-When no console is available (an offline first start, or `OPENRAL_DASHBOARD_UI_DIR`
-naming a directory without an `index.html`) `/` serves a built-in fallback page: the
-robot's status and an **E-STOP** button.
+What the UI shows comes from the **robot manifest**, which the deploy writes at start (`openral dashboard --manifest <file>`) and the reasoner re-sends whenever the installed rSkills change; the fresher one wins.
 
-**The console's license and source.**
+- **Panels**: robot identity, one camera per image sensor (`left`, `center` or `right`), joints, map, point cloud, reasoner, reward monitor (when it runs), the running rSkill, safety status, system health, metrics, events, world state, and the 3D view when the bridge runs. Operators can show, hide and reorder the tabs.
+- **Actions**: `estop`, `estop_reset` (with a "work cell clear?" confirmation), `prompt` (when the reasoner runs), and one `skill:<rskill id>` per installed rSkill the robot can run, whose form is the rSkill's `goal_params_schema`. Skills appear only with `OPENRAL_DASHBOARD_WRITE_CONTROLS=1`.
 
-- The console bundle is licensed Apache-2.0, like the rest of OpenRAL.
-- It is prebuilt (minified), and its source is not published (ADR-0131). The
-  dashboard server, the robot API and the fallback page with its E-STOP button are
-  in this repository.
-- To serve a different UI, point `OPENRAL_DASHBOARD_UI_DIR` at your own build, or at
-  an empty directory to get the fallback page. The robot API
-  ([Endpoints](#endpoints)) is the public contract for third-party UIs.
-
-What the UI shows comes from the **robot manifest**, which the deploy runtime emits at
-start and again whenever the installed rSkills change (`/openral/skill_registry_changed`):
-
-- **Panels** — robot identity, one camera per image sensor (with its `position` in the
-  camera row: `left`, `center` or `right`, from `openral_core.camera_position`), joints, then map (SLAM),
-  point cloud (octomap), reasoner, reward monitor (when that leg runs), the running
-  rSkill, safety status and ledger, system health, metrics, events, world state, and the
-  3D view when the bridge runs. The UI lays them out as an operator console: cameras
-  over the 3D scene, and the rest as tabs in a right pane (Reasoner, Events, World,
-  Safety, Skill, Robot, System) that each operator can show, hide and reorder.
-- **Actions** — `estop`, `estop_reset` (with a "work cell clear?" confirmation),
-  `prompt` (when the reasoner runs), and one `skill:<rskill id>` per installed rSkill
-  the robot can run — the same set the reasoner may dispatch — whose form is the
-  rSkill's `goal_params_schema`. Skills appear only with
-  `OPENRAL_DASHBOARD_WRITE_CONTROLS=1`.
-
-The deploy launch writes the manifest and hands it to the dashboard
-(`openral dashboard --manifest <file>`); the reasoner, when it runs, re-sends it as an
-OTLP record whenever the installed rSkills change, and the fresher one wins. Cameras are polled JPEG
-snapshots (`/api/camera/<sensor>/snapshot.jpg`), never video.
+Cameras are polled JPEG snapshots, never video.
 
 ## Who may do what
 
@@ -82,192 +43,56 @@ snapshots (`/api/camera/<sensor>/snapshot.jpg`), never video.
 |---|---|---|---|
 | This machine (`127.0.0.1:4318`) | `local` | operator | everything the manifest offers |
 | Another host, with `--host <LAN address>` | `lan` | viewer | read and press E-STOP; export OTLP to `/v1/*` only with `OPENRAL_DASHBOARD_LAN_INGEST=1` |
-| openral.com, through the tunnel (`127.0.0.1:4319`) | `remote` | the user's role | see below |
+| openral.com through the tunnel (`127.0.0.1:4319`) | `remote` | the user's role | viewer: read and E-STOP. operator/admin: also reset, prompt and run skills, only with `OPENRAL_DASHBOARD_REMOTE_CONTROL=1` |
 
-Over the tunnel, every request carries a 5-minute token openral.com mints for that user
-and that robot only. **viewer** may read and press E-STOP; **operator** and **admin**
-may also reset the e-stop, prompt and run skills — but only with
-`OPENRAL_DASHBOARD_REMOTE_CONTROL=1`. A robot linked to openral.com gets it, and
-`OPENRAL_DASHBOARD_WRITE_CONTROLS=1`, from its account (ADR-0132): both are on unless
-turned off as **Remote control** and **Skill controls** under **Settings** on openral.com
-(by an org admin, or by the owner of a free robot). An OFF on either side wins: the
-account's OFF turns a switch off even when the robot sets `1`, and a site that wants every
-reset done where the hazard can be seen (IEC 60204-1) sets
-`OPENRAL_DASHBOARD_REMOTE_CONTROL=0` on the robot, which openral.com can't turn back on.
-Only `1` turns a switch on, and a cached copy never does. Remote control fails closed: it
-is off whenever openral.com couldn't confirm it at start (unreachable, an error, or a cache
-that can't be written), even on a robot set to `1`. An unlinked robot keeps both off. A change is **not live**: it applies at the next start (see **At deploy start**;
-restart `openral dashboard` for remote control, the deploy for skills). E-STOP is always
-allowed, from every role and listener.
-**Remote E-STOP is best-effort, not a safety function**: the physical e-stop stays
-authoritative.
+E-STOP is allowed from every role and listener. **Remote E-STOP is best-effort, not a safety function: the physical e-stop stays authoritative.** Every action is announced on `/openral/operator_action` and recorded by the compliance recorder as an intervention ([compliance log](../reference/compliance-log.md)).
 
-Every action is announced on `/openral/operator_action` and recorded by the compliance
-recorder as an intervention, attributed to the signed-in user (or, locally, the client
-address) — pseudonymised, see [compliance log](../reference/compliance-log.md).
+Safeguards on the network paths:
 
-A request whose `Origin` names another site than the page is refused (CSRF); the tunnel
-listener accepts only the origins in `OPENRAL_DASHBOARD_ALLOWED_ORIGINS` (default
-`https://www.openral.com,https://dev.openral.com,https://viz.openral.com`). A token
-over the tunnel is good for any number of reads but one write (a replayed token cannot
-prompt or reset twice; E-STOP is never refused). A request on the local port that carries
-Cloudflare's forwarding headers is refused: only the tunnel's own port takes forwarded
-traffic. A manifest may raise an action's role, never lower it under operator.
+| Safeguard | Behavior |
+|---|---|
+| Tunnel tokens | Short-lived, minted by openral.com for one user and one robot; any number of reads, but one write per token (E-STOP is never refused). |
+| Origin check | A request whose `Origin` names another site than the page is refused (CSRF). The tunnel listener accepts only `OPENRAL_DASHBOARD_ALLOWED_ORIGINS` (default `https://www.openral.com,https://dev.openral.com,https://viz.openral.com`). |
+| Forwarded traffic | A request on the local port carrying Cloudflare forwarding headers is refused; only the tunnel's own port takes forwarded traffic. |
+| Remote listener | Answers only `/api/*` and `/ws`, with a valid token. The OTLP receiver is never reachable through it. |
+| OTLP from other hosts | Off by default, so a LAN host cannot fill the event log or fake telemetry. Set `OPENRAL_DASHBOARD_LAN_INGEST=1` to collect from another robot computer. A dashboard bound to one LAN address needs it too. |
+| Remote control and skill controls | A linked robot gets them from its openral.com account (ADR-0132). OFF on either side wins; only `1` turns a switch on; remote control fails closed when openral.com cannot confirm it at start. A change applies at the next start. To require every reset on site (IEC 60204-1), set `OPENRAL_DASHBOARD_REMOTE_CONTROL=0` on the robot. An unlinked robot keeps both off. |
+| Action roles | A manifest may raise an action's required role, never lower it under operator. |
 
-**OTLP from other hosts is off by default.** A LAN host could otherwise fill the event
-log or fake telemetry the operator reads. To collect from another robot computer on the
-LAN (ADR-0017), start the dashboard with `OPENRAL_DASHBOARD_LAN_INGEST=1`; exporters on
-this machine (the deploy sends to `127.0.0.1`) are unaffected. A dashboard bound to one
-LAN address (not `0.0.0.0`) sees its own exporters arrive from that address, so it
-needs the opt-in too.
+## Reach the robot from openral.com
 
-## Reaching the robot from openral.com
+Platform behavior (accounts, settings levels, fleet features, org limits) is documented on [openral.com](https://openral.com), not here. On the robot you need one step.
 
-Sign in on openral.com and add the robot (**Dashboard → Robots → Add robot**, with its
-name and serial number; a free account has one remote robot, a Pro org as many as it
-needs). The serial travels in the link: every deploy stamps it on its compliance records,
-so a linked robot needs no `OPENRAL_UNIT_SERIAL`. It shows a one-time
-command; run it on the robot, as the user that runs OpenRAL:
+1. Sign in on openral.com and add the robot (**Dashboard, Robots, Add robot**, with its name and serial number). It shows a one-time command.
+2. Run it on the robot, as the user that runs OpenRAL (no root, nothing to install):
 
 ```bash
-openral robot link <code>
+uv run openral robot link <code>
 ```
 
-That is the only step on the robot. Nothing to install and no root:
+You should see the link succeed. Then start `openral dashboard` (or the deploy); the robot appears on openral.com/dashboard. While the dashboard is down the tunnel stays up and openral.com shows the robot as unreachable.
 
-- the code's issuer (`iss`) must be `https://www.openral.com` or
-  `https://dev.openral.com`, and its signing keys (`jwks`) must be on the same origin;
-  any other code is refused, and so is a stored `robot.json` naming another site. A
-  self-hosted issuer sets `OPENRAL_TRUSTED_ISSUERS` (comma-separated origins; it
-  replaces the openral.com pair, and an origin listed there may also serve another
-  listed issuer's keys);
-- the robot's identity (no secrets) goes to `~/.config/openral/robot.json` and its tunnel
-  token to `tunnel.env` beside it, both mode 0600;
-- a pinned `cloudflared` (sha256-checked) is fetched into `~/.cache/openral`;
-- the tunnel is installed as the **user** systemd service `openral-tunnel.service`, enabled
-  with `loginctl enable-linger`, so it is up now and after every reboot, before anyone
-  logs in. `--no-service` skips this; so does a machine without user systemd (a
-  container). Then `openral dashboard` runs the tunnel as its own child, up exactly while
-  the dashboard is.
+What `link` does:
 
-Start `openral dashboard` (or the deploy, which starts it): it opens the remote listener on
-`127.0.0.1:4319`, the tunnel's target, and the robot shows on openral.com/dashboard. While
-the dashboard is down the tunnel stays up and openral.com shows the robot as unreachable.
-The listener answers only `/api/*` and `/ws`, with a valid token; the OTLP receiver is
-never reachable through it.
+- Accepts only codes whose issuer is `https://www.openral.com` or `https://dev.openral.com`, with signing keys on the same origin. A self-hosted issuer sets `OPENRAL_TRUSTED_ISSUERS` (comma-separated origins; replaces the pair).
+- Stores the robot's identity (no secrets) in `~/.config/openral/robot.json` and its tunnel token in `tunnel.env` beside it, both mode 0600; fetches a sha256-pinned `cloudflared` into `~/.cache/openral`.
+- Installs the user systemd service `openral-tunnel.service` (with `loginctl enable-linger`), so the tunnel is up after every reboot. `--no-service` skips it, as does a machine without user systemd (a container); the dashboard then runs the tunnel as its own child.
+- At deploy start a linked robot fetches its settings from openral.com (cached for offline starts); a variable already set on the robot wins. A robot's rSkill list (`OPENRAL_RSKILLS`, Hugging Face repo ids) is installed at `deploy run|sim` start: Apache-2.0 / MIT / BSD rSkills install on their own, others are skipped with the `openral rskill install <id>` to run by hand. A failure never stops the deploy. `--no-rskill-install` or `OPENRAL_RSKILL_AUTO_INSTALL=0` turns this off.
 
-**Several linked robots on one host** (`openral deploy sim` of a scene with several robots,
-each its own openral.com robot): link each one with its own enrolment and no service,
-`OPENRAL_ROBOT_ENROLMENT=~/.config/openral/robots/<scene id>/<robot name>/robot.json openral robot
-link --no-service <its code>` (each scene robot's dashboard runs its tunnel; the user service is
-the host's own robot's). openral.com points every robot's tunnel at `localhost:4319`, so the deploy
-gives each robot's remote listener a port of its own (`4350 + i`, through
-`OPENRAL_DASHBOARD_REMOTE_PORT`) and runs one router on `127.0.0.1:4319` that sends each
-connection to its robot by the host of its first request (`r-<id>.openral.com`; each robot's
-tunnel carries only its own); every robot still checks its own tokens. The deploy says whether
-the router took the port.
-Each robot's dashboard runs its own tunnel. The user service keeps the robot it was linked
-for: `openral robot link` never replaces a service that runs another robot's tunnel. Port
-4319 is the router's while the scene runs: a host robot's own dashboard holding it leaves the
-scene's robots unreachable from openral.com (the deploy says so), and a host robot's dashboard
-started during the scene keeps its local listener and E-STOP but turns its remote listener off
-(it warns).
+**Several linked robots on one host** (a multi-robot `deploy sim` scene): link each with its own enrolment and no service: `OPENRAL_ROBOT_ENROLMENT=~/.config/openral/robots/<scene id>/<robot name>/robot.json openral robot link --no-service <code>`. The deploy gives each robot's remote listener its own port (`4350 + i`, through `OPENRAL_DASHBOARD_REMOTE_PORT`) and runs one router on `127.0.0.1:4319`; every robot still checks its own tokens. Port 4319 belongs to the router while the scene runs, so a host robot's own dashboard started then keeps its local listener and E-STOP but turns its remote listener off (it warns).
 
-**Settings levels.** openral.com holds settings at four levels. Each setting lives at exactly
-one of them, and a robot reads two: its own robot settings and one account.
-
-| Level | What is set there | Who changes it | Reaches the robot |
-|---|---|---|---|
-| **Robot** | its name, reasoner model, curated rSkills | an org admin (the owner, for a free robot) on openral.com's Robot settings page; the operator at the robot, in the console's ⚙ | yes; wins over the account |
-| **Organisation** | the provider API keys, the remote-control and skill-control switches | an org admin, in **Account → Settings** | yes, for the org's robots |
-| **Personal** | the same keys and switches | you, in **Account → Settings** | only for your own free robots, never an org's |
-| **Fleet** | the fleet's super reasoner (model, workcells, steps at once) | an org admin, on the fleet's settings page | no; openral.com uses them itself |
-
-An account's model from before models were set per robot is the fallback for a robot with
-none of its own.
-
-**Two reasoners, two models.** Don't confuse them:
-
-- The **robot's reasoner** (`OPENRAL_REASONER_MODEL`, a robot setting) is the S2 planner of
-  one robot: it runs with that robot's deploy, picks its rSkills and talks to its operator.
-  The robot gets its model and the account's key for it at deploy start.
-- The **fleet's super reasoner** (`OPENRAL_FLEET_MODEL`, a fleet setting, ADR-0135; a Pro
-  org's) runs on no robot: its loop runs in the fleet console on openral.com, which calls its
-  model with the org's key. It splits a fleet goal into steps and gives each to one robot as
-  a prompt (`POST /api/actions/prompt` with `new_goal` and a `fleet-…:<n>` `correlation_id`),
-  which that robot's own reasoner carries out with its own rSkills; it follows each step
-  through the robot's `/api/mission`, and relays a robot's question to the person (or, with
-  the fleet's "Super reasoner answers robots" on, answers it). Its settings are never sent to
-  a robot, and a robot's model never sets it.
-
-**At deploy start.** A linked robot fetches its settings from openral.com
-(`<site>/api/robot/settings`, the account's with the robot's own on top) with its own
-credential (`robot.secret`, 0600), caches them (`settings.json`, 0600) for offline starts,
-and puts them in the environment. A variable already set on the robot wins, so a change made
-on openral.com or in the console reaches the reasoner at the next deploy start, and never
-while that variable is set. The dashboard's switches are the exception: openral.com's OFF
-turns one off over the robot's own `1`, a cached copy (used when openral.com can't be
-reached) never turns one on, and remote control stays off when openral.com couldn't confirm
-it. Only a refused credential (401) deletes the cache.
-
-**The robot's rSkills.** A robot's **Robot settings** page on openral.com lists the
-rSkills it may run (`OPENRAL_RSKILLS`, comma-separated Hugging Face repo ids such as
-`OpenRAL/rskill-smolvla-so101-eraser_place-bf16`): the reasoner offers only those. At
-`openral deploy run` / `deploy sim` start, right after the account settings apply and
-before the reasoner starts, the robot installs each listed rSkill it doesn't have yet,
-one at a time, printing one line per rSkill (`installing …`, `installed`, `already
-installed`, or `skipped` and why). Only Apache-2.0 / MIT / BSD rSkills install on their
-own; a proprietary or non-commercial one is skipped with the `openral rskill install
-<id>` to run by hand (it asks you to accept the licence). A gated OpenRAL Pro rSkill this
-robot's Hugging Face token can't read (401/403) says to request access on Hugging Face.
-No failure (offline, Hub down, a bad manifest) stops the deploy: it starts with what is
-installed. `--no-rskill-install` or `OPENRAL_RSKILL_AUTO_INSTALL=0` turns this off.
-
-**Settings in the console.** Robot settings have one source of truth: openral.com. The
-console's header ⚙ shows the same Robot settings as openral.com's Robot settings page (its
-name, its reasoner model, its curated rSkills): the robot's dashboard relays them to
-`<site>/api/robot/console` with its own credential (`GET`/`PUT`/`PATCH /api/robot-settings`),
-and openral.com decides who may change what. The operator at the robot may read and change
-them; a LAN viewer may only read them; over the tunnel they may only be read, with remote
-control on (change them on openral.com, where you are signed in). An unlinked robot, or one
-whose credential openral.com refuses, answers 409, and 502 while openral.com can't be
-reached. The robot keeps no reasoner settings of its own: a deploy applies the account's at
-start (above), and a variable set on the robot still wins; a `robot-settings.json` left by an
-older release is no longer read (the deploy says so) and can be deleted.
-
-Manage the service like any user unit:
+To unlink, remove the robot on openral.com, then:
 
 ```bash
-systemctl --user status openral-tunnel.service
+systemctl --user disable --now openral-tunnel.service
+rm ~/.config/openral/{robot.json,tunnel.env,robot.secret,settings.json}
 ```
-
-To unlink, remove the robot on openral.com (its tunnel is deleted there), then
-`systemctl --user disable --now openral-tunnel.service` and delete
-`~/.config/openral/robot.json`, `tunnel.env`, `robot.secret` and `settings.json` (and
-`robot-settings.json`, if an older release left one).
 
 ## The 3D view
 
-The robot UI draws the 3D scene itself (three.js): the robot from its URDF, TF, the
-occupancy grid (`/map`), a point cloud, collision boxes and payload markers
-(`/openral/viz/*`) and the world-state objects, each a layer the operator can switch
-off. It reads the same `/ws` bridge proxy as Lichtblick and subscribes only to the
-layers that are on. Links are posed from `/tf`, so the model follows whatever
-`robot_state_publisher` computed. The proxy relays heavy snapshot topics (images, point
-clouds, maps, laser scans) latest-wins, so a slow tunnel drops stale frames instead of
-falling behind; sampled streams (joint states, IMU, odometry) are never dropped by it.
-From another machine on the LAN the page asks the robot for a 3D ticket first, as it
-does through the tunnel.
+The UI draws the scene itself (three.js): the robot from its URDF and `/tf`, the occupancy grid, point cloud, collision boxes and payload markers (`/openral/viz/*`) and world-state objects, each a switchable layer. It reads the dashboard's `/ws` proxy to `foxglove_bridge`, which stays on loopback and read-only. The proxy relays heavy topics latest-wins, so a slow tunnel drops stale frames; joint states, IMU and odometry are never dropped. From another machine the page asks the robot for a 3D ticket first.
 
-The dashboard also serves a pinned [Lichtblick](https://github.com/Lichtblick-Suite/lichtblick)
-web build (MPL-2.0, the open Foxglove Studio fork) at `/viz/`, downloaded on first use.
-It connects to `foxglove_bridge` through the dashboard's `/ws` proxy — the bridge itself
-stays on loopback and read-only. Remote and LAN viewers need a ticket from
-`POST /api/viz/ticket` (valid 15 minutes, reusable for reconnects, never past the
-token that asked for it, and only on the port that issued it). The page may connect only
-to the robot it came from, so a `?ds.url=` link cannot point it at another bridge. `/viz/` opens with a
-layout for this robot's cameras and base frame already in place. The robot UI links to it
-from the System pane for raw topic inspection.
+A pinned [Lichtblick](https://github.com/Lichtblick-Suite/lichtblick) web build (MPL-2.0) is served at `/viz/` for raw topic inspection, downloaded on first use. Remote and LAN viewers need a ticket from `POST /api/viz/ticket`; the page may connect only to the robot it came from.
 
 ## Endpoints
 
@@ -279,30 +104,34 @@ from the System pane for raw topic inspection.
 | `GET /api/manifest` | The robot manifest (404 until the runtime sends one) |
 | `GET /api/state` | One-shot JSON snapshot (`manifest_rev` bumps when the manifest changes) |
 | `GET /api/stream[?images=0]` | Server-Sent Events; `images=0` drops camera thumbnails |
-| `GET /api/mission` | For programs: the mission (goal, the prompt's `correlation_id`, each task's status), the reasoner's last tick, `awaiting_operator` with the `question` it asked, the last dashboard skill run by its `goal_id` (`skill_result`: `running`, then `finished` with `success` and `failure_reason`), and `stopped` / `estopped` / `latched` with `latch_reason` and `latch_detail` (`{kind, link, other, depth_m}`: what the latching stop hit, e.g. `attached:trk:2` into `voxel_464002`, 14.5 mm deep). A robot of a scene with several robots also reports `world_pose` (`{x, y, yaw, frame: "world"}`: where its map sits in the scene's shared frame; its graph publishes the same as a static `world -> map` TF). A few hundred bytes |
+| `GET /api/mission` | Programmatic status: the mission (goal, `correlation_id`, task statuses), the reasoner's last tick, `awaiting_operator` and its `question`, the last dashboard skill run (`skill_result`), `stopped` / `estopped` / `latched` with `latch_reason` and `latch_detail`, and `world_pose` in multi-robot scenes |
 | `GET /api/mission/stream` | The same as Server-Sent Events, one event per change |
 | `GET /api/camera/{sensor}/snapshot.jpg` | Latest frame of one camera |
 | `POST /api/actions/{id}` | Run an action: body `{"args": {...}}` |
 | `POST /api/viz/ticket` · `WS /ws` | The 3D view's ticket and bridge proxy |
 | `GET /api/traces` · `GET /api/spans/{trace_id}` | Trace index (`openral replay`) |
 | `POST /api/transcribe` | Speech to text on the host (local Whisper) |
-| `POST /v1/{traces,metrics,logs}` | OTLP/HTTP receiver (local listener, from this machine, or the LAN with `OPENRAL_DASHBOARD_LAN_INGEST=1`; never through the tunnel) |
+| `POST /v1/{traces,metrics,logs}` | OTLP/HTTP receiver (this machine, or the LAN with `OPENRAL_DASHBOARD_LAN_INGEST=1`; never through the tunnel) |
 | `GET /healthz` | `{"status": "ok"}` |
 
-`POST /api/actions/{id}` answers `200 {"ok": true}` (`202` with a `goal_id` for a
-skill), `400` for args that fail the action's schema, `403` for a role, listener or flag
-that does not allow it, `404` for an unknown action, `409` for a refused reset or goal,
-and `503` when ROS is not available.
+`POST /api/actions/{id}` answers `200 {"ok": true}` (`202` with a `goal_id` for a skill), `400` for args that fail the action's schema, `403` for a role, listener or flag that does not allow it, `404` for an unknown action, `409` for a refused reset or goal, `503` when ROS is not available.
 
-## Running alongside Jaeger + Prometheus
+## Alongside Jaeger and Prometheus
 
-For post-hoc trace analysis or metric history, bring up the dev compose stack and point
-the workload at the OTel Collector (`http://localhost:4317`) instead; it fans out to
-Jaeger (`http://localhost:16686`) and Prometheus (`http://localhost:9090`):
+For post-hoc traces or metric history, bring up the dev stack and send the workload to the OTel Collector (`http://localhost:4317`) instead; it fans out to Jaeger (`:16686`) and Prometheus (`:9090`). Use one OTLP endpoint per workload, the dashboard or the collector.
 
 ```bash
 docker compose -f docker-compose.dev.yml up -d otelcol jaeger prometheus
 ```
 
-Set `OPENRAL_JAEGER_UI_URL` and the UI links traces to Jaeger. One OTLP endpoint per
-workload: either the dashboard or the collector.
+Set `OPENRAL_JAEGER_UI_URL` and the UI links traces to Jaeger.
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `/` shows a bare page with E-STOP | No console bundle: first start offline, or `OPENRAL_DASHBOARD_UI_DIR` has no `index.html`. Check the `dashboard.ui_source` log line. |
+| No `skill:` actions in the UI | Start with `OPENRAL_DASHBOARD_WRITE_CONTROLS=1`. |
+| Remote user cannot reset or prompt | Remote control is off: `OPENRAL_DASHBOARD_REMOTE_CONTROL=1` and the account's switch must both allow it. |
+| Another robot's telemetry never shows | Start the dashboard with `OPENRAL_DASHBOARD_LAN_INGEST=1`. |
+| Scene robots unreachable from openral.com | A host robot's dashboard holds port 4319; stop it before the scene starts. |

@@ -1,5 +1,9 @@
 # Collision-primitive study — is the OBB the reason the arm reads as in-collision?
 
+!!! note "Superseded study"
+    The sphere-swept box it costs never landed; the [hull narrow phase](collision-hull-narrow-phase.md) and the [one-fitter lowering](collision-geometry-review.md) replaced it. Kept as a record; it is not maintained against master.
+
+
 > **Status: analysis.** The sphere-swept box it costs (§2–§7) never landed.
 > Overtaken since: the manifest lowering now accepts several primitives per link
 > and `lower_link_geometry` no longer emits only a PCA capsule (#324, §3, §8.5);
