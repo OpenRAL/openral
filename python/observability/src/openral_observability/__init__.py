@@ -44,7 +44,7 @@ from openral_observability.failure_bus import (
     FailureBusPublisher,
     FailureSource,
 )
-from openral_observability.lifecycle import log_lifecycle_errors
+from openral_observability.lifecycle import log_lifecycle_errors, refuse_unavailable_transitions
 from openral_observability.tracing import (
     InferenceKind,
     inference_span,
@@ -72,6 +72,7 @@ __all__ = [
     "producer",
     "propagation",
     "reasoner_span",
+    "refuse_unavailable_transitions",
     "rskill_span",
     "safety_span",
     "semconv",

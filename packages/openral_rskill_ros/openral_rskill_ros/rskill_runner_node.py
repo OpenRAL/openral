@@ -617,6 +617,11 @@ if _ROS2_AVAILABLE:
         ) -> None:
             """Store references; opens no ROS resources until ``on_configure``."""
             super().__init__(node_name)
+            from openral_observability import refuse_unavailable_transitions
+
+            # A change_state the current state lacks (a repeated deactivate) is refused,
+            # not raised out of the executor (rclpy kills the node on an unknown id).
+            refuse_unavailable_transitions(self)
             # 0 = the manifest's `action_spec.control_freq_hz` (issue #303: the
             # HAL derives every trajectory deadline from that field, so the
             # runner must tick at the same value), else 30 Hz.

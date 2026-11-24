@@ -38,6 +38,8 @@ TARGETS=(
     tests/integration/test_reasoner_palette_preserves_detector_coverage.py
     # Configured lifecycle peers reach the palette without a skill seed.
     tests/integration/test_reasoner_lifecycle_peers_without_seed.py
+    # A repeated id-only deactivate is refused; the lifecycle node keeps serving.
+    tests/integration/test_lifecycle_unavailable_transition_live.py
     # A blank query_task_progress task is the active mission task; stale replies drop.
     tests/integration/test_reasoner_task_progress_live.py
     # A completes_task_on_success action settles its task; a stale result does not.
@@ -361,6 +363,7 @@ ISOLATED_TARGETS=(
     tests/unit/test_hal_policy_state_publisher.py
     tests/unit/test_lifecycle_autostart.py
     tests/unit/test_lifecycle_error_logging.py
+    tests/unit/test_refuse_unavailable_transitions.py
     tests/unit/test_policy_state_palette_gate.py
     tests/unit/test_real_bringup_include.py
     tests/unit/test_reasoner_execute_prompt.py

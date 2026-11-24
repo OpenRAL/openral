@@ -153,6 +153,11 @@ if _ROS2_AVAILABLE:
                     against a stub ``RobotDescription``.
             """
             super().__init__("openral_world_state")
+            from openral_observability import refuse_unavailable_transitions
+
+            # A change_state the current state lacks (a repeated deactivate) is refused,
+            # not raised out of the executor (rclpy kills the node on an unknown id).
+            refuse_unavailable_transitions(self)
             # Dashboard-only: rotate camera thumbnails 180° so bottom-up
             # MuJoCo/LIBERO renders show upright to the operator. The topic the
             # VLA reads is untouched. Set OPENRAL_DASHBOARD_FLIP_180=1 to enable.

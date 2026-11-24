@@ -903,6 +903,11 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         ``None`` the query tools are never offered.
         """
         super().__init__(node_name)
+        from openral_observability import refuse_unavailable_transitions
+
+        # A change_state the current state lacks (a repeated deactivate) is refused,
+        # not raised out of the executor (rclpy kills the node on an unknown id).
+        refuse_unavailable_transitions(self)
         if tick_hz <= 0:
             raise ValueError(f"ReasonerNode.tick_hz must be > 0; got {tick_hz!r}")
         self._tick_hz = tick_hz

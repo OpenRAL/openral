@@ -17,6 +17,14 @@ exception it logs the full traceback via the node's ROS logger
 in the well-defined ``unconfigured``/``inactive`` state rather than
 ``errorprocessing``.
 
+``refuse_unavailable_transitions`` keeps a node alive when its ``change_state``
+service is asked for a transition its current state lacks (a repeated ``deactivate``).
+rclpy (Jazzy) refuses an unknown transition *label* cleanly, but an unknown transition
+*id* raises ``RCLError`` out of the service callback and the executor, killing the node.
+The reasoner's lifecycle dispatch and ``tools/lifecycle_autostart.py`` send the label
+too, but launch_ros ``ChangeState`` events and a hand-typed ``ros2 service call`` send an
+id alone, so the guard lives on the server side, once per node, whoever the client is.
+
 Imports ``rclpy`` lazily (inside the wrapper) so the module stays
 import-safe on pure-Python hosts, matching
 ``openral_observability.diagnostics``.
@@ -36,7 +44,7 @@ from opentelemetry.trace import Status, StatusCode
 if TYPE_CHECKING:
     from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
 
-__all__ = ["log_lifecycle_errors"]
+__all__ = ["log_lifecycle_errors", "refuse_unavailable_transitions"]
 
 _Node = TypeVar("_Node", bound="LifecycleNode")
 
@@ -104,3 +112,47 @@ def log_lifecycle_errors(
             return result
 
     return _wrapper
+
+
+def refuse_unavailable_transitions(node: LifecycleNode) -> None:
+    """Answer ``success: false`` to a ``change_state`` the current state cannot take.
+
+    Call once in a ``LifecycleNode``'s ``__init__`` (after ``super().__init__``). A
+    transition id not registered for the current state — a second ``deactivate``, an
+    ``activate`` before ``configure`` — is logged as a warning and refused, the state is
+    left unchanged and the node keeps serving, exactly as rclpy already answers an unknown
+    transition label. Valid transitions, labelled requests and any other failure inside a
+    transition are left to rclpy unchanged.
+
+    Args:
+        node: The lifecycle node whose ``change_state`` service to guard.
+
+    Example:
+        >>> from rclpy.lifecycle import LifecycleNode
+        >>> from openral_observability import refuse_unavailable_transitions
+        >>> class MyNode(LifecycleNode):
+        ...     def __init__(self):
+        ...         super().__init__("my_node")
+        ...         refuse_unavailable_transitions(self)
+    """
+    # reason: rclpy keeps the service and state machine on private attributes; there is
+    # no public hook.
+    service: Any = node._service_change_state
+    serve = service.callback
+
+    def _guarded(req: Any, resp: Any) -> Any:
+        # Only an id-only request needs the check: rclpy resolves a label itself and refuses
+        # an unknown one. Any other failure inside the transition still raises.
+        if not req.transition.label:
+            available = {t[0] for t in node._state_machine.available_transitions}
+            if req.transition.id not in available:
+                logger: Any = node.get_logger()
+                logger.warning(
+                    f"change_state refused: transition id {req.transition.id} is not "
+                    f"available in state {node._state_machine.current_state[1]!r}"
+                )
+                resp.success = False
+                return resp
+        return serve(req, resp)
+
+    service.callback = _guarded

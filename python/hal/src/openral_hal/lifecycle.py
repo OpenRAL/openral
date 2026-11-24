@@ -523,7 +523,7 @@ log = logging.getLogger(__name__)
 
 try:
     import rclpy
-    from openral_observability import log_lifecycle_errors
+    from openral_observability import log_lifecycle_errors, refuse_unavailable_transitions
     from rclpy.executors import ExternalShutdownException
     from rclpy.lifecycle import (
         LifecycleNode,
@@ -750,7 +750,7 @@ if _ROS2_AVAILABLE:
         See the module docstring for the full lifecycle contract.
         """
 
-        def __init__(
+        def __init__(  # noqa: PLR0915 — one statement per declared parameter
             self,
             node_name: str,
             *,
@@ -763,6 +763,9 @@ if _ROS2_AVAILABLE:
             from ``parameter_overrides`` — never from a later ``set_parameters``.
             """
             super().__init__(node_name, parameter_overrides=parameter_overrides)
+            # A change_state the current state lacks (a repeated deactivate) is refused,
+            # not raised out of the executor (rclpy kills the node on an unknown id).
+            refuse_unavailable_transitions(self)
             # The effective name: a launch `__node:=` remap renames the node,
             # and the remapped `openral_hal_<robot_id>` is what diagnostics key on.
             self._node_name = self.get_name()

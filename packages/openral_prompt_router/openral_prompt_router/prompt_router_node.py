@@ -108,6 +108,11 @@ class PromptRouterNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy un
     ) -> None:
         """Initialise; no rclpy I/O until on_configure."""
         super().__init__(node_name)
+        from openral_observability import refuse_unavailable_transitions
+
+        # A change_state the current state lacks (a repeated deactivate) is refused,
+        # not raised out of the executor (rclpy kills the node on an unknown id).
+        refuse_unavailable_transitions(self)
         self._sources = dict(sources or DEFAULT_SOURCES)
         self._pub: Any = None
         self._forwarded_count: int = 0

@@ -165,6 +165,11 @@ class ComplianceRecorderNode(LifecycleNode):  # type: ignore[misc]  # reason: rc
     def __init__(self, node_name: str = "openral_compliance_recorder") -> None:
         """Declare parameters; opens no resources until on_configure."""
         super().__init__(node_name)
+        from openral_observability import refuse_unavailable_transitions
+
+        # A change_state the current state lacks (a repeated deactivate) is refused,
+        # not raised out of the executor (rclpy kills the node on an unknown id).
+        refuse_unavailable_transitions(self)
         self.declare_parameter("run_mode", "sim")
         # Real hardware: a recorder that stops recording (deactivated while the graph runs)
         # stops the machine too, the same way a failed log write does.
