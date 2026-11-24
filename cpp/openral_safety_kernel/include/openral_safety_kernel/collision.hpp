@@ -1829,10 +1829,46 @@ std::uint8_t update_support_contact_witnesses(const AttachedModel& attached,
 /// driving base while the physical contact persists, so it decorrelated; the
 /// support-contact witness replaced it.
 /// Allocation-free; supports the first eight attached objects (the schema cap).
+///
+/// `snapshot_objects` is per object: bit i set snapshots object i afresh (its old
+/// bits and distances are discarded first); every other object is refreshed. A
+/// payload that was already carried keeps its attach-time baseline when another one
+/// joins or leaves the set, rather than having whatever it overlaps *now* exempted.
 bool update_attached_voxel_contacts(const AttachedModel& attached, const CollisionScratch& scratch,
                                     const VoxelGrid& grid, std::uint8_t* contact_mask,
                                     double* contact_distance, std::size_t mask_capacity,
-                                    std::size_t distance_capacity, bool snapshot) noexcept;
+                                    std::size_t distance_capacity,
+                                    std::uint8_t snapshot_objects) noexcept;
+
+/// All-or-nothing form: `snapshot=true` snapshots every object.
+inline bool update_attached_voxel_contacts(const AttachedModel& attached,
+                                           const CollisionScratch& scratch, const VoxelGrid& grid,
+                                           std::uint8_t* contact_mask, double* contact_distance,
+                                           std::size_t mask_capacity, std::size_t distance_capacity,
+                                           bool snapshot) noexcept {
+  return update_attached_voxel_contacts(attached, scratch, grid, contact_mask, contact_distance,
+                                        mask_capacity, distance_capacity,
+                                        static_cast<std::uint8_t>(snapshot ? 0xFFU : 0U));
+}
+
+/// Where each slot of a re-ordered attached set came from: `from[i]` is the old slot
+/// whose payload now sits in slot i, or -1 for a payload new to the set.
+using SlotOrigin = std::array<int, 8>;
+
+/// Per-slot bits carried across a re-ordered set: new bit i is old bit `from[i]`;
+/// a new slot (`from[i] < 0`) gets 0. Witness liveness and residue masks both move
+/// with their payload, never with the slot index.
+std::uint8_t carry_slot_bits(std::uint8_t old_bits, const SlotOrigin& from) noexcept;
+
+/// Re-index the attach-time residue (mask bits and per-object distance blocks of
+/// `stride` cells) for a re-ordered set of `n_objects`: each carried payload keeps
+/// its own baseline in its new slot; new and vacated slots are cleared (bits 0,
+/// distances +inf). `temp_block` (>= `stride` doubles) breaks permutation cycles.
+/// Allocation-free.
+void carry_attached_contacts(std::uint8_t* contact_mask, std::size_t cells,
+                             double* contact_distance, std::size_t stride, std::size_t max_objects,
+                             const SlotOrigin& from, std::size_t n_objects,
+                             double* temp_block) noexcept;
 
 /// Check every attached payload against the robot's own link geometry
 /// (capsules + boxes), skipping each object's attach link and its explicit

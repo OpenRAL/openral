@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hand-written exemptions for the R1 Pro's kernel self-collision ACM (openral#740).
+     Source: OpenRAL, not a vendor MoveIt config; `openral collision lower` unions these
+     rows into the adjacent / certified-always-colliding pairs it derives itself.
+     Every row here is a safety-WG review item. -->
+<robot name="r1pro">
+  <!-- The two fingers of one gripper close onto each other. The BEHAVIOR-1K meshes
+       interpenetrate by ~49 mm at q = 0 (closed), so an empty close would trip the
+       kernel; the fingers slide, so the pair cannot be proved always-colliding.
+       Both fingers are grasp-contact links of that hand. -->
+  <disable_collisions link1="left_gripper_finger_link1" link2="left_gripper_finger_link2" reason="User"/>
+  <disable_collisions link1="right_gripper_finger_link1" link2="right_gripper_finger_link2" reason="User"/>
+</robot>

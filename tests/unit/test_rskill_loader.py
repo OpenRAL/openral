@@ -1008,7 +1008,12 @@ class TestCheckCompatibility:
         (req,) = m.sensors_required
         assert (req.min_width, req.min_height) == (320, 256)
 
-        rSkill.check_compatibility(m, robot)  # must not raise
+        # The skill runs in the simpler_env scene, which declares the gripper encoding it
+        # consumes (SCENES gripper_convention); sim_runner passes it the same way. The bare
+        # widowx end effector is the MuJoCo twin's normalized_open_unit (#740).
+        rSkill.check_compatibility(
+            m, robot, scene_gripper_convention="normalized_open_symmetric"
+        )  # must not raise
 
 
 # ── InstalledRSkillEntry schema round-trip ──────────────────────────────────────

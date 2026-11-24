@@ -14,7 +14,7 @@ caveats). `hal.real` is the source of truth for real-hardware support:
 `hal.sim` being `null` does **not** mean no sim support: when the manifest has
 a `sim:` block, `openral_hal.build_hal` derives `MujocoArmHAL.from_description`
 from it (most arms below), and several embodiments (`aloha_agilex`, `gr1`,
-`pusht_2d`, `r1pro`, `sawyer`, `widowx`) run only through a scene adapter's
+`pusht_2d`, `r1pro`, `sawyer`) run only through a scene adapter's
 `fixed_robot=` binding, some of them in an out-of-process sidecar.
 
 | Robot dir | Description | Embodiment tags | Sim support | Real-HW support | README |
@@ -45,7 +45,7 @@ from it (most arms below), and several embodiments (`aloha_agilex`, `gr1`,
 | `so101_follower` | 6-DoF follower arm (LeRobot SO-101), serial — shares `SO100FollowerHAL` | `so101_follower`, `lerobot` | yes — derived `MujocoArmHAL` (`sim:` block) + `fixed_robot="so101_follower"` scene adapter (`so101_box`, MuJoCo tabletop arena) | yes — `SO100FollowerHAL` (serial, `/dev/ttyUSB0`) | [README.md](so101_follower/README.md) |
 | `ur10e` | 6-DoF collaborative arm (Universal Robots UR10e), no gripper | `ur10e`, `ur` | yes — derived `MujocoArmHAL` (mujoco_menagerie MJCF; class form `UR10eHAL`) | yes — `UR10eRealHAL` | [README.md](ur10e/README.md) |
 | `ur5e` | 6-DoF collaborative arm (Universal Robots UR5e), no gripper | `ur5e`, `ur` | yes — derived `MujocoArmHAL` (mujoco_menagerie MJCF; class form `UR5eHAL`) | yes — `UR5eRealHAL` | [README.md](ur5e/README.md) |
-| `widowx` | Trossen WidowX-250s 6-DoF arm (BridgeData V2 / SimplerEnv embodiment) | `widowx`, `widowx_250s`, `bridge`, `bridgedata_v2`, `oxe` | yes — `fixed_robot="widowx"` SimplerEnv/ManiSkill3 scene adapter (`scenes/benchmark/widowx_carrot_on_plate.yaml`) | no (`hal.real` null) | [README.md](widowx/README.md) |
+| `widowx` | Trossen WidowX-250s 6-DoF arm (BridgeData V2 / SimplerEnv embodiment) | `widowx`, `widowx_250s`, `bridge`, `bridgedata_v2`, `oxe` | yes — `fixed_robot="widowx"` SimplerEnv/ManiSkill3 scene adapter (`scenes/benchmark/widowx_carrot_on_plate.yaml`), plus a manifest-driven MuJoCo twin for `deploy sim` (`scenes/deploy/widowx_twin.yaml`) | no (`hal.real` null) | [README.md](widowx/README.md) |
 
 ## Robot manifests name code — load them from trusted sources only
 

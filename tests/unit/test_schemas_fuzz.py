@@ -112,6 +112,7 @@ from openral_core.schemas import (
     SensorReaderConfig,
     SensorSpec,
     SimEnvironment,
+    SimGripperDescription,
     SpatialEdge,
     SpatialNode,
     SpatialNodeKind,
@@ -1881,3 +1882,38 @@ _ovb_detector_config_st = st.builds(
 def test_fuzz_ovb_detector_config(instance: OvbDetectorConfig) -> None:
     """OvbDetectorConfig (DetectorContract.ovb) round-trips + validates its schema."""
     _round_trip_and_validate(OvbDetectorConfig, instance)
+
+
+_name_st = st.text(alphabet="abcdefghijklmnopqrstuvwxyz_", min_size=1, max_size=12)
+_sim_gripper_st = st.one_of(
+    st.builds(
+        SimGripperDescription,
+        joint=_name_st,
+        ctrl_range=st.tuples(st.floats(-1, 0), st.floats(0, 1)),
+        qpos_addrs=st.lists(st.integers(0, 40), min_size=1, max_size=2).map(tuple),
+        qpos_scale=st.floats(0.001, 1.0),
+    ),
+    st.builds(
+        SimGripperDescription,
+        end_effector=_name_st,
+        ctrl_range=st.tuples(st.floats(-1, 0), st.floats(0, 1)),
+        qpos_addrs=st.lists(st.integers(0, 40), min_size=1, max_size=2).map(tuple),
+        qpos_scale=st.floats(0.001, 1.0),
+        actuator_index=st.integers(0, 40),
+    ),
+)
+
+
+@_FUZZ_SETTINGS
+@given(_sim_gripper_st)
+def test_fuzz_sim_gripper_description(instance: SimGripperDescription) -> None:
+    """SimGripperDescription (joint or end-effector target) round-trips through JSON."""
+    _round_trip_and_validate(SimGripperDescription, instance)
+
+
+def test_sim_gripper_needs_exactly_one_target() -> None:
+    """A gripper names a joint or an end effector; an end effector needs an actuator."""
+    common = {"ctrl_range": (0.0, 0.03), "qpos_addrs": (6, 7), "qpos_scale": 0.06}
+    for bad in ({}, {"joint": "g", "end_effector": "gripper"}, {"end_effector": "gripper"}):
+        with pytest.raises(ValueError, match=r"sim\.grippers"):
+            SimGripperDescription(**common, **bad)

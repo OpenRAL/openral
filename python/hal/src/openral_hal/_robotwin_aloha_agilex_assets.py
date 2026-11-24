@@ -18,8 +18,11 @@ Two steps, so a caller can tell an unreachable host from bad bytes:
 
 from __future__ import annotations
 
+import hashlib
 import os
+import tempfile
 import uuid
+import xml.etree.ElementTree as ET
 import zipfile
 from collections.abc import Callable
 from functools import partial
@@ -33,7 +36,10 @@ from openral_hal._pinned_files import sha256_file
 _T = TypeVar("_T")
 
 __all__ = [
+    "ARM_JOINT_RANGES",
+    "EFFORT_LIMIT",
     "ROBOTWIN_ASSETS_REVISION",
+    "ensure_aloha_agilex_mjcf",
     "ensure_aloha_agilex_urdf",
     "fetch_aloha_agilex_files",
 ]
@@ -234,3 +240,209 @@ def ensure_aloha_agilex_urdf() -> Path:
             )
     stamp.touch()
     return root / _URDF
+
+
+# ── MuJoCo twin ─────────────────────────────────────────────────────────────────
+#
+# The derived cache is keyed by this module's own source (every derive constant
+# and step lives here), so an edit invalidates a stale MJCF without a hand-bumped
+# version; the pinned revision in the cache root covers the upstream files.
+_DERIVE_KEY: str = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
+
+#: Arm joint ranges (rad), joint1..joint6, from ``robots/aloha_agilex/robot.yaml``
+#: (the URDF declares ±10 rad placeholders). Both front arms share them;
+#: ``tests/unit/test_robotwin_aloha_agilex_mjcf.py`` holds the two in lock-step.
+ARM_JOINT_RANGES: tuple[tuple[float, float], ...] = (
+    (-2.618, 2.618),
+    (0.0, 3.14),
+    (0.0, 2.967),
+    (-1.745, 1.745),
+    (-1.22, 1.22),
+    (-3.14159, 3.14159),
+)
+#: Actuator force clamp (N·m / N), the manifest's ``effort_limit`` for every joint.
+EFFORT_LIMIT: float = 30.0
+_ARMS: tuple[str, ...] = ("fl_", "fr_")
+# RoboTwin's ``config.yml`` couples each gripper as ``joint8 = 1.0 * joint7``
+# (both 0..0.04765 m, 0 = closed; joint8's axis is mirrored in the URDF).
+_DRIVEN_FINGER: str = "joint7"
+_MIMIC_FINGER: str = "joint8"
+# Sim-only position-servo gains (kp N·m/rad or N/m, kv N·m·s/rad or N·s/m).
+# RoboTwin's SAPIEN drive (stiffness 1000, damping 200) under the 30 N·m clamp
+# would cap a joint at 30 / 200 = 0.15 rad/s; kv = 10 puts that cap at the
+# manifest's 3 rad/s velocity limit instead.
+_KP_KV: dict[str, tuple[float, float]] = {
+    "joint1": (300.0, 10.0),
+    "joint2": (400.0, 10.0),
+    "joint3": (300.0, 10.0),
+    "joint4": (100.0, 3.0),
+    "joint5": (100.0, 3.0),
+    "joint6": (50.0, 1.5),
+    _DRIVEN_FINGER: (400.0, 10.0),
+}
+# Mesh-contact pairs to exclude per arm. ``base_link`` is welded to the world,
+# so MuJoCo's parent/child filter does not cover it, and its STL overlaps
+# ``link1``'s by ~2 mm at every pose; the two fingers touch when closed.
+_CONTACT_EXCLUDES: tuple[tuple[str, str], ...] = (("base_link", "link1"), ("link7", "link8"))
+_JOINT_DAMPING: float = 0.5
+_JOINT_ARMATURE: float = 0.02
+
+
+def _is_front_arm_joint(name: str) -> bool:
+    """``fl_joint1``..``fr_joint8`` (``fl_castor_wheel`` shares the prefix, not the stem)."""
+    return name.startswith(tuple(p + "joint" for p in _ARMS))
+
+
+def _frozen_urdf_xml(urdf: Path) -> str:
+    """The URDF with every joint but the two front arms' turned ``fixed``, minus COLLADA.
+
+    The wheels, castors and the two rear (``lr_`` / ``rr_``) arms are welded at
+    their zero pose: RoboTwin drives only the front arms, and the manifest's
+    14 joints name only those. MuJoCo cannot load the ``.dae`` visuals, so they
+    are dropped; those links render their STL collision mesh (the same shape),
+    and the visual-only STL frame (``box1_Link``, the camera mast) is kept.
+    """
+    root = ET.parse(urdf).getroot()
+    for link in root.findall("link"):
+        for visual in link.findall("visual"):
+            mesh = visual.find("geometry/mesh")
+            if mesh is not None and str(mesh.get("filename")).lower().endswith(".dae"):
+                link.remove(visual)
+    for joint in root.findall("joint"):
+        name = str(joint.get("name"))
+        if joint.get("type") != "fixed" and not _is_front_arm_joint(name):
+            joint.set("type", "fixed")
+    return ET.tostring(root, encoding="unicode")
+
+
+def _aloha_agilex_mjcf_xml(urdf: Path) -> str:
+    """Compile the frozen URDF with MuJoCo and add actuators + finger equalities.
+
+    Raises:
+        ROSConfigError: ``mujoco`` is missing or the URDF does not compile, or
+            the compiled model lacks a front-arm joint.
+    """
+    try:
+        import mujoco  # noqa: PLC0415 — sim-only optional dep, lazy
+    except ImportError as exc:
+        raise ROSConfigError(
+            f"Deriving the aloha_agilex MJCF needs the `mujoco` package "
+            f"({type(exc).__name__}: {exc}); install the sim extras."
+        ) from exc
+
+    root = ET.fromstring(_frozen_urdf_xml(urdf))
+    ext = ET.SubElement(root, "mujoco")
+    # fusestatic=false keeps every URDF link a body (the camera mounts and
+    # link names the manifest refers to); the remaining STL visuals are kept.
+    ET.SubElement(
+        ext,
+        "compiler",
+        {
+            "meshdir": str(urdf.parent),
+            "fusestatic": "false",
+            "discardvisual": "false",
+            "balanceinertia": "true",
+            "angle": "radian",
+        },
+    )
+    try:
+        # MjSpec, not ``mj_saveLastXML`` (process-global, racy across threads).
+        spec = mujoco.MjSpec.from_string(ET.tostring(root, encoding="unicode"))
+        spec.compile()
+    except ValueError as exc:
+        raise ROSConfigError(f"Deriving the aloha_agilex MJCF failed: {exc}") from exc
+    mjcf = ET.fromstring(spec.to_xml())
+
+    mjcf.set("model", "aloha_agilex")
+    compiler = mjcf.find("compiler")
+    if compiler is None:
+        compiler = ET.Element("compiler")
+        mjcf.insert(0, compiler)
+    compiler.set("meshdir", str(urdf.parent))
+    compiler.set("angle", "radian")
+    option = mjcf.find("option")
+    if option is None:
+        option = ET.Element("option")
+        mjcf.insert(1, option)
+    option.set("integrator", "implicitfast")
+
+    joints = {str(j.get("name")): j for j in mjcf.iter("joint")}
+    for joint in joints.values():
+        joint.set("damping", f"{_JOINT_DAMPING}")
+        joint.set("armature", f"{_JOINT_ARMATURE}")
+
+    for old in mjcf.findall("actuator") + mjcf.findall("equality") + mjcf.findall("contact"):
+        mjcf.remove(old)
+    contact = ET.SubElement(mjcf, "contact")
+    actuator = ET.SubElement(mjcf, "actuator")
+    equality = ET.SubElement(mjcf, "equality")
+    # Actuators in manifest order: left joint1..6, left gripper, right ...
+    for prefix in _ARMS:
+        names = [f"joint{i}" for i in range(1, 7)] + [_DRIVEN_FINGER]
+        for name in names:
+            mj_joint = joints.get(prefix + name)
+            if mj_joint is None:
+                raise ROSConfigError(
+                    f"aloha_agilex: compiled model has no joint {prefix + name!r} — "
+                    f"the pinned RoboTwin URDF changed its joint names."
+                )
+            if name == _DRIVEN_FINGER:
+                lo, hi = (float(v) for v in str(mj_joint.get("range")).split())
+            else:
+                lo, hi = ARM_JOINT_RANGES[int(name[-1]) - 1]
+                mj_joint.set("range", f"{lo} {hi}")
+                mj_joint.set("limited", "true")
+            kp, kv = _KP_KV[name]
+            ET.SubElement(
+                actuator,
+                "position",
+                {
+                    "name": prefix + name,
+                    "joint": prefix + name,
+                    "kp": f"{kp}",
+                    "kv": f"{kv}",
+                    "ctrlrange": f"{lo} {hi}",
+                    "forcerange": f"{-EFFORT_LIMIT} {EFFORT_LIMIT}",
+                },
+            )
+        ET.SubElement(
+            equality,
+            "joint",
+            {
+                "name": f"{prefix}finger_mimic",
+                "joint1": prefix + _MIMIC_FINGER,
+                "joint2": prefix + _DRIVEN_FINGER,
+                "polycoef": "0 1 0 0 0",
+            },
+        )
+        for body1, body2 in _CONTACT_EXCLUDES:
+            ET.SubElement(contact, "exclude", {"body1": prefix + body1, "body2": prefix + body2})
+    ET.indent(mjcf)
+    return ET.tostring(mjcf, encoding="unicode")
+
+
+def ensure_aloha_agilex_mjcf() -> Path:
+    """Return the aloha-agilex MuJoCo twin MJCF, deriving it from the URDF if needed.
+
+    The front two arms are actuated (one ``<position>`` actuator per manifest
+    joint, in manifest order, ranges from the manifest) with ``joint8``
+    mirroring ``joint7`` per gripper; the base, wheels and rear arms are welded.
+    The gains are OpenRAL's sim-only choice, not a model of the real servos.
+
+    Raises:
+        ROSConfigError: The URDF fetch / verification fails or ``mujoco`` is
+            not installed.
+    """
+    urdf = ensure_aloha_agilex_urdf()
+    path = _root() / f"derived-{_DERIVE_KEY}" / "aloha_agilex.xml"
+    if not path.is_file():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(_aloha_agilex_mjcf_xml(urdf))
+            os.replace(tmp, path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+    return path

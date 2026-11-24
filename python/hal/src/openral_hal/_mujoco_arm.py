@@ -37,9 +37,10 @@ from typing import TYPE_CHECKING, Unpack
 import structlog
 from openral_core.assets import AssetRefError, resolve_asset
 from openral_core.exceptions import ROSConfigError, ROSEStopRequested, ROSRuntimeError
-from openral_core.schemas import RobotDescription
+from openral_core.schemas import ControlMode, RobotDescription
 
-from openral_hal.mujoco_twin import MujocoTwinRollout, TwinKwargs
+from openral_hal.mujoco_twin import MujocoTwinRollout, TwinKwargs, _PlanarBaseTwin
+from openral_hal.protocol import HALHealthReport
 from openral_hal.sim_attached import SimAttachedHAL
 
 if TYPE_CHECKING:
@@ -286,6 +287,23 @@ class MujocoArmHAL(SimAttachedHAL):
             n_joints=len(self._twin.joint_names),
         )
 
+    def health(self) -> HALHealthReport:
+        """The diagnostics heartbeat's fields: each end-effector gripper's position.
+
+        ``<end_effector>_position_normalized`` per ``sim.grippers[]`` entry with no
+        manifest joint — the key a real HAL reporting such a gripper uses (the Galaxea
+        A1's ``gripper_position_normalized``). No I/O: reads the in-process ``MjData``.
+        A twin without one reports what the lifecycle node reports for a HAL with no
+        ``health``.
+        """
+        return HALHealthReport(
+            message="hal ready",
+            fields={
+                f"{name}_position_normalized": f"{value:.6f}"
+                for name, value in self._twin.end_effector_gripper_positions().items()
+            },
+        )
+
     # ── Safety ─────────────────────────────────────────────────────────────────
 
     def estop(self) -> None:
@@ -406,7 +424,9 @@ class MujocoArmHAL(SimAttachedHAL):
         constructor stays available for tests / one-off overrides. Default
         joint→qpos/qvel/actuator mappings are 1:1 with ``description.joints``
         order, offset by 7/6 if ``description.sim.floating_base`` is True
-        (humanoids); explicit per-joint overrides in ``description.sim`` win.
+        (humanoids); explicit per-joint overrides in ``description.sim`` win. A
+        manifest that supports ``BODY_TWIST`` without a floating base runs on
+        ``_PlanarBaseTwin`` (its MJCF's ``base_x`` / ``base_y`` / ``base_yaw``).
 
         Args:
             description: A ``RobotDescription`` whose ``sim`` field is
@@ -441,7 +461,14 @@ class MujocoArmHAL(SimAttachedHAL):
             staleness_limit_s=staleness_limit_s,
             mjcf_path_override=mjcf_path_override,
         )
-        return cls(description, **kwargs)
+        # A fixed-base-addressed manifest that takes BODY_TWIST drives a wheeled base the
+        # MJCF carries on planar joints (the R1 Pro); every other robot gets the plain twin.
+        assert description.sim is not None  # _sim_kwargs_for refused a missing block
+        planar = (
+            ControlMode.BODY_TWIST in description.capabilities.supported_control_modes
+            and not description.sim.floating_base
+        )
+        return cls(description, twin=_PlanarBaseTwin if planar else MujocoTwinRollout, **kwargs)
 
     def _init_from_description(
         self,

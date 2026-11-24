@@ -955,9 +955,12 @@ class SimAttachedHAL:
         from the MJCF, no ``joint_efforts`` key, or a short vector) ``effort`` is
         empty — never a zero a torque observer would read as a free joint.
 
+        A backend with no MJCF handle is read from its observation
+        (``_read_state_from_obs``), and refuses rather than publish zeros.
+
         Raises:
-            ROSRuntimeError: when called before `connect` or when the
-                env hasn't been reset (no obs cached).
+            ROSRuntimeError: when called before `connect`, or when a backend with
+                no MJCF handle reports no measured position for some joint.
         """
         self._require_connected("read_state")
         # A backend that reads its own joint state (``read_joint_state``, the
@@ -970,32 +973,7 @@ class SimAttachedHAL:
         velocities: list[float] = []
         handles = self._mujoco_handles()
         if handles is None:
-            # No MJCF handle (a non-MuJoCo backend — e.g. the Isaac Sim sidecar,
-            # ManiSkill3 / SimplerEnv). Prefer the real joint angles the
-            # SimRollout surfaces as obs["joint_positions"] (in description-joint
-            # order) so /joint_states carries live values; fall back to zeros
-            # (shape-correct) when the backend provides none. Never reached on
-            # the MuJoCo path (non-MuJoCo joint-state handling).
-            names = [j.name for j in self.description.joints]
-            njoints = len(names)
-
-            def _from_obs(key: str, missing: list[float]) -> list[float]:
-                """Read a per-joint vector from the cached obs, padded/truncated to njoints."""
-                raw = self._last_obs.get(key) if self._last_obs is not None else None
-                if raw is None:
-                    return missing
-                vec = np.asarray(raw, dtype=np.float64).reshape(-1)
-                if not missing and vec.shape[0] < njoints:
-                    return missing  # a short measured vector: unmeasured rows, not zeros
-                return [float(vec[i]) if i < vec.shape[0] else 0.0 for i in range(njoints)]
-
-            return JointState(
-                name=names,
-                position=_from_obs("joint_positions", [0.0] * njoints),
-                velocity=_from_obs("joint_velocities", [0.0] * njoints),
-                effort=_from_obs("joint_efforts", []),
-                stamp_ns=time.time_ns(),
-            )
+            return self._read_state_from_obs()
         model, data = handles
         import mujoco  # noqa: PLC0415  # reason: optional dep guarded by caller
 
@@ -1031,6 +1009,78 @@ class SimAttachedHAL:
             velocity=velocities,
             effort=efforts if measured else [],
             stamp_ns=self._last_state_ns,
+        )
+
+    def _read_state_from_obs(self) -> JointState:
+        """``read_state`` for a backend with no MJCF handle (Isaac, BEHAVIOR, RoboTwin, ...).
+
+        Reads ``obs["joint_positions"]`` (and ``joint_velocities`` / ``joint_efforts``).
+        With ``obs["joint_names"]`` the vectors are keyed by name and each description
+        joint is looked up by ``name``, then ``sim_joint_name``; without it they must be
+        in description-joint order and exactly one value per joint.
+
+        Position is all or refuse: a missing key, a short or over-long vector, or a
+        joint the backend does not report raises, because the safety kernel, the
+        self-collision check and world state read this as the measured pose (a
+        fabricated zero pose is a pose the robot is not in). Velocity and effort are
+        all or nothing: unmeasured means an empty list, never zeros.
+
+        Raises:
+            ROSRuntimeError: The backend reports no joint positions for some joint.
+                Runtime, not ``ROSPerceptionStale``: the backend's observation never
+                carries them, so waiting for a fresher one cannot recover.
+        """
+        joints = self.description.joints
+        obs = self._last_obs or {}
+        raw_names = obs.get("joint_names")
+        index: dict[str, int] | None = None
+        n_reported = 0
+        if raw_names is not None:
+            n_reported = len(raw_names)
+            reported = {str(n): i for i, n in enumerate(raw_names)}
+            index = {}
+            for j in joints:
+                for key in (j.name, j.sim_joint_name):
+                    if key is not None and key in reported:
+                        index[j.name] = reported[key]
+                        break
+
+        def _vector(key: str) -> list[float] | None:
+            raw = obs.get(key)
+            if raw is None:
+                return None
+            vec = np.asarray(raw, dtype=np.float64).reshape(-1)
+            if index is not None:
+                if len(index) != len(joints) or vec.shape[0] != n_reported:
+                    return None
+                return [float(vec[index[j.name]]) for j in joints]
+            if vec.shape[0] != len(joints):
+                return None
+            return [float(v) for v in vec]
+
+        position = _vector("joint_positions")
+        if position is None:
+            missing = [j.name for j in joints if index is not None and j.name not in index]
+            raise ROSRuntimeError(
+                f"{type(self._env).__name__} reports no measured joint positions for "
+                f"robot {self.description.name!r} (obs keys {sorted(obs)}; "
+                f"joint_positions width {np.asarray(obs.get('joint_positions', [])).size}, "
+                f"{len(joints)} description joints"
+                + (f"; unreported joints {missing}" if missing else "")
+                + "). Refusing to publish a fabricated /joint_states: the backend's "
+                "SimRollout must emit obs['joint_positions'] for every description joint."
+            )
+        if not np.isfinite(position).all():
+            raise ROSRuntimeError(
+                f"{type(self._env).__name__} reports non-finite joint positions for robot "
+                f"{self.description.name!r}; refusing to publish them as measured /joint_states."
+            )
+        return JointState(
+            name=[j.name for j in joints],
+            position=position,
+            velocity=_vector("joint_velocities") or [],
+            effort=_vector("joint_efforts") or [],
+            stamp_ns=time.time_ns(),
         )
 
     def add_post_step_observer(self, observer: Callable[[], None]) -> None:
@@ -2746,6 +2796,10 @@ class SimAttachedHAL:
         """
         self._held_twist = None
         self._latch_twist(None)
+        # A target the stop cut short must not ride along as the next pack's ``prev``:
+        # an absolute-target env (RoboTwin) would resume it on the next gripper or twist
+        # command. Unset slots then take the measured pose, as after a reset.
+        self._last_env_action = None
         hold = getattr(self._env, "hold_present_pose", None)
         if callable(hold) and self._connected:
             hold()

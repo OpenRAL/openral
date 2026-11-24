@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import os
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -361,14 +361,12 @@ def _sim_joint_body_id(
     return int(model.jnt_bodyid[joint_id])
 
 
-def _resolve_gripper_body_groups(
+def _jaw_body_groups(
     model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
-    gripper_joints: list[JointSpec],
+    jaw_body_ids: Sequence[int],
 ) -> dict[int, int]:
-    """Map every physical finger body to its independently contacting jaw."""
-    assemblies = {
-        int(model.body_parentid[_sim_joint_body_id(model, joint)]) for joint in gripper_joints
-    }
+    """Map every finger body under the jaws' assemblies to its jaw root."""
+    assemblies = {int(model.body_parentid[body_id]) for body_id in jaw_body_ids}
     groups: dict[int, int] = {}
     for assembly_body_id in assemblies:
         jaw_roots = [
@@ -386,6 +384,144 @@ def _resolve_gripper_body_groups(
     if not groups:
         raise ROSConfigError("Sim attachment evidence found no physical gripper branches.")
     return groups
+
+
+@dataclass
+class _Hand:
+    """One gripper's attachment state: a bimanual robot has two, each independent.
+
+    Every rule of the single-gripper tracker holds per hand (a payload attaches to
+    a hand only on that hand's own jaws, and releases on that hand's own contact
+    loss); what crosses hands is only ever more conservative (see the tracker).
+    """
+
+    attach_link: str
+    attach_body_id: int
+    touch_links: list[str]
+    body_groups: dict[int, int]
+    candidates: dict[int, _ContactCandidate] = field(default_factory=dict)
+    attached_root: int | None = None
+    attached_translation: NDArray[np.float64] | None = None
+    attached_rotation: NDArray[np.float64] | None = None
+    # The record this hand last published, re-sent unchanged while another hand's
+    # transition re-publishes the set.
+    attachment: AttachedCollisionObject | None = None
+    place_attested_stamp_ns: int | None = None
+    refused: set[int] = field(default_factory=set)  # unattachable payloads, logged once
+    # The manifest attach/touch link names, kept when ``bind_kernel_links`` renames the hand
+    # to its sim bodies: a grasp declaration names the hand in the manifest's namespace.
+    manifest_links: frozenset[str] = frozenset()
+
+
+def _joint_gripper_hands(
+    model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    description: RobotDescription,
+) -> list[_Hand]:
+    """One hand per ``role: gripper`` parent link, in manifest order."""
+    import mujoco  # noqa: PLC0415  # reason: optional sim dependency
+
+    child_to_joint = {joint.child_link: joint for joint in description.joints}
+    by_link: dict[str, list[JointSpec]] = {}
+    for joint in description.joints:
+        if joint.role == "gripper":
+            by_link.setdefault(joint.parent_link, []).append(joint)
+    hands: list[_Hand] = []
+    for attach_link, jaws in by_link.items():
+        jaw_bodies = [_sim_joint_body_id(model, joint) for joint in jaws]
+        attach_joint = child_to_joint.get(attach_link)
+        if attach_joint is not None and attach_joint.sim_joint_name:
+            attach_body_id = _sim_joint_body_id(model, attach_joint)
+        else:
+            # A fixed hand link (the R1 Pro's ``*_gripper_link``) is no joint's child; the
+            # MJCF body of the same name is that link's frame.
+            attach_body_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, attach_link))
+        # The attach frame must carry the jaws: a same-named body elsewhere would pose the
+        # payload in the wrong frame.
+        if attach_body_id < 0 or not all(
+            int(model.body_parentid[body]) in _body_subtree(model, attach_body_id)
+            for body in jaw_bodies
+        ):
+            raise ROSConfigError(f"Cannot resolve sim body for attach link {attach_link!r}.")
+        hands.append(
+            _Hand(
+                attach_link=attach_link,
+                attach_body_id=attach_body_id,
+                # The same source as the kernel's grasp allowlist and the hand links: the
+                # jaws, their mimic followers and the links rigid on those (#349).
+                touch_links=list(
+                    description.grasp_contact_links(gripper_joints={j.name for j in jaws})
+                ),
+                body_groups=_jaw_body_groups(model, jaw_bodies),
+            )
+        )
+    return hands
+
+
+def _end_effector_gripper_hands(
+    model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    description: RobotDescription,
+) -> list[_Hand]:
+    """One hand per ``sim.grippers`` entry driving an end effector with no manifest joint.
+
+    The Galaxea A1 twin: its fingers are MJCF joints only, found by the entry's
+    ``qpos_addrs``. The attach link is the manifest link whose sim body carries the
+    fingers; the touch links are the finger bodies themselves.
+    """
+    import mujoco  # noqa: PLC0415  # reason: optional sim dependency
+
+    if description.sim is None:
+        return []
+    link_by_body = {
+        int(model.jnt_bodyid[joint_id]): joint.child_link
+        for joint in description.joints
+        if joint.sim_joint_name
+        # A joint the twin does not model is no EE attach link (as _resolve_robot_bodies).
+        and (joint_id := mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint.sim_joint_name))
+        >= 0
+    }
+    hands: list[_Hand] = []
+    for gripper in description.sim.grippers:
+        if gripper.end_effector is None:
+            continue
+        jaw_bodies = [
+            int(model.jnt_bodyid[joint_id])
+            for joint_id in range(int(model.njnt))
+            if int(model.jnt_qposadr[joint_id]) in gripper.qpos_addrs
+        ]
+        assemblies = {int(model.body_parentid[body]) for body in jaw_bodies}
+        if len(jaw_bodies) != len(gripper.qpos_addrs) or len(assemblies) != 1:
+            raise ROSConfigError(
+                f"End-effector gripper {gripper.end_effector!r}: qpos_addrs "
+                f"{gripper.qpos_addrs} do not name fingers on one sim body."
+            )
+        attach_body_id = next(iter(assemblies))
+        attach_link = link_by_body.get(attach_body_id)
+        if attach_link is None:
+            raise ROSConfigError(
+                f"End-effector gripper {gripper.end_effector!r}: no manifest link is the "
+                "sim body its fingers hang from."
+            )
+        # Only the listed finger joints' bodies and what hangs on them: a sibling branch
+        # with its own joint (a hinged tool guard on the same wrist) is no jaw, and must
+        # neither count as a contact branch nor become a touch link.
+        groups = {body: jaw for jaw in jaw_bodies for body in _body_subtree(model, jaw)}
+        touch_links = [
+            mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, b) for b in sorted(groups)
+        ]
+        if not all(touch_links):
+            raise ROSConfigError(
+                f"End-effector gripper {gripper.end_effector!r}: a finger body has no MJCF name, "
+                "so it cannot be named as a touch link."
+            )
+        hands.append(
+            _Hand(
+                attach_link=attach_link,
+                attach_body_id=attach_body_id,
+                touch_links=[str(name) for name in touch_links],
+                body_groups=groups,
+            )
+        )
+    return hands
 
 
 def _resolve_robot_bodies(
@@ -1553,9 +1689,33 @@ def probe_contact_force(
 
 
 class SimAttachmentEvidenceTracker:
-    """Confirm free-object grasp/release from exact MuJoCo contacts and motion."""
+    """Confirm free-object grasp/release from exact MuJoCo contacts and motion.
 
-    def __init__(  # noqa: PLR0915  # reason: flat attribute-init list
+    One hand per gripper (``_Hand``): the ``role: gripper`` joints grouped by their
+    parent link, or a ``sim.grippers`` entry driving an end effector with no manifest
+    joint. Each hand attaches and releases on its own jaws exactly as a single
+    gripper does. Across hands only conservative rules apply: hands may share no jaw
+    body; a payload held by one hand is never a candidate for another; hands publish
+    in a fixed order, each record carrying a 1/N share of the kernel's attached
+    primitive budget (``attached_max_primitives`` over N hands), so a full set always
+    fits; and a place declaration licenses one attestation per carry with at most one
+    attested carry at a time across hands (a release ends its carry, as with a single
+    gripper, whose re-grasp starts a new place phase). The safety kernel keys witness
+    re-arming by (object, support, stamp) across slots, so a record moving slot when
+    another hand attaches or releases keeps its witness state. An update that fails
+    part-way still publishes, on the next update, the transitions earlier hands
+    already committed.
+
+    ``bind_kernel_links``: names each hand as the safety kernel's collision model does
+    (manifest links, or the sim bodies of a model lowered from the MJCF) and returns
+    the links neither naming resolves. The kernel rejects a whole set naming an
+    unknown link and never acknowledges it, so the bridge must not arm a tracker
+    that would name one.
+    An unattachable payload (no MJCF name, no collision geometry) is refused for that
+    hand alone and logged; the other hands keep publishing.
+    """
+
+    def __init__(
         self,
         model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
         description: RobotDescription,
@@ -1570,19 +1730,18 @@ class SimAttachmentEvidenceTracker:
         self._release_ticks = release_ticks
         self._translation_tolerance_m = translation_tolerance_m
         self._rotation_tolerance_rad = rotation_tolerance_rad
-        self._candidates: dict[int, _ContactCandidate] = {}
-        self._attached_root: int | None = None
-        self._attached_translation: NDArray[np.float64] | None = None
-        self._attached_rotation: NDArray[np.float64] | None = None
         # -- Place-phase declaration state (ADR-0097) --
-        # The declaration itself, the bodies its target resolves to, and the
-        # stamp of the declaration a place witness has already been attested
-        # for. That last one is the hysteresis: one declaration licenses ONE
-        # attestation, so a payload that separates from its place surface and
-        # touches it again is a fresh violation, never silently re-forgiven.
+        # The declaration itself, the bodies its target resolves to, and (per
+        # hand, ``_Hand.place_attested_stamp_ns``) the stamp of the declaration a
+        # place witness has already been attested for. That last one is the
+        # hysteresis: one declaration licenses ONE attestation per carry, and no hand
+        # attests while another holds an attestation under it, so a payload that
+        # separates from its place surface and touches it again is a fresh
+        # violation, never silently re-forgiven.
         self._place_declaration: PlaceDeclaration | None = None
         self._place_target_bodies: frozenset[int] = frozenset()
-        self._place_attested_stamp_ns: int | None = None
+        # Some hand's record changed since the last published set (see ``update``).
+        self._set_changed = False
         # The declared target's body and its model-measured region box, in that
         # body's own frame (ADR-0097's 2026-08-14 amendment). Measured once at
         # declaration time; posed into the robot base frame on every
@@ -1611,47 +1770,52 @@ class SimAttachmentEvidenceTracker:
         # region's one-voxel lift off its support. ``None`` until a grid is seen.
         self._voxel_resolution_m: float | None = None
 
-        gripper_joints = [joint for joint in description.joints if joint.role == "gripper"]
-        if not gripper_joints:
-            raise ROSConfigError("Sim attachment evidence requires gripper-role joints.")
-        attach_links = {joint.parent_link for joint in gripper_joints}
-        if len(attach_links) != 1:
-            raise ROSConfigError(
-                f"Sim attachment evidence needs one gripper parent link, got {attach_links}."
-            )
-        attach_link = next(iter(attach_links))
-        child_to_joint = {joint.child_link: joint for joint in description.joints}
-        attach_joint = child_to_joint.get(attach_link)
-        if attach_joint is None or not attach_joint.sim_joint_name:
-            raise ROSConfigError(f"Cannot resolve sim body for attach link {attach_link!r}.")
-        self._attach_link = attach_link
-        self._attach_body_id = _sim_joint_body_id(model, attach_joint)
-        # The jaws plus their mimic followers (#349): the follower finger squeezes the
-        # payload as hard as the leader, so the payload never collides with it.
-        jaws = {joint.name for joint in gripper_joints}
-        # The same source as the kernel's grasp allowlist and the hand links: the jaws,
-        # their mimic followers and the links rigid on those (the Robotiq bars).
-        self._touch_links = list(description.grasp_contact_links(gripper_joints=jaws))
-
-        self._gripper_body_groups = _resolve_gripper_body_groups(model, gripper_joints)
-
-        end_effector = next(
-            (spec for spec in description.end_effectors if spec.actuated),
-            None,
+        self._hands = _joint_gripper_hands(model, description) + _end_effector_gripper_hands(
+            model, description
         )
-        if end_effector is None:
+        if not self._hands:
+            raise ROSConfigError(
+                "Sim attachment evidence requires gripper-role joints or an end-effector gripper."
+            )
+        actuated = [spec for spec in description.end_effectors if spec.actuated]
+        if not actuated:
             raise ROSConfigError("Sim attachment evidence requires an actuated end effector.")
-        self._required_contact_groups = (
-            2 if end_effector.kind in {"parallel_gripper", "dexterous_hand"} else 1
+        # The strictest actuated end effector sets every hand's jaw count: never fewer
+        # contacts than a single-gripper robot of the same kind would need.
+        strict = next(
+            (spec for spec in actuated if spec.kind in {"parallel_gripper", "dexterous_hand"}),
+            actuated[0],
         )
-        if len(set(self._gripper_body_groups.values())) < self._required_contact_groups:
+        self._required_contact_groups = (
+            2 if strict.kind in {"parallel_gripper", "dexterous_hand"} else 1
+        )
+        claimed: set[int] = set()
+        for hand in self._hands:
+            found = len(set(hand.body_groups.values()))
+            if found < self._required_contact_groups:
+                raise ROSConfigError(
+                    f"Sim {strict.kind} on {hand.attach_link!r} needs "
+                    f"{self._required_contact_groups} physical contact branches, found {found}."
+                )
+            # Two hands over the same fingers (a gripper split across parent links, or a
+            # joint and an end-effector entry for one gripper) would both claim a payload.
+            if claimed & set(hand.body_groups):
+                raise ROSConfigError(
+                    f"Sim grippers share finger bodies: {hand.attach_link!r} overlaps another hand."
+                )
+            claimed |= set(hand.body_groups)
+        # Every record together must fit the kernel's attached-primitive cap.
+        cap = load_tracking_thresholds().caps.attached_max_primitives
+        if len(self._hands) > cap:
             raise ROSConfigError(
-                f"Sim {end_effector.kind} needs {self._required_contact_groups} physical "
-                f"contact branches, found {len(set(self._gripper_body_groups.values()))}."
+                f"{len(self._hands)} sim grippers cannot share the kernel's attached-primitive "
+                f"cap of {cap}: each record needs at least one primitive."
             )
+        self._max_primitives_per_hand = cap // len(self._hands)
 
         robot_bodies = _resolve_robot_bodies(model, description.joints)
-        robot_bodies.update(self._gripper_body_groups)
+        for hand in self._hands:
+            robot_bodies.update(hand.body_groups)
         self._robot_body_ids = frozenset(robot_bodies)
 
         # The body the robot's ``base_frame`` TF denotes (ADR-0095), which is the
@@ -1671,21 +1835,53 @@ class SimAttachmentEvidenceTracker:
             resolved = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, base_body_name))
             self._base_body_id = resolved if resolved >= 0 else None
 
+    def bind_kernel_links(self, kernel_link_names: Collection[str]) -> list[str]:
+        """Name every hand's attach/touch links as the safety kernel's collision model does.
+
+        A model lowered from the manifest keeps the manifest's link names; one lowered
+        from the MJCF bodies (``mjcf_lowering``, the WidowX twin's ``wx250s/*``) names
+        the sim bodies. Per hand, the manifest names are kept when the kernel knows them
+        all, else the hand's own sim bodies are named (its attach body; every body under
+        its jaws as touch links) when the kernel knows those. Returns the manifest links
+        neither naming resolves: the kernel rejects a whole set naming one, so a
+        non-empty result means the tracker must not arm.
+        """
+        unknown: list[str] = []
+        for hand in self._hands:
+            names = (hand.attach_link, *hand.touch_links)
+            if all(name in kernel_link_names for name in names):
+                continue
+            attach = str(self._model.body(hand.attach_body_id).name)
+            touch = [str(self._model.body(body).name) for body in sorted(hand.body_groups)]
+            if all(name in kernel_link_names for name in (attach, *touch)):
+                hand.manifest_links = frozenset(names)
+                hand.attach_link, hand.touch_links = attach, touch
+                continue
+            unknown += [name for name in names if name not in kernel_link_names]
+        return unknown
+
+    @property
+    def attach_links(self) -> tuple[str, ...]:
+        """Each hand's attach link, in publication order."""
+        return tuple(hand.attach_link for hand in self._hands)
+
     def _contacts(
         self,
         data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
-    ) -> dict[int, set[int]]:
-        contacts: dict[int, set[int]] = {}
+    ) -> list[dict[int, set[int]]]:
+        """Per hand: free-body root -> that hand's jaws touching it."""
+        contacts: list[dict[int, set[int]]] = [{} for _ in self._hands]
         for index in range(int(data.ncon)):
             contact = data.contact[index]
             body_a = int(self._model.geom_bodyid[int(contact.geom1)])
             body_b = int(self._model.geom_bodyid[int(contact.geom2)])
-            if body_a in self._gripper_body_groups and body_b not in self._robot_body_ids:
-                root = _root_motion_body(self._model, body_b)
-                contacts.setdefault(root, set()).add(self._gripper_body_groups[body_a])
-            elif body_b in self._gripper_body_groups and body_a not in self._robot_body_ids:
-                root = _root_motion_body(self._model, body_a)
-                contacts.setdefault(root, set()).add(self._gripper_body_groups[body_b])
+            for hand_contacts, hand in zip(contacts, self._hands, strict=True):
+                if body_a in hand.body_groups and body_b not in self._robot_body_ids:
+                    root = _root_motion_body(self._model, body_b)
+                    hand_contacts.setdefault(root, set()).add(hand.body_groups[body_a])
+                elif body_b in hand.body_groups and body_a not in self._robot_body_ids:
+                    root = _root_motion_body(self._model, body_a)
+                    hand_contacts.setdefault(root, set()).add(hand.body_groups[body_b])
         return contacts
 
     def update(
@@ -1698,32 +1894,55 @@ class SimAttachmentEvidenceTracker:
 
         "Changes" is attach, detach, and — while a place-phase declaration is
         active (ADR-0097) — the arming or disarming of the payload's place
-        witness. Nothing else re-publishes; a heartbeat of the same attachment
-        would re-arm an exemption the kernel had deliberately killed.
+        witness, on any hand. Nothing else re-publishes; a heartbeat of the same
+        attachment would re-arm an exemption the kernel had deliberately killed.
+        The set holds one record per holding hand, in hand order.
         """
         contacts = self._contacts(data)
-        if self._attached_root is not None:
-            candidate = self._candidates.setdefault(self._attached_root, _ContactCandidate())
-            if self._attached_root in contacts:
+        for hand, hand_contacts in zip(self._hands, contacts, strict=True):
+            held_elsewhere = {
+                root
+                for other in self._hands
+                if other is not hand and (root := other.attached_root) is not None
+            }
+            # Accumulated on the tracker, not a local: if a later hand raises, the
+            # transitions earlier hands committed still publish on the next update.
+            self._set_changed |= self._update_hand(
+                hand, hand_contacts, held_elsewhere, data, stamp_ns=stamp_ns
+            )
+        if not self._set_changed:
+            return None
+        self._set_changed = False
+        return [hand.attachment for hand in self._hands if hand.attachment is not None]
+
+    def _update_hand(  # noqa: PLR0912, PLR0915  # reason: the single-gripper state machine, per hand
+        self,
+        hand: _Hand,
+        contacts: dict[int, set[int]],
+        held_elsewhere: set[int],
+        data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+        *,
+        stamp_ns: int,
+    ) -> bool:
+        """Advance one hand; ``True`` when its published record changed."""
+        if hand.attached_root is not None:
+            candidate = hand.candidates.setdefault(hand.attached_root, _ContactCandidate())
+            if hand.attached_root in contacts:
                 candidate.missed_ticks = 0
-                self._attached_translation, self._attached_rotation = _relative_pose(
+                hand.attached_translation, hand.attached_rotation = _relative_pose(
                     data,
-                    parent_body_id=self._attach_body_id,
-                    child_body_id=self._attached_root,
+                    parent_body_id=hand.attach_body_id,
+                    child_body_id=hand.attached_root,
                 )
-                return self._place_phase_transition(
-                    data,
-                    root=self._attached_root,
-                    stamp_ns=stamp_ns,
-                )
+                return self._place_phase_transition(data, hand=hand, stamp_ns=stamp_ns)
             translation, rotation = _relative_pose(
                 data,
-                parent_body_id=self._attach_body_id,
-                child_body_id=self._attached_root,
+                parent_body_id=hand.attach_body_id,
+                child_body_id=hand.attached_root,
             )
-            if self._attached_translation is not None and self._attached_rotation is not None:
-                translation_error = float(np.linalg.norm(translation - self._attached_translation))
-                relative_rotation = self._attached_rotation.T @ rotation
+            if hand.attached_translation is not None and hand.attached_rotation is not None:
+                translation_error = float(np.linalg.norm(translation - hand.attached_translation))
+                relative_rotation = hand.attached_rotation.T @ rotation
                 angle_error = math.acos(
                     float(np.clip((np.trace(relative_rotation) - 1.0) * 0.5, -1.0, 1.0))
                 )
@@ -1735,34 +1954,38 @@ class SimAttachmentEvidenceTracker:
                     # Still carried — the jaws lost their solver contact
                     # records but the payload is rigidly following the
                     # gripper. The place phase is live here too.
-                    return self._place_phase_transition(
-                        data,
-                        root=self._attached_root,
-                        stamp_ns=stamp_ns,
-                    )
+                    return self._place_phase_transition(data, hand=hand, stamp_ns=stamp_ns)
             candidate.missed_ticks += 1
             if candidate.missed_ticks < self._release_ticks:
-                return None
-            self._attached_root = None
-            self._attached_translation = None
-            self._attached_rotation = None
-            self._candidates.clear()
+                return False
+            hand.attached_root = None
+            hand.attached_translation = None
+            hand.attached_rotation = None
+            hand.attachment = None
+            hand.candidates.clear()
             # Release ends the place phase for this payload: a subsequent grasp
             # starts a new one, and the declaration alone never carries over.
-            self._place_attested_stamp_ns = None
-            return []
+            hand.place_attested_stamp_ns = None
+            return True
 
+        # One payload, one holding hand; and no stability carried over, so after the
+        # other hand releases this one must build a fresh grasp. Dropped whether or not
+        # this hand still touches it: a count kept from before would survive the hold.
+        for root in held_elsewhere:
+            hand.candidates.pop(root, None)
         for root, contact_bodies in contacts.items():
+            if root in held_elsewhere:
+                continue
             if classify_body_mobility(self._model, root) is not SimObjectMobility.FREE:
                 continue
-            candidate = self._candidates.setdefault(root, _ContactCandidate())
+            candidate = hand.candidates.setdefault(root, _ContactCandidate())
             candidate.contact_bodies = contact_bodies
             if len(contact_bodies) < self._required_contact_groups:
                 candidate.stable_ticks = 0
                 continue
             translation, rotation = _relative_pose(
                 data,
-                parent_body_id=self._attach_body_id,
+                parent_body_id=hand.attach_body_id,
                 child_body_id=root,
             )
             if candidate.last_translation is None or candidate.last_rotation is None:
@@ -1792,39 +2015,65 @@ class SimAttachmentEvidenceTracker:
                 root,
             )
             if not body_name:
-                raise ROSConfigError(f"Attached MuJoCo body {root} has no name.")
-            attachment = self._build_attachment(
-                data,
-                root=root,
-                translation=translation,
-                rotation=rotation,
-                stamp_ns=stamp_ns,
-                # Attested once, at attach, from the contacts that exist right
-                # now. The safety kernel latches it and kills it on separation;
-                # re-attesting mid-carry would defeat that hysteresis.
-                witness=support_contact_witness(
-                    self._model,
+                self._refuse(hand, root, "unnamed MuJoCo body")
+                continue
+            try:
+                attachment = self._build_attachment(
                     data,
-                    root_body_id=root,
-                    robot_body_ids=self._robot_body_ids,
+                    hand=hand,
+                    root=root,
+                    translation=translation,
+                    rotation=rotation,
                     stamp_ns=stamp_ns,
-                ),
+                    # Attested once, at attach, from the contacts that exist right
+                    # now. The safety kernel latches it and kills it on separation;
+                    # re-attesting mid-carry would defeat that hysteresis.
+                    witness=support_contact_witness(
+                        self._model,
+                        data,
+                        root_body_id=root,
+                        robot_body_ids=self._robot_body_ids,
+                        stamp_ns=stamp_ns,
+                    ),
+                )
+            except ROSConfigError as exc:  # e.g. a payload with no collision geometry
+                self._refuse(hand, root, str(exc))
+                continue
+            self._freeze_grasp_region(
+                data, hand=hand, object_id=f"sim:{body_name}", stamp_ns=stamp_ns
             )
-            self._freeze_grasp_region(data, object_id=f"sim:{body_name}", stamp_ns=stamp_ns)
-            self._attached_root = root
-            self._attached_translation = translation.copy()
-            self._attached_rotation = rotation.copy()
+            # The hand's state and its record change together, after everything that can
+            # raise: a half-recorded attach would publish a payload no release can retract.
+            hand.attached_root = root
+            hand.attached_translation = translation.copy()
+            hand.attached_rotation = rotation.copy()
             # A newly grasped payload is a new place-phase subject: whatever a
             # still-live declaration already licensed for the previous payload
             # does not carry over.
-            self._place_attested_stamp_ns = None
-            return [attachment]
-        return None
+            hand.place_attested_stamp_ns = None
+            hand.attachment = attachment
+            return True
+        return False
+
+    def _refuse(self, hand: _Hand, root: int, reason: str) -> None:
+        """Refuse one unattachable payload for one hand; the other hands keep publishing.
+
+        An update that raised here instead would hold back every other hand's
+        transition (a release included) for as long as this hand pinched the payload.
+        Logged once per (hand, payload); the payload stays unattached, so the kernel
+        keeps checking it as world occupancy.
+        """
+        if root not in hand.refused:
+            hand.refused.add(root)
+            _LOGGER.warning(
+                "sim.attachment_refused", reason=reason, body_id=root, attach_link=hand.attach_link
+            )
 
     def _build_attachment(
         self,
         data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
         *,
+        hand: _Hand,
         root: int,
         translation: NDArray[np.float64],
         rotation: NDArray[np.float64],
@@ -1841,18 +2090,19 @@ class SimAttachmentEvidenceTracker:
         object_bodies = _body_subtree(self._model, root)
         return AttachedCollisionObject(
             object_id=object_id,
-            attach_link=self._attach_link,
-            touch_links=self._touch_links,
+            attach_link=hand.attach_link,
+            touch_links=hand.touch_links,
             primitives=extract_body_primitives(
                 self._model,
                 data,
                 root_body_id=root,
                 object_id=object_id,
+                max_primitives=self._max_primitives_per_hand,
             ),
             pose_in_link=Pose6D(
                 xyz=(float(translation[0]), float(translation[1]), float(translation[2])),
                 quat_xyzw=_matrix_to_quat_xyzw(rotation),
-                frame_id=self._attach_link,
+                frame_id=hand.attach_link,
             ),
             mass_kg=sum(float(self._model.body_mass[body_id]) for body_id in object_bodies),
             confidence=1.0,
@@ -2154,6 +2404,7 @@ class SimAttachmentEvidenceTracker:
         self,
         data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
         *,
+        hand: _Hand,
         object_id: str,
         stamp_ns: int,
     ) -> None:
@@ -2161,13 +2412,20 @@ class SimAttachmentEvidenceTracker:
 
         Called before the attachment is recorded, so the measurement is the
         target's last pre-attach pose. ``object_id`` empty on the declaration
-        means any attached object is the declared one.
+        means any attached object is the declared one. A declaration naming its
+        ``contact_links`` freezes only on an attach by the hand that owns them: the
+        other hand picking something up is not this declaration's grasp.
         """
         declaration = self._grasp_declaration
         if (
             declaration is None
             or self._grasp_frozen
             or declaration.object_id not in ("", object_id)
+            or (
+                declaration.contact_links
+                and not set(declaration.contact_links)
+                & (set(hand.touch_links) | hand.manifest_links)
+            )
         ):
             return
         self._grasp_frozen_region = self._grasp_region(data, stamp_ns=stamp_ns)
@@ -2299,25 +2557,32 @@ class SimAttachmentEvidenceTracker:
             return None
         if declaration.object_id and declaration.object_id != object_id:
             return None
-        if self._place_attested_stamp_ns == declaration.stamp_ns:
-            return None  # one declaration, one attestation — the hysteresis
-        return support_contact_witness(
-            self._model,
-            data,
-            root_body_id=root,
-            robot_body_ids=self._robot_body_ids,
-            stamp_ns=stamp_ns,
-            support_roots=self._place_target_bodies,
-        )
+        if any(hand.place_attested_stamp_ns == declaration.stamp_ns for hand in self._hands):
+            return None  # one declaration, one attestation (across hands) — the hysteresis
+        try:
+            return support_contact_witness(
+                self._model,
+                data,
+                root_body_id=root,
+                robot_body_ids=self._robot_body_ids,
+                stamp_ns=stamp_ns,
+                support_roots=self._place_target_bodies,
+            )
+        except ROSConfigError as exc:
+            # An unattestable support (an unnamed body) is no attestation, the fail-closed
+            # answer for this payload alone: raised out of `update`, it would abort every hand's
+            # transition on every tick the support persists, holding back another hand's release.
+            _LOGGER.warning("sim.place_witness_refused", object_id=object_id, reason=str(exc))
+            return None
 
     def _place_phase_transition(
         self,
         data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
         *,
-        root: int,
+        hand: _Hand,
         stamp_ns: int,
-    ) -> list[AttachedCollisionObject] | None:
-        """Arm or disarm the place witness for the carried payload.
+    ) -> bool:
+        """Arm or disarm the place witness for the payload ``hand`` carries.
 
         Two transitions, both mid-carry, both re-publishing the whole
         attachment set (the atomic snapshot contract World State ingests):
@@ -2330,10 +2595,13 @@ class SimAttachmentEvidenceTracker:
            carry it past the goal that justified it (HZ-0097-3).
 
         Returns:
-            The new attachment set, or ``None`` when nothing changed.
+            Whether ``hand``'s record changed (it is replaced on ``hand``).
         """
-        if self._place_declaration is None and self._place_attested_stamp_ns is None:
-            return None  # no place phase has ever been declared for this carry
+        root = hand.attached_root
+        if root is None or (
+            self._place_declaration is None and hand.place_attested_stamp_ns is None
+        ):
+            return False  # no place phase has ever been declared for this carry
 
         import mujoco  # noqa: PLC0415  # reason: optional sim dependency
 
@@ -2343,7 +2611,7 @@ class SimAttachmentEvidenceTracker:
         object_id = f"sim:{body_name}"
 
         declaration = self._place_declaration
-        attested_stamp_ns = self._place_attested_stamp_ns
+        attested_stamp_ns = hand.place_attested_stamp_ns
         witness = self._place_witness(
             data,
             root=root,
@@ -2351,28 +2619,28 @@ class SimAttachmentEvidenceTracker:
             stamp_ns=stamp_ns,
         )
         if witness is not None and declaration is not None:
-            self._place_attested_stamp_ns = declaration.stamp_ns
+            hand.place_attested_stamp_ns = declaration.stamp_ns
         elif attested_stamp_ns is not None and (
             declaration is None
             or declaration.stamp_ns != attested_stamp_ns
             or not declaration.is_live(now_ns=stamp_ns)
         ):
-            self._place_attested_stamp_ns = None
+            hand.place_attested_stamp_ns = None
         else:
-            return None
+            return False
 
         translation, rotation = _relative_pose(
             data,
-            parent_body_id=self._attach_body_id,
+            parent_body_id=hand.attach_body_id,
             child_body_id=root,
         )
-        return [
-            self._build_attachment(
-                data,
-                root=root,
-                translation=translation,
-                rotation=rotation,
-                stamp_ns=stamp_ns,
-                witness=witness,
-            )
-        ]
+        hand.attachment = self._build_attachment(
+            data,
+            hand=hand,
+            root=root,
+            translation=translation,
+            rotation=rotation,
+            stamp_ns=stamp_ns,
+            witness=witness,
+        )
+        return True

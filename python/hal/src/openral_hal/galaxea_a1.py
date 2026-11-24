@@ -39,9 +39,12 @@ from openral_core.schemas import (
     Action,
     ActionSpec,
     AssetRefs,
+    CameraSimPlacement,
     ControlMode,
     EmbodimentKind,
     EndEffectorSpec,
+    GripperReadMode,
+    GripperWriteMode,
     HalEntrypoints,
     IntrinsicsPinhole,
     JointSpec,
@@ -52,6 +55,8 @@ from openral_core.schemas import (
     SafetyEnvelope,
     SensorModality,
     SensorSpec,
+    SimDescription,
+    SimGripperDescription,
     UrdfAsset,
 )
 
@@ -102,7 +107,9 @@ GALAXEA_A1_DESCRIPTION = RobotDescription(
     name="galaxea_a1",
     embodiment_kind=EmbodimentKind.MANIPULATOR,
     base_frame="base_link",
-    assets=AssetRefs(urdf=UrdfAsset(ref="galaxea:a1")),
+    assets=AssetRefs(
+        urdf=UrdfAsset(ref="galaxea:a1"), mjcf="galaxea:a1", srdf="file:galaxea_a1.srdf"
+    ),
     joints=[
         JointSpec(
             name=name,
@@ -116,6 +123,7 @@ GALAXEA_A1_DESCRIPTION = RobotDescription(
             velocity_limit=velocity,
             effort_limit=effort,
             actuator_kind="bldc",
+            sim_joint_name=name,
         )
         for index, (name, limits, velocity, effort) in enumerate(
             zip(
@@ -167,6 +175,7 @@ GALAXEA_A1_DESCRIPTION = RobotDescription(
                 "output_height": 480,
                 "crop": "x=103,y=0,width=480,height=480",
             },
+            sim_placement=CameraSimPlacement(pos=(0.9, 0.0, 0.55), target=(0.3, 0.0, 0.1)),
         ),
         SensorSpec(
             name="wrist",
@@ -195,6 +204,9 @@ GALAXEA_A1_DESCRIPTION = RobotDescription(
             vendor="Intel",
             model="RealSense D405",
             metadata={"output_width": 640, "output_height": 480},
+            sim_placement=CameraSimPlacement(
+                parent_body="arm_seg6", pos=(0.06, 0.0, 0.0), target=(0.0, 0.0, 0.2)
+            ),
         ),
     ],
     capabilities=RobotCapabilities(
@@ -219,6 +231,20 @@ GALAXEA_A1_DESCRIPTION = RobotDescription(
         joint_state_staleness_limit_s=0.5,  # provisional, mirrors the YAML
     ),
     sdk_kind="closed_with_api",
+    # The MuJoCo twin's wiring; mirrors the YAML's `sim:` block (its comment says why).
+    sim=SimDescription(
+        grippers=[
+            SimGripperDescription(
+                end_effector="gripper",
+                ctrl_range=(0.0, 0.03),
+                qpos_addrs=(6, 7),
+                qpos_scale=0.06,
+                read_mode=GripperReadMode.SUM_OVER_SCALE,
+                write_mode=GripperWriteMode.NORMALISED,
+                actuator_index=6,
+            )
+        ]
+    ),
     # Control rate: the runner ticks at it, the HAL node publishes proprio at
     # it, and the recorder stamps it as fps (issue #303). Mirrors the YAML.
     # dim / representation deliberately undeclared (no committed policy

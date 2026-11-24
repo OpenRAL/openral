@@ -73,6 +73,10 @@ _MANIFEST_DRIVEN_ROBOTS = [
     "anvil_openarm_v2",  # bimanual: openarm layout + Anvil J1/J6 ranges (openarm: scheme)
     "makermods_metal",  # mimic finger at qpos 6; gripper pinned to qpos 7 (makermods: scheme)
     "makermods_metal_station",  # bimanual: 2 x makermods_metal, explicit actuator_index
+    "widowx",  # mirrored fingers via MJCF equality; starts at the `home` keyframe (#740)
+    "aloha_agilex",  # bimanual: URDF-derived MJCF, joint8 mirrors joint7 (robotwin:, #740)
+    "r1pro",  # planar base off the manifest (qpos 0..2), finger_joint2 by equality (#740)
+    "galaxea_a1",  # end-effector gripper (no manifest joint), galaxea: derived MJCF (#740)
 ]
 
 

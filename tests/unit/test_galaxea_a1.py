@@ -13,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import numpy as np
 import pytest
 from openral_core import (
     Action,
@@ -26,6 +27,7 @@ from openral_core import (
     SensorReaderConfig,
     VLASpec,
 )
+from openral_core.kinematics import transform_from_xyz_rpy
 from openral_hal.galaxea_a1 import (
     GALAXEA_A1_DESCRIPTION,
     GalaxeaA1HAL,
@@ -172,10 +174,19 @@ def test_manifest_and_hal_pin_official_a1_joint_transforms() -> None:
         ((0.0, -0.1575, -0.00023266), (1.5708, 0.0, 0.0), (0.0, 0.0, 1.0)),
     ]
 
+    # Compared as transforms: `openral collision lower` writes the manifest's origins at the
+    # vendor URDF's full precision (e.g. yaw -3.1415853 for the SDK's 3.1416), the same frame.
     for description in (manifest, GALAXEA_A1_DESCRIPTION):
-        assert [
-            (joint.origin_xyz, joint.origin_rpy, joint.axis_xyz) for joint in description.joints
-        ] == expected
+        got = [(j.origin_xyz, j.origin_rpy, j.axis_xyz) for j in description.joints]
+        assert len(got) == len(expected)
+        for (xyz, rpy, axis), (want_xyz, want_rpy, want_axis) in zip(got, expected, strict=True):
+            assert np.allclose(xyz, want_xyz, atol=1e-6)
+            assert np.allclose(
+                transform_from_xyz_rpy(xyz, rpy)[:3, :3],
+                transform_from_xyz_rpy(want_xyz, want_rpy)[:3, :3],
+                atol=1e-4,
+            )
+            assert axis == want_axis
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.20", "sidecar.example", "::1"])
@@ -609,20 +620,20 @@ def test_sidecar_gripper_requires_active_relay() -> None:
     assert gripper_publisher.messages[0].gripper_stroke == 52.0
 
 
-def test_deploy_sim_of_real_only_robot_raises_typed_errors() -> None:
-    """`deploy sim` of the hardware-only A1 fails with typed errors, never a bare TypeError.
+def test_deploy_sim_builds_the_twin_and_refuses_the_real_cell_as_a_scene() -> None:
+    """`deploy sim` of the A1 builds its MuJoCo twin (#740); the real cell is no sim scene.
 
     Regression: an unknown sim scene id used to crash formatting its own error
-    message with ``TypeError: '_Registry' object is not iterable``.
+    message with ``TypeError: '_Registry' object is not iterable``; it is a typed
+    ``ROSConfigError``.
     """
-    from openral_core.exceptions import ROSCapabilityMismatch
+    from openral_hal._mujoco_arm import MujocoArmHAL
     from openral_hal.resolver import build_hal
 
     repo_root = Path(__file__).resolve().parents[2]
     robot_yaml = repo_root / "robots" / "galaxea_a1" / "robot.yaml"
     description = RobotDescription.from_yaml(str(robot_yaml))
-    with pytest.raises(ROSCapabilityMismatch, match="real-hardware-only"):
-        build_hal(description, mode="sim")
+    assert isinstance(build_hal(description, mode="sim"), MujocoArmHAL)  # MJCF loads at connect
     with pytest.raises(ROSConfigError, match="not registered"):
         build_hal(
             description,

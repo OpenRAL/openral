@@ -1774,7 +1774,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           }
           return;
         }
-        if ((attached_contact_snapshot_pending_ || attached_contact_active_) &&
+        if ((attached_contact_snapshot_mask_ != 0 || attached_contact_active_) &&
             !measured_state_fresh()) {
           unavailable("state_unavailable", openral_msgs::msg::SafetyStatus::DROP_STATE_UNAVAILABLE,
                       "/joint_states", measured_state_age_ms(), collision_state_deadline_s_ * 1e3);
@@ -1970,15 +1970,15 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         }
         forward_kinematics(collision_model_, q_fk_.data(), robot_ndof, collision_scratch_);
       };
-      if (attached_contact_snapshot_pending_ || attached_contact_active_ ||
+      if (attached_contact_snapshot_mask_ != 0 || attached_contact_active_ ||
           support_witness_live_ != 0) {
         fk_config(q_meas_.data());
-        if (attached_contact_snapshot_pending_ || attached_contact_active_) {
+        if (attached_contact_snapshot_mask_ != 0 || attached_contact_active_) {
           attached_contact_active_ = update_attached_voxel_contacts(
               attached_model_, collision_scratch_, voxel_grid_, attached_contact_mask_.data(),
               attached_contact_distance_.data(), attached_contact_mask_.size(),
-              attached_contact_distance_.size(), attached_contact_snapshot_pending_);
-          attached_contact_snapshot_pending_ = false;
+              attached_contact_distance_.size(), attached_contact_snapshot_mask_);
+          attached_contact_snapshot_mask_ = 0;
         }
         // Refresh the witness latch against the MEASURED configuration only —
         // a predicted pose must never keep an exemption alive. Separation kills
@@ -4397,11 +4397,13 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   attached_overflow_ = false;
   attached_revision_ = 0;
   attached_set_identity_ = 0;
-  attached_contact_snapshot_pending_ = false;
+  attached_object_identity_n_ = 0;
+  attached_contact_snapshot_mask_ = 0;
   attached_contact_active_ = false;
   support_witness_live_ = 0;
   support_witness_keys_.assign(std::min<std::size_t>(attached_max_objects_, 8),
                                SupportWitnessKey{});
+  support_witness_keys_next_.assign(support_witness_keys_.size(), SupportWitnessKey{});
   support_witness_max_patch_radius_m_ =
       this->get_parameter("support_witness_max_patch_radius_m").as_double();
   support_witness_max_penetration_m_ =
@@ -4409,6 +4411,8 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   attached_contact_mask_.assign(world_voxel_max_cells_, 0);
   attached_contact_distance_.assign(attached_max_objects_ * world_voxel_max_cells_,
                                     std::numeric_limits<double>::infinity());
+  attached_contact_temp_block_.assign(world_voxel_max_cells_,
+                                      std::numeric_limits<double>::infinity());
   voxel_grid_.attached_contact_mask = attached_contact_mask_.data();
   voxel_grid_.attached_contact_distance = attached_contact_distance_.data();
   voxel_grid_.attached_contact_stride = world_voxel_max_cells_;
@@ -4980,7 +4984,7 @@ void SafetyKernelLifecycleNode::on_world_state(
     attached_overflow_ = true;
     attached_received_ = true;
     attached_stamp_ = producer_stamp;
-    attached_contact_snapshot_pending_ = false;
+    attached_contact_snapshot_mask_ = 0;
     attached_contact_active_ = false;
     support_witness_live_ = 0;
     std::fill(support_witness_keys_.begin(), support_witness_keys_.end(), SupportWitnessKey{});
@@ -5157,6 +5161,7 @@ void SafetyKernelLifecycleNode::on_world_state(
   const auto mix = [&set_identity](std::size_t h) {
     set_identity ^= h + 0x9e3779b97f4a7c15ULL + (set_identity << 6) + (set_identity >> 2);
   };
+  std::array<std::size_t, 8> object_identity{};
   for (std::size_t i = 0; i < attached_model_.n_objects; ++i) {
     attached_labels_[i] = wire[i].object_id;
     attached_evidence_kinds_[i] = wire[i].evidence_kind;
@@ -5164,7 +5169,34 @@ void SafetyKernelLifecycleNode::on_world_state(
     mix(std::hash<std::string>{}(wire[i].object_id));
     mix(std::hash<std::uint32_t>{}(wire[i].epoch));
     mix(std::hash<std::string>{}(wire[i].attach_link));
+    if (i < object_identity.size()) {
+      // The object's own identity: the three mixed into a fresh seed, not the running set hash.
+      std::size_t own = 0;
+      own ^= std::hash<std::string>{}(wire[i].object_id) + 0x9e3779b97f4a7c15ULL;
+      own ^= std::hash<std::uint32_t>{}(wire[i].epoch) + 0x9e3779b97f4a7c15ULL + (own << 6) +
+             (own >> 2);
+      own ^= std::hash<std::string>{}(wire[i].attach_link) + 0x9e3779b97f4a7c15ULL + (own << 6) +
+             (own >> 2);
+      object_identity[i] = own;
+    }
   }
+  // Where each accepted object sat in the previously accepted set (-1: new to it).
+  SlotOrigin slot_origin{};
+  slot_origin.fill(-1);
+  {
+    std::uint8_t taken = 0;
+    for (std::size_t i = 0; i < attached_model_.n_objects && i < slot_origin.size(); ++i) {
+      for (std::size_t j = 0; j < attached_object_identity_n_; ++j) {
+        if ((taken & (1U << j)) == 0 && attached_object_identity_[j] == object_identity[i]) {
+          slot_origin[i] = static_cast<int>(j);
+          taken = static_cast<std::uint8_t>(taken | (1U << j));
+          break;
+        }
+      }
+    }
+  }
+  attached_object_identity_ = object_identity;
+  attached_object_identity_n_ = std::min<std::size_t>(attached_model_.n_objects, 8);
   check_attachment_bindings(*msg);
   apply_declared_release(wire);
   apply_tracked_release();
@@ -5174,28 +5206,42 @@ void SafetyKernelLifecycleNode::on_world_state(
   // separation. The key is (object id, support id, producer stamp): a regrasp
   // or a re-contact produces a fresh stamp and re-arms honestly; a republished
   // snapshot does not.
-  for (std::size_t i = 0; i < support_witness_keys_.size(); ++i) {
+  //
+  // The key is looked up across EVERY previous slot, not only this one: when another
+  // payload joins or leaves, a record moves to a new slot, and comparing slot-wise would
+  // resurrect a witness its separation had killed (a bimanual partial release). A key
+  // found anywhere keeps that slot's liveness; only a key new to the set arms.
+  SlotOrigin witness_from{};
+  witness_from.fill(-1);
+  std::uint8_t armed = 0;
+  for (std::size_t i = 0; i < support_witness_keys_next_.size(); ++i) {
     const auto bit = static_cast<std::uint8_t>(1U << i);
     // An off-hand tracked binding (#418 K3) arms no witness: a payload the
     // kernel cannot place in the hand licenses no contact.
     if (i >= attached_model_.n_objects || !attached_model_.objects[i].has_support_witness ||
         attached_binding_[i].off_hand != nullptr) {
-      support_witness_keys_[i] = SupportWitnessKey{};
-      support_witness_live_ = static_cast<std::uint8_t>(support_witness_live_ & ~bit);
+      support_witness_keys_next_[i] = SupportWitnessKey{};
       continue;
     }
-    SupportWitnessKey key;
+    SupportWitnessKey& key = support_witness_keys_next_[i];
     key.object_id = wire[i].object_id;
     key.support_id = wire[i].support_contact.support_id;
     key.stamp_ns = wire[i].support_contact.stamp_ns;
     key.valid = true;
-    if (!(key == support_witness_keys_[i])) {
-      support_witness_keys_[i] = key;
-      support_witness_live_ = static_cast<std::uint8_t>(support_witness_live_ | bit);
+    for (std::size_t j = 0; j < support_witness_keys_.size() && witness_from[i] < 0; ++j) {
+      if (key == support_witness_keys_[j]) {
+        witness_from[i] = static_cast<int>(j);
+      }
+    }
+    if (witness_from[i] < 0) {
+      armed = static_cast<std::uint8_t>(armed | bit);
       RCLCPP_INFO(this->get_logger(), "safety.support_witness_armed object=%s support=%s",
                   key.object_id.c_str(), key.support_id.c_str());
     }
   }
+  support_witness_keys_.swap(support_witness_keys_next_);
+  support_witness_live_ =
+      static_cast<std::uint8_t>(carry_slot_bits(support_witness_live_, witness_from) | armed);
   // Attachment-revision edge FIRST, and specifically before the declaration is
   // re-ingested: a detach retires the payload the region is scoped to, and a
   // region ingested against a payload that is already gone resolves to an empty
@@ -5203,10 +5249,15 @@ void SafetyKernelLifecycleNode::on_world_state(
   // (`spark:~/openral-runs/2026-08-15-round8/`) logged every clean release that
   // way, as `place_region_rejected`, when what happened was an ordinary disarm.
   // Announcing the drop here keeps a detach one `place_region_dropped` line.
-  if (msg->attachment_revision != attached_revision_) {
+  // A set change is handled like a revision edge even under the same revision: producers do
+  // not have to bump it, and a reordered or shrunk set under an unchanged revision must still
+  // move each payload's baseline with it (left in place, a slot's baseline would belong to
+  // whichever payload now sits there).
+  const bool revision_edge = msg->attachment_revision != attached_revision_;
+  if (revision_edge || attached_set_identity_ != set_identity) {
     attached_revision_ = msg->attachment_revision;
     if (attached_model_.n_objects == 0) {
-      attached_contact_snapshot_pending_ = false;
+      attached_contact_snapshot_mask_ = 0;
       attached_contact_active_ = false;
       // Detach: every exemption dies with the payload it belonged to.
       support_witness_live_ = 0;
@@ -5238,9 +5289,29 @@ void SafetyKernelLifecycleNode::on_world_state(
         retire_grasp_declaration("detached");
       }
       attached_set_identity_ = 0;
-    } else if (attached_set_identity_ != set_identity || provider_ != nullptr) {
-      attached_contact_snapshot_pending_ = true;
+    } else if (provider_ != nullptr) {
+      // An exemption provider re-baselines the whole set on every revision edge.
+      attached_contact_snapshot_mask_ = 0xFF;
       attached_contact_active_ = false;
+      attached_set_identity_ = set_identity;
+    } else if (attached_set_identity_ != set_identity) {
+      // A payload joined, left or moved slot: each carried payload keeps its own
+      // attach-time baseline in its new slot; only payloads new to the set are
+      // snapshotted. Re-baselining a carried payload would exempt whatever it
+      // overlaps at this instant (a box being lowered into a shelf).
+      carry_attached_contacts(attached_contact_mask_.data(), attached_contact_mask_.size(),
+                              attached_contact_distance_.data(), world_voxel_max_cells_,
+                              attached_max_objects_, slot_origin, attached_model_.n_objects,
+                              attached_contact_temp_block_.data());
+      std::uint8_t fresh = 0;
+      for (std::size_t i = 0; i < attached_model_.n_objects && i < slot_origin.size(); ++i) {
+        if (slot_origin[i] < 0) {
+          fresh = static_cast<std::uint8_t>(fresh | (1U << i));
+        }
+      }
+      // A baseline still pending from an earlier revision moves with its payload too.
+      attached_contact_snapshot_mask_ = static_cast<std::uint8_t>(
+          carry_slot_bits(attached_contact_snapshot_mask_, slot_origin) | fresh);
       attached_set_identity_ = set_identity;
     } else {
       // Same objects, no exemption provider: the revision moved because a payload's geometry grew

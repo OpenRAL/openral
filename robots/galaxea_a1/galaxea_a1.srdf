@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hand-written exemption for the Galaxea A1's kernel self-collision ACM (openral#740).
+     Source: OpenRAL, not a vendor MoveIt config; `openral collision lower` unions these
+     rows into the adjacent / certified-always-colliding pairs it derives itself.
+     Every row here is a safety-WG review item. -->
+<robot name="galaxea_a1">
+  <!-- The two fingers of the one gripper. The kernel poses both at the closed pose
+       (vendor `fixed` joints, no joint state) and their geometry covers each finger's
+       30 mm stroke (`sweep_xyz`), so the two exact hulls overlap at every pose: the
+       pair carries no information. Both fingers are grasp-contact links. -->
+  <disable_collisions link1="gripper1" link2="gripper2" reason="User"/>
+</robot>

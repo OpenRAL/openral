@@ -1949,7 +1949,7 @@
           "type": "string"
         }
       },
-      "description": "End-effector specification.\n\nAttributes:\n    name: End-effector name.\n    kind: Type of end-effector.\n    hand: Laterality.\n    n_dof: Number of controllable degrees of freedom.\n    max_grip_force_n: Maximum grip force in Newtons.\n    max_payload_kg: Maximum payload in kg.\n    workspace_radius_m: Reach radius in meters.\n    tactile_sensors: List of tactile SensorSpec names attached to this EE.\n    actuated: Whether the end-effector is driven by an actuator.\n        False for passive tools (inert flanges,\n        magnetic plates without electromagnet, kinematic-only\n        mounts). When False, the safety kernel rejects any\n        chunk addressed at this EE \u2014 the chunk routes to a\n        no-op rather than risking unintended motion. Default\n        True: every actuated gripper / dexterous hand / suction\n        cup we ship is driven.\n    command_convention: Encoding of the value a ``GRIPPER_*`` action\n        addressed at this end effector carries when it reaches the HAL\n        (see ``GripperConvention``). An rSkill whose gripper convention\n        differs is refused at load time. Every actuated\n        ``parallel_gripper`` in ``robots/`` declares it.\n    command_range: Inclusive ``(min, max)`` the safety kernel bounds\n        every ``GRIPPER_*`` value addressed at this end effector by, in\n        ``command_convention``'s unit. Defaults to the convention's own\n        range for the normalized conventions; REQUIRED for the physical\n        ones (``raw_joint_rad``, ``width_meters``).\n\nExample:\n    >>> ee = EndEffectorSpec(\n    ...     name=\"left_gripper\",\n    ...     kind=\"parallel_gripper\",\n    ...     command_convention=\"raw_joint_rad\",\n    ...     command_range=(0.0, 0.7854),\n    ... )\n    >>> ee.resolved_command_range()\n    (0.0, 0.7854)\n    >>> EndEffectorSpec(\n    ...     name=\"g\", kind=\"parallel_gripper\", command_convention=\"normalized_open_unit\"\n    ... ).resolved_command_range()\n    (0.0, 1.0)",
+      "description": "End-effector specification.\n\nAttributes:\n    name: End-effector name.\n    kind: Type of end-effector.\n    hand: Laterality.\n    n_dof: Number of controllable degrees of freedom.\n    max_grip_force_n: Maximum grip force in Newtons.\n    max_payload_kg: Maximum payload in kg.\n    workspace_radius_m: Reach radius in meters.\n    tactile_sensors: List of tactile SensorSpec names attached to this EE.\n    actuated: Whether the end-effector is driven by an actuator.\n        False for passive tools (inert flanges,\n        magnetic plates without electromagnet, kinematic-only\n        mounts). When False, the safety kernel rejects any\n        chunk addressed at this EE \u2014 the chunk routes to a\n        no-op rather than risking unintended motion. Default\n        True: every actuated gripper / dexterous hand / suction\n        cup we ship is driven.\n    command_convention: Encoding of the value a ``GRIPPER_*`` action\n        addressed at this end effector carries when it reaches the HAL\n        (see ``GripperConvention``). An rSkill whose gripper convention\n        differs is refused at load time. Every actuated\n        ``parallel_gripper`` in ``robots/`` declares it.\n    command_range: Inclusive ``(min, max)`` the safety kernel bounds\n        every ``GRIPPER_*`` value addressed at this end effector by, in\n        ``command_convention``'s unit. Defaults to the convention's own\n        range for the normalized conventions; REQUIRED for the physical\n        ones (``raw_joint_rad``, ``width_meters``).\n    parent_link: The link the end effector hangs from (its gripper joints'\n        ``parent_link``). Lets a sim twin route a ``GRIPPER_POSITION`` addressed\n        by this end effector's name to the gripper joint on that link. ``None``\n        = undeclared.\n\nExample:\n    >>> ee = EndEffectorSpec(\n    ...     name=\"left_gripper\",\n    ...     kind=\"parallel_gripper\",\n    ...     command_convention=\"raw_joint_rad\",\n    ...     command_range=(0.0, 0.7854),\n    ... )\n    >>> ee.resolved_command_range()\n    (0.0, 0.7854)\n    >>> EndEffectorSpec(\n    ...     name=\"g\", kind=\"parallel_gripper\", command_convention=\"normalized_open_unit\"\n    ... ).resolved_command_range()\n    (0.0, 1.0)",
       "properties": {
         "name": {
           "title": "Name",
@@ -2064,6 +2064,18 @@
           ],
           "default": null,
           "title": "Command Range"
+        },
+        "parent_link": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Link"
         }
       },
       "required": [
@@ -3015,7 +3027,7 @@
           "type": "string"
         },
         "EndEffectorSpec": {
-          "description": "End-effector specification.\n\nAttributes:\n    name: End-effector name.\n    kind: Type of end-effector.\n    hand: Laterality.\n    n_dof: Number of controllable degrees of freedom.\n    max_grip_force_n: Maximum grip force in Newtons.\n    max_payload_kg: Maximum payload in kg.\n    workspace_radius_m: Reach radius in meters.\n    tactile_sensors: List of tactile SensorSpec names attached to this EE.\n    actuated: Whether the end-effector is driven by an actuator.\n        False for passive tools (inert flanges,\n        magnetic plates without electromagnet, kinematic-only\n        mounts). When False, the safety kernel rejects any\n        chunk addressed at this EE \u2014 the chunk routes to a\n        no-op rather than risking unintended motion. Default\n        True: every actuated gripper / dexterous hand / suction\n        cup we ship is driven.\n    command_convention: Encoding of the value a ``GRIPPER_*`` action\n        addressed at this end effector carries when it reaches the HAL\n        (see ``GripperConvention``). An rSkill whose gripper convention\n        differs is refused at load time. Every actuated\n        ``parallel_gripper`` in ``robots/`` declares it.\n    command_range: Inclusive ``(min, max)`` the safety kernel bounds\n        every ``GRIPPER_*`` value addressed at this end effector by, in\n        ``command_convention``'s unit. Defaults to the convention's own\n        range for the normalized conventions; REQUIRED for the physical\n        ones (``raw_joint_rad``, ``width_meters``).\n\nExample:\n    >>> ee = EndEffectorSpec(\n    ...     name=\"left_gripper\",\n    ...     kind=\"parallel_gripper\",\n    ...     command_convention=\"raw_joint_rad\",\n    ...     command_range=(0.0, 0.7854),\n    ... )\n    >>> ee.resolved_command_range()\n    (0.0, 0.7854)\n    >>> EndEffectorSpec(\n    ...     name=\"g\", kind=\"parallel_gripper\", command_convention=\"normalized_open_unit\"\n    ... ).resolved_command_range()\n    (0.0, 1.0)",
+          "description": "End-effector specification.\n\nAttributes:\n    name: End-effector name.\n    kind: Type of end-effector.\n    hand: Laterality.\n    n_dof: Number of controllable degrees of freedom.\n    max_grip_force_n: Maximum grip force in Newtons.\n    max_payload_kg: Maximum payload in kg.\n    workspace_radius_m: Reach radius in meters.\n    tactile_sensors: List of tactile SensorSpec names attached to this EE.\n    actuated: Whether the end-effector is driven by an actuator.\n        False for passive tools (inert flanges,\n        magnetic plates without electromagnet, kinematic-only\n        mounts). When False, the safety kernel rejects any\n        chunk addressed at this EE \u2014 the chunk routes to a\n        no-op rather than risking unintended motion. Default\n        True: every actuated gripper / dexterous hand / suction\n        cup we ship is driven.\n    command_convention: Encoding of the value a ``GRIPPER_*`` action\n        addressed at this end effector carries when it reaches the HAL\n        (see ``GripperConvention``). An rSkill whose gripper convention\n        differs is refused at load time. Every actuated\n        ``parallel_gripper`` in ``robots/`` declares it.\n    command_range: Inclusive ``(min, max)`` the safety kernel bounds\n        every ``GRIPPER_*`` value addressed at this end effector by, in\n        ``command_convention``'s unit. Defaults to the convention's own\n        range for the normalized conventions; REQUIRED for the physical\n        ones (``raw_joint_rad``, ``width_meters``).\n    parent_link: The link the end effector hangs from (its gripper joints'\n        ``parent_link``). Lets a sim twin route a ``GRIPPER_POSITION`` addressed\n        by this end effector's name to the gripper joint on that link. ``None``\n        = undeclared.\n\nExample:\n    >>> ee = EndEffectorSpec(\n    ...     name=\"left_gripper\",\n    ...     kind=\"parallel_gripper\",\n    ...     command_convention=\"raw_joint_rad\",\n    ...     command_range=(0.0, 0.7854),\n    ... )\n    >>> ee.resolved_command_range()\n    (0.0, 0.7854)\n    >>> EndEffectorSpec(\n    ...     name=\"g\", kind=\"parallel_gripper\", command_convention=\"normalized_open_unit\"\n    ... ).resolved_command_range()\n    (0.0, 1.0)",
           "properties": {
             "name": {
               "title": "Name",
@@ -3130,6 +3142,18 @@
               ],
               "default": null,
               "title": "Command Range"
+            },
+            "parent_link": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Parent Link"
             }
           },
           "required": [
@@ -3141,7 +3165,7 @@
         },
         "FixedAttachment": {
           "additionalProperties": false,
-          "description": "A rigid, zero-DoF parent\u2192child link attachment in the kinematic tree.\n\n``RobotDescription.joints`` enumerates only the robot's **movable**\njoints \u2014 consumed unfiltered as the action-vector width, the sim\n``qpos`` map, the reasoner's rSkill state-contract filter and the\nrunner's joint permutation, so a zero-DoF entry there would corrupt all\nfour. But a real robot's collision tree also contains rigid mounts (a\nFranka hand bolted to the flange, a bimanual rig's two arm pedestals),\nand without them the tree is a *forest*.\n\nThis list is that missing connectivity and nothing else: no limits, no\nsensors, no DoF, never a command channel, invisible to every ``joints``\nconsumer. The safety envelope loader unions it with ``joints`` to build\nthe collision tree and **refuses to load a robot whose collision links\ndo not form one connected tree**\n(``openral_safety.envelope_loader.collision_params_from_description``).\n\nEvery value must come from the robot's real URDF/MJCF at the zero\nconfiguration \u2014 the same source ``joints``' own ``origin_xyz`` /\n``origin_rpy`` come from. Never hand-estimate a mount transform.\n\nAttributes:\n    name: Attachment name, matching the source URDF ``<joint>`` name where\n        one exists (a composed multi-hop mount is named for its endpoint).\n    parent_link: The link this attachment hangs from. Must be reachable\n        from the tree's single root.\n    child_link: The rigidly attached link.\n    origin_xyz: Translation (metres) of ``child_link``'s frame in\n        ``parent_link``'s frame. When the source model inserts intermediate\n        links between the two, this is the **composed** transform, exactly\n        as ``openral_safety.urdf_lowering.lower_joint_fk`` computes it\n        for movable joints.\n    origin_rpy: Orientation ``(roll, pitch, yaw)`` in radians, same frame\n        convention as ``origin_xyz``.\n\nExample:\n    >>> a = FixedAttachment(\n    ...     name=\"panda_hand_joint\",\n    ...     parent_link=\"panda_link7\",\n    ...     child_link=\"panda_hand\",\n    ...     origin_xyz=(0.0, 0.0, 0.107),\n    ...     origin_rpy=(0.0, 0.0, -0.7853981633974483),\n    ... )\n    >>> a.child_link\n    'panda_hand'",
+          "description": "A rigid, zero-DoF parent\u2192child link attachment in the kinematic tree.\n\n``RobotDescription.joints`` enumerates only the robot's **movable**\njoints \u2014 consumed unfiltered as the action-vector width, the sim\n``qpos`` map, the reasoner's rSkill state-contract filter and the\nrunner's joint permutation, so a zero-DoF entry there would corrupt all\nfour. But a real robot's collision tree also contains rigid mounts (a\nFranka hand bolted to the flange, a bimanual rig's two arm pedestals),\nand without them the tree is a *forest*.\n\nThis list is that missing connectivity and nothing else: no limits, no\nsensors, no DoF, never a command channel, invisible to every ``joints``\nconsumer. The safety envelope loader unions it with ``joints`` to build\nthe collision tree and **refuses to load a robot whose collision links\ndo not form one connected tree**\n(``openral_safety.envelope_loader.collision_params_from_description``).\n\nEvery value must come from the robot's real URDF/MJCF at the zero\nconfiguration \u2014 the same source ``joints``' own ``origin_xyz`` /\n``origin_rpy`` come from. Never hand-estimate a mount transform.\n\nAttributes:\n    name: Attachment name, matching the source URDF ``<joint>`` name where\n        one exists (a composed multi-hop mount is named for its endpoint).\n    parent_link: The link this attachment hangs from. Must be reachable\n        from the tree's single root.\n    child_link: The rigidly attached link.\n    origin_xyz: Translation (metres) of ``child_link``'s frame in\n        ``parent_link``'s frame. When the source model inserts intermediate\n        links between the two, this is the **composed** transform, exactly\n        as ``openral_safety.urdf_lowering.lower_joint_fk`` computes it\n        for movable joints.\n    origin_rpy: Orientation ``(roll, pitch, yaw)`` in radians, same frame\n        convention as ``origin_xyz``.\n    sweep_xyz: A travel the child link makes from ``origin`` that nothing\n        reports (``None`` = rigid): a translation in the child's own frame,\n        reached along a straight line. The kernel still poses the link at\n        ``origin``; the collision lowering fits its geometry over the whole\n        travel, so the model covers every position (the Galaxea A1's fingers,\n        vendor ``fixed`` joints that slide 30 mm with no joint state).\n\nExample:\n    >>> a = FixedAttachment(\n    ...     name=\"panda_hand_joint\",\n    ...     parent_link=\"panda_link7\",\n    ...     child_link=\"panda_hand\",\n    ...     origin_xyz=(0.0, 0.0, 0.107),\n    ...     origin_rpy=(0.0, 0.0, -0.7853981633974483),\n    ... )\n    >>> a.child_link\n    'panda_hand'",
           "properties": {
             "name": {
               "title": "Name",
@@ -3198,6 +3222,31 @@
               ],
               "title": "Origin Rpy",
               "type": "array"
+            },
+            "sweep_xyz": {
+              "anyOf": [
+                {
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "prefixItems": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ],
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Sweep Xyz"
             }
           },
           "required": [
@@ -5107,11 +5156,31 @@
         },
         "SimGripperDescription": {
           "additionalProperties": false,
-          "description": "Gripper wiring inside a MuJoCo MJCF.\n\nAttributes:\n    joint: Name of the gripper joint as it appears in\n        ``RobotDescription.joints`` (the public, lerobot-style name \u2014\n        not the menagerie MJCF name).\n    ctrl_range: ``(low, high)`` raw control range for the gripper\n        actuator.  In ``NORMALISED`` write mode, ``low`` \u2194 closed\n        (Action.gripper = 0), ``high`` \u2194 open (Action.gripper = 1).  In\n        ``PASSTHROUGH`` write mode this is informational \u2014 MuJoCo clips\n        on its own.\n    qpos_addrs: ``qpos`` indices used to compute the reported gripper\n        position.  When the gripper has multiple finger joints (Franka),\n        list every finger's qpos index.\n    qpos_scale: Span used to normalise the summed/raw gripper qpos to\n        ``[0, 1]``.  For Franka with two fingers each in ``[0, 0.04]`` m,\n        ``qpos_scale = 0.08``.  Ignored by ``AFFINE_LOW_HIGH`` and\n        ``PASSTHROUGH`` read modes but kept for symmetry with the\n        base-class invariant.\n    read_mode: How to report the qpos \u2014 see ``GripperReadMode``.\n    write_mode: How to map an Action's gripper value to ``ctrl`` \u2014 see\n        ``GripperWriteMode``.\n    actuator_index: Explicit MJCF actuator index that receives the\n        (mapped) gripper command.  When omitted, defaults to the\n        position of ``joint`` in ``RobotDescription.joints``\n        (i.e. the 1:1 mapping derived by ``SimDescription`` for arm\n        joints).\n    mirror_actuator_index: Optional second actuator that receives the\n        **negation** of the (mapped) gripper command.  Models the\n        Aloha parallel jaws where one motor drives ``+x`` and the\n        other ``-x`` to keep the fingers symmetric.  ``None`` for\n        single-actuator grippers.",
+          "description": "Gripper wiring inside a MuJoCo MJCF.\n\nExactly one of ``joint`` and ``end_effector`` is set. A ``joint`` gripper is a\nmanifest joint: commanded inside ``JOINT_POSITION`` rows and published in the\njoint state. An ``end_effector`` gripper is not a manifest joint (the real HAL\nof the Galaxea A1 publishes six arm joints and takes the gripper only as a\n``GRIPPER_POSITION`` action): the twin takes it as ``GRIPPER_POSITION``\n(``Action.gripper[0]``, ``NORMALISED``) and reports it in ``health`` as\n``<end_effector>_position_normalized``, never in the joint state.\n\nAttributes:\n    joint: Name of the gripper joint as it appears in\n        ``RobotDescription.joints`` (the public, lerobot-style name \u2014\n        not the menagerie MJCF name). ``None`` for an end-effector gripper.\n    end_effector: Name of a ``RobotDescription.end_effectors`` entry the\n        gripper realises when it has no manifest joint; requires an explicit\n        ``actuator_index``.\n    ctrl_range: ``(low, high)`` raw control range for the gripper\n        actuator.  In ``NORMALISED`` write mode, ``low`` \u2194 closed\n        (Action.gripper = 0), ``high`` \u2194 open (Action.gripper = 1).  In\n        ``PASSTHROUGH`` write mode this is informational \u2014 MuJoCo clips\n        on its own.\n    qpos_addrs: ``qpos`` indices used to compute the reported gripper\n        position.  When the gripper has multiple finger joints (Franka),\n        list every finger's qpos index.\n    qpos_scale: Span used to normalise the summed/raw gripper qpos to\n        ``[0, 1]``.  For Franka with two fingers each in ``[0, 0.04]`` m,\n        ``qpos_scale = 0.08``.  Ignored by ``AFFINE_LOW_HIGH`` and\n        ``PASSTHROUGH`` read modes but kept for symmetry with the\n        base-class invariant.\n    read_mode: How to report the qpos \u2014 see ``GripperReadMode``.\n    write_mode: How to map an Action's gripper value to ``ctrl`` \u2014 see\n        ``GripperWriteMode``.\n    actuator_index: Explicit MJCF actuator index that receives the\n        (mapped) gripper command.  When omitted, defaults to the\n        position of ``joint`` in ``RobotDescription.joints``\n        (i.e. the 1:1 mapping derived by ``SimDescription`` for arm\n        joints).\n    mirror_actuator_index: Optional second actuator that receives the\n        **negation** of the (mapped) gripper command.  Models the\n        Aloha parallel jaws where one motor drives ``+x`` and the\n        other ``-x`` to keep the fingers symmetric.  ``None`` for\n        single-actuator grippers.",
           "properties": {
             "joint": {
-              "title": "Joint",
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Joint"
+            },
+            "end_effector": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "End Effector"
             },
             "ctrl_range": {
               "maxItems": 2,
@@ -5172,7 +5241,6 @@
             }
           },
           "required": [
-            "joint",
             "ctrl_range",
             "qpos_addrs",
             "qpos_scale"

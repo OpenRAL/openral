@@ -346,6 +346,11 @@ def urdf_joint_curves(
     return out
 
 
+def _kernel_link_names(names: Sequence[str]) -> list[str] | None:
+    """The ``attachment_kernel_link_names`` parameter: ``["*"]`` (its default) is "not given"."""
+    return None if list(names) == ["*"] else list(names)
+
+
 def sim_attachment_heartbeat(*, hal_mode: str, vision_attachment_enabled: bool) -> bool:
     """Whether ``SimSensorBridge`` may heartbeat "nothing attached, fresh".
 
@@ -1110,6 +1115,15 @@ if _ROS2_AVAILABLE:
             renderers). Default: no-op.
             """
 
+        def on_signal_shutdown_pre_disconnect(self) -> None:
+            """Subclass extension point before ``shutdown_hal`` disconnects the HAL.
+
+            The signal-driven exit runs no lifecycle transition, so
+            ``on_cleanup_pre_disconnect`` never runs on it. Release here what must
+            not outlive the interpreter (a viewer window's GL thread), without rclpy
+            calls: the context is already down. Default: no-op.
+            """
+
         # ── Lifecycle ────────────────────────────────────────────────────
 
         @log_lifecycle_errors
@@ -1444,6 +1458,7 @@ if _ROS2_AVAILABLE:
             if hal is None:
                 return
             try:
+                self.on_signal_shutdown_pre_disconnect()
                 hal.disconnect()
                 release_env = getattr(hal, "release_env", None)
                 if callable(release_env):
@@ -2468,7 +2483,17 @@ if _ROS2_AVAILABLE:
 
             from openral_hal.vision_attachment_bridge import DEFAULT_SEGMENT_SERVICE
 
-            self.declare_parameter("vision_attachment_enabled", False)
+            # ``attachment_kernel_*``: set by the deploy launch from the safety kernel's own
+            # configuration: whether it checks attached payloads, and its collision-model
+            # link names (["*"]: not given, unchecked; other launches keep the old behaviour).
+            self.declare_parameters(
+                "",
+                [
+                    ("vision_attachment_enabled", False),
+                    ("attachment_kernel_checked", True),
+                    ("attachment_kernel_link_names", ["*"]),
+                ],
+            )
             self.declare_parameter("vision_attachment_camera", "")
             self.declare_parameter("vision_attachment_depth_topic", "")
             # Empty → the camera's conventional depth/camera_info topic. The
@@ -3024,6 +3049,16 @@ if _ROS2_AVAILABLE:
                     .get_parameter_value()
                     .bool_value,
                 ),
+                attachment_kernel_checked=self.get_parameter("attachment_kernel_checked")
+                .get_parameter_value()
+                .bool_value,
+                attachment_kernel_link_names=_kernel_link_names(
+                    list(
+                        self.get_parameter("attachment_kernel_link_names")
+                        .get_parameter_value()
+                        .string_array_value
+                    )
+                ),
                 camera_rate_hz=self.get_parameter("camera_publish_rate_hz")
                 .get_parameter_value()
                 .double_value,
@@ -3338,6 +3373,11 @@ if _ROS2_AVAILABLE:
                 self.destroy_publisher(self._sim_scene_pub)
                 self._sim_scene_pub = None
                 self._sim_scene_payload = None
+
+        def on_signal_shutdown_pre_disconnect(self) -> None:
+            """Close the sensor bridge's viewer before the HAL's model goes (signal exit)."""
+            if self._bridge is not None:
+                self._bridge.close_viewer()
 
         def on_cleanup_pre_disconnect(self) -> None:
             """Idempotent teardown of the sensor + mobile-base bridges + ResetToPose."""

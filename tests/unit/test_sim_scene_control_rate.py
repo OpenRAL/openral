@@ -78,9 +78,9 @@ def test_a_scene_without_the_keys_returns_the_manifest_itself() -> None:
 
 
 def test_a_rate_override_needs_an_action_spec() -> None:
-    widowx = _robot("widowx")  # declares no action_spec
+    google_robot = _robot("google_robot")  # declares no action_spec
     with pytest.raises(ROSConfigError, match="declares no action_spec"):
-        sim_scene_description(widowx, {"control_freq_hz": 60.0})
+        sim_scene_description(google_robot, {"control_freq_hz": 60.0})
 
 
 @pytest.mark.parametrize(

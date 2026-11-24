@@ -2876,6 +2876,8 @@ class SimSensorBridge:
         depth_pixel_stride: int = 4,
         idle_hold_ms: float = 2000.0,
         attachment_heartbeat: bool = True,
+        attachment_kernel_checked: bool = True,
+        attachment_kernel_link_names: Sequence[str] | None = None,
         on_step: Any = None,
         on_attachment_perception_ready: Any = None,
     ) -> None:
@@ -2905,6 +2907,13 @@ class SimSensorBridge:
         self._on_step = on_step
         self._on_attachment_perception_ready = on_attachment_perception_ready
         self._attachment_heartbeat = attachment_heartbeat
+        # What the deploy launch told the HAL about the safety kernel's attached check:
+        # whether it runs at all, and the collision-model link names it resolves. Without
+        # the check nothing ever acknowledges an attachment revision.
+        self._attachment_kernel_checked = attachment_kernel_checked
+        self._attachment_kernel_link_names = (
+            None if attachment_kernel_link_names is None else tuple(attachment_kernel_link_names)
+        )
         self._hal = hal
         self._description = description
         self._viewer_enabled = viewer_enabled
@@ -3195,6 +3204,15 @@ class SimSensorBridge:
         self._tf_broadcaster = None
         self._static_tf_broadcaster = None
         self._world_base_published = False
+        self.close_viewer()
+
+    def close_viewer(self) -> None:
+        """Close the MuJoCo passive viewer, if one is open. Idempotent; no rclpy calls.
+
+        Also reached on a signal-driven exit, where ``teardown`` never runs (the rclpy
+        context is already down): a viewer thread still running when GLFW's atexit
+        ``terminate`` fires aborts (or segfaults) the HAL process.
+        """
         if self._viewer is not None:
             with contextlib.suppress(Exception):  # reason: viewer already closed
                 self._viewer.close()
@@ -4093,18 +4111,45 @@ class SimSensorBridge:
             voxel_qos,
         )
         handles = getattr(self._hal, "mujoco_handles", lambda: None)()
-        if handles is not None and self._attachment_heartbeat:
+        if (
+            handles is not None
+            and self._attachment_heartbeat
+            and not self._attachment_kernel_checked
+        ):
+            self._node.get_logger().warning(
+                "automatic sim attachment evidence disabled: the safety kernel does not check "
+                "attached payloads on this robot (no collision model), so nothing would "
+                "acknowledge an attachment"
+            )
+        elif handles is not None and self._attachment_heartbeat:
             from openral_core.exceptions import ROSConfigError
 
             from openral_hal._sim_attachment_evidence import SimAttachmentEvidenceTracker
 
             model, _data = handles
             try:
-                self._attachment_tracker = SimAttachmentEvidenceTracker(
-                    model,
-                    self._description,
-                    stable_ticks=1,
+                tracker = SimAttachmentEvidenceTracker(model, self._description, stable_ticks=1)
+                unknown = (
+                    []
+                    if self._attachment_kernel_link_names is None
+                    else tracker.bind_kernel_links(self._attachment_kernel_link_names)
                 )
+                if unknown:
+                    # The robot can grasp, but every set naming these links would be rejected.
+                    # A fresh empty heartbeat would tell the kernel "nothing carried" while the
+                    # sim holds a payload: withdraw the stream instead, so the kernel's attached
+                    # check fails closed (attachment state unavailable) until this is fixed.
+                    if self._attachment_timer is not None:
+                        self._node.destroy_timer(self._attachment_timer)
+                        self._attachment_timer = None
+                    self._attachment_pub = None
+                    self._node.get_logger().error(
+                        "automatic sim attachment evidence refused: attach/touch links "
+                        f"{unknown} are not in the safety kernel's collision model; "
+                        "/openral/attachment_state withdrawn, so the kernel fails closed"
+                    )
+                    return
+                self._attachment_tracker = tracker
                 add_observer = getattr(self._hal, "add_post_step_observer", None)
                 if callable(add_observer):
                     add_observer(self._observe_attachment_evidence)
@@ -4415,9 +4460,27 @@ class SimSensorBridge:
         if self._attachment_tracker is not None and handles is not None:
             from openral_hal._sim_attachment_evidence import SimAttachmentEvidenceTracker
 
-            self._attachment_tracker = SimAttachmentEvidenceTracker(
-                handles[0], self._description, stable_ticks=1
+            fresh = SimAttachmentEvidenceTracker(handles[0], self._description, stable_ticks=1)
+            # Named as setup named the one it replaces: on a model the kernel lowered from the
+            # MJCF (the WidowX's `wx250s/*`), the constructor's manifest names are ones the
+            # kernel rejects, and its never-acknowledged revision would stall the bridge.
+            unknown = (
+                []
+                if self._attachment_kernel_link_names is None
+                else fresh.bind_kernel_links(self._attachment_kernel_link_names)
             )
+            if unknown:  # same model and names as setup, which armed: not expected
+                # Withdraw the stream as setup does: an empty heartbeat would tell the kernel
+                # "nothing carried" while the sim may hold a payload.
+                if self._attachment_timer is not None:
+                    self._node.destroy_timer(self._attachment_timer)
+                    self._attachment_timer = None
+                self._attachment_pub = None
+                self._node.get_logger().error(
+                    f"sim attachment evidence disarmed at reset: links {unknown} are not in "
+                    "the safety kernel's collision model; /openral/attachment_state withdrawn"
+                )
+            self._attachment_tracker = None if unknown else fresh
         update = getattr(self._hal, "update_attached_objects", None)
         read = getattr(self._hal, "read_attached_objects", None)
         if self._attachment_pub is None or not callable(update) or not callable(read):

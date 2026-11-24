@@ -233,6 +233,7 @@ def test_station_sim_maps_match_station_mjcf(station: RobotDescription) -> None:
         assert mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, act) == sim_name
         assert int(model.actuator_trnid[act, 0]) == jid
     for gripper in station.sim.grippers:
+        assert gripper.joint is not None
         gripper_sim = next(j.sim_joint_name for j in station.joints if j.name == gripper.joint)
         jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, gripper_sim)
         assert gripper.qpos_addrs == (int(model.jnt_qposadr[jid]),)

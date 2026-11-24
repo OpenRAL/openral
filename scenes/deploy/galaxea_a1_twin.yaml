@@ -1,0 +1,34 @@
+# Galaxea A1 — bare MuJoCo twin (#740).
+#
+#     openral deploy sim --config scenes/deploy/galaxea_a1_twin.yaml
+#
+# `galaxea_a1_twin` is not an openral_sim scene id, so `deploy sim` builds the bare twin
+# (`MujocoArmHAL.from_description` on the MJCF derived from the vendor URDF, the
+# manifest's `sim:` block) at the manifest's 30 Hz, with the `front` and `wrist`
+# cameras at their sim placements. The twin keeps the real GalaxeaA1HAL's contract:
+# six arm joints on /joint_states, the gripper as a GRIPPER_POSITION action
+# (normalised, 1 = open). `galaxea_a1_bench.yaml` is the real cell.
+#
+# Arm only, no depth camera: every runtime feature that needs a sensor the manifest does
+# not declare is off.
+scene:
+  id: galaxea_a1_twin
+robot_id: galaxea_a1
+
+runtime:
+  enable_reasoner: false
+  enable_slam: false
+  enable_nav2: false
+  enable_octomap: false
+  enable_octomap_kernel_check: true
+  enable_object_detector: false
+  object_detector_onnx: null
+  object_detector_manifest: null
+  object_detector_query: null
+  object_detector_locators: null
+  enable_reward_monitor: false
+  reward_monitor_manifest: null
+  reward_monitor_task: null
+  enable_critic: false
+  spatial_memory_ingest: false
+  approach_skill_id: null

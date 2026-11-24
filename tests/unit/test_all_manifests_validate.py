@@ -141,8 +141,12 @@ _DEPLOY_STEMS: list[str] = [
     "robocasa_sink_cup",
     "robocasa_vslam",
     "robocasa_vslam_mono",
+    "r1pro_twin",
     "so101_bench",
     "so101_box",
+    "widowx_twin",
+    "aloha_agilex_twin",
+    "galaxea_a1_twin",
 ]
 
 

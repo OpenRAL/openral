@@ -1,15 +1,23 @@
 # RobotDescription — Trossen WidowX-250s (sim-only embodiment).
 #
-# Sim-only pseudo-embodiment exception: WidowX-250s is a real 6-DoF + gripper
-# desktop arm (Trossen Robotics), but OpenRAL ships no HAL adapter for it
-# today — exists only so SimEnvironment configs targeting SimplerEnv's
-# `widowx_*` envs (Bridge-Data setup) can round-trip through the schema.
-# Sim-imposed observation/action contract lives in
-# python/sim/src/openral_sim/backends/simpler_env.py, not here.
+# Sim-only embodiment: WidowX-250s is a real 6-DoF + gripper desktop arm
+# (Trossen Robotics), but OpenRAL ships no real HAL for it. Two sims run it:
+# * SimplerEnv's `widowx_*` envs (Bridge-Data setup, ManiSkill3/SAPIEN), whose
+#   observation/action contract lives in
+#   python/sim/src/openral_sim/backends/simpler_env.py, not here;
+# * a bare MuJoCo twin (`MujocoArmHAL.from_description`, the `sim:` block
+#   below) on the Menagerie MJCF, for `openral deploy sim` and the dashboard
+#   (scenes/deploy/widowx_twin.yaml). The twin takes joint-space actions and a lone
+#   GRIPPER_POSITION; its kernel collision model is lowered from the MJCF
+#   bodies, so grasp evidence names `wx250s/*` links, not the ones below.
 #
 # Kinematic numbers from the public WidowX-250s data sheet
 # (trossenrobotics.com/widowx-250). Joint limits are placeholder for the
-# simulated config; tighten when a real-HW adapter lands.
+# simulated config, kept inside the Menagerie MJCF's joint ranges so the kernel
+# never admits a target the twin's actuators clip; tighten when a real-HW adapter
+# lands. `sim_joint_name` names each joint's MJCF joint (the twin's contact and
+# attachment evidence resolves bodies through it): the arm joints share their
+# names, the normalised `gripper` is the actuated `left_finger` slide.
 
 name: "widowx"
 embodiment_kind: "manipulator"
@@ -32,6 +40,7 @@ assets:
 
 joints:
   - name: "waist"
+    sim_joint_name: "waist"
     joint_type: "revolute"
     parent_link: "base_link"
     child_link: "shoulder_link"
@@ -40,22 +49,25 @@ joints:
     effort_limit: 8.0
     actuator_kind: "servo"
   - name: "shoulder"
+    sim_joint_name: "shoulder"
     joint_type: "revolute"
     parent_link: "shoulder_link"
     child_link: "upper_arm_link"
-    position_limits: [-1.88, 1.99]
+    position_limits: [-1.88, 1.98]
     velocity_limit: 3.14
     effort_limit: 8.0
     actuator_kind: "servo"
   - name: "elbow"
+    sim_joint_name: "elbow"
     joint_type: "revolute"
     parent_link: "upper_arm_link"
     child_link: "upper_forearm_link"
-    position_limits: [-2.16, 1.6]
+    position_limits: [-2.14, 1.6]
     velocity_limit: 3.14
     effort_limit: 4.0
     actuator_kind: "servo"
   - name: "forearm_roll"
+    sim_joint_name: "forearm_roll"
     joint_type: "revolute"
     parent_link: "upper_forearm_link"
     child_link: "lower_forearm_link"
@@ -67,14 +79,16 @@ joints:
     effort_limit: 2.0
     actuator_kind: "servo"
   - name: "wrist_angle"
+    sim_joint_name: "wrist_angle"
     joint_type: "revolute"
     parent_link: "lower_forearm_link"
     child_link: "wrist_link"
-    position_limits: [-1.74, 2.15]
+    position_limits: [-1.74, 2.14]
     velocity_limit: 3.14
     effort_limit: 2.0
     actuator_kind: "servo"
   - name: "wrist_rotate"
+    sim_joint_name: "wrist_rotate"
     joint_type: "revolute"
     parent_link: "wrist_link"
     child_link: "gripper_link"
@@ -83,18 +97,24 @@ joints:
     effort_limit: 2.0
     actuator_kind: "servo"
   - name: "gripper"
+    sim_joint_name: "left_finger"
     joint_type: "prismatic"
     parent_link: "gripper_link"
     child_link: "finger_pair"
     position_limits: [0.0, 1.0]
-    velocity_limit: 0.1
+    # Normalised stroke per second. Measured on the MuJoCo twin (Menagerie kp 200
+    # finger servo: a full 0.015-0.037 m stroke in 0.11 s, ~9/s); Trossen publishes
+    # no gripper speed. The old 0.1 placeholder held a full stroke to ~20 s.
+    velocity_limit: 10.0
     effort_limit: 2.0
     actuator_kind: "servo"
     role: "gripper"
 
 end_effectors:
   - name: "gripper"
-    command_convention: "normalized_open_symmetric"
+    # The twin's encoding (0 = closed, 1 = open). SimplerEnv scenes override it
+    # with their own `normalized_open_symmetric` (SCENES gripper_convention).
+    command_convention: "normalized_open_unit"
     kind: "parallel_gripper"
     hand: "na"
     n_dof: 1
@@ -148,8 +168,54 @@ sensors:
     vla_feature_key: "observation.images.camera1"
     vendor: "sim"
     model: "simpler_env_overhead"
+    # MuJoCo twin only (SimplerEnv renders its own camera): a world-fixed view
+    # of the workspace in front of the arm. A sim choice, not a measured mount.
+    # The static transform publishes the same pose to /tf (the twin's base_link
+    # is the MJCF world origin): at (0.75, 0, 0.55) facing -x (yaw pi), pitched
+    # 45 deg down onto (0.25, 0, 0.05).
+    parent_frame: "base_link"
+    static_transform_xyz_rpy: [0.75, 0.0, 0.55, 0.0, 0.785398, 3.141593]
+    static_transform_calibrated: false
+    sim_placement:
+      pos: [0.75, 0.0, 0.55]
+      target: [0.25, 0.0, 0.05]
 
 sdk_kind: "open"
-# observation_spec / action_spec deliberately omitted, per the robot/sim split convention. The
-# per-sim IO contracts live in the matching scene adapters.
+
+hal:
+  # null -> build_hal derives MujocoArmHAL.from_description from `sim:` below.
+  sim: null
+  real: null
+
+# MuJoCo wiring for the twin, on the Menagerie `trossen_wx250s/wx250s.xml`:
+# qpos 0-5 / actuators 0-5 are the arm in manifest order; the `gripper`
+# actuator (6) drives `left_finger` (qpos 6, slide 0.015-0.037 m), and an MJCF
+# equality mirrors it onto `right_finger` (qpos 7). The twin starts at the MJCF's
+# `home` keyframe: qpos 0 puts both fingers outside their slide ranges, where
+# they jam and never open.
+sim:
+  keyframe_index: 0
+  joint_qpos_addr:
+    waist: 0
+    shoulder: 1
+    elbow: 2
+    forearm_roll: 3
+    wrist_angle: 4
+    wrist_rotate: 5
+    gripper: 6
+  grippers:
+    - joint: "gripper"
+      ctrl_range: [0.015, 0.037]
+      qpos_addrs: [6]
+      qpos_scale: 0.022
+      read_mode: "affine_low_high"
+      write_mode: "normalised"
+
+# observation_spec and the action representation stay with the scene adapters (robot/sim
+# split). Only the control rate lives here: one action is one 5 Hz period, the rate of
+# ManiSkill3's bridge_dataset_eval WidowX envs (SimConfig control_freq=5) and of
+# BridgeData V2. The MuJoCo twin steps one period per action at this rate.
+action_spec:
+  control_freq_hz: 5.0
+
 schema_version: "0.2"

@@ -18,7 +18,8 @@ overriding the per-robot hooks (``_per_step``, ``_apply_targets``, ``_drive_base
 ``_on_load``, ``_on_idle``, ``_compose``), chosen by its HAL subclass; the building
 blocks for the humanoids live here (``_GlideTwin``: the ADR-0087 pinned glide base;
 ``_SoftwarePDTwin``: a position loop over torque actuators; ``_FreeBaseTwin``: a base
-pose read off the free joint). The rollout never holds a reference to its HAL.
+pose read off the free joint; ``_PlanarBaseTwin``: a kinematic wheeled base on MJCF
+planar joints). The rollout never holds a reference to its HAL.
 
 Only ``mujoco`` is needed (imported lazily, on ``load``): ``openral_sim`` is never
 imported here, so a bare twin runs on a host without it.
@@ -143,7 +144,9 @@ class MujocoTwinRollout:
         joint_qpos_addr: ``joint_name -> qpos index``.
         actuator_index: ``joint_name -> ctrl column``.
         joint_qvel_addr: ``joint_name -> qvel index``; defaults to ``joint_qpos_addr``.
-        grippers: ``SimGripperDescription`` entries, each on a ``description.joints`` joint.
+        grippers: ``SimGripperDescription`` entries, each on a ``description.joints`` joint
+            or (``end_effector``) on a manifest end effector with no joint, commanded by
+            ``GRIPPER_POSITION`` (``_split_end_effector_grippers``).
         keyframe_index: Keyframe ``load`` resets the data to, when set.
         seed_ctrl_from_qpos: Seed each position actuator's ctrl from its joint's qpos.
         settle_steps: Pinned physics steps per ``step``; ``None`` derives one control
@@ -197,10 +200,19 @@ class MujocoTwinRollout:
             dict(joint_qvel_addr) if joint_qvel_addr is not None else dict(joint_qpos_addr)
         )
         self.actuator_index = dict(kwargs["actuator_index"])
-        self.grippers_by_joint: dict[str, SimGripperDescription] = {g.joint: g for g in grippers}
-        if len(self.grippers_by_joint) != len(list(grippers)):
-            duplicates = [g.joint for g in grippers]
+        self.grippers_by_joint: dict[str, SimGripperDescription] = {
+            g.joint: g for g in grippers if g.joint is not None
+        }
+        # Grippers with no manifest joint, by end-effector name: commanded only by
+        # GRIPPER_POSITION, read only through ``end_effector_gripper_positions``.
+        self.grippers_by_end_effector: dict[str, SimGripperDescription] = {
+            g.end_effector: g for g in grippers if g.end_effector is not None
+        }
+        if len(self.grippers_by_joint) + len(self.grippers_by_end_effector) != len(list(grippers)):
+            duplicates = [g.joint or g.end_effector for g in grippers]
             raise ROSConfigError(f"grippers contains duplicate joint names: {duplicates}")
+        for ee_name in self.grippers_by_end_effector:
+            self._require_open_unit(ee_name)
         joint_name_set = {j.name for j in description.joints}
         for g_joint in self.grippers_by_joint:
             if g_joint not in joint_name_set:
@@ -283,6 +295,7 @@ class MujocoTwinRollout:
                     f"only {model.nkey} keyframes ({self.mjcf_path})"
                 )
             mj.mj_resetDataKeyframe(model, data, self.keyframe_index)
+        self._check_gripper_actuators(int(model.nu))
         mj.mj_forward(model, data)
         # Nothing is assigned before the MJCF has loaded: a refused load leaves the
         # rollout closed (no clock, no handles, no renders), and so does a refused
@@ -398,18 +411,30 @@ class MujocoTwinRollout:
     def step_action_group(self, actions: list[Action]) -> TwinStepResult:
         """Apply one command for one control period: a slot group, or one ungrouped action.
 
-        ``_compose`` validates the command and turns it into a full-dof target row and/or
-        a planar twist; the row goes into ``ctrl`` (``_apply_targets``), the twist drives
-        the base (``_drive_base``), and ONE ``advance`` runs the period, so a tick that
-        carries joint and twist slots moves both inside the same control period.
+        Directly written gripper slots (``GRIPPER_POSITION`` on an end-effector gripper,
+        or a lone one on a joint gripper) are split off first
+        (``_split_end_effector_grippers``); ``_compose``
+        validates the rest and turns it into a full-dof target row and/or a planar twist;
+        the row goes into ``ctrl`` (``_apply_targets``), the twist drives the base
+        (``_drive_base``), the gripper slots into their actuators, and ONE ``advance``
+        runs the period, so a tick that carries joint and twist slots moves both inside
+        the same control period.
 
         Raises:
             ROSConfigError: An unsupported control mode, a malformed or unplaceable
                 command (``_compose``).
         """
-        targets, twist, applied = self._compose(actions)
+        ee_targets, actions = self._split_end_effector_grippers(actions)
+        targets: list[float] | None = None
+        twist: tuple[float, float, float] | None = None
+        if actions or not ee_targets:
+            targets, twist, applied = self._compose(actions)
+        else:
+            applied = ee_targets[0][2]
         assert self.model is not None and self.data is not None
         self._command(targets, twist)
+        for gripper, command, _action in ee_targets:  # validated, written after any refusal
+            self._write_gripper_ctrl(gripper, command)
         applied = self._record_applied(applied, twist)
         self.advance(self._action_steps(twist))
         return TwinStepResult(info={"applied_action": applied})
@@ -678,11 +703,20 @@ class MujocoTwinRollout:
             )
         import mujoco as mj  # reason: optional sim-only dep
 
-        for name, value in zip(self.joint_names, pose, strict=True):
+        # A follower jaw a gripper already snaps (the R1 Pro's finger_joint2, inside its
+        # leader's qpos_addrs) is not written again: its own entry would undo the snap.
+        gripper_owned = {a for g in self.grippers_by_joint.values() for a in g.qpos_addrs}
+        # Ordinary joints first, grippers last: a gripper's snap (and the equality followers
+        # it drags) is final, whatever row a follower the mapping does not list carries.
+        rows = sorted(
+            zip(self.joint_names, pose, strict=True),
+            key=lambda row: row[0] in self.grippers_by_joint,
+        )
+        for name, value in rows:
             qpos_addr = self.joint_qpos_addr.get(name)
-            if qpos_addr is None:
-                continue
             gripper = self.grippers_by_joint.get(name)
+            if qpos_addr is None or (gripper is None and qpos_addr in gripper_owned):
+                continue
             # Zero qvel too so the snap doesn't carry momentum: every coordinate written.
             if gripper is None:
                 data.qpos[qpos_addr] = float(value)
@@ -693,6 +727,10 @@ class MujocoTwinRollout:
                 self._reset_gripper_qpos(gripper, float(value))
                 for addr in self._gripper_reset_addrs(gripper):
                     data.qvel[self._dof_of_qpos(addr)] = 0.0
+                    # A finger the MJCF couples by a joint equality (the WidowX
+                    # right_finger mirrors left_finger) is snapped with it, or the
+                    # constraint yanks it across on the next steps.
+                    self._snap_equality_followers(addr)
         # Re-seed ctrl so the actuators hold the new pose on the next ``mj_step``:
         # position actuators from qpos, grippers through their write mode.
         self._hold_qpos_in_ctrl([n for n in self.joint_names if n not in self.grippers_by_joint])
@@ -701,6 +739,39 @@ class MujocoTwinRollout:
         # After the last ctrl write, so efforts read right after reflect the new ctrl.
         mj.mj_forward(model, data)
         self.last_state_time = time.monotonic()
+
+    def _snap_equality_followers(self, qpos_addr: int) -> None:
+        """Write every joint tied to the joint at ``qpos_addr`` by an active joint equality.
+
+        MuJoCo's joint equality holds ``q1 - q1_0 = c0 + c1 (q2 - q2_0) + ... + c4 (q2 -
+        q2_0)^4`` (``q_0`` = ``qpos0``). When ``qpos_addr`` is ``joint2`` its follower
+        ``joint1`` is evaluated directly; when it is ``joint1``, ``joint2`` is solved for
+        a linear coupling only (``c2..c4 == 0``, ``c1 != 0``) and left alone otherwise.
+        The follower's velocity is zeroed like the snapped joint's.
+        """
+        model, data = self.model, self.data
+        assert model is not None and data is not None
+        import mujoco as mj  # reason: optional sim-only dep
+
+        for eq in range(int(model.neq)):
+            if int(model.eq_type[eq]) != int(mj.mjtEq.mjEQ_JOINT) or not bool(data.eq_active[eq]):
+                continue
+            j1, j2 = int(model.eq_obj1id[eq]), int(model.eq_obj2id[eq])
+            if j2 < 0:
+                continue  # joint1 pinned to a constant: nothing follows it
+            a1, a2 = int(model.jnt_qposadr[j1]), int(model.jnt_qposadr[j2])
+            c = [float(v) for v in model.eq_data[eq][:5]]
+            q1_0, q2_0 = float(model.qpos0[a1]), float(model.qpos0[a2])
+            if qpos_addr == a2:
+                x = float(data.qpos[a2]) - q2_0
+                data.qpos[a1] = q1_0 + sum(ck * x**k for k, ck in enumerate(c))
+                follower = a1
+            elif qpos_addr == a1 and c[1] != 0.0 and not any(c[2:]):
+                data.qpos[a2] = q2_0 + (float(data.qpos[a1]) - q1_0 - c[0]) / c[1]
+                follower = a2
+            else:
+                continue
+            data.qvel[self._dof_of_qpos(follower)] = 0.0
 
     def _dof_of_qpos(self, qpos_addr: int) -> int:
         """The DOF (``qvel``) address of the joint whose ``qpos`` starts at ``qpos_addr``.
@@ -737,18 +808,27 @@ class MujocoTwinRollout:
         """
         assert self.data is not None
         for joint_name, gripper in self.grippers_by_joint.items():
-            command = float(targets[self.joint_names.index(joint_name)])
-            raw = _gripper_command_to_raw(gripper, command)
-            primary_idx = self._gripper_actuator_index(gripper, joint_name)
-            if primary_idx is None:
-                raise ROSConfigError(
-                    f"Gripper {joint_name!r} has no actuator index — set "
-                    "sim.grippers[].actuator_index or include the joint in "
-                    "sim.actuator_index."
-                )
-            self.data.ctrl[primary_idx] = raw
-            if gripper.mirror_actuator_index is not None:
-                self.data.ctrl[gripper.mirror_actuator_index] = -raw
+            self._write_gripper_ctrl(gripper, float(targets[self.joint_names.index(joint_name)]))
+
+    def _write_gripper_ctrl(self, gripper: SimGripperDescription, command: float) -> None:
+        """One gripper's public command into its actuator's ``ctrl`` (and its mirror's).
+
+        Raises:
+            ROSConfigError: The gripper has no actuator index.
+        """
+        assert self.data is not None
+        raw = _gripper_command_to_raw(gripper, command)
+        name = gripper.joint or gripper.end_effector or ""
+        primary_idx = self._gripper_actuator_index(gripper, name)
+        if primary_idx is None:
+            raise ROSConfigError(
+                f"Gripper {name!r} has no actuator index — set "
+                "sim.grippers[].actuator_index or include the joint in "
+                "sim.actuator_index."
+            )
+        self.data.ctrl[primary_idx] = raw
+        if gripper.mirror_actuator_index is not None:
+            self.data.ctrl[gripper.mirror_actuator_index] = -raw
 
     # ── Commands (per-robot hooks; a subclass overrides what its robot does) ──
 
@@ -780,6 +860,152 @@ class MujocoTwinRollout:
         self._validate(command)
         assert command.joint_targets is not None
         return list(command.joint_targets[-1]), twist, command
+
+    def _require_open_unit(self, ee_name: str | None) -> None:
+        """Refuse an end effector whose ``command_convention`` the twin cannot write.
+
+        The twin writes ``Action.gripper`` as the ``[0, 1]`` opening (``1`` = open);
+        a ``normalized_close_symmetric`` command would reverse the gripper and a
+        ``width_meters`` one would be read as a fraction. An undeclared convention
+        (``None``) or a name that is no end effector keeps that default.
+
+        Raises:
+            ROSConfigError: The end effector declares any other convention.
+        """
+        for ee in self.description.end_effectors:
+            if ee.name == ee_name and ee.command_convention not in (None, "normalized_open_unit"):
+                raise ROSConfigError(
+                    f"{self.description.name}: end effector {ee_name!r} declares "
+                    f"command_convention {ee.command_convention!r}; the twin writes only "
+                    "'normalized_open_unit'."
+                )
+
+    def _gripper_of(self, action: Action, *, lone: bool) -> SimGripperDescription | None:
+        """The sim gripper a ``GRIPPER_POSITION`` slot drives; ``None`` leaves it to ``_compose``.
+
+        An end-effector gripper by ``ee_name`` (or the only one). A joint gripper only
+        for a lone action: in a slot group ``compose_slot_group`` already places a
+        gripper slot by the joint its ``ee_name`` names. A lone action's ``ee_name``
+        names its gripper joint (the slot-group rule) or a declared end effector (the
+        name the safety kernel bounds it by), which drives the one gripper joint on
+        its ``parent_link``; with exactly one joint gripper, any end effector (or none).
+
+        Raises:
+            ROSConfigError: The action names no gripper of this twin.
+        """
+        name = action.ee_name
+        if self.grippers_by_end_effector:
+            only_ee = len(self.grippers_by_end_effector) == 1 and not self.grippers_by_joint
+            if name is None and only_ee:
+                name = next(iter(self.grippers_by_end_effector))
+            gripper = self.grippers_by_end_effector.get(name or "")
+            if gripper is not None:
+                return gripper
+            # A twin may carry joint grippers too (`sim.grippers` mixes both): a name that is
+            # no end-effector gripper is resolved as a joint gripper below, not refused here.
+            if not self.grippers_by_joint:
+                raise ROSConfigError(
+                    f"{self.backend}: GRIPPER_POSITION ee_name={action.ee_name!r} names no "
+                    f"end-effector gripper (have: {sorted(self.grippers_by_end_effector)})."
+                )
+        if not lone:
+            return None
+        joint = self._gripper_joint_named(name)
+        ee_names = {ee.name for ee in self.description.end_effectors}
+        if joint is None and len(self.grippers_by_joint) == 1 and name in {None, *ee_names}:
+            joint = next(iter(self.grippers_by_joint))
+        gripper = self.grippers_by_joint.get(joint or "")
+        if gripper is None or gripper.write_mode is not GripperWriteMode.NORMALISED:
+            raise ROSConfigError(
+                f"{self.backend}: GRIPPER_POSITION ee_name={action.ee_name!r} names no "
+                f"normalised gripper joint (have: {sorted(self.grippers_by_joint)})."
+            )
+        self._require_joint_gripper_open_unit(joint)
+        return gripper
+
+    def _gripper_joint_named(self, name: str | None) -> str | None:
+        """The joint gripper a slot's ``ee_name`` names: the joint itself, or an end effector's.
+
+        A declared end effector (the name the safety kernel bounds a gripper command by)
+        names the one gripper joint hanging from its ``parent_link``.
+        """
+        if name in self.grippers_by_joint:
+            return name
+        ee = next((e for e in self.description.end_effectors if e.name == name), None)
+        if ee is None or ee.parent_link is None:
+            return None
+        parents = {j.name: j.parent_link for j in self.description.joints}
+        on_link = [j for j in self.grippers_by_joint if parents[j] == ee.parent_link]
+        return on_link[0] if len(on_link) == 1 else None
+
+    def _require_joint_gripper_open_unit(self, joint: str | None) -> None:
+        """``_require_open_unit`` for the end effector that owns gripper ``joint``.
+
+        Checked on the gripper the command resolved to, so naming it by its joint cannot
+        skip a convention its end effector declares.
+
+        Raises:
+            ROSConfigError: The owning end effector declares another convention.
+        """
+        parents = {j.name: j.parent_link for j in self.description.joints}
+        for ee in self.description.end_effectors:
+            owns = ee.name == joint or (
+                ee.parent_link is not None and ee.parent_link == parents.get(joint or "")
+            )
+            if owns:
+                self._require_open_unit(ee.name)
+
+    def _split_end_effector_grippers(
+        self, actions: list[Action]
+    ) -> tuple[list[tuple[SimGripperDescription, float, Action]], list[Action]]:
+        """The command's directly written gripper slots and its other slots.
+
+        A ``GRIPPER_POSITION`` slot ``_gripper_of`` resolves drives that gripper with
+        ``gripper[0]``, normalised ``[0, 1]`` and refused outside it, as the real HAL of
+        such a robot refuses it; every other slot passes through unchanged.
+
+        Raises:
+            ROSConfigError: An unsupported mode, an empty or out-of-range ``gripper``,
+                or an ``ee_name`` that names no gripper.
+        """
+        out: list[tuple[SimGripperDescription, float, Action]] = []
+        rest: list[Action] = []
+        for action in actions:
+            gripper = (
+                self._gripper_of(action, lone=len(actions) == 1)
+                if action.control_mode is ControlMode.GRIPPER_POSITION
+                else None
+            )
+            if gripper is None:
+                if action.control_mode is ControlMode.GRIPPER_POSITION:
+                    # A slot-group gripper slot: `compose_slot_group` places it by joint name,
+                    # so an end-effector name resolves here, the same way a lone slot's does.
+                    joint = self._gripper_joint_named(action.ee_name)
+                    if joint is not None:
+                        self._require_joint_gripper_open_unit(joint)
+                        if joint != action.ee_name:
+                            rest.append(action.model_copy(update={"ee_name": joint}))
+                            continue
+                rest.append(action)
+                continue
+            require_supported_control_mode(self.description, action)
+            if not action.gripper:
+                raise ROSConfigError(f"{self.backend}: GRIPPER_POSITION needs action.gripper.")
+            command = float(action.gripper[0])
+            if not math.isfinite(command) or not 0.0 <= command <= 1.0:
+                raise ROSConfigError(
+                    f"{self.backend}: gripper target {command} is not finite within [0, 1]."
+                )
+            out.append((gripper, command, action))
+        return out, rest
+
+    def end_effector_gripper_positions(self) -> dict[str, float]:
+        """Each end-effector gripper's normalised position (``read_mode``); ``{}`` unloaded."""
+        if self.data is None:
+            return {}
+        return {
+            name: self._read_gripper_value(g) for name, g in self.grippers_by_end_effector.items()
+        }
 
     def _split_twist(
         self, actions: list[Action]
@@ -994,6 +1220,30 @@ class MujocoTwinRollout:
             )
         self.body_twist_dt_s = float(pinned)
 
+    def _check_gripper_actuators(self, nu: int) -> None:
+        """Refuse a gripper whose actuator (or mirror) is missing or past ``nu``, at load.
+
+        Checked here, not at the write: a mixed command writes the arm row before its
+        gripper slots, so a gripper refused there would leave that row in ``ctrl``.
+
+        Raises:
+            ROSConfigError: A gripper has no actuator index, or one outside the model.
+        """
+        for gripper in (*self.grippers_by_joint.values(), *self.grippers_by_end_effector.values()):
+            name = gripper.joint or gripper.end_effector or ""
+            primary = self._gripper_actuator_index(gripper, name)
+            if primary is None:
+                raise ROSConfigError(
+                    f"Gripper {name!r} has no actuator index — set "
+                    "sim.grippers[].actuator_index or include the joint in "
+                    "sim.actuator_index."
+                )
+            for idx in (primary, gripper.mirror_actuator_index):
+                if idx is not None and not 0 <= idx < nu:
+                    raise ROSConfigError(
+                        f"Gripper {name!r} names actuator {idx}, but {self.mjcf_path} has {nu}."
+                    )
+
     def _gripper_actuator_index(
         self, gripper: SimGripperDescription, joint_name: str
     ) -> int | None:
@@ -1106,6 +1356,68 @@ class _FreeBaseTwin(MujocoTwinRollout):
         _model, data = self._require_loaded("base_pose")
         x, y, yaw, _z = capture_base_pin(data.qpos)
         return (x, y, yaw)
+
+
+class _PlanarBaseTwin(MujocoTwinRollout):
+    """A wheeled base the twin places kinematically on MJCF planar joints.
+
+    The MJCF carries ``base_x`` / ``base_y`` slides and a ``base_yaw`` hinge that are
+    not manifest joints (the manifest has no ``base_joints``; the base is driven only by
+    ``BODY_TWIST``). Their pose is written into qpos, velocity zeroed, before every
+    physics step (actions and idle slices alike), so the arms' reaction forces never
+    push the base. A ``BODY_TWIST`` slides that pose by one ``body_twist_dt_s`` of
+    ``(vx, vy, wz)`` (``integrate_planar_twist``: a holonomic base). ``MujocoArmHAL
+    .from_description`` picks it for a fixed-base-addressed manifest that supports
+    ``BODY_TWIST`` (the R1 Pro).
+    """
+
+    BASE_JOINTS: ClassVar[tuple[str, str, str]] = ("base_x", "base_y", "base_yaw")
+    _base_qpos: list[int]
+    _base_qvel: list[int]
+    _base: tuple[float, float, float]
+
+    def _on_load(self) -> None:
+        """Find the three base joints in the MJCF; the pose starts at their qpos.
+
+        Raises:
+            ROSConfigError: The MJCF lacks one of ``BASE_JOINTS``.
+        """
+        import mujoco as mj  # reason: optional sim-only dep
+
+        super()._on_load()
+        model, data = self._require_loaded("load")
+        ids = [mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, n) for n in self.BASE_JOINTS]
+        if min(ids) < 0:
+            raise ROSConfigError(
+                f"{self.backend}: robot '{self.description.name}' supports BODY_TWIST but "
+                f"its MJCF lacks the planar base joints {self.BASE_JOINTS}."
+            )
+        self._base_qpos = [int(model.jnt_qposadr[i]) for i in ids]
+        self._base_qvel = [int(model.jnt_dofadr[i]) for i in ids]
+        x, y, yaw = (float(data.qpos[a]) for a in self._base_qpos)
+        self._base = (x, y, yaw)
+
+    def read_base_pose(self) -> tuple[float, float, float]:
+        """The base ``(x, y, yaw)``.
+
+        Raises:
+            ROSRuntimeError: Not loaded (the HAL is not connected).
+        """
+        self._require_loaded("base_pose")
+        return self._base
+
+    def _drive_base(self, vx: float, vy: float, wz: float) -> None:
+        assert self.body_twist_dt_s is not None
+        x, y, yaw, _ = integrate_planar_twist((*self._base, 0.0), vx, vy, wz, self.body_twist_dt_s)
+        self._base = (x, y, yaw)
+
+    def _per_step(self) -> None:
+        """Write the base pose into its joints, then the next block's hook."""
+        assert self.data is not None
+        for qpos, qvel, value in zip(self._base_qpos, self._base_qvel, self._base, strict=True):
+            self.data.qpos[qpos] = value
+            self.data.qvel[qvel] = 0.0
+        super()._per_step()
 
 
 class _SoftwarePDTwin(MujocoTwinRollout):

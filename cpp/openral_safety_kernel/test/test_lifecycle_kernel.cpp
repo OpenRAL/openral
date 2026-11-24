@@ -4639,9 +4639,12 @@ struct GraspBeat {
   /// A second payload, `cell:other` at the region centre, attached on this link
   /// ("" = none): the other hand still holding, or a released payload frozen on the base.
   std::string second_attach_link{};
-  double region_qx{0.0};  ///< the region's orientation x
-  double region_qw{1.0};  ///< the region's orientation w
-  bool region{true};      ///< the producer measured a target region (region_valid)
+  double second_x{0.05};     ///< the second payload's origin along its attach link's x
+  bool second_first{false};  ///< publish the second payload ahead of the first
+  bool first_present{true};  ///< publish the first payload at all (with `carrying`)
+  double region_qx{0.0};     ///< the region's orientation x
+  double region_qw{1.0};     ///< the region's orientation w
+  bool region{true};         ///< the producer measured a target region (region_valid)
   /// #349: the producer-confirmed manipulation workspace (workspace_region_valid),
   /// a box centred on the target cell, `workspace_half` on every side.
   bool workspace{false};
@@ -4693,7 +4696,7 @@ openral_msgs::msg::WorldStateStamped grasp_state(std::int64_t stream_ns, const G
   openral_msgs::msg::WorldStateStamped msg;
   msg.attachment_stamp_ns = stream_ns;
   msg.attachment_revision = b.revision;
-  if (b.carrying) {
+  if (b.carrying && b.first_present) {
     openral_msgs::msg::AttachedCollisionObject obj;
     obj.object_id = b.object_label;
     obj.attach_link = b.attach_link;
@@ -4763,14 +4766,18 @@ openral_msgs::msg::WorldStateStamped grasp_state(std::int64_t stream_ns, const G
     openral_msgs::msg::AttachedCollisionObject obj;
     obj.object_id = "cell:other";
     obj.attach_link = b.second_attach_link;
-    obj.pose_in_link.position.x = 0.05;
+    obj.pose_in_link.position.x = b.second_x;
     obj.pose_in_link.orientation.w = 1.0;
     openral_msgs::msg::AttachedCollisionPrimitive prim;
     prim.shape_type = openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_BOX;
     prim.shape_dimensions = {0.01, 0.01, 0.01};
     prim.pose_in_object.orientation.w = 1.0;
     obj.primitives.push_back(prim);
-    msg.attached_objects.push_back(obj);
+    if (b.second_first) {
+      msg.attached_objects.insert(msg.attached_objects.begin(), obj);
+    } else {
+      msg.attached_objects.push_back(obj);
+    }
   }
   msg.grasp_declaration_valid = true;
   auto& d = msg.grasp_declaration;
@@ -6010,6 +6017,94 @@ ScaleOutcome run_witnessed_support_chunk(const std::string& node_name, bool supp
 }
 
 }  // namespace
+
+TEST_F(LifecycleKernelTest, AWitnessKeepsItsStateWhenItsRecordMovesSlot) {
+  // Review finding (#750): witness re-arming compared keys slot by slot, so a record that moved
+  // slot when another payload joined ahead of it re-armed a witness the kernel had already seen
+  // (a bimanual partial grasp). The key is looked up across every previous slot: only a key new
+  // to the set arms. The control: a fresh attestation stamp for the same object does re-arm.
+  LogCapture logs;
+  auto params = with_param(place_declaration_params(), "attached_max_objects",
+                           rclcpp::ParameterValue(std::int64_t{2}));
+  params = with_param(params, "attached_max_primitives", rclcpp::ParameterValue(std::int64_t{2}));
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides(params);
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_witness_slot_move", opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  ASSERT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  // Scope-owned teardown from here on: an ASSERT that returns early still deactivates (when
+  // active) and cleans up, so the node is never destroyed mid-lifecycle (as GraspRig does).
+  struct Teardown {
+    std::shared_ptr<osk::SafetyKernelLifecycleNode> node;
+    bool active{false};
+    ~Teardown() {
+      if (active) {
+        node->on_deactivate(
+            rclcpp_lifecycle::State(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "ac"));
+      }
+      node->on_cleanup(
+          rclcpp_lifecycle::State(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in"));
+    }
+  } teardown{node};
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  teardown.active = true;
+  rclcpp::Node helper("kernel_witness_slot_move_helper");
+  rclcpp::QoS reliable(rclcpp::KeepLast(1));
+  reliable.reliable();
+  auto ws_pub = helper.create_publisher<openral_msgs::msg::WorldStateStamped>(
+      "/openral/world_state_fast", reliable);
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  const auto payload = [](const std::string& id, double x, std::int64_t witness_stamp) {
+    openral_msgs::msg::AttachedCollisionObject obj;
+    obj.object_id = id;
+    obj.attach_link = "link0";
+    obj.pose_in_link.position.x = x;
+    obj.pose_in_link.orientation.w = 1.0;
+    openral_msgs::msg::AttachedCollisionPrimitive prim;
+    prim.shape_type = openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_BOX;
+    prim.shape_dimensions = {0.02, 0.02, 0.02};
+    prim.pose_in_object.orientation.w = 1.0;
+    obj.primitives.push_back(prim);
+    if (witness_stamp > 0) {
+      obj.support_contact_valid = true;
+      obj.support_contact.support_id = "sim:counter_main";
+      obj.support_contact.contact_point_in_object.x = -0.02;
+      obj.support_contact.contact_normal_in_object.x = 1.0;
+      obj.support_contact.patch_radius_m = 0.02;
+      obj.support_contact.max_penetration_m = 0.002;
+      obj.support_contact.evidence_kind = "sim_geom_distance";
+      obj.support_contact.stamp_ns = witness_stamp;
+    }
+    return obj;
+  };
+  const auto publish = [&](std::uint64_t revision,
+                           const std::vector<openral_msgs::msg::AttachedCollisionObject>& objs) {
+    openral_msgs::msg::WorldStateStamped ws;
+    ws.attachment_revision = revision;
+    ws.attached_objects = objs;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+    while (std::chrono::steady_clock::now() < until) {
+      ws.attachment_stamp_ns = node->now().nanoseconds();
+      ws_pub->publish(ws);
+      exec.spin_some(std::chrono::milliseconds(10));
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  };
+  const std::string armed = "safety.support_witness_armed object=sim:obj_main";
+  publish(1, {payload("sim:obj_main", 0.30, 1)});
+  ASSERT_EQ(logs.count(armed), 1U) << logs.joined();
+  // Another payload joins AHEAD of it: the witnessed record moves from slot 0 to slot 1.
+  publish(2, {payload("sim:obj_other", 0.05, 0), payload("sim:obj_main", 0.30, 1)});
+  EXPECT_EQ(logs.count(armed), 1U) << "a moved record re-armed its witness: " << logs.joined();
+  // The control: a fresh attestation (new stamp) of the same object arms again.
+  publish(3, {payload("sim:obj_other", 0.05, 0), payload("sim:obj_main", 0.30, 2)});
+  EXPECT_EQ(logs.count(armed), 2U) << logs.joined();
+  exec.remove_node(node->get_node_base_interface());
+}
 
 TEST_F(LifecycleKernelTest, APayloadOnItsWitnessedSupportStillLeavesTheChunkScaled) {
   // Review finding: ANY exempted pair (the support witness, the embedded
@@ -8880,6 +8975,38 @@ TEST_F(LifecycleKernelTest, ADetachThenReattachReSnapshotsTheResidue) {
   b.payload_half = 0.04875;  // deep in A and in B
   rig.warm(&b, 0.0, 100);
   EXPECT_TRUE(rig.offer(&b, 0.0)) << "a fresh attach snapshots again: " << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, ASameRevisionReorderKeepsEachResidueWithItsPayload) {
+  // Review finding: baselines were carried only on a revision edge. [A, B] at revision 1, then
+  // [B, A] under the SAME revision, then [B] at revision 2: B took slot 0, whose baseline was
+  // still A's, and inherited A's exempt cell. A set change now carries baselines whether or not
+  // the revision moved, so B arrives with its own (empty) residue and stops on A's cell.
+  LogCapture logs;
+  auto params = with_param(residue_params(false), "attached_max_objects",
+                           rclcpp::ParameterValue(std::int64_t{2}));
+  params = with_param(params, "attached_max_primitives", rclcpp::ParameterValue(std::int64_t{2}));
+  GraspRig rig("kernel_residue_same_revision_reorder", params);
+  rig.voxels = declared_target_voxels();
+  two_cells(rig.voxels);
+  rig.start();
+  GraspBeat b = tracked_beat(rig);
+  b.carrying = true;
+  b.revision = 1;
+  b.payload_x = 0.1475;  // A, embedded in cell A at attach: its exempt residue
+  b.payload_half = 0.0075;
+  b.second_attach_link = "link0";  // B, clear of every cell
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << "A's attach-time residue is exempt: " << logs.joined();
+  b.second_first = true;  // [B, A], same revision
+  rig.warm(&b, 0.0, 100);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  b.first_present = false;  // A let go: [B] at revision 2, B now on cell A
+  b.second_x = 0.1525;
+  ++b.revision;
+  rig.warm(&b, 0.0, 100);
+  EXPECT_FALSE(rig.offer(&b, 0.0)) << "B inherited A's exempt cell: " << logs.joined();
+  EXPECT_TRUE(rig.node->fault_latched());
 }
 
 TEST_F(LifecycleKernelTest, ALoadedProviderStillReSnapshotsTheResidueOnGrowth) {

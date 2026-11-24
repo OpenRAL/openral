@@ -69,6 +69,7 @@ __all__ = [
     "lower_robot_auto",
     "lower_robot_from_mjcf",
     "mjcf_coupled_joints",
+    "modelled_links",
     "parse_srdf_disabled_pairs",
     "sample_acm_from_urdf",
     "select_lowering",
@@ -945,6 +946,7 @@ def lower_link_geometry(
     *,
     tight_links: Mapping[str, int] | Iterable[str] = (),
     extra_meshes: Mapping[str, Any] | None = None,
+    sweeps: Mapping[str, tuple[float, float, float]] | None = None,
 ) -> list[LinkCollisionGeometry]:
     """The conservative primitive set of every URDF link with geometry.
 
@@ -968,8 +970,11 @@ def lower_link_geometry(
     (``fit_link_with_tight_geometry``), or as ``k`` such slabs when
     ``tight_links`` maps it to ``k > 1``. ``extra_meshes`` adds geometry per link,
     already in the link frame, to the cloud (``lower_robot`` passes the robot's
-    MJCF twin meshes, ``_twin_link_meshes``). A link whose only geometry is one
-    sphere ``<collision>`` emits that exact ``SphereShape``.
+    MJCF twin meshes, ``_twin_link_meshes``). ``sweeps`` maps a link to a travel in
+    its own frame (``FixedAttachment.sweep_xyz``): its cloud is joined with a copy
+    moved by that travel, so the fit (which bounds the cloud's hull) covers every
+    position along it. A link whose only geometry is one sphere ``<collision>``
+    emits that exact ``SphereShape``.
 
     Fails closed on partial resolution: a link some of whose geometry loads and
     some does not raises, because fitting the part that loaded would under-cover
@@ -982,7 +987,7 @@ def lower_link_geometry(
     """
     tight = _as_tight_links(tight_links)
     out: list[LinkCollisionGeometry] = []
-    for link_name, item in _link_clouds(urdf_path, tight, extra_meshes):
+    for link_name, item in _link_clouds(urdf_path, tight, extra_meshes, sweeps):
         if isinstance(item, LinkCollisionGeometry):
             out.append(item)
         else:
@@ -991,7 +996,10 @@ def lower_link_geometry(
 
 
 def _link_clouds(
-    urdf_path: str, tight: Mapping[str, int], extra_meshes: Mapping[str, Any] | None
+    urdf_path: str,
+    tight: Mapping[str, int],
+    extra_meshes: Mapping[str, Any] | None,
+    sweeps: Mapping[str, tuple[float, float, float]] | None = None,
 ) -> Iterator[tuple[str, LinkCollisionGeometry | Any]]:
     """Each URDF link's geometry, ready to fit: an exact sphere entry or a link-frame mesh.
 
@@ -1007,6 +1015,7 @@ def _link_clouds(
     model = _load_urdf(urdf_path)
     handler = getattr(model, "_filename_handler", None)
     extra = dict(extra_meshes or {})
+    swept = dict(sweeps or {})
 
     for link_name, link in model.link_map.items():  # type: ignore[attr-defined]  # reason: yourdfpy URDF
         collisions = list(getattr(link, "collisions", None) or [])
@@ -1017,6 +1026,7 @@ def _link_clouds(
         if (
             link_name not in tight
             and link_name not in extra
+            and link_name not in swept
             and len(elements) == 1
             and getattr(collisions[0].geometry, "sphere", None) is not None
         ):
@@ -1053,6 +1063,14 @@ def _link_clouds(
         if link_name in extra:
             parts.append(extra[link_name])
         cloud = trimesh.util.concatenate(parts)
+        if link_name in swept:
+            # The hull of the link at both ends of a straight travel holds the link swept
+            # along it (K + [0, d] for convex K). Fitted as that one hull, never as the two
+            # end clouds: a fitter that splits a cloud (slabs, capsule chains) could cover
+            # each end and miss the travel between them.
+            cloud = trimesh.util.concatenate(
+                [cloud, cloud.copy().apply_translation(swept[link_name])]
+            ).convex_hull
         if len(cloud.vertices) < 4:
             continue
         yield link_name, cloud
@@ -1336,7 +1354,11 @@ def _axis_radius_bound(
 
 
 def _pair_relative_dofs(
-    model: object, link_a: str, link_b: str, geoms: _GeomsByLink
+    model: object,
+    link_a: str,
+    link_b: str,
+    geoms: _GeomsByLink,
+    welded: frozenset[str] = frozenset(),
 ) -> list[tuple[object, float, tuple[float, float]]] | None:
     """The joints that move ``link_a`` relative to ``link_b``, with their radius bounds.
 
@@ -1344,7 +1366,10 @@ def _pair_relative_dofs(
     certificate needs — or ``None`` if the pair's relative pose cannot be pinned
     down (links in different trees). An **empty** list is a meaningful answer: the
     two links are rigidly related, so a single evaluation decides the pair
-    exactly.
+    exactly. ``welded`` names URDF joints the manifest models as rigid (a
+    ``fixed_attachments`` row at the joint's zero pose, as a twin welds them): the
+    kernel never moves them, so they are no DoF here and ``_chain_transforms`` holds
+    them at zero, the pose the kernel's model has them in.
     """
     chains = _relative_chains(model, link_a, link_b)
     if chains is None:
@@ -1354,6 +1379,8 @@ def _pair_relative_dofs(
     for chain, distal in ((chain_a, link_a), (chain_b, link_b)):
         for joint in chain:
             if str(joint.type) not in _MOVABLE_JOINT_TYPES:  # type: ignore[attr-defined]  # reason: yourdfpy Joint
+                continue
+            if str(joint.name) in welded:  # type: ignore[attr-defined]  # reason: yourdfpy Joint
                 continue
             radius = 1.0  # prismatic: 1 m of travel moves the link 1 m
             if str(joint.type) != "prismatic":  # type: ignore[attr-defined]  # reason: yourdfpy Joint
@@ -1369,6 +1396,7 @@ def _certified_always_colliding(  # noqa: PLR0911  # reason: one early-out per w
     link_b: str,
     *,
     margin_m: float,
+    welded: frozenset[str] = frozenset(),
 ) -> bool:
     """Is the kernel's trip condition **provably** true at every reachable pose?
 
@@ -1399,7 +1427,7 @@ def _certified_always_colliding(  # noqa: PLR0911  # reason: one early-out per w
     """
     import numpy as np
 
-    dofs = _pair_relative_dofs(model, link_a, link_b, geoms)
+    dofs = _pair_relative_dofs(model, link_a, link_b, geoms, welded)
     if dofs is None or len(dofs) > _CERTIFY_MAX_DOF:
         return False
 
@@ -1484,6 +1512,83 @@ def _xyzrpy_matrix(origin: _Origin) -> _Arr:
     return out
 
 
+def _urdf_zero_path(
+    model: Any, child: str, parent: str
+) -> list[Any] | None:  # reason: yourdfpy URDF / joints are untyped
+    """The URDF joints from ``parent`` down to ``child`` (child-most first); None if apart."""
+    into = {str(j.child): j for j in model.robot.joints}
+    path, link = [], child
+    while link != parent:
+        joint = into.get(link)
+        if joint is None:
+            return None
+        path.append(joint)
+        link = str(joint.parent)
+    return path
+
+
+def _check_attachment_rows(
+    robot: RobotDescription, model: Any
+) -> frozenset[str]:  # reason: yourdfpy URDF
+    """Refuse a ``fixed_attachments`` row the kernel's rigid pose cannot honour; its welds.
+
+    The kernel holds a row's child rigid at the row's origin. Where the URDF connects the
+    two links, the row must be the URDF's parent -> child transform at zero, and no joint
+    on that path may be one the manifest keeps as a kernel DoF: the kernel would move one
+    side of it while holding the row's child still, so a pair certified rigid could
+    separate. Every other movable URDF joint on the path is welded by the row (aloha_agilex
+    welds each castor swivel and wheel axle with one wheel row). Rows between links the
+    URDF does not connect (a mount off a frame the URDF lacks) are left alone.
+
+    Returns:
+        The URDF joints the rows weld.
+
+    Raises:
+        ROSConfigError: A row is not its URDF zero pose, or spans a manifest joint.
+    """
+    import numpy as np
+    from openral_core.kinematics import transform_from_xyz_rpy
+
+    dofs = {j.sim_joint_name or j.name for j in robot.joints} | {j.name for j in robot.joints}
+    welded: set[str] = set()
+    for row in robot.fixed_attachments:
+        path = _urdf_zero_path(model, row.child_link, row.parent_link)
+        if path is None:
+            continue
+        spanned = [str(j.name) for j in path if str(j.name) in dofs]
+        if spanned:
+            raise ROSConfigError(
+                f"{robot.name}: fixed_attachments row {row.name!r} spans manifest joints "
+                f"{spanned}; the kernel would hold {row.child_link!r} rigid while they move."
+            )
+        tf = np.eye(4)
+        for joint in path:
+            tf = np.asarray(_origin_matrix(joint.origin), dtype=np.float64) @ tf
+        row_tf = np.asarray(transform_from_xyz_rpy(row.origin_xyz, row.origin_rpy))
+        # 1e-4: the manifests round angles to 5 decimals (pi as 3.14159, 2.7e-6 rad).
+        if not np.allclose(tf, row_tf, atol=1e-4):
+            raise ROSConfigError(
+                f"{robot.name}: fixed_attachments row {row.name!r} is not the URDF's "
+                f"{row.parent_link!r} -> {row.child_link!r} transform at zero."
+            )
+        welded.update(str(j.name) for j in path if str(j.type) in _MOVABLE_JOINT_TYPES)
+    return frozenset(welded)
+
+
+def _manifest_welded_joints(robot: RobotDescription, urdf_ref: str) -> frozenset[str]:
+    """URDF joints the manifest models as rigid: each movable joint a row spans.
+
+    A twin may weld URDF-movable joints (aloha_agilex's rear arms, wheels): the
+    manifest then carries the welded link as a ``fixed_attachments`` row at that
+    chain's zero pose, which is all the kernel ever poses it at. The always-colliding
+    proof must use the same kinematics, or it cannot certify a pair the kernel holds
+    rigid and would trip on forever. ``_check_attachment_rows`` refuses a row that
+    spans a manifest joint or is not its URDF zero pose.
+    """
+    model: Any = _load_urdf(urdf_ref)
+    return _check_attachment_rows(robot, model)
+
+
 def acm_for_geometry(
     urdf_path: str,
     geoms: Mapping[str, LinkCollisionGeometry | Sequence[LinkCollisionGeometry]]
@@ -1491,6 +1596,7 @@ def acm_for_geometry(
     *,
     srdf_path: str | None = None,
     margin_m: float = 0.0,
+    welded: frozenset[str] = frozenset(),
 ) -> _AcmPairs:
     """The self-collision ACM for a specific per-link primitive geometry ``geoms``.
 
@@ -1526,6 +1632,9 @@ def acm_for_geometry(
             use the same threshold — a sweep pinned at ``0.0`` against a kernel
             running a negative margin would exempt pairs the kernel never trips
             on, silently deleting a live check.
+        welded: URDF joints the manifest models as rigid (``fixed_attachments``
+            rows, ``_manifest_welded_joints``); the proof holds them at zero, as
+            the kernel does.
 
     Returns:
         The disabled pairs, as unordered two-element frozensets.
@@ -1542,7 +1651,7 @@ def acm_for_geometry(
         for b in links[i + 1 :]:
             if frozenset({a, b}) in disabled:
                 continue  # already adjacent; no need to prove anything
-            if _certified_always_colliding(model, by_link, a, b, margin_m=margin_m):
+            if _certified_always_colliding(model, by_link, a, b, margin_m=margin_m, welded=welded):
                 disabled.add(frozenset({a, b}))
 
     if srdf_path is not None:
@@ -1751,7 +1860,9 @@ def _urdf_link_meshes(
     A manifest link is matched to the URDF link that a joint of the same
     ``sim_joint_name`` (or name) connects, its child or parent. The joint's URDF
     origin must equal the manifest's (``_TWIN_FRAME_TOL``), or the two frames
-    differ and nothing is unioned: that raises. Fails closed like
+    differ and nothing is unioned: that raises. A ``fixed_attachments`` child the MJCF
+    maps a body for joins too, its row checked against the URDF (``_check_attachment_rows``).
+    Fails closed like
     ``_static_link_meshes``: geometry that does not load raises. A link the URDF
     has no geometry for, or a robot with no URDF, contributes nothing.
 
@@ -1789,6 +1900,15 @@ def _urdf_link_meshes(
             )
         pairs.setdefault(joint.child_link, urdf_joint.child)
         pairs.setdefault(joint.parent_link, urdf_joint.parent)
+    # A fixed_attachments child the MJCF maps a body for is fitted on the MJCF path, so its
+    # URDF geometry joins the union too (the static path no longer reaches it), once its row
+    # is checked to be the URDF's own frame.
+    mapped_rows = [a for a in robot.fixed_attachments if a.child_link in link_body]
+    if any(a.child_link in model.link_map for a in mapped_rows):
+        _check_attachment_rows(robot, model)
+    for row in mapped_rows:
+        if row.child_link in model.link_map:
+            pairs.setdefault(row.child_link, row.child_link)
     handler = _static_mesh_filename_handler(urdf_path)
     out: dict[str, Any] = {}
     for link_name, urdf_link_name in pairs.items():
@@ -1954,9 +2074,10 @@ def _mjcf_link_bodies(robot: RobotDescription, model: object) -> dict[str, int]:
         ji = int(mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, mim.sim_joint_name or mim.name))
         if ji >= 0:
             link_body[mim.child_link] = int(m.jnt_bodyid[ji])
-    for ln in {g.link_name for g in robot.collision_geometry} | {
-        j.parent_link for j in robot.joints
-    }:
+    # Every link the manifest models, not only those that already carry geometry: a
+    # fixed_attachments child lowered fresh must map exactly as on a re-lower, or the
+    # twin meshes folded into its fit (``_twin_link_meshes``) differ between the two.
+    for ln in {g.link_name for g in robot.collision_geometry} | modelled_links(robot):
         bid = int(mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, ln))
         if ln not in link_body and bid >= 0:
             link_body[ln] = bid
@@ -2304,9 +2425,13 @@ def fit_collision_geometry_from_mjcf(
     geometry: list[LinkCollisionGeometry] = []
     # Parents too: a chain's root link (each OpenArm arm's ``link0``) is only
     # ever a parent, and a bimanual robot has one root per arm.
-    ordered_links = [ln for j in robot.joints for ln in (j.parent_link, j.child_link)] + [
-        mim.child_link for mim in robot.mimic_joints
-    ]
+    # And every fixed_attachments child the MJCF names a body for: `_static_link_meshes`
+    # covers only the ones it does not, so a mapped one would otherwise get no geometry.
+    ordered_links = (
+        [ln for j in robot.joints for ln in (j.parent_link, j.child_link)]
+        + [mim.child_link for mim in robot.mimic_joints]
+        + [a.child_link for a in robot.fixed_attachments]
+    )
     # A body a mimic row owns (the Metal's ``link8``, on the MJCF's driven
     # joint8) is fitted under the mimic's link only: the gripper joint's
     # logical child sharing it (``finger_pair``) would be slid by the [0, 1]
@@ -2392,11 +2517,19 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
 
     Raises:
         ROSConfigError: If the robot has no ``assets.mjcf`` ref, or it cannot be
-            resolved to a file.
+            resolved to a file, or a ``fixed_attachments`` row declares a
+            ``sweep_xyz`` (only the URDF fit covers a sweep; ignoring it would
+            under-cover the link).
     """
     import mujoco
     import numpy as np
     from openral_core.assets import AssetRefError, resolve_asset
+
+    if swept := sorted(_link_sweeps(robot)):
+        raise ROSConfigError(
+            f"{robot.name}: fixed_attachments {swept} declare sweep_xyz, which the MJCF "
+            "lowering does not cover; lower this robot from its URDF."
+        )
 
     if not robot.assets.mjcf:
         raise ROSConfigError(f"{robot.name}: no urdf and no assets.mjcf to lower from")
@@ -2667,6 +2800,74 @@ def _twin_link_meshes(
     return out
 
 
+def _link_sweeps(robot: RobotDescription) -> dict[str, tuple[float, float, float]]:
+    """Each ``fixed_attachments`` child with a declared ``sweep_xyz``: its travel.
+
+    Raises:
+        ROSConfigError: A swept link has a link hanging from it. That link rides the
+            travel too, but only the swept link's own geometry is fitted over it.
+    """
+    sweeps = {a.child_link: a.sweep_xyz for a in robot.fixed_attachments if a.sweep_xyz}
+    parents = (
+        {a.parent_link for a in robot.fixed_attachments}
+        | {j.parent_link for j in robot.joints}
+        | {m.parent_link for m in robot.mimic_joints}
+    )
+    if carrying := sorted(set(sweeps) & parents):
+        raise ROSConfigError(
+            f"{robot.name}: swept links {carrying} carry other links, which the sweep does "
+            "not cover; declare the travel on the link at the end of the chain."
+        )
+    return sweeps
+
+
+def modelled_links(robot: RobotDescription) -> set[str]:
+    """The links the manifest models, the only ones lowered geometry may land on.
+
+    Its kinematic chain, the rigid links ``fixed_attachments`` hang on it, and every
+    ``mimic_joints`` follower (the aloha_agilex mirror finger): the attachment
+    producers name followers as touch links, and the kernel rejects a whole set
+    naming a link it does not know.
+    """
+    return (
+        {j.parent_link for j in robot.joints}
+        | {j.child_link for j in robot.joints}
+        | {a.parent_link for a in robot.fixed_attachments}
+        | {a.child_link for a in robot.fixed_attachments}
+        | {m.child_link for m in robot.mimic_joints}
+    )
+
+
+def _check_mimic_frames(robot: RobotDescription, urdf_ref: str, lowered: set[str]) -> None:
+    """Refuse a lowered mimic follower whose manifest origin/axis is not the URDF's.
+
+    The kernel poses a follower from its ``mimic_joints`` row (``MimicJoint`` takes
+    the origin from the URDF), and the URDF fit puts its geometry in the URDF frame:
+    a row left at the zero default would place that geometry wrong.
+    """
+    import numpy as np
+    from openral_core.kinematics import transform_from_xyz_rpy
+
+    mimics = [m for m in robot.mimic_joints if m.child_link in lowered]
+    if not mimics:
+        return
+    fk = lower_joint_fk(robot.model_copy(update={"joints": mimics}), urdf_ref)
+    for mimic in mimics:
+        if mimic.name not in fk:
+            continue  # not a URDF joint pair: nothing to compare against
+        xyz, rpy, axis = fk[mimic.name]
+        frame_off = np.abs(
+            transform_from_xyz_rpy(mimic.origin_xyz, mimic.origin_rpy)
+            - transform_from_xyz_rpy(xyz, rpy)
+        ).max()
+        if frame_off > _TWIN_FRAME_TOL or not np.allclose(mimic.axis_xyz, axis, atol=1e-6):
+            raise ROSConfigError(
+                f"{robot.name}: mimic_joints row {mimic.name!r} has origin "
+                f"{mimic.origin_xyz} {mimic.origin_rpy} axis {mimic.axis_xyz}, but the URDF "
+                f"has {xyz} {rpy} axis {axis}; the kernel would pose its geometry wrong."
+            )
+
+
 def lower_robot(
     robot: RobotDescription,
     *,
@@ -2728,12 +2929,7 @@ def lower_robot(
     # orphan URDF link (e.g. panda_leftfinger, absent from a manifest that models a
     # single panda_finger_pair) can't reach the kernel — and a URDF body link the
     # kernel should see is one `fixed_attachments` row away.
-    chain_links = (
-        {j.parent_link for j in robot.joints}
-        | {j.child_link for j in robot.joints}
-        | {a.parent_link for a in robot.fixed_attachments}
-        | {a.child_link for a in robot.fixed_attachments}
-    )
+    chain_links = modelled_links(robot)
 
     geometry: list[LinkCollisionGeometry] = []
     joint_fk: dict[str, tuple[_Vec3, _Vec3, _Vec3]] = {}
@@ -2744,6 +2940,7 @@ def lower_robot(
                 urdf_ref,
                 tight_links=_tight_links_of(robot, tight_links),
                 extra_meshes=_twin_link_meshes(robot, _load_urdf(urdf_ref), manifest_dir),
+                sweeps=_link_sweeps(robot),
             )
             if g.link_name in chain_links
         ]
@@ -2759,6 +2956,7 @@ def lower_robot(
                 f"(urdf={urdf_ref}). Refusing to lower an empty collision model."
             )
         joint_fk = lower_joint_fk(robot, urdf_ref)
+        _check_mimic_frames(robot, urdf_ref, chain_links)
 
     pairs: list[tuple[str, str]] = []
     source = "sampling"
@@ -2789,6 +2987,7 @@ def lower_robot(
             geom_list,
             srdf_path=used_srdf,
             margin_m=float(getattr(robot.safety, "self_collision_margin_m", 0.0) or 0.0),
+            welded=_manifest_welded_joints(robot, urdf_ref),
         )
         source = "srdf" if used_srdf else "sampling"
         pairs = _scoped_sorted_pairs(disabled, {g.link_name for g in geom_list})

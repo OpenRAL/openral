@@ -14,7 +14,7 @@ their environment directly and start no lifecycle node.
 |---|---|---|---|
 | SO-100 (LeRobot follower arm) | [`robots/so100_follower/`](https://github.com/OpenRAL/openral/tree/master/robots/so100_follower/) | `SO100FollowerHAL` (real) + `SO100MujocoHAL` (sim) | ✓ HW + sim |
 | SO-101 (LeRobot follower arm) | [`robots/so101_follower/`](https://github.com/OpenRAL/openral/tree/master/robots/so101_follower/) | shares SO-100 family — `SO100FollowerHAL` (real) + `SO100MujocoHAL` (sim) | ✓ HW + sim |
-| Galaxea A1 | [`robots/galaxea_a1/`](https://github.com/OpenRAL/openral/tree/master/robots/galaxea_a1/) | `GalaxeaA1HAL` (real-only) + isolated operator-provided ROS 1 SDK sidecar | ✓ unit + offline integration + real observation/hold/joint/gripper + C++ kernel HIL |
+| Galaxea A1 | [`robots/galaxea_a1/`](https://github.com/OpenRAL/openral/tree/master/robots/galaxea_a1/) | `GalaxeaA1HAL` + isolated operator-provided ROS 1 SDK sidecar; MuJoCo twin for `deploy sim` (`scenes/deploy/galaxea_a1_twin.yaml`) | ✓ unit + offline integration + real observation/hold/joint/gripper + C++ kernel HIL |
 | Franka Panda | [`robots/franka_panda/`](https://github.com/OpenRAL/openral/tree/master/robots/franka_panda/) | `FrankaPandaHAL` (`MujocoArmHAL`) + real-HW `FrankaPandaRealHAL` (`franka_ros2` / `libfranka` over the FCI) | ✓ sim · HW adapter landed, never validated — no physical Franka; `tests/hil/test_franka_panda.py` is gated on a `lab-franka` runner that does not exist (#56) |
 | UR5e | [`robots/ur5e/`](https://github.com/OpenRAL/openral/tree/master/robots/ur5e/) | `UR5eHAL` (`MujocoArmHAL`) + real-HW `UR5eRealHAL` (`ur_robot_driver`, URCap/RTDE) | ✓ sim · HW adapter landed, no recorded run — `tests/hil/test_ur5e.py` needs `UR5E_HOST` plus a `lab-ur5e` runner, and neither has ever been set |
 | UR10e | [`robots/ur10e/`](https://github.com/OpenRAL/openral/tree/master/robots/ur10e/) | `UR10eHAL` (`MujocoArmHAL`) + real-HW `UR10eRealHAL` (`ur_robot_driver`, URCap/RTDE) | ✓ sim · HW adapter landed, no recorded run — `tests/hil/test_ur10e.py` needs `UR10E_HOST` plus a `lab-ur10e` runner, and neither has ever been set |
@@ -33,9 +33,9 @@ their environment directly and start no lifecycle node.
 | Fourier GR1 | [`robots/gr1/`](https://github.com/OpenRAL/openral/tree/master/robots/gr1/) | eval-only (RoboCasa GR1 fork + RLDX-1) | ✓ sim |
 | Panda mobile (RoboCasa kitchen) | [`robots/panda_mobile/`](https://github.com/OpenRAL/openral/tree/master/robots/panda_mobile/) | `PandaMobileHAL` (sim-only, RoboCasa/robosuite backend) | ✓ sim |
 | Panda mobile, visual-SLAM twin | [`robots/panda_mobile_vslam/`](https://github.com/OpenRAL/openral/tree/master/robots/panda_mobile_vslam/) | `PandaMobileHAL` (sim-only); localises from two base RGB cameras via cuVSLAM instead of a `LaserScan` | ✓ sim |
-| Galaxea R1 Pro | [`robots/r1pro/`](https://github.com/OpenRAL/openral/tree/master/robots/r1pro/) | generic scene-attached HAL + official BEHAVIOR/OmniGibson sidecar | ✓ sim |
+| Galaxea R1 Pro | [`robots/r1pro/`](https://github.com/OpenRAL/openral/tree/master/robots/r1pro/) | MuJoCo twin (`MujocoArmHAL`, planar base) + generic scene-attached HAL on the official BEHAVIOR/OmniGibson sidecar | ✓ sim |
 | Google Robot (SimplerEnv) | [`robots/google_robot/`](https://github.com/OpenRAL/openral/tree/master/robots/google_robot/) | eval-only (SimplerEnv `fractal20220817_data` bridge env) | ✓ sim |
-| WidowX (SimplerEnv) | [`robots/widowx/`](https://github.com/OpenRAL/openral/tree/master/robots/widowx/) | eval-only (SimplerEnv `bridge_orig` env) | ✓ sim |
+| WidowX (SimplerEnv) | [`robots/widowx/`](https://github.com/OpenRAL/openral/tree/master/robots/widowx/) | SimplerEnv `bridge_orig` env for eval, plus a manifest-driven `MujocoArmHAL` twin on the Menagerie MJCF for `deploy sim` (`scenes/deploy/widowx_twin.yaml`) | ✓ sim |
 | PushT 2-D (gym-pusht) | [`robots/pusht_2d/`](https://github.com/OpenRAL/openral/tree/master/robots/pusht_2d/) | eval-only (`pymunk` 2-D rigid-body) | ✓ sim |
 
 ## Manifest format

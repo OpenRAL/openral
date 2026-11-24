@@ -3643,7 +3643,10 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             f"enable_vision_attachment is on but robot {description.name!r} declares no "
             "collision geometry, so the kernel could not check the payload the leg publishes."
         )
-    if has_collision_capsules and _attached_collision_enabled(hal_mode, vision_attachment_enabled):
+    kernel_checks_attachments = has_collision_capsules and _attached_collision_enabled(
+        hal_mode, vision_attachment_enabled
+    )
+    if kernel_checks_attachments:
         kernel_params = {
             **kernel_params,
             "attached_collision_enabled": True,
@@ -4258,6 +4261,20 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 )
             },
             {"use_sim_time": use_sim_time},
+            # The kernel's attached check, as configured above: the sim HAL arms its MuJoCo
+            # attachment evidence only when the kernel will acknowledge it, and only with
+            # attach/touch links the kernel's collision model resolves (it rejects, and never
+            # acknowledges, a set naming any other link).
+            {
+                "attachment_kernel_checked": kernel_checks_attachments,
+                "attachment_kernel_link_names": [
+                    str(name)
+                    for name in cast(
+                        "list[object]", collision_params.get("collision_link_names", [])
+                    )
+                ]
+                or ["*"],
+            },
             # After the params file: with tracking on the tracker owns /openral/attachment_state
             # (two publishers on that latched topic would interleave revisions), so the HAL's
             # vision bridge runs only its grasp trigger (/openral/grasp_events): no legs, no
