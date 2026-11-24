@@ -1696,6 +1696,14 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     estimated_sensors = merge_deploy_sensors(description.sensors, estimated_scene_sensors)
     estimated_scene_names = {s.name for s in estimated_scene_sensors}
     calibrated_intrinsics = {o.name for o in overlays or () if o.intrinsics is not None}
+    from openral_core.depth_extrinsic import DEFAULT_ESTIMATED_DEPTH_RSKILL
+
+    estimated_rskill_ref = (rt.estimated_depth_rskill if rt is not None else None) or (
+        DEFAULT_ESTIMATED_DEPTH_RSKILL
+    )
+    # The estimated-depth skill's absolute manifest, checked here (license gate included)
+    # rather than inside the running graph, where a refusal leaves the robot halted.
+    estimated_depth_manifest: Path | None = None
     if (
         enable_octomap
         and not estimated_depth_camera
@@ -1705,10 +1713,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     ):
         # Octomap asked for explicitly, and nothing gives it a cloud: estimate one from the
         # one RGB camera that qualifies (refused when none or several do).
-        from openral_core.depth_extrinsic import (
-            DEFAULT_ESTIMATED_DEPTH_RSKILL,
-            auto_estimated_depth_camera,
-        )
+        from openral_core.depth_extrinsic import auto_estimated_depth_camera
 
         estimated_depth_camera = auto_estimated_depth_camera(
             estimated_sensors,
@@ -1716,15 +1721,12 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             scene_sensor_names=estimated_scene_names,
             calibrated_intrinsics=calibrated_intrinsics,
         )
-        skill = (rt.estimated_depth_rskill if rt is not None else None) or (
-            DEFAULT_ESTIMATED_DEPTH_RSKILL
-        )
         _console.print(
             f"[bold yellow]WARN: runtime.enable_octomap is true and nothing publishes a cloud: "
             f"the world map (the safety kernel's world voxels) is fed an ESTIMATED depth "
-            f"cloud from camera {estimated_depth_camera!r} ({skill}), auto-picked as the one "
-            "RGB camera that qualifies. Set runtime.estimated_depth_camera to make it explicit, "
-            "or pin runtime.octomap_cloud_topic to a measured cloud.[/bold yellow]"
+            f"cloud from camera {estimated_depth_camera!r} ({estimated_rskill_ref}), auto-picked "
+            "as the one RGB camera that qualifies. Set runtime.estimated_depth_camera to make it "
+            "explicit, or pin runtime.octomap_cloud_topic to a measured cloud.[/bold yellow]"
         )
     if estimated_depth_camera:
         from openral_core.depth_extrinsic import resolve_estimated_depth_camera
@@ -1741,6 +1743,12 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
                 "runtime.estimated_depth_camera cannot feed the world map:\n  "
                 + "\n  ".join(problems)
             )
+        from openral_rskill.depth_estimator import depth_rskill_manifest, depth_skill
+
+        estimated_depth_manifest = depth_rskill_manifest(
+            estimated_rskill_ref, repo_root / "rskills"
+        )
+        depth_skill(estimated_depth_manifest, metric=True)  # what the provider checks
         _console.print(
             f"[yellow]World-collision depth for {estimated_depth_camera!r} is ESTIMATED "
             "(monocular depth_estimator rSkill), not measured: it can misplace or miss "
@@ -2185,8 +2193,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         argv_template.append(f"octomap_cloud_topic:={octomap_cloud_topic}")
     if estimated_depth_camera:
         argv_template.append(f"estimated_depth_camera:={estimated_depth_camera}")
-    if rt is not None and rt.estimated_depth_rskill:
-        argv_template.append(f"estimated_depth_rskill:={rt.estimated_depth_rskill}")
+    if estimated_depth_manifest is not None:
+        argv_template.append(f"estimated_depth_rskill:={estimated_depth_manifest}")
     # Grasp-target exemption: forwarded only when enabled, so the off path's argv is
     # unchanged. The launch always passes the kernel the manifest's gripper links.
     if rt is not None and rt.grasp_allowance_enabled:

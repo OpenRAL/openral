@@ -58,7 +58,8 @@ def family_command(manifest_path: str, host: str, port: int) -> list[str]:
     if revision:
         cmd += ["--revision", revision]
     cmd += ["--host", host, "--port", str(port)]
-    if contract.process_res is not None:
+    if contract.process_res is not None and contract.family.value == "da3":
+        # Only the DA3 launcher takes it; Depth Pro 2 runs at its own resolution.
         cmd += ["--process-res", str(contract.process_res)]
     return cmd
 

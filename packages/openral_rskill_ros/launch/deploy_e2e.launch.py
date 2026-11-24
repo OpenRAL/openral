@@ -1290,22 +1290,18 @@ _SLAM_DEPTH_PORT = 5771
 def _depth_rskill_manifest(ref: str) -> str:
     """The ``rskill.yaml`` a depth-skill reference names: a path to it, or a ``rskills/`` dir.
 
+    ``openral_rskill.depth_estimator.depth_rskill_manifest`` over this launch's skill tree,
+    the rule ``openral deploy`` applies before launch (it forwards an absolute path).
+
     Example:
         >>> _depth_rskill_manifest(_SLAM_DEPTH_RSKILL).endswith(
         ...     "rskills/rskill-da3_small-any-depth-bf16/rskill.yaml"
         ... )
         True
     """
-    from openral_core.exceptions import ROSConfigError
+    from openral_rskill.depth_estimator import depth_rskill_manifest
 
-    path = pathlib.Path(ref) if ref.endswith(".yaml") else pathlib.Path(_RSKILLS_DIR) / ref
-    if not ref.endswith(".yaml"):
-        path = path / "rskill.yaml"
-    elif not path.is_absolute():
-        path = _REPO_ROOT / path
-    if not path.is_file():
-        raise ROSConfigError(f"depth_estimator rSkill {ref!r}: no manifest at {path}")
-    return str(path)
+    return str(depth_rskill_manifest(ref, _RSKILLS_DIR))
 
 
 def _depth_sidecar_process(manifest: str, port: int, name: str) -> object:

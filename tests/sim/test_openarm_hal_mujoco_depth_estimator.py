@@ -183,15 +183,18 @@ def frames() -> tuple[np.ndarray[Any, Any], np.ndarray[Any, Any], Any]:
 
 
 @pytest.mark.parametrize("skill", _SKILLS)
-def test_depth_estimator_metres_match_the_ray_cast(skill: str, frames: Any) -> None:
+def test_depth_estimator_metres_match_the_ray_cast(
+    skill: str, frames: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import io
 
     import msgpack
-    from openral_perception_ros.depth_provider_node import depth_skill
     from openral_perception_ros.metric_depth import metres_from_output, scale_intrinsics
+    from openral_rskill.depth_estimator import depth_skill
     from PIL import Image as PILImage
 
     manifest = _REPO / "rskills" / skill / "rskill.yaml"
+    monkeypatch.setenv("OPENRAL_ALLOW_NONCOMMERCIAL", "1")  # Depth Pro 2 is research-only
     contract, model = depth_skill(str(manifest), metric=True)
     rgb, truth, info = frames
     h, w = truth.shape
