@@ -48,8 +48,11 @@ intrinsics (`predicts_intrinsics: true`); the provider publishes both, and cuVSL
 (RGBD odometry, for scale) and nvblox (occupancy grid and voxels) fuse them. That is
 what gives a lidar-less, camera-only robot a navigable `/map`.
 
-DA3's main series is **not documented as metric** (`output: relative`), so the provider
-refuses this skill in metric mode: it never feeds the world-collision map.
+DA3's main series is **not documented as metric** (`output: relative`). The SLAM path
+publishes its output unconverted and nvblox / cuVSLAM read it as *approximately* metres, so
+the `/map` and the odometry scale inherit DA3's scale error (no conversion corrects it). The
+provider refuses this skill in metric mode: it never feeds the safety kernel's
+world-collision map.
 
 ## How it runs
 
@@ -107,7 +110,8 @@ python tools/depth_estimator_sidecar.py \
 
 ## Known limitations
 
-- Not metric: fine for SLAM scale through cuVSLAM, never for collision checking.
+- Not metric: used as approximate metres for SLAM (cuVSLAM scale, the nvblox `/map`, which
+  carry its scale error), never for the kernel's collision checking.
 - The model's intrinsics are an estimate; nvblox places the depth through the HAL's
   camera TF.
 
