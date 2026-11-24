@@ -24,8 +24,9 @@
 # `n_dof: 6`, `flat: [vx, vy, 0, 0, 0, wz]` — what a BODY_TWIST rSkill
 # (nav2-navigate-to-pose) publishes. The HAL clamps it to the manifest's 0.5 m/s /
 # 0.5 rad/s envelope; the policy was trained on |vx|,|vy| <= 0.5 m/s, |wz| <= 1 rad/s
-# and stands still below ~0.2 m/s. In MuJoCo it under-tracks forward speed
-# (~0.21 m/s at vx = 0.4; robots/h2/README.md).
+# and stands still for a pure-forward command <= ~0.3 m/s. The checkpoint itself
+# under-tracks pure-forward speed (~0.21 m/s at vx = 0.4); vy / wz and its training
+# command mix track within its model-card error (robots/h2/README.md).
 #
 # Every perception/nav leg is off: the bare twin declares no camera, lidar or depth.
 scene:

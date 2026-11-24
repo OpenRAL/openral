@@ -141,18 +141,29 @@ without it the HAL refuses with that command.
 ~0.01 m drift and < 1° torso tilt, pelvis settling from 1.04 to ~0.94 m (training
 target 0.915 m). At `vx = 0.4` it walks ~2.1–2.5 m in 10 s (**~0.21 m/s, ~50 %
 tracking**), < 3.5° tilt; `vy = 0.3` gives ~0.23 m/s; `wz = 0.5` turns ~4.3 rad in
-10 s (~87 %). The policy stands still below ~0.2 m/s (the training's null-command
-band). While walking it asks for ankle pitch up to ~1.1 rad against the MJCF's
-0.611 rad limit (clamped on ~20 % of ticks at 0.4 m/s) and ankle roll to −0.76 rad
-against −0.349 rad. The forward under-tracking did not move with any sim knob tried:
-armature 0.01–0.1 (training uses 0.02), timestep 1 ms vs 5 ms (training: 200 Hz,
-decimation 4), joint frictionloss 0.2 / 0.1 / 0.003 and damping 0 (WBC-AGILE's own
-sim2mujoco recipe), widened ankle limits, feet-only collision (training's
-`feet_only` profile), floor friction 2.0, stiffer contacts, elliptic cones, noslip.
-The H2 Plus USD it was trained on is a conversion of this same `unitree_mujoco`
-MJCF (with the same wrist fix), so the kinematics match; the gap is the
-PhysX→MuJoCo contact/actuator model, not a mapping bug. The policy's upstream
-sim2mujoco validation itself only gates on balance.
+10 s (~87 %). A pure-forward command at or below ~0.3 m/s is answered by standing
+still (a crouched, toe-out stance; no foot lifts), and every forward command
+under-tracks by a near-constant ~0.13–0.2 m/s (0.5 → 0.34, 0.8 → 0.49 m/s;
+backward −0.4 → −0.29), while `vy` and `wz` track within ~0.05. While walking it
+asks for ankle pitch up to ~1.1 rad against the 0.611 rad limit (clamped on ~20 %
+of ticks at 0.4 m/s); removing the clamp does not help (0.16 m/s).
+
+**Why: it is the policy, not the twin.** The H2 Plus USD it was trained on
+(Isaac 6.1 `H2plus/unitree_h2.usda`) is a conversion of this same `unitree_mujoco`
+MJCF: every joint range, axis/frame, link mass and CoM, and the `feet_only` foot
+spheres + box match (only the wrist-pitch anchor fix differs). The action is
+`default + 0.5 · a` (checked against the graph's `last_action` to 3e-8), the
+command enters unscaled. No twin knob moves `vx` at 0.4 m/s out of 0.16–0.31:
+training's DC-motor torque–speed clip, 200 Hz zero-order-hold PD, 0–4-step
+actuator delay, 5 ms physics, frictionloss 0, armature 0.02, damping ×1.4,
+floor friction 0.5/1.5, training-level observation noise, +2 kg / +5–15 cm
+pelvis-CoM shifts (training's randomisation means). Replaying training's own
+command distribution (`UniformNullVelocityCommand`: ±0.5 m/s, ±1 rad/s, 25 %
+standing, 8–12 s resampling, 30 s episodes, 16 seeds) gives an `error_vel_xy` of
+**0.053 m/s** and `error_vel_yaw` of **0.072 rad/s**, below the **0.125 m/s /
+0.313 rad/s** the model card reports from training telemetry — the forward
+deficit is how this checkpoint tracks (its reward is a σ = 0.2 exp kernel, and a
+pure-x command is rare under the uniform sampling), not a sim-to-sim loss.
 
 ## Upstream disagreements (not papered over)
 

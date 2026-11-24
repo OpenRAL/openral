@@ -9,8 +9,8 @@ the downloaded bundle is missing (a SHA-256 mismatch fails instead).
 
 Thresholds are set below what was measured on this twin (2026-11-24, robots/h2/README.md
 "Sim S0"): standing 10 s drifts ~0.01 m with < 1° tilt; vx = 0.4 m/s walks ~2.1 m in
-10 s (~0.21 m/s — the policy under-tracks forward speed in MuJoCo, a sim-to-sim gap,
-not a regression); wz = 0.5 rad/s turns ~4.3 rad in 10 s.
+10 s (~0.21 m/s — the checkpoint's own forward deficit, within its reported training
+error, not a twin bug); wz = 0.5 rad/s turns ~4.3 rad in 10 s.
 """
 
 from __future__ import annotations
