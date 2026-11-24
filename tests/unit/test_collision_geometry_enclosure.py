@@ -215,11 +215,15 @@ def _manifest_to_twin_affine(
     from openral_safety.urdf_lowering import _gripper_actuator, _manifest_to_mjcf_affine
 
     grip = next((g for g in (robot.sim.grippers if robot.sim else []) if g.joint == joint), None)
-    if grip is None or grip.write_mode != GripperWriteMode.NORMALISED:
-        return _manifest_to_mjcf_affine(robot, model, joint, leader)
-    act = _gripper_actuator(robot, grip)
+    act = (
+        _gripper_actuator(robot, grip)
+        if grip is not None and grip.write_mode == GripperWriteMode.NORMALISED
+        else -1
+    )
     if not (0 <= act < model.nu and model.actuator_trntype[act] == mujoco.mjtTrn.mjTRN_TENDON):
-        return _manifest_to_mjcf_affine(robot, model, joint, leader)
+        a, b = _manifest_to_mjcf_affine(robot, model, joint, leader)
+        return float(a), float(b)
+    assert grip is not None
     assert model.actuator_gaintype[act] == mujoco.mjtGain.mjGAIN_FIXED, joint
     assert model.actuator_biastype[act] == mujoco.mjtBias.mjBIAS_AFFINE, joint
     g = float(model.actuator_gainprm[act][0])
