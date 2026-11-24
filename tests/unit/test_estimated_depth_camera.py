@@ -26,6 +26,7 @@ from openral_core import (
     RSkillManifest,
 )
 from openral_core.depth_extrinsic import (
+    auto_estimated_depth_camera,
     depth_extrinsic_problems,
     resolve_estimated_depth_camera,
 )
@@ -74,6 +75,12 @@ class TestRuntimeField:
     def test_ambiguous_choices_are_refused(self, fields: dict[str, str], match: str) -> None:
         with pytest.raises(ValidationError, match=match):
             DeployRuntime(**fields)
+
+    def test_a_depth_rskill_needs_a_camera_or_octomap_to_pick_one(self) -> None:
+        skill = "rskill-depth_pro2_s-any-metric_depth-bf16"
+        with pytest.raises(ValidationError, match="needs estimated_depth_camera"):
+            DeployRuntime(estimated_depth_rskill=skill)
+        assert DeployRuntime(estimated_depth_rskill=skill, enable_octomap=True).enable_octomap
 
     def test_its_cloud_is_the_map_input_sim_and_real(self) -> None:
         sensors = RobotDescription.from_yaml(str(_VSLAM)).sensors
@@ -403,3 +410,96 @@ class TestDeployResolution:
         self._rgb_only_robot(tmp_path, monkeypatch)
         with pytest.raises(ROSConfigError, match="no mount ties"):
             self._resolve(self._scene(tmp_path, "wrist"))
+
+
+def _sensors(robot: str) -> list[SensorSpec]:
+    return RobotDescription.from_yaml(str(_REPO / "robots" / robot / "robot.yaml")).sensors
+
+
+class TestAutoPick:
+    """``enable_octomap: true`` with no cloud picks the one RGB camera that qualifies."""
+
+    @pytest.mark.parametrize("robot", ["widowx", "makermods_metal"])
+    def test_the_one_mounted_rgb_camera_is_picked(self, robot: str) -> None:
+        # makermods_metal's wrist has no mount, so only top qualifies.
+        assert auto_estimated_depth_camera(_sensors(robot), hal_mode="sim") == "top"
+
+    def test_a_measured_sensor_refuses_every_estimate(self) -> None:
+        # Never reached by a deploy in sim (front_depth's cloud is mapped instead, see
+        # TestDeployAutoPick); on real with nothing pinned, the refusal names the sensor.
+        with pytest.raises(ROSConfigError, match=r"no RGB camera qualifies(.|\n)*'front_depth'"):
+            auto_estimated_depth_camera(_sensors("panda_mobile"), hal_mode="real")
+
+    def test_unmounted_cameras_are_refused_naming_each_problem(self) -> None:
+        with pytest.raises(ROSConfigError) as exc:
+            auto_estimated_depth_camera(_sensors("so101_follower"), hal_mode="sim")
+        assert "top: no mount ties it" in str(exc.value)
+        assert "wrist: no mount ties it" in str(exc.value)
+
+    def test_several_qualifying_cameras_are_named_never_first_wins(self) -> None:
+        rgb_only = [
+            s for s in RobotDescription.from_yaml(str(_VSLAM)).sensors if s.modality == "rgb"
+        ]
+        with pytest.raises(ROSConfigError, match="shoulder_left, shoulder_right could each"):
+            auto_estimated_depth_camera(rgb_only, hal_mode="sim")
+
+
+class TestDeployAutoPick:
+    """``openral deploy sim`` on the shipped WidowX twin, octomap toggled in the scene."""
+
+    def _resolve(self, tmp_path: Path, runtime: str) -> object:
+        from openral_cli.deploy_sim import resolve_launch_invocation
+
+        text = (_REPO / "scenes" / "deploy" / "widowx_twin.yaml").read_text()
+        assert "\n  enable_octomap: false\n" in text
+        scene = tmp_path / "widowx.yaml"
+        scene.write_text(text.replace("\n  enable_octomap: false\n", runtime))
+        return resolve_launch_invocation(
+            config=scene,
+            robot_override=None,
+            dashboard_port=4318,
+            reset_to_pose_service=None,
+            hal_param_overrides=None,
+        )
+
+    def test_explicit_octomap_without_a_cloud_estimates_from_top(self, tmp_path: Path) -> None:
+        inv = self._resolve(tmp_path, "\n  enable_octomap: true\n")
+        assert inv.estimated_depth_camera == "top"  # type: ignore[attr-defined]
+        argv = inv.argv_template  # type: ignore[attr-defined]
+        assert "estimated_depth_camera:=top" in argv and "enable_octomap:=true" in argv
+        assert not [a for a in argv if a.startswith("estimated_depth_rskill:=")]
+
+    def test_the_scenes_depth_rskill_comes_with_the_pick(self, tmp_path: Path) -> None:
+        dp2 = "rskill-depth_pro2_s-any-metric_depth-bf16"
+        inv = self._resolve(
+            tmp_path, f"\n  enable_octomap: true\n  estimated_depth_rskill: {dp2}\n"
+        )
+        assert f"estimated_depth_rskill:={dp2}" in inv.argv_template  # type: ignore[attr-defined]
+
+    def test_an_explicit_camera_is_kept(self, tmp_path: Path) -> None:
+        inv = self._resolve(tmp_path, "\n  enable_octomap: true\n  estimated_depth_camera: top\n")
+        assert inv.estimated_depth_camera == "top"  # type: ignore[attr-defined]
+
+    def test_unset_octomap_stays_off_an_estimate_never_enables_it(self, tmp_path: Path) -> None:
+        inv = self._resolve(tmp_path, "\n")
+        assert inv.estimated_depth_camera is None  # type: ignore[attr-defined]
+        argv = inv.argv_template  # type: ignore[attr-defined]
+        assert "enable_octomap:=false" in argv
+        assert not [a for a in argv if a.startswith("estimated_depth_camera:=")]
+
+    def test_a_measured_depth_sensor_is_mapped_not_estimated(self, tmp_path: Path) -> None:
+        text = (_REPO / "scenes" / "deploy" / "robocasa_vslam_mono.yaml").read_text()
+        scene = tmp_path / "mono.yaml"
+        scene.write_text(text.replace("\n  enable_octomap: false\n", "\n  enable_octomap: true\n"))
+        from openral_cli.deploy_sim import resolve_launch_invocation
+
+        inv = resolve_launch_invocation(
+            config=scene,
+            robot_override=None,
+            dashboard_port=4318,
+            reset_to_pose_service=None,
+            hal_param_overrides=None,
+        )
+        assert inv.estimated_depth_camera is None
+        assert inv.octomap_cloud_topic is None
+        assert not [a for a in inv.argv_template if a.startswith("estimated_depth_camera:=")]

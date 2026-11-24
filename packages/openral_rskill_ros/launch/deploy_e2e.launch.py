@@ -96,6 +96,7 @@ from openral_core import (
     resolve_sensor_overlays,
     resolve_unit_identity,
 )
+from openral_core.depth_extrinsic import DEFAULT_ESTIMATED_DEPTH_RSKILL
 from openral_core.ros_security import HAL_ENCLAVE, KERNEL_ENCLAVE, OPERATOR_ENCLAVE
 from openral_core.tracking_thresholds import DeployModeThresholds, load_tracking_thresholds
 from openral_foxglove_bringup.topics import (
@@ -1277,8 +1278,10 @@ def _cloud_shows_the_robot(
 #: ``DeployRuntime.estimated_depth_camera`` (``estimated_depth_rskill`` overrides the skill):
 #: DA3METRIC-LARGE, canonical focal-300 depth, Apache-2.0. Its own port so mono SLAM's
 #: sidecar on 5771 can run beside it.
-_ESTIMATED_DEPTH_RSKILL = "rskill-da3metric_large-any-metric_depth-bf16"
+_ESTIMATED_DEPTH_RSKILL = DEFAULT_ESTIMATED_DEPTH_RSKILL
 _ESTIMATED_DEPTH_PORT = 5772
+#: The estimated-depth provider's lifecycle node: a reasoner lifecycle peer.
+_ESTIMATED_DEPTH_PROVIDER = "openral_estimated_depth_provider"
 #: The mono SLAM path's depth skill: DA3-SMALL, which predicts its own camera.
 _SLAM_DEPTH_RSKILL = "rskill-da3_small-any-depth-bf16"
 _SLAM_DEPTH_PORT = 5771
@@ -1434,15 +1437,19 @@ def _build_estimated_depth_nodes(
     /tf_static, as the sim bridge does for a depth sensor's mount. The sidecar provisions
     its venv on first boot (minutes); until it answers the provider publishes nothing, so
     the kernel's world-voxel deadline stops motion rather than run on an empty map.
+
+    The provider is a managed lifecycle node, autostarted ACTIVE (the camera is launched to
+    feed octomap); the reasoner may deactivate / reactivate it
+    (``_ESTIMATED_DEPTH_PROVIDER`` is one of its ``lifecycle_peer_node_ids``).
     """
     optical_tf = [] if optical_parent is None else [_optical_tf_node(optical_parent, cloud_frame)]
     return [
         *optical_tf,
         _depth_sidecar_process(manifest, _ESTIMATED_DEPTH_PORT, "estimated_depth_sidecar"),
-        Node(
+        LifecycleNode(
             package="openral_perception_ros",
             executable="depth_provider_node.py",
-            name="openral_estimated_depth_provider",
+            name=_ESTIMATED_DEPTH_PROVIDER,
             namespace="",
             parameters=[
                 {
@@ -1464,6 +1471,7 @@ def _build_estimated_depth_nodes(
             ],
             output="screen",
         ),
+        _poll_autostart(_ESTIMATED_DEPTH_PROVIDER, 60.0),
     ]
 
 
@@ -2873,7 +2881,6 @@ def _build_visual_slam_includes(
     """
     from launch.actions import IncludeLaunchDescription
     from launch.launch_description_sources import PythonLaunchDescriptionSource
-    from launch_ros.actions import Node
 
     sim_time_arg = "true" if use_sim_time else "false"
     mono_camera = mono_camera.strip()
@@ -2905,7 +2912,7 @@ def _build_visual_slam_includes(
             # DA3 metric-depth provider: RGB → 32FC1 depth for BOTH cuVSLAM (scale)
             # and nvblox (dense map). Depth is framed at the RGB camera's optical
             # frame so nvblox locates it via the HAL's live camera TF.
-            Node(
+            LifecycleNode(
                 package="openral_perception_ros",
                 executable="depth_provider_node.py",
                 name="openral_depth_provider",
@@ -2923,6 +2930,10 @@ def _build_visual_slam_includes(
                 ],
                 output="screen",
             ),
+            # ACTIVE at boot and never a reasoner lifecycle peer: cuVSLAM's RGBD scale and
+            # nvblox's map both stop without this depth, and no deadline turns a stalled
+            # SLAM pose into a stop the way the world-voxel deadline does for octomap.
+            _poll_autostart("openral_depth_provider", 60.0),
             # nvblox: cuVSLAM pose + DA3 depth → /map occupancy grid + voxels.
             # Always composed in mono mode (the map IS the point), not gated on nav2.
             IncludeLaunchDescription(
@@ -3448,6 +3459,29 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         from openral_core import unit_gripper_curves
 
         description = unit_gripper_curves(description, robot_yaml, scene_unit)
+    if (
+        enable_octomap
+        and not estimated_depth_camera
+        and not deploy_cloud_topic(
+            description.sensors, pinned=octomap_cloud_topic, hal_mode=hal_mode
+        )
+    ):
+        # A direct ``ros2 launch`` with octomap on and no cloud: the rule ``openral deploy``
+        # applies before launch (which then forwards the camera it picked).
+        from openral_core.depth_extrinsic import auto_estimated_depth_camera
+
+        estimated_depth_camera = auto_estimated_depth_camera(
+            merge_deploy_sensors(description.sensors, scene_sensors),
+            hal_mode=hal_mode,
+            scene_sensor_names={s.name for s in scene_sensors},
+            calibrated_intrinsics={o.name for o in unit_overlays or () if o.intrinsics is not None},
+        )
+        print(
+            f"[deploy_e2e] WARN: enable_octomap with no cloud: octomap maps an ESTIMATED depth "
+            f"cloud from camera {estimated_depth_camera!r} (the one RGB camera that "
+            "qualifies), not a measurement; set estimated_depth_camera to make it explicit",
+            flush=True,
+        )
     publishing = publishing_sensors(description.sensors, scene_sensors, hal_mode)
     # Issue #418: the Layer-2 object tracker (off by default; checked here once).
     object_tracking, tracked_cameras = _object_tracking(
@@ -4016,10 +4050,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         additional_env=otel_env,
         output="screen",
     )
-    # Lifecycle peer node ids the Reasoner should surface to
-    # the LLM via `LifecycleTransitionTool`. Today only slam_toolbox is
-    # opt-in; future managed services (RTAB-Map, perception trees) will
-    # append themselves here under their own `enable_<svc>` launch args.
+    # Lifecycle peer node ids the Reasoner should surface to the LLM via
+    # `LifecycleTransitionTool`: slam_toolbox, the detector + its locators, and the
+    # estimated-depth provider, each under its own enable flag.
     lifecycle_peer_node_ids: list[str] = []
     # GPU peers the reasoner AUTO-deactivates before a VLA dispatch
     # and reactivates after (distinct from the LLM-facing palette peers above).
@@ -4041,6 +4074,15 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         for _spec in locator_specs:
             lifecycle_peer_node_ids.append(_spec["node"])
         vram_lifecycle_peers.extend(_vram_locator_peers(locator_specs, object_tracking))
+    if estimated_depth_camera:
+        # The LLM may pause / resume the estimated world-collision cloud. Fail-safe: with the
+        # provider INACTIVE no cloud reaches octomap, the octree ages past max_octree_age_s,
+        # the voxel bridge stops republishing /openral/world_voxels and the kernel's
+        # world_voxel_deadline_ms stops motion until it is reactivated (with
+        # enable_octomap_kernel_check; without it, only the perception map goes stale).
+        # NOT a VRAM peer: the model lives in the sidecar process, which keeps its weights
+        # resident whatever the provider's state, so deactivating frees no VRAM.
+        lifecycle_peer_node_ids.append(_ESTIMATED_DEPTH_PROVIDER)
     # ``lifecycle_peer_node_ids`` is omitted when empty: launch_ros's
     # evaluate_parameter_dict normalises a Python list to a typed array and
     # an EMPTY list collapses to ``()``, which ensure_argument_type rejects

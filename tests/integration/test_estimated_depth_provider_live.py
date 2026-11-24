@@ -17,7 +17,10 @@ in, depth + ``CameraInfo`` + ``PointCloud2`` out. Pinned:
 * a full-resolution ``CameraInfo`` for a downscaled image still gives the plane at 1.5 m,
   while one of another aspect ratio (another view: K would be wrong) yields no cloud;
 * a distorted lens (the real Arducam ``plumb_bob`` calibration) is rectified first, and
-  the cloud goes through the rectified pinhole K; an unsupported lens model yields none.
+  the cloud goes through the rectified pinhole K; an unsupported lens model yields none;
+* the node is a managed lifecycle node, driven through its ``change_state`` service:
+  deactivated it calls no sidecar and publishes no cloud, reactivated the cloud resumes
+  (the reasoner's ``lifecycle_transition`` on ``openral_estimated_depth_provider``).
 
 Gated on ``OPENRAL_TEST_ROS_LIVE=1`` like its neighbours.
 """
@@ -56,9 +59,8 @@ _FRAME = "test_camera_optical_frame"
 
 
 @contextlib.contextmanager
-def _provider(
-    prefix: str, port: int, log: Path, frame: str, skill: str
-) -> Iterator[subprocess.Popen[bytes]]:
+def _provider(prefix: str, port: int, log: Path, frame: str, skill: str) -> Iterator[str]:
+    """Run the provider lifecycle node (UNCONFIGURED); yield its node name."""
     params = {
         "manifest_path": str(_REPO / "rskills" / skill / "rskill.yaml"),
         "image_topic": f"{prefix}/image",
@@ -74,13 +76,14 @@ def _provider(
     argv = [sys.executable, str(_NODE), "--ros-args"]
     for key, value in params.items():
         argv += ["-p", f"{key}:={value}"]
-    argv += ["-r", f"__node:=depth_provider_{uuid.uuid4().hex[:6]}"]
+    name = f"depth_provider_{uuid.uuid4().hex[:6]}"
+    argv += ["-r", f"__node:={name}"]
     env = dict(os.environ)
     env["PYTHONPATH"] = f"{_REPO / 'packages/openral_perception_ros'}:{env.get('PYTHONPATH', '')}"
     with log.open("wb") as out:
         proc = subprocess.Popen(argv, stdout=out, stderr=subprocess.STDOUT, env=env)
         try:
-            yield proc
+            yield name
         finally:
             with contextlib.suppress(ProcessLookupError):
                 proc.send_signal(signal.SIGINT)
@@ -89,6 +92,28 @@ def _provider(
             except subprocess.TimeoutExpired:  # pragma: no cover - shutdown hardening
                 proc.kill()
                 proc.wait(timeout=5)
+
+
+def _transition(node: Any, provider: str, *transitions: str) -> bool:
+    """Drive ``provider`` through ``transitions`` via its ``change_state`` service."""
+    import rclpy
+    from lifecycle_msgs.msg import Transition
+    from lifecycle_msgs.srv import ChangeState
+
+    client = node.create_client(ChangeState, f"/{provider}/change_state")
+    try:
+        if not client.wait_for_service(timeout_sec=15.0):
+            return False
+        for name in transitions:
+            req = ChangeState.Request()
+            req.transition.id = getattr(Transition, f"TRANSITION_{name.upper()}")
+            fut = client.call_async(req)
+            rclpy.spin_until_future_complete(node, fut, timeout_sec=15.0)
+            if not fut.done() or not fut.result().success:
+                return False
+        return True
+    finally:
+        node.destroy_client(client)
 
 
 def _run(
@@ -100,8 +125,14 @@ def _run(
     lens: tuple[str, list[float]] = ("plumb_bob", [0.0] * 5),
     focal_raster: float | None = None,
     skill: str = _DA3M,
+    toggle: bool = False,
 ) -> tuple[dict[str, Any], Any, str]:
-    """Feed the provider RGB + CameraInfo for ``wait_s``; return what it published."""
+    """Feed the provider RGB + CameraInfo for ``wait_s``; return what it published.
+
+    ``toggle``: once the first cloud is in, deactivate the provider and feed 3 s
+    (``clouds_inactive`` / ``requests_inactive`` count what still came out / went to the
+    sidecar), then activate it again and feed until a cloud is back (``resumed``).
+    """
     import rclpy
     from rclpy.qos import qos_profile_sensor_data
     from sensor_msgs.msg import CameraInfo, Image, PointCloud2
@@ -148,16 +179,36 @@ def _run(
         image.height, image.width, image.encoding = _H, _W, "rgb8"
         image.step = _W * 3
         image.data = bytes(np.full((_H, _W, 3), 120, np.uint8).tobytes())
-        with _provider(prefix, sidecar.port, log, frame, skill):
-            deadline = time.monotonic() + wait_s
+        with _provider(prefix, sidecar.port, log, frame, skill) as provider:
+            # A refused manifest fails configure; the tests read that from the log.
+            got["active"] = _transition(node, provider, "configure", "activate")
+
+            def feed(seconds: float, done: Any) -> None:
+                deadline = time.monotonic() + seconds
+                while time.monotonic() < deadline and not done():
+                    now = node.get_clock().now().to_msg()
+                    info.header.stamp = now
+                    image.header.stamp = now
+                    info_pub.publish(info)
+                    img_pub.publish(image)
+                    rclpy.spin_once(node, timeout_sec=0.2)
+
             # Cloud and CameraInfo arrive on separate topics, in either order.
-            while time.monotonic() < deadline and not ("cloud" in got and "info" in got):
-                now = node.get_clock().now().to_msg()
-                info.header.stamp = now
-                image.header.stamp = now
-                info_pub.publish(info)
-                img_pub.publish(image)
-                rclpy.spin_once(node, timeout_sec=0.2)
+            feed(wait_s, lambda: "cloud" in got and "info" in got)
+            if toggle and "cloud" in got:
+                assert _transition(node, provider, "deactivate"), log.read_text()
+                # The LLM may repeat it: refused, never fatal (the node keeps serving).
+                got["second_deactivate"] = _transition(node, provider, "deactivate")
+                rclpy.spin_once(node, timeout_sec=0.5)  # drain a cloud already in flight
+                got.pop("cloud", None)
+                before = sidecar.requests
+                feed(3.0, lambda: False)
+                got["clouds_inactive"] = int("cloud" in got)
+                got["requests_inactive"] = sidecar.requests - before
+                assert _transition(node, provider, "activate"), log.read_text()
+                got.pop("cloud", None)
+                feed(wait_s, lambda: "cloud" in got)
+                got["resumed"] = "cloud" in got
     finally:
         node.destroy_node()
         rclpy.shutdown()
@@ -186,6 +237,18 @@ def test_a_metric_sidecar_gives_the_plane_as_a_cloud_in_the_camera_frame(
     assert float(pts[:, 0].max()) == pytest.approx(_W / 2.0 * _PLANE_Z_M / _F, rel=0.02)
 
 
+def test_deactivating_stops_the_cloud_and_activating_resumes_it(tmp_path: Path) -> None:
+    """The reasoner's lifecycle peer: INACTIVE calls no sidecar and publishes no cloud."""
+    got, sidecar, log = _run("depth-anything/DA3METRIC-LARGE", tmp_path, wait_s=30.0, toggle=True)
+    assert got["active"], log
+    assert "resumed" in got, f"no first cloud after {sidecar.requests} requests; log:\n{log}"
+    assert got["clouds_inactive"] == 0, "a deactivated provider still published a cloud"
+    assert got["requests_inactive"] == 0, "a deactivated provider still called the sidecar"
+    assert got["second_deactivate"] is False and "change_state refused" in log
+    assert got["resumed"], f"no cloud after reactivating; log:\n{log}"
+    assert "deactivated; no depth or cloud" in log
+
+
 def test_a_sidecar_serving_another_model_feeds_the_map_nothing(tmp_path: Path) -> None:
     """The DA3METRIC skill's provider against a sidecar that serves DA3-SMALL."""
     got, sidecar, log = _run("depth-anything/DA3-SMALL", tmp_path, wait_s=8.0)
@@ -206,10 +269,11 @@ def test_a_metric_skill_is_sent_the_focal_and_its_metres_pass_through(tmp_path: 
 
 
 def test_a_relative_skill_is_refused_in_metric_mode(tmp_path: Path) -> None:
-    """DA3-SMALL is not metric: the provider refuses to start rather than map its depth."""
+    """DA3-SMALL is not metric: the provider refuses to configure rather than map its depth."""
     got, sidecar, log = _run(
         "depth-anything/DA3-SMALL", tmp_path, wait_s=8.0, skill="rskill-da3_small-any-depth-bf16"
     )
+    assert got["active"] is False
     assert sidecar.requests == 0 and "cloud" not in got
     assert "predicts relative depth" in log
 
