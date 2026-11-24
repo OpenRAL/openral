@@ -421,6 +421,13 @@ def test_tabletop_cube_push_sim_attached_hal_reads_so101_joint_state() -> None:
             [rollout._data.qpos[addr] for addr in rollout._act_qpos_addrs],
             dtype=np.float64,
         )
+        # The jaw is an ``affine_low_high`` gripper: its channel is the [0, 1] opening over
+        # ``ctrl_range``, not the jaw angle (#754).
+        assert desc.sim is not None
+        (jaw,) = desc.sim.grippers
+        low, high = jaw.ctrl_range
+        i = [joint.name for joint in desc.joints].index(str(jaw.joint))
+        expected_rad[i] = max(0.0, min(1.0, (expected_rad[i] - low) / (high - low)))
 
         assert state.name == [joint.name for joint in desc.joints]
         np.testing.assert_allclose(state.position, expected_rad, atol=1e-6)
