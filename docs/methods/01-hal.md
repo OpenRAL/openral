@@ -365,14 +365,14 @@ _Real Galaxea A1 HAL (its MuJoCo twin is the manifest-driven `MujocoArmHAL`, #74
 official ROS 1 Noetic SDK runs out of process behind a literal IPv4-loopback
 JSON-lines sidecar. No vendor source, binary, or message package is distributed._
 
-- `class GalaxeaA1HAL(HALBase)` (L609) — Six-axis joint-position + normalized-gripper adapter. Takes `description=` (loaded manifest; `None` keeps `GALAXEA_A1_DESCRIPTION`). `read_state`/`send_action` use a cached snapshot/latest target so network I/O stays off the hot path. Commands fail closed on stale state/status, unaccepted motor bits, non-finite values, target misalignment, or an excessive feedback-relative step. `estop` asks the sidecar to stop its owned ROS 1 stack, records a `DownstreamStopReport` (`DownstreamStopReporting`), and always raises `ROSEStopRequested`.
-  - `connect() -> None` (L741) — Connect to the sidecar (sends the `hello` handshake with joint names/limits/timeouts/masks); requires one complete fresh snapshot. Raises `ROSRuntimeError` if already connected.
-  - `disconnect() -> None` (L776) — Close the sidecar transport idempotently.
-  - `read_state() -> JointState` (L781) — Return the latest non-stale six-joint feedback snapshot.
-  - `send_action(action: Action) -> None` (L793) — Queue one validated joint or normalized-gripper target; raises `ROSConfigError` for an unsupported control mode.
-  - `health() -> HALHealthReport` (L848) — Cached hardware health for the lifecycle diagnostics heartbeat (sidecar address, feedback/status ages, motor status, relay state, staged/forwarded targets).
-  - **(property)** `last_stop_report -> DownstreamStopReport | None` (L733) — Report of the last `estop()`; `None` before the first and after `connect()`.
-  - `estop() -> None` (L870) — Drop the connection flag first, then stop the sidecar-owned ROS 1 stack (bounded, SIGINT then SIGKILL). The sidecar's `estopped` confirmation is the acknowledgement (`stopped=True`, `joint_tracker`/`serial_driver`/`roscore` = `exited`); a refusal, timeout or link drop is recorded as `stopped=False` with the error as `detail` — never escaping as anything but `ROSEStopRequested`, which it always raises.
+- `class GalaxeaA1HAL(HALBase)` (L611) — Six-axis joint-position + normalized-gripper adapter. Takes `description=` (loaded manifest; `None` keeps `GALAXEA_A1_DESCRIPTION`). `read_state`/`send_action` use a cached snapshot/latest target so network I/O stays off the hot path. Commands fail closed on stale state/status, unaccepted motor bits, non-finite values, target misalignment, or an excessive feedback-relative step. `estop` asks the sidecar to stop its owned ROS 1 stack, records a `DownstreamStopReport` (`DownstreamStopReporting`), and always raises `ROSEStopRequested`.
+  - `connect() -> None` (L743) — Connect to the sidecar (sends the `hello` handshake with joint names/limits/timeouts/masks); requires one complete fresh snapshot. Raises `ROSRuntimeError` if already connected.
+  - `disconnect() -> None` (L778) — Close the sidecar transport idempotently.
+  - `read_state() -> JointState` (L783) — Return the latest non-stale six-joint feedback snapshot.
+  - `send_action(action: Action) -> None` (L795) — Queue one validated joint or normalized-gripper target; raises `ROSConfigError` for an unsupported control mode.
+  - `health() -> HALHealthReport` (L850) — Cached hardware health for the lifecycle diagnostics heartbeat (sidecar address, feedback/status ages, motor status, relay state, staged/forwarded targets).
+  - **(property)** `last_stop_report -> DownstreamStopReport | None` (L735) — Report of the last `estop()`; `None` before the first and after `connect()`.
+  - `estop() -> None` (L872) — Drop the connection flag first, then stop the sidecar-owned ROS 1 stack (bounded, SIGINT then SIGKILL). The sidecar's `estopped` confirmation is the acknowledgement (`stopped=True`, `joint_tracker`/`serial_driver`/`roscore` = `exited`); a refusal, timeout or link drop is recorded as `stopped=False` with the error as `detail` — never escaping as anything but `ROSEStopRequested`, which it always raises.
 - module const `_JOINT_NAMES` (L71) — six `arm_jointN` names.
 - module const `_JOINT_LIMITS` (L72) — per-joint `(min, max)` position limits, official A1 URDF.
 - module const `_JOINT_ORIGINS_XYZ` (L80) — per-joint URDF origin translation, transcribed from the official A1 URDF.
