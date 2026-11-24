@@ -4,7 +4,7 @@
 # Packages `omlab/omdet-turbo-swin-tiny-hf` (Apache-2.0, real-time open-vocabulary
 # detector, AutoModelForZeroShotObjectDetection) as an OpenRAL perception producer.
 # It runs IN PROCESS under the runtime's own transformers (no sidecar) over a
-# FIXED, curated indoor vocabulary (~230 household / kitchen / office /
+# FIXED, curated indoor vocabulary (~266 household / kitchen / office /
 # manipulation classes). Because the vocabulary never changes, the detector
 # behaves like a large closed-vocabulary detector: an unprompted background
 # producer that streams ObjectsMetadata to /openral/perception/objects with far
@@ -365,7 +365,7 @@ source_repo: "hf://omlab/omdet-turbo-swin-tiny-hf"
 
 description: >
   OmDet-Turbo (Swin-tiny) real-time open-vocabulary detector, run in-process
-  over a fixed curated indoor vocabulary (~230 household/kitchen/office/
+  over a fixed curated indoor vocabulary (~266 household/kitchen/office/
   manipulation classes). An unprompted background producer: publishes
   ObjectsMetadata to /openral/perception/objects every frame without reasoner
   prompting, giving the world model far more classes than the 80 COCO
