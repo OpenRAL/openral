@@ -232,12 +232,20 @@ def _manifest_to_twin_affine(
     l0 = l1 = 0.0
     for w in range(model.tendon_adr[tendon], model.tendon_adr[tendon] + model.tendon_num[tendon]):
         assert model.wrap_type[w] == mujoco.mjtWrap.mjWRAP_JOINT, f"{joint}: spatial tendon"
-        c0, c1 = follows[int(model.wrap_objid[w])]
+        wj = int(model.wrap_objid[w])
+        assert wj in follows, (
+            f"{joint}: tendon {tendon} spans joint "
+            f"{mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, wj)!r}, which is neither "
+            "the leader nor one of its equality followers"
+        )
+        c0, c1 = follows[wj]
         coef = float(model.wrap_prm[w])
         l0, l1 = l0 + coef * c0, l1 + coef * c1
     lo, hi = grip.ctrl_range
-    # ctrl = lo + (hi - lo) · v  ->  L = -(b0 + g · ctrl) / b1  ->  q = (L - l0) / l1
-    return (-(b0 + g * lo) / b1 - l0) / l1, (-g * (hi - lo) / b1) / l1
+    # The servo acts on the actuator length gear · L:
+    # ctrl = lo + (hi - lo) · v  ->  L = -(b0 + g · ctrl) / (b1 · gear)  ->  q = (L - l0) / l1
+    k = b1 * float(model.actuator_gear[act][0])
+    return (-(b0 + g * lo) / k - l0) / l1, (-g * (hi - lo) / k) / l1
 
 
 # Links a manifest leaves without a primitive ON PURPOSE, exempt from the
@@ -434,18 +442,22 @@ def test_every_twin_mesh_vertex_is_inside_its_links_primitives(robot_id: str) ->
     box_o = np.asarray(params.get("collision_box_origin_xyzrpy", []), dtype=float).reshape(-1, 6)
     for i, link in enumerate(params.get("collision_box_link", [])):
         prims.setdefault(int(link), []).append((int(link), None, None, box_he[i], box_o[i]))
-    uncovered = [
+    bare = {
         ln
         for ln, bs in bodies_of.items()
         if names.index(ln) not in prims
-        and ln not in _INTENDED_UNCOVERED_LINKS.get(robot_id, frozenset())
-        and ln not in _KNOWN_UNCOVERED_LINKS.get(robot_id, frozenset())
         and any(
             _body_vertices_world(model, data, bb, meshes_only=not mjcf_lowered) is not None
             for bb in bs
         )
-    ]
+    }
+    known = _KNOWN_UNCOVERED_LINKS.get(robot_id, frozenset())
+    uncovered = sorted(bare - _INTENDED_UNCOVERED_LINKS.get(robot_id, frozenset()) - known)
     assert not uncovered, f"links with twin geometry but no primitive: {uncovered}"
+    # A known gap closed by any route (a primitive on the link, or another link now
+    # owning its bodies) leaves its exemption dead: fail so it is removed.
+    stale = sorted(known - bare)
+    assert not stale, f"{robot_id}: {stale} no longer uncovered; drop _KNOWN_UNCOVERED_LINKS"
 
     refined: dict[str, list[LinkCollisionGeometry]] = {}
     for g in robot.collision_geometry:
