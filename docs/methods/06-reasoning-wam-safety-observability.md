@@ -368,20 +368,20 @@ _Day-1 Python safety envelope: `candidate_action` → `safe_action` pass-through
 
 - `class SafetyPassthroughNode(LifecycleNode)` (L151) — Owns `/openral/candidate_action → /openral/safe_action` plus the estop latch/reset pair and the `SafetyStatus` topic. Refuses (`nonfinite`) a candidate whose `flat` holds any non-finite value before the per-mode bounds run (NaN passes every ordered comparison).
   - `__init__(node_name="openral_safety") -> None` (L172)
-  - `on_configure(state) -> TransitionCallbackReturn` (L235) — Opens the publishers, subscriptions, service, and diagnostics heartbeat.
-  - `on_activate(state) -> TransitionCallbackReturn` (L325)
-  - `on_deactivate(state) -> TransitionCallbackReturn` (L357)
-  - `on_cleanup(state) -> TransitionCallbackReturn` (L367)
-  - `on_shutdown(state) -> TransitionCallbackReturn` (L399)
-  - `_on_candidate_action(msg) -> None` (L405) — Subscribes `/openral/candidate_action`. Drops the candidate and re-fires `/openral/estop` on an envelope violation; drops silently while already latched; otherwise forwards unchanged on `/openral/safe_action`. Emits a `safety.check` OTel span per candidate.
-  - `_envelope_violation(msg) -> tuple[str | None, str]` (L462) — Dispatches on `control_mode`: joint modes get the position-limit check; Cartesian/twist/gripper modes each get their own bound check. Every bound parameter defaults to `-1.0` (no enforcement declared, skip).
-  - `_handle_violation(msg, *, kind, reason) -> None` (L730) — Drops the chunk, latches the estop, publishes `std_msgs/Empty` on `/openral/estop`, and updates the latched `SafetyStatus`.
-  - `_on_external_estop(_msg) -> None` (L759) — Subscribes `/openral/estop` (defense in depth): any external estop publication latches this node too, independent of its own checks.
-  - `_on_estop_reset(request, response) -> object` (L786) — Exposes `/openral/estop_reset` (`std_srvs/Trigger`); clears the latch only once `estop_reset_cooldown_s` (default 0.5 s) has elapsed since the last estop.
-- `SafetySupervisorNode` (L870) — Back-compat alias of `SafetyPassthroughNode`, not a separate skeleton.
+  - `on_configure(state) -> TransitionCallbackReturn` (L238) — Opens the publishers, subscriptions, service, and diagnostics heartbeat.
+  - `on_activate(state) -> TransitionCallbackReturn` (L328)
+  - `on_deactivate(state) -> TransitionCallbackReturn` (L360)
+  - `on_cleanup(state) -> TransitionCallbackReturn` (L370)
+  - `on_shutdown(state) -> TransitionCallbackReturn` (L402)
+  - `_on_candidate_action(msg) -> None` (L408) — Subscribes `/openral/candidate_action`. Drops the candidate and re-fires `/openral/estop` on an envelope violation; drops silently while already latched; otherwise forwards unchanged on `/openral/safe_action`. Emits a `safety.check` OTel span per candidate.
+  - `_envelope_violation(msg) -> tuple[str | None, str]` (L465) — Dispatches on `control_mode`: joint modes get the position-limit check; Cartesian/twist/gripper modes each get their own bound check. Every bound parameter defaults to `-1.0` (no enforcement declared, skip).
+  - `_handle_violation(msg, *, kind, reason) -> None` (L733) — Drops the chunk, latches the estop, publishes `std_msgs/Empty` on `/openral/estop`, and updates the latched `SafetyStatus`.
+  - `_on_external_estop(_msg) -> None` (L762) — Subscribes `/openral/estop` (defense in depth): any external estop publication latches this node too, independent of its own checks.
+  - `_on_estop_reset(request, response) -> object` (L789) — Exposes `/openral/estop_reset` (`std_srvs/Trigger`); clears the latch only once `estop_reset_cooldown_s` (default 0.5 s) has elapsed since the last estop.
+- `SafetySupervisorNode` (L873) — Back-compat alias of `SafetyPassthroughNode`, not a separate skeleton.
 - `SAFETY_STATUS_TOPIC: str` (L72) — `/openral/safety_status`, the latched current-safety-state topic (RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1), published alongside — never instead of — `/openral/estop`. Same contract the C++ kernel publishes.
 - `SAFETY_STATUS_HEARTBEAT_S: float` (L79) — 1.0 s liveness refresh; `header.stamp` is re-stamped at this cadence even when nothing changed, so a durable value can be told apart from a dead publisher's leftover state.
-- `main(args=None) -> int` (L873) — Entry point for `ros2 run openral_safety supervisor_node`.
+- `main(args=None) -> int` (L876) — Entry point for `ros2 run openral_safety supervisor_node`.
 - module constant `_KERNEL_LABEL_PASSTHROUGH: str = "passthrough"` (L57) — `safety.kernel` span/log label this Python passthrough stamps (vs. the future C++ kernel's own label).
 - module constant `_WORKSPACE_VIOLATION_KINDS: frozenset[str]` (L96) — `{"workspace", "gripper_range"}`, envelope-violation kinds `_envelope_violation` can return.
 - module constant `_RATE_VIOLATION_KINDS: frozenset[str]` (L97) — `{"cartesian_step", "cartesian_step_rot", "ee_linear_speed", "ee_angular_speed", "base_linear_speed", "base_angular_speed"}`, the rate/speed-bound violation kinds.
@@ -809,7 +809,7 @@ _`diagnostic_msgs/DiagnosticArray` heartbeat helper, shared by every OpenRAL lif
 _Make `LifecycleNode` transition-callback failures observable, and keep a node alive on an unavailable `change_state` transition — rclpy silently converts an uncaught callback exception to `TransitionCallbackReturn.ERROR` without logging, so a composing host sees only `exit code 4`._
 
 - `log_lifecycle_errors(callback) -> callback` — Decorator for `on_configure`/`on_activate`/… transition callbacks. Transparent on success; on an uncaught exception logs the callback name + traceback and returns `TransitionCallbackReturn.FAILURE` instead of letting rclpy swallow it silently. Applied to `RskillRunnerNode`, `_WorldStateLifecycleNode`, `HALLifecycleNodeBase`, and `ReasonerNode`. Lazy-imports `rclpy` so the module stays import-safe on pure-Python hosts. (L52)
-- `refuse_unavailable_transitions(node) -> None` — Guard a `LifecycleNode`'s `change_state` service: an id-only request (launch_ros `ChangeState` events, `ros2 service call`) naming a transition the current state lacks (a repeated `deactivate`) is logged and answered `success: false` with the state unchanged, instead of rclpy (Jazzy) raising `RCLError` out of the executor and killing the node. Checked against the state machine's available transitions before rclpy runs, so labelled requests (rclpy refuses an unknown label itself), valid transitions and any other failure inside a transition are untouched. Called in `__init__` by `ReasonerNode`, `RskillRunnerNode`, `HALLifecycleNodeBase`, `_WorldStateLifecycleNode`, `ObjectTrackerNode`, `Propagator`, `SegmenterNode`, `RosImageObjectDetectorNode` (detector + on-demand locators), `PromptRouterNode` and `ComplianceRecorderNode`; not yet in the safety-package nodes. (L117)
+- `refuse_unavailable_transitions(node) -> None` — Guard a `LifecycleNode`'s `change_state` service: an id-only request (launch_ros `ChangeState` events, `ros2 service call`) naming a transition the current state lacks (a repeated `deactivate`) is logged and answered `success: false` with the state unchanged, instead of rclpy (Jazzy) raising `RCLError` out of the executor and killing the node. Checked against the state machine's available transitions before rclpy runs, so labelled requests (rclpy refuses an unknown label itself), valid transitions and any other failure inside a transition are untouched. Called in `__init__` by `ReasonerNode`, `RskillRunnerNode`, `HALLifecycleNodeBase`, `_WorldStateLifecycleNode`, `ObjectTrackerNode`, `Propagator`, `SegmenterNode`, `RosImageObjectDetectorNode` (detector + on-demand locators), `PromptRouterNode`, `ComplianceRecorderNode` and `SafetyPassthroughNode`. The E-stop sources (deadman, hardware E-stop, human E-stop forwarder) use the dependency-free copy `openral_safety_watchdog.transition_guard.refuse_unavailable_transitions`. (L117)
 
 ### `python/observability/src/openral_observability/semconv.py`
 _Single source of truth for OpenRAL OTel attribute / span / metric names. `Final[str]` constants grouped by wire namespace exactly as the module's own `# ──` section banners divide them; each constant's value is its own description._

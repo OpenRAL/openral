@@ -40,6 +40,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
 
 from openral_safety_watchdog._param_guard import install_parameter_guard
+from openral_safety_watchdog.transition_guard import refuse_unavailable_transitions
 
 __all__ = ["DEFAULT_POLL_RATE_HZ", "HardwareEstopNode", "main"]
 
@@ -75,6 +76,9 @@ class HardwareEstopNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy u
     def __init__(self, node_name: str = "openral_hardware_estop") -> None:
         """Declare parameters; opens no resources until on_configure."""
         super().__init__(node_name)
+        # An id-only change_state the current state lacks (a repeated activate) is refused,
+        # not raised out of the executor (rclpy would kill this E-stop source).
+        refuse_unavailable_transitions(self)
         self.declare_parameter("poll_rate_hz", DEFAULT_POLL_RATE_HZ)
         self.declare_parameter("device", "")  # "" → no pendant declared (see _resolve_read_source)
         self.declare_parameter("active_low", True)

@@ -40,6 +40,8 @@ TARGETS=(
     tests/integration/test_reasoner_lifecycle_peers_without_seed.py
     # A repeated id-only deactivate is refused; the lifecycle node keeps serving.
     tests/integration/test_lifecycle_unavailable_transition_live.py
+    # The E-stop sources and the supervisor refuse it too and keep braking.
+    tests/integration/test_safety_lifecycle_unavailable_transition_live.py
     # A blank query_task_progress task is the active mission task; stale replies drop.
     tests/integration/test_reasoner_task_progress_live.py
     # A completes_task_on_success action settles its task; a stale result does not.
