@@ -38,7 +38,7 @@ mujoco = pytest.importorskip("mujoco", reason="needs mujoco (sim group) for the 
 pytest.importorskip("openral_safety", reason="the collision lowering lives in openral_safety")
 pytest.importorskip("trimesh")
 
-from openral_core import LinkCollisionGeometry, RobotDescription  # noqa: E402
+from openral_core import GripperWriteMode, LinkCollisionGeometry, RobotDescription  # noqa: E402
 from openral_core.assets import AssetRefError, resolve_asset  # noqa: E402
 from openral_safety.envelope_loader import collision_params_from_description  # noqa: E402
 
@@ -195,14 +195,71 @@ def _signed_distance(
     return round_d
 
 
+def _manifest_to_twin_affine(
+    robot: RobotDescription,
+    model: Any,
+    joint: str,
+    leader: int,
+    coupled: dict[int, list[tuple[int, float, float]]],
+) -> tuple[float, float]:
+    """``(a, b)`` with the twin's ``leader`` qpos ``= a + b · v``, tendon grippers included.
+
+    `_manifest_to_mjcf_affine` covers a normalised gripper whose actuator drives
+    the leader joint at gear 1, and refuses anything else. The menagerie Panda
+    (franka_panda's twin) drives its fingers through a fixed tendon instead:
+    ``actuator8`` holds ``split = 0.5·finger_joint1 + 0.5·finger_joint2`` with an
+    affine-bias position servo. Its equilibrium is ``g·ctrl + b0 + b1·L = 0``,
+    and the tendon's joints are the leader and its equality followers, so ``L``
+    is linear in the leader's qpos and the map solves exactly.
+    """
+    from openral_safety.urdf_lowering import _gripper_actuator, _manifest_to_mjcf_affine
+
+    grip = next((g for g in (robot.sim.grippers if robot.sim else []) if g.joint == joint), None)
+    if grip is None or grip.write_mode != GripperWriteMode.NORMALISED:
+        return _manifest_to_mjcf_affine(robot, model, joint, leader)
+    act = _gripper_actuator(robot, grip)
+    if not (0 <= act < model.nu and model.actuator_trntype[act] == mujoco.mjtTrn.mjTRN_TENDON):
+        return _manifest_to_mjcf_affine(robot, model, joint, leader)
+    assert model.actuator_gaintype[act] == mujoco.mjtGain.mjGAIN_FIXED, joint
+    assert model.actuator_biastype[act] == mujoco.mjtBias.mjBIAS_AFFINE, joint
+    g = float(model.actuator_gainprm[act][0])
+    b0, b1, b2 = (float(v) for v in model.actuator_biasprm[act][:3])
+    assert b1 < 0.0 and b2 <= 0.0, f"{joint}: actuator {act} is not a position servo"
+    # Tendon length L = l0 + l1 · q_leader, from the leader and its followers.
+    follows = {f: (c0, c1) for f, c0, c1 in coupled.get(leader, [])}
+    follows[leader] = (0.0, 1.0)
+    tendon = int(model.actuator_trnid[act][0])
+    l0 = l1 = 0.0
+    for w in range(model.tendon_adr[tendon], model.tendon_adr[tendon] + model.tendon_num[tendon]):
+        assert model.wrap_type[w] == mujoco.mjtWrap.mjWRAP_JOINT, f"{joint}: spatial tendon"
+        c0, c1 = follows[int(model.wrap_objid[w])]
+        coef = float(model.wrap_prm[w])
+        l0, l1 = l0 + coef * c0, l1 + coef * c1
+    lo, hi = grip.ctrl_range
+    # ctrl = lo + (hi - lo) · v  ->  L = -(b0 + g · ctrl) / b1  ->  q = (L - l0) / l1
+    return (-(b0 + g * lo) / b1 - l0) / l1, (-g * (hi - lo) / b1) / l1
+
+
 # Links a manifest leaves without a primitive ON PURPOSE, exempt from the
 # uncovered check only (every other link is still held to enclosure). RoboCasa's
-# PandaOmron twin (robosuite:PandaOmron, #726) has the fingers franka_panda's xfail
-# names, and panda_mobile's collision_geometry excludes them deliberately: the
+# PandaOmron twin (robosuite:PandaOmron, #726) has the fingers `_KNOWN_UNCOVERED_LINKS`
+# names for franka_panda, and panda_mobile's collision_geometry excludes them deliberately: the
 # gripper is the intended-contact part.
 _INTENDED_UNCOVERED_LINKS: dict[str, frozenset[str]] = {
     "panda_mobile": frozenset({"panda_finger_pair"}),
     "panda_mobile_vslam": frozenset({"panda_finger_pair"}),
+}
+
+# Links whose twin geometry the kernel does NOT model, though it should: a known,
+# NON-CONSERVATIVE gap. Exempt from the uncovered check only, so the robot's other
+# links are still held to enclosure; `test_known_uncovered_links_still_lack_a_primitive`
+# fails once a gap is covered, so the entry cannot outlive it.
+_KNOWN_UNCOVERED_LINKS: dict[str, frozenset[str]] = {
+    # The manifest's synthetic `panda_finger_pair` (prismatic off the hand) has
+    # no URDF link, so no primitive: the twin's fingers (~50 mm past the hand)
+    # are not in the kernel's model. Pre-existing; needs the MJCF finger sweep
+    # the OpenArm uses, on a URDF-lowered robot.
+    "franka_panda": frozenset({"panda_finger_pair"}),
 }
 
 # Measured twin-vertex escapes, per robot, recorded instead of hidden behind an xfail:
@@ -220,11 +277,6 @@ _KNOWN_TWIN_ESCAPE_M: dict[str, float] = {
 # Twins whose manifest leaves a twin body with geometry uncovered. Strict xfails
 # so covering them flips green (docs/reference/collision-geometry-review.md §12).
 _UNCOVERED_TWIN_BODIES: dict[str, str] = {
-    # The manifest's synthetic `panda_finger_pair` (prismatic off the hand) has
-    # no URDF link, so no primitive: the twin's fingers (~50 mm past the hand)
-    # are not in the kernel's model. Pre-existing; needs the MJCF finger sweep
-    # the OpenArm uses, on a URDF-lowered robot.
-    "franka_panda": "panda_finger_pair (the fingers) carries no primitive",
     # Unitree's H2.urdf (unitree_ros @ 41dec58c) has <visual> but no <collision>
     # on 11 links — hip_pitch, ankle_roll, waist_yaw/roll, wrist_roll/pitch,
     # head_pitch — so the URDF lowering emits no primitive for them while the
@@ -251,7 +303,6 @@ _UNCOVERED_TWIN_BODIES: dict[str, str] = {
 )
 def test_every_twin_mesh_vertex_is_inside_its_links_primitives(robot_id: str) -> None:
     from openral_safety.urdf_lowering import (
-        _manifest_to_mjcf_affine,
         _mjcf_link_bodies,
         mjcf_coupled_joints,
         select_lowering,
@@ -321,7 +372,7 @@ def test_every_twin_mesh_vertex_is_inside_its_links_primitives(robot_id: str) ->
             if int(model.jnt_bodyid[follower]) not in own_body:
                 bodies_of.setdefault(j.child_link, []).append(int(model.jnt_bodyid[follower]))
         dof_adr.append(int(model.jnt_qposadr[ji]))
-        affine.append(_manifest_to_mjcf_affine(robot, model, j.name, ji))
+        affine.append(_manifest_to_twin_affine(robot, model, j.name, ji, coupled))
         lo, hi = j.position_limits if j.position_limits else (-np.pi, np.pi)
         if j.role == "base":
             # The kernel's collision model is base-relative: a planar base DoF moves
@@ -388,6 +439,7 @@ def test_every_twin_mesh_vertex_is_inside_its_links_primitives(robot_id: str) ->
         for ln, bs in bodies_of.items()
         if names.index(ln) not in prims
         and ln not in _INTENDED_UNCOVERED_LINKS.get(robot_id, frozenset())
+        and ln not in _KNOWN_UNCOVERED_LINKS.get(robot_id, frozenset())
         and any(
             _body_vertices_world(model, data, bb, meshes_only=not mjcf_lowered) is not None
             for bb in bs
@@ -463,6 +515,14 @@ def test_every_twin_mesh_vertex_is_inside_its_links_primitives(robot_id: str) ->
         )
     }
     assert not bad, f"{robot_id}: twin mesh vertices outside their primitives (mm): {bad}"
+
+
+@pytest.mark.parametrize("robot_id", sorted(_KNOWN_UNCOVERED_LINKS))
+def test_known_uncovered_links_still_lack_a_primitive(robot_id: str) -> None:
+    """Covering a known gap must also remove its `_KNOWN_UNCOVERED_LINKS` entry."""
+    robot = RobotDescription.from_yaml(str(REPO / "robots" / robot_id / "robot.yaml"))
+    covered = {g.link_name for g in robot.collision_geometry} & _KNOWN_UNCOVERED_LINKS[robot_id]
+    assert not covered, f"{robot_id}: {sorted(covered)} now carry primitives; drop the exemption"
 
 
 def test_openamrobot_v2_base_box_holds_the_whole_chassis() -> None:
