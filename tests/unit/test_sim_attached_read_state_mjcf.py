@@ -2,9 +2,13 @@
 """``SimAttachedHAL.read_state`` over an MJCF it does not own: indices and gripper units.
 
 Real ALOHA manifest (``robots/aloha_bimanual/robot.yaml``) on the real gym-aloha MJCF,
-behind ``FakeSimEnv`` (the ``SimRollout`` boundary double, CLAUDE.md §1.11). Found in
-review (#754): the joint-name index skipped unnamed joints, so every joint after one read
-another joint's ``qpos`` (here: an unnamed joint ahead of both arms shifted every arm joint).
+behind ``FakeSimEnv`` (the ``SimRollout`` boundary double, CLAUDE.md §1.11). Two defects
+found in review (#754):
+
+* the joint-name index skipped unnamed joints, so every joint after one read another
+  joint's ``qpos`` (here: an unnamed joint ahead of both arms shifted every arm joint);
+* an ``affine_low_high`` gripper published its finger travel (gym-aloha: 0.021-0.057 m)
+  on a channel the manifest defines as the ``[0, 1]`` opening.
 
 Skips without ``mujoco`` or ``gym_aloha``.
 """
@@ -61,3 +65,15 @@ def test_an_unnamed_joint_does_not_shift_the_joints_after_it() -> None:
         spec = next(j for j in desc.joints if j.name == joint)
         expected = float(data.qpos[int(model.jnt_qposadr[name_id[spec.sim_joint_name]])])
         assert state.position[state.name.index(joint)] == pytest.approx(expected), joint
+
+
+@pytest.mark.parametrize(("finger_m", "opening"), [(0.057, 1.0), (0.021, 0.0), (0.039, 0.5)])
+def test_an_affine_gripper_reads_its_opening_not_its_finger_travel(
+    finger_m: float, opening: float
+) -> None:
+    desc, model, data = _aloha()
+    finger = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "vx300s_left/left_finger")
+    data.qpos[int(model.jnt_qposadr[finger])] = finger_m
+    mujoco.mj_forward(model, data)
+    state = _hal(desc, model, data).read_state()
+    assert state.position[state.name.index("left_gripper")] == pytest.approx(opening)

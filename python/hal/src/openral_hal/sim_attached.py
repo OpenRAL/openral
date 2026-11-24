@@ -60,7 +60,7 @@ from openral_core.exceptions import (
     ROSRuntimeError,
     ROSSafetyViolation,
 )
-from openral_core.schemas import Action, ControlMode, JointState
+from openral_core.schemas import Action, ControlMode, GripperReadMode, JointState
 
 from openral_hal._base import require_connected
 from openral_hal._floating_base import integrate_planar_twist, validate_planar_body_twist
@@ -988,6 +988,13 @@ class SimAttachedHAL:
             ]
             # Unnamed joints keep their slot (as ""): the index is the MJCF joint id.
             self._joint_index = normalized_joint_index([n or "" for n in names])
+        affine = {
+            g.joint: (float(g.ctrl_range[0]), float(g.ctrl_range[1]))
+            for g in (self.description.sim.grippers if self.description.sim else [])
+            if g.joint is not None
+            and g.read_mode is GripperReadMode.AFFINE_LOW_HIGH
+            and g.ctrl_range[1] != g.ctrl_range[0]
+        }
         for joint in self.description.joints:
             sim_name = joint.sim_joint_name or joint.name
             jid = self._joint_index.get(sim_name, -1)
@@ -1000,8 +1007,16 @@ class SimAttachedHAL:
                 measured = False
                 continue
             dof = int(model.jnt_dofadr[jid])
-            positions.append(float(qpos[int(model.jnt_qposadr[jid])]))
-            velocities.append(float(qvel[dof]))
+            position, velocity = float(qpos[int(model.jnt_qposadr[jid])]), float(qvel[dof])
+            span = affine.get(joint.name)
+            if span is not None:
+                # An ``affine_low_high`` gripper's channel is the [0, 1] opening, not the
+                # finger's travel (gym-aloha's own convention): map it as the twin reads it.
+                low, high = span
+                position = max(0.0, min(1.0, (position - low) / (high - low)))
+                velocity /= high - low
+            positions.append(position)
+            velocities.append(velocity)
             efforts.append(joint_actuator_effort(data, dof))
         self._last_state_ns = time.time_ns()
         return JointState(

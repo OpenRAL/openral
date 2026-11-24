@@ -182,6 +182,14 @@ def test_hooks_are_opt_in_a_backend_without_them_keeps_the_previous_paths(
         )
         for j in hal.description.joints
     ]
+    # The jaw is an ``affine_low_high`` gripper: its channel is the [0, 1] opening over
+    # ``ctrl_range``, not the jaw angle (#754).
+    assert hal.description.sim is not None
+    (jaw,) = hal.description.sim.grippers
+    low, high = jaw.ctrl_range
+    names = [j.name for j in hal.description.joints]
+    i = names.index(str(jaw.joint))
+    expected[i] = max(0.0, min(1.0, (expected[i] - low) / (high - low)))
     assert hal.read_state().position == pytest.approx(expected)
 
     # Idle: an env.step of the idle action, whose observation is re-cached.

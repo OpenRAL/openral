@@ -3033,6 +3033,9 @@ class SimSensorBridge:
         self._attachment_desired: list[Any] = []
         self._attachment_pending: list[Any] | None = None
         self._attachment_tracker: Any = None
+        # The tracker on the manifest's own twin MJCF whose names the kernel knows, when the
+        # HAL's scene model names its bodies otherwise (``_bind_attachment_tracker``).
+        self._attachment_twin_tracker: Any = None
         self._attachment_depth_frames_remaining: int = 0
         self._attachment_voxel_updates_remaining: int = 0
         self._attachment_expect_voxel_update: bool = False
@@ -4139,11 +4142,7 @@ class SimSensorBridge:
             model, _data = handles
             try:
                 tracker = SimAttachmentEvidenceTracker(model, self._description, stable_ticks=1)
-                unknown = (
-                    []
-                    if self._attachment_kernel_link_names is None
-                    else tracker.bind_kernel_links(self._attachment_kernel_link_names)
-                )
+                unknown = self._bind_attachment_tracker(tracker)
                 if unknown:
                     # The robot can grasp, but every set naming these links would be rejected.
                     self._withdraw_attachment_stream(
@@ -4161,7 +4160,10 @@ class SimSensorBridge:
                     self._setup_place_declaration()
                     self._setup_grasp_declaration()
                 else:
-                    self._node.get_logger().warning(
+                    # Never fed, the tracker would leave the heartbeat certifying "nothing
+                    # carried" while the twin's gripper can hold a payload.
+                    self._attachment_tracker = None
+                    self._withdraw_attachment_stream(
                         "automatic sim attachment evidence has no post-step observer"
                     )
             except ROSConfigError as exc:
@@ -4176,6 +4178,54 @@ class SimSensorBridge:
                     f"automatic sim attachment evidence refused: {exc}"
                 )
 
+    def _bind_attachment_tracker(self, tracker: Any) -> list[str]:
+        """Name ``tracker``'s hands as the kernel's collision model does; the links it can't.
+
+        ``bind_kernel_links`` first (manifest links, or this model's own bodies). A scene
+        model whose bodies neither the manifest nor the kernel names (LIBERO's robosuite
+        Panda, ``robot0_right_hand``, beside a kernel lowered from the menagerie twin's
+        ``hand``) then takes the names of the same robot's tracker on that twin MJCF
+        (``description.assets.mjcf``), when the twin binds and every attach frame agrees
+        (``SimAttachmentEvidenceTracker.adopt_kernel_names``).
+        """
+        names = self._attachment_kernel_link_names
+        if names is None:
+            return []
+        unknown: list[str] = tracker.bind_kernel_links(names)
+        if not unknown:
+            return []
+        twin = self._attachment_twin_tracker or self._kernel_twin_tracker(names)
+        if twin is not None and tracker.adopt_kernel_names(twin):
+            self._attachment_twin_tracker = twin
+            self._node.get_logger().info(
+                f"sim attachment evidence names this scene's hands as the kernel's twin: "
+                f"{list(tracker.attach_links)}"
+            )
+            return []
+        return unknown
+
+    def _kernel_twin_tracker(self, names: tuple[str, ...]) -> Any:
+        """A tracker on the manifest's twin MJCF bound to ``names``, or ``None`` (logged)."""
+        mjcf = self._description.assets.mjcf
+        if not mjcf:
+            return None
+        import mujoco
+        from openral_core.assets import AssetFetchError, AssetRefError, resolve_asset
+        from openral_core.exceptions import ROSConfigError
+
+        from openral_hal._sim_attachment_evidence import SimAttachmentEvidenceTracker
+
+        try:
+            path = resolve_asset(mjcf, "mjcf")
+            if path is None:
+                return None
+            model = mujoco.MjModel.from_xml_path(str(path))
+            twin = SimAttachmentEvidenceTracker(model, self._description, stable_ticks=1)
+        except (AssetFetchError, AssetRefError, ROSConfigError, ValueError) as exc:
+            self._node.get_logger().warning(f"sim attachment evidence: no kernel twin: {exc}")
+            return None
+        return None if twin.bind_kernel_links(names) else twin
+
     def _withdraw_attachment_stream(self, reason: str) -> None:
         """Stop the attachment heartbeat so the kernel's attached check fails closed.
 
@@ -4186,7 +4236,11 @@ class SimSensorBridge:
         if self._attachment_timer is not None:
             self._node.destroy_timer(self._attachment_timer)
             self._attachment_timer = None
-        self._attachment_pub = None
+        if self._attachment_pub is not None:
+            # Destroyed, not just dropped: rclpy keeps a node's publishers alive, and a
+            # silent one would still be advertised as an authority on the topic.
+            self._node.destroy_publisher(self._attachment_pub)
+            self._attachment_pub = None
         self._node.get_logger().error(
             f"{reason}; /openral/attachment_state withdrawn, so the kernel fails closed"
         )
@@ -4488,11 +4542,7 @@ class SimSensorBridge:
             # Named as setup named the one it replaces: on a model the kernel lowered from the
             # MJCF (the WidowX's `wx250s/*`), the constructor's manifest names are ones the
             # kernel rejects, and its never-acknowledged revision would stall the bridge.
-            unknown = (
-                []
-                if self._attachment_kernel_link_names is None
-                else fresh.bind_kernel_links(self._attachment_kernel_link_names)
-            )
+            unknown = self._bind_attachment_tracker(fresh)
             if unknown:  # same model and names as setup, which armed: not expected
                 self._withdraw_attachment_stream(
                     f"sim attachment evidence disarmed at reset: links {unknown} are not in "

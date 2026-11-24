@@ -5,16 +5,25 @@ Issue #752: when ``SimAttachmentEvidenceTracker`` refused a robot, ``SimSensorBr
 heartbeating an empty, fresh ``/openral/attachment_state``, so the safety kernel read
 "nothing carried" while the twin could close its gripper on a payload. Now:
 
-* a twin that drives a gripper (``twin_drives_gripper``) and whose tracker refuses has the
-  stream withdrawn, so the kernel's attached check fails closed;
+* a twin that drives a gripper (``twin_drives_gripper``) and whose tracker refuses, or
+  that has no post-step hook to feed it, has the stream withdrawn (its publisher
+  destroyed), so the kernel's attached check fails closed;
 * a twin with no gripper keeps the empty heartbeat, which is the truth there;
-* the SO-101, one of the robots the issue listed, arms.
+* the SO-101, one of the robots the issue listed, arms;
+* a scene model whose bodies the kernel does not name (LIBERO's robosuite Panda, beside a
+  kernel lowered from the menagerie twin) arms under the twin's names.
 
 Real components (CLAUDE.md §1.11): a real ``rclpy`` ``LifecycleNode``, the real
 ``SimSensorBridge`` and ``SimAttachedHAL`` over the native-MuJoCo ``so101_box`` scene, the
 real ``robots/so101_follower/robot.yaml``. The two refusal cases edit that manifest in
 memory (no fixed jaw; no gripper at all), the way a robot the tracker cannot model looks.
-Skips without ROS 2 + colcon-built ``openral_msgs``, ``openral_sim`` or ``mujoco``.
+Skips without ROS 2 + colcon-built ``openral_msgs``, ``openral_sim`` or ``mujoco``; the LIBERO
+case also needs the ``libero`` group and ``openral_safety`` (its kernel link names).
+
+In-process rather than ``launch_testing`` (CLAUDE.md §2 names launch_testing for this tier),
+like ``test_sim_idle_stepper_wiring.py``: what is asserted is the bridge's own setup outcome
+(publisher, heartbeat timer, tracker), which a black-box launch cannot observe without a
+kernel and a wall-clock wait.
 """
 
 from __future__ import annotations
@@ -37,12 +46,13 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.fixture
-def setup_bridge() -> Iterator[Callable[[Any], Any]]:
+def setup_bridge() -> Iterator[Callable[..., Any]]:
     """Build the bridge for a (possibly edited) SO-101 description and arm its attachment state."""
     pytest.importorskip("openral_sim")
     pytest.importorskip("mujoco")
 
     import rclpy
+    from openral_core import RobotDescription
     from openral_hal.sim_attached import SimAttachedHAL
     from openral_hal.sim_bringup import build_sim_env_from_yaml
     from openral_hal.sim_sensor_bridge import SimSensorBridge
@@ -51,11 +61,21 @@ def setup_bridge() -> Iterator[Callable[[Any], Any]]:
     rclpy.init()
     made: list[tuple[Any, Any, Any]] = []
 
-    def build(description: Any) -> Any:
-        env, seed = build_sim_env_from_yaml(
-            "scenes/sim/so101_tube_insertion.yaml", robot_id_fallback="so101_follower"
+    def build(
+        description: Any,
+        *,
+        scene: str = "scenes/sim/so101_tube_insertion.yaml",
+        kernel_link_names: list[str] | None = None,
+        post_step_hook: bool = True,
+    ) -> Any:
+        env, seed = build_sim_env_from_yaml(scene, robot_id_fallback=description.name)
+        hal_class = SimAttachedHAL if post_step_hook else _no_post_step_hook_hal()
+        hal = hal_class(
+            env,
+            RobotDescription.from_yaml(f"robots/{description.name}/robot.yaml"),
+            env_reset_seed=seed,
+            env_action_dim=6 if description.name == "so101_follower" else None,
         )
-        hal = SimAttachedHAL(env, _so101(), env_reset_seed=seed, env_action_dim=6)
         hal.connect()
         node = LifecycleNode(f"test_sim_attachment_fail_closed_{len(made)}")
         bridge = SimSensorBridge(
@@ -65,6 +85,7 @@ def setup_bridge() -> Iterator[Callable[[Any], Any]]:
             viewer_enabled=False,
             attachment_heartbeat=True,
             attachment_kernel_checked=True,
+            attachment_kernel_link_names=kernel_link_names,
         )
         made.append((bridge, node, hal))
         bridge._setup_attachment_state()
@@ -77,6 +98,17 @@ def setup_bridge() -> Iterator[Callable[[Any], Any]]:
             bridge.teardown()
             node.destroy_node()
         rclpy.shutdown()
+
+
+def _no_post_step_hook_hal() -> type[Any]:
+    from openral_hal.sim_attached import SimAttachedHAL
+
+    class _NoHook(SimAttachedHAL):
+        """A sim HAL that exposes MuJoCo handles but has no post-step observer hook."""
+
+        add_post_step_observer = None  # type: ignore[assignment]  # reason: the hook is absent
+
+    return _NoHook
 
 
 def _so101() -> Any:
@@ -99,6 +131,17 @@ def test_a_gripper_twin_the_tracker_refuses_withdraws_the_stream(
     bridge = setup_bridge(desc.model_copy(update={"joints": joints}))
     assert bridge._attachment_tracker is None
     assert bridge._attachment_pub is None and bridge._attachment_timer is None
+    # Destroyed, not just dropped: no silent publisher stays advertised on the topic.
+    assert bridge._node.count_publishers("/openral/attachment_state") == 0
+
+
+def test_a_tracker_nothing_would_feed_withdraws_the_stream(
+    setup_bridge: Callable[..., Any],
+) -> None:
+    """A HAL with MuJoCo handles but no post-step hook never updates the tracker."""
+    bridge = setup_bridge(_so101(), post_step_hook=False)
+    assert bridge._attachment_tracker is None
+    assert bridge._attachment_pub is None and bridge._attachment_timer is None
 
 
 def test_a_twin_without_a_gripper_keeps_the_empty_heartbeat(
@@ -116,3 +159,26 @@ def test_a_twin_without_a_gripper_keeps_the_empty_heartbeat(
     bridge = setup_bridge(desc.model_copy(update={"joints": joints, "sim": sim}))
     assert bridge._attachment_tracker is None
     assert bridge._attachment_pub is not None and bridge._attachment_timer is not None
+
+
+def test_a_scene_model_takes_the_kernel_twins_names(setup_bridge: Callable[..., Any]) -> None:
+    """LIBERO's Panda arms under the menagerie twin's names, the ones the kernel was lowered to."""
+    pytest.importorskip("libero")
+    lowering = pytest.importorskip("openral_safety.mjcf_lowering")
+    import mujoco
+    from openral_core import RobotDescription
+    from openral_core.assets import resolve_asset
+
+    desc = RobotDescription.from_yaml("robots/franka_panda/robot.yaml")
+    assert desc.assets.mjcf is not None
+    twin = mujoco.MjModel.from_xml_path(str(resolve_asset(desc.assets.mjcf, "mjcf")))
+    names = lowering.lower_collision_params(twin, [j.name for j in desc.joints], margin_m=0.0)[
+        "collision_link_names"
+    ]
+    bridge = setup_bridge(desc, scene="scenes/deploy/libero_pnp.yaml", kernel_link_names=names)
+    assert bridge._attachment_pub is not None and bridge._attachment_timer is not None
+    (hand,) = bridge._attachment_tracker._hands
+    assert (hand.attach_link, sorted(hand.touch_links)) == ("hand", ["left_finger", "right_finger"])
+    # Contacts stay measured on the scene's own bodies.
+    model, _ = bridge._hal.mujoco_handles()
+    assert model.body(hand.attach_body_id).name == "robot0_right_hand"

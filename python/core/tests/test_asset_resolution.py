@@ -173,8 +173,12 @@ def test_declared_srdf_parses(mf: Path) -> None:
     assert isinstance(pairs, (list, set))
     # An SRDF may disable nothing (rizon_dual's only carries the rest pose; its ACM is the
     # lowering's adjacent pairs), but rows it does declare must not be lost.
-    rows = ET.parse(p).getroot().findall(".//disable_collisions")
-    assert bool(pairs) == bool(rows), f"{mf.parent.name}: {len(rows)} rows, {len(pairs)} pairs"
+    rows = {
+        frozenset({one, two})
+        for el in ET.parse(p).getroot().iter("disable_collisions")
+        if (one := el.get("link1")) and (two := el.get("link2")) and one != two
+    }
+    assert len(pairs) == len(rows), f"{mf.parent.name}: {len(rows)} rows, {len(pairs)} pairs"
 
 
 def test_urdf_less_robots_declare_no_urdf() -> None:
