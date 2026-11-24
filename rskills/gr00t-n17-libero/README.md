@@ -28,9 +28,9 @@ inference: false
 openral:
   description: NVIDIA Isaac GR00T N1.7 (3B, Cosmos-Reason2-2B VLM backbone) finetuned
     on the LIBERO benchmark, packaged for OpenRAL. 7-D LIBERO action space (delta
-    end-effector 6-DoF + gripper) over two RGB views. Runs in-process via lerobot
-    0.6.0's native GrootPolicy with an NF4-quantized backbone (~5.2 GiB peak, fits
-    an 8 GB GPU). Open Model License — commercial use permitted.
+    end-effector 6-DoF + gripper) over two RGB views. Runs in-process via lerobot's
+    native GrootPolicy with an NF4-quantized backbone (~5.2 GiB peak, fits an 8 GB
+    GPU). Open Model License — commercial use permitted.
   model_family: gr00t
   min_vram_gb: null
   latency_ms: 1500.0
@@ -40,7 +40,19 @@ openral:
 
 # rskill-gr00t_n17-franka_panda-libero_spatial-bf16
 
-> **Requires OpenRAL Pro.** This rSkill runs at `int4 (NF4)` (sub-16-bit weights). Under ADR-0123, open-source OpenRAL loads only fp32, fp16 and bf16 weights; quantized formats (int8, fp8, int4/NF4, nvfp4) need the OpenRAL Pro quantization package.
+> **Needs OpenRAL Pro as packaged.** The manifest runs this rSkill at `int4` (NF4). Under ADR-0123, open-source OpenRAL loads only fp32, fp16 and bf16 weights; int8, fp8, int4/NF4 and nvfp4 need the OpenRAL Pro quantization package. On open OpenRAL, run it unpacked with `OPENRAL_QUANTIZATION_DTYPE=fp32` on a GPU with 16 GB or more (see [Hardware](#hardware)).
+
+### Name and quantization
+
+The name's `-bf16` suffix is the precision the weights are **stored** at, not the one they **run** at:
+
+| | Value | Where it is recorded |
+|---|---|---|
+| Stored weights | bf16 (the upstream checkpoint, repackaged unchanged) | the name suffix, `quantization.extra.stored_dtype` |
+| Runtime, default | int4 (NF4): the adapter packs the Qwen3-VL backbone at load; the diffusion action head stays bf16 | `quantization.dtype`, needs OpenRAL Pro |
+| Runtime, open | fp32 via `OPENRAL_QUANTIZATION_DTYPE=fp32` (the adapter accepts only `nf4`, `fp32` or `none`; there is no bf16 path) | per-run override, logged as a warning |
+
+The recorded benchmark numbers were measured at the NF4 default; an fp32 run is not covered by them. Most other OpenRAL rSkills are named after their runtime dtype (for example `rldx1-ft-libero-nf4`), so this name is the exception.
 
 > **OpenRAL rSkill** — NVIDIA Isaac **GR00T N1.7** (3B) finetuned on the
 > [LIBERO](https://libero-project.github.io/) benchmark, packaged for the
@@ -54,7 +66,7 @@ subfolder checkpoint (the upstream repo has no root `model.safetensors`).
 
 > **Runtime status.** The manifest, license posture, and `model_family: gr00t`
 > are wired and tested. `openral_sim.policies.gr00t` runs GR00T N1.7
-> **in-process** under the workspace's Python 3.12 via lerobot 0.6.0's native
+> **in-process** under the workspace's Python 3.12 via lerobot's native
 > `GrootPolicy` (backbone-only NF4 quantization), like the SmolVLA/π0.5
 > adapters; there is no out-of-process sidecar and no `tools/gr00t_sidecar.py`.
 > (`tools/behavior_groot_sidecar.py` is unrelated: it drives the external
