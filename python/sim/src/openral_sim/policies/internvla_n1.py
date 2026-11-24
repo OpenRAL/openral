@@ -16,14 +16,18 @@ After System-2 emits STOP the adapter latches and returns zero twist for the
 rest of the episode (the base halts; episode termination is the env's /
 reasoner's call).
 
-**Depth** is sourced monocularly from the DA3 sidecar
-(``openral_sim.da3_depth``) — the same ``depth-anything/DA3-SMALL`` model the
-SLAM/nvblox stack uses — so it is real metric depth and works identically on a
-sim-rendered RGB frame and a real camera (no robot depth sensor required). The
-DualVLN checkpoint's ``nextdit`` System-1 is RGB+latent conditioned and does not
-actually consume depth (verified against the model source), so
-``OPENRAL_INTERNVLA_N1_DEPTH=none`` skips DA3 for it; a depth-consuming ``navdp``
-System-1 checkpoint keeps the default ``da3``.
+**Depth** is declared by the rSkill manifest, never fetched from a private
+sidecar: ``policy_extras.depth_input`` must be ``"none"``, which states that the
+checkpoint's System-1 never reads depth. That holds for DualVLN: its
+``config.json`` sets ``system1: "nextdit_async"``, and InternNav's
+``generate_traj`` (pinned commit, see ``tools/internvla_n1_sidecar.py``) feeds
+``depths_dp`` only to the ``navdp`` branch. The sidecar's step wire still takes
+a depth map, so a unit-metre placeholder is sent. A ``navdp`` System-1
+checkpoint would need metric depth for its camera from the robot (an RGB-D
+sensor, or ``DeployRuntime.estimated_depth_camera`` with a ``depth_estimator``
+rSkill), checked by ``_check_depth_input`` via
+``openral_core.depth_extrinsic.policy_depth_source``; it is still refused at
+build time, because the policy observation carries RGB only today.
 """
 
 from __future__ import annotations
@@ -44,7 +48,6 @@ from openral_observability import inference_span
 from openral_rskill._vla_core import resolve_rskill_repo_revision
 
 from openral_sim._quantization import resolve_quant_plan, sidecar_quant_token
-from openral_sim.da3_depth import DEFAULT_DA3_PORT, Da3DepthClient
 from openral_sim.policies._policy_loading import load_manifest_for_spec
 from openral_sim.registry import POLICIES
 from openral_sim.sidecar import SidecarClient
@@ -58,15 +61,8 @@ _log = structlog.get_logger(__name__)
 
 _PORT_ENV = "OPENRAL_INTERNVLA_N1_SIDECAR_PORT"
 _AUTO_SPAWN_ENV = "OPENRAL_INTERNVLA_N1_AUTO_SPAWN"
-# Depth source. `da3` (default) pulls real monocular metric depth from the DA3
-# sidecar (openral_sim.da3_depth) — the SAME model the SLAM/nvblox stack uses,
-# shared via ping-reuse; works identically on a sim-rendered RGB frame and a
-# real camera. `none` sends a unit-depth placeholder: valid ONLY for the
-# depth-agnostic `nextdit` System-1 (which InternVLA-N1-DualVLN uses — its
-# trajectory head is RGB+latent conditioned, verified against the model source);
-# a `navdp` System-1 checkpoint genuinely consumes depth and needs `da3`.
-_DEPTH_SOURCE_ENV = "OPENRAL_INTERNVLA_N1_DEPTH"
-_DA3_PORT_ENV = "OPENRAL_INTERNVLA_N1_DA3_PORT"
+# The manifest's `policy_extras` key declaring what depth the checkpoint reads.
+_DEPTH_INPUT_KEY = "depth_input"
 _PORT_MIN = 22_000
 _PORT_MAX = 22_499
 # One S2 replan is a full 7B-VLM generate on an NF4 8 GiB card — keep the
@@ -97,18 +93,15 @@ def _locate_sidecar_script() -> Path:
 class _InternVLAN1Adapter:
     """``PolicyAdapter`` proxying the InternVLA-N1 sidecar.
 
-    Depth is sourced monocularly from the DA3 sidecar (``_da3``) rather than a
-    robot depth sensor, so the same adapter runs on a sim-rendered RGB frame and
-    a real RGB camera. When ``_da3`` is ``None`` (``OPENRAL_INTERNVLA_N1_DEPTH=
-    none``) a unit-depth placeholder is sent — valid only for DualVLN's
-    depth-agnostic ``nextdit`` System-1.
+    Only built for a manifest declaring ``policy_extras.depth_input: none``, so
+    the sidecar gets a unit-metre depth placeholder (its step wire takes one and
+    refuses all-zero depth); the checkpoint's System-1 never reads it.
     """
 
     spec: VLASpec
     device: str
     _client: SidecarClient
     _camera_key: str
-    _da3: Da3DepthClient | None
     _stopped: bool = False
     _last_input: NDArray[np.uint8] | None = field(default=None)
 
@@ -129,13 +122,7 @@ class _InternVLAN1Adapter:
             )
         rgb = np.ascontiguousarray(images[self._camera_key], dtype=np.uint8)
         self._last_input = rgb
-        # Real DA3 metric depth (same model the SLAM stack uses), or a unit
-        # placeholder for the depth-agnostic nextdit checkpoint.
-        depth = (
-            self._da3.infer(rgb)
-            if self._da3 is not None
-            else np.ones(rgb.shape[:2], dtype=np.float32)
-        )
+        depth = np.ones(rgb.shape[:2], dtype=np.float32)  # depth_input: none
 
         with inference_span(kind="single", engine="sidecar"):
             reply = self._client.call(
@@ -161,8 +148,53 @@ class _InternVLAN1Adapter:
             with contextlib.suppress(Exception):
                 self._client.call("close")
         self._client.close()
-        if self._da3 is not None:
-            self._da3.close()
+
+
+def _check_depth_input(
+    env_cfg: SimEnvironment, skill: str, policy_extras: dict[str, object], camera: str
+) -> None:
+    """Refuse, before any sidecar boots, a checkpoint whose depth this deployment cannot feed.
+
+    ``policy_extras.depth_input`` is required. ``none`` (System-1 never reads depth) needs
+    nothing. ``metric`` needs depth for ``camera`` from the robot or scene
+    (``openral_core.depth_extrinsic.policy_depth_source``: an RGB-D sensor, or
+    ``vla.extra["estimated_depth_camera"]`` with a ``depth_estimator`` rSkill); even when
+    that holds it is refused, because the policy observation carries RGB only today.
+
+    Raises:
+        ROSConfigError: ``depth_input`` is missing or unknown, the robot gives ``camera``
+            no depth, or ``metric`` is declared at all (naming the missing transport).
+    """
+    from openral_core.depth_extrinsic import policy_depth_source
+
+    depth_input = policy_extras.get(_DEPTH_INPUT_KEY)
+    if depth_input == "none":
+        _log.info("internvla_n1.depth_unused", skill=skill, depth_input="none")
+        return
+    if depth_input != "metric":
+        raise ROSConfigError(
+            f"internvla_n1: rSkill {skill!r} must declare policy_extras.{_DEPTH_INPUT_KEY} "
+            f"'none' (System-1 never reads depth, config.json system1: nextdit*) or 'metric' "
+            f"(navdp*), got {depth_input!r}."
+        )
+    description = getattr(env_cfg, "robot_description", None)
+    if description is None:
+        raise ROSConfigError(
+            f"internvla_n1: rSkill {skill!r} reads metric depth; its depth source is checked "
+            "against the robot manifest, and none was given."
+        )
+    estimated = env_cfg.vla.extra.get("estimated_depth_camera")
+    source = policy_depth_source(
+        list(description.sensors),
+        camera,
+        estimated_depth_camera=str(estimated) if estimated else None,
+    )
+    raise ROSConfigError(
+        f"internvla_n1: rSkill {skill!r} reads metric depth for {camera!r}, which "
+        f"{description.name!r} provides on {source!r}'s depth stream, but the policy "
+        "observation carries RGB only (WorldState ingests no depth images), so this "
+        "checkpoint cannot run yet."
+    )
 
 
 @POLICIES.register(
@@ -218,6 +250,8 @@ def _build_internvla_n1(env_cfg: SimEnvironment) -> _InternVLAN1Adapter:
         # `vla.extra.camera_keys` to override.
         camera_key = "head"
 
+    _check_depth_input(env_cfg, manifest.name, manifest.policy_extras, camera_key)
+
     port_env = os.environ.get(_PORT_ENV)
     port = int(port_env) if port_env else _derive_port(model_ref, quantization)
     auto_spawn = os.environ.get(_AUTO_SPAWN_ENV, "1") != "0"
@@ -249,23 +283,6 @@ def _build_internvla_n1(env_cfg: SimEnvironment) -> _InternVLAN1Adapter:
         },
     )
     client.connect()
-
-    # Depth source: DA3 (real monocular metric depth, shared with SLAM) by
-    # default; `none` skips it (DualVLN's nextdit System-1 ignores depth).
-    depth_source = os.environ.get(_DEPTH_SOURCE_ENV, "da3").lower()
-    da3: Da3DepthClient | None = None
-    if depth_source == "da3":
-        da3_port_env = os.environ.get(_DA3_PORT_ENV)
-        da3 = Da3DepthClient(
-            port=int(da3_port_env) if da3_port_env else DEFAULT_DA3_PORT,
-            auto_spawn=auto_spawn,
-        )
-        da3.connect()
-    elif depth_source != "none":
-        raise ROSConfigError(
-            f"{_DEPTH_SOURCE_ENV}={depth_source!r} is invalid; use 'da3' or 'none'."
-        )
-
     return _InternVLAN1Adapter(
-        spec=env_cfg.vla, device="cuda", _client=client, _camera_key=camera_key, _da3=da3
+        spec=env_cfg.vla, device="cuda", _client=client, _camera_key=camera_key
     )

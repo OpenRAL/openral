@@ -18,11 +18,11 @@ tags:
 inference: false
 openral:
   description: 'InternVLA-N1 / DualVLN — a dual-system Vision-Language Navigation
-    foundation model (Qwen2.5-VL-7B waypoint planner + NavDP diffusion controller).
-    Takes a single forward egocentric RGB camera (metric depth derived monocularly
-    via the DA3 sidecar, not a robot sensor) plus a natural-language navigation instruction
-    and drives a mobile base with body-twist velocity commands, emitting STOP on arrival.
-    Zero-shot across wheeled and legged bases (paper: Unitree Go2 / H1).'
+    foundation model (Qwen2.5-VL-7B waypoint planner + NextDiT diffusion controller).
+    Takes a single forward egocentric RGB camera (no depth) plus a natural-language
+    navigation instruction and drives a mobile base with body-twist velocity commands,
+    emitting STOP on arrival. Zero-shot across wheeled and legged bases (paper: Unitree
+    Go2 / H1).'
   model_family: internvla_n1
   min_vram_gb: 16.6
   latency_ms: 2500.0
@@ -69,7 +69,7 @@ Full head-camera clip: [media/head_camera_view.mp4](media/head_camera_view.mp4).
 
 Drives a mobile base to follow a natural-language navigation instruction
 ("go to the kitchen and stop at the fridge") from one forward egocentric RGB
-camera (depth, when used, is estimated by DA3 — see below).
+camera; it reads no depth (see below).
 It emits a stream of base **body-twist** velocity commands and raises STOP on
 arrival. Navigation verbs / spatial targets it is offered for in the reasoner
 palette are in the manifest's `actions:` / `objects:` / `scenes:` keys.
@@ -84,9 +84,10 @@ Vision-and-Language Navigation". A **dual-system** design:
   instruction it predicts the next **pixel goal** (a waypoint in the current
   image) or a discrete VLN-CE action (`forward` / `turn-left` / `turn-right` /
   `stop`).
-- **System-1** (NavDP diffusion transformer) — "moves fast": back-projects the
-  pixel goal into a **metric trajectory** using the depth image + camera
-  intrinsics, which the adapter converts to a base velocity.
+- **System-1** — "moves fast": turns the System-2 latent into a **trajectory**,
+  which the adapter converts to a base velocity. InternVLA-N1 ships two System-1
+  heads: NavDP (reads RGB + depth) and NextDiT (reads RGB + the latent). This
+  checkpoint uses NextDiT (`system1: nextdit_async` in its `config.json`).
 
 The two systems run **asynchronously**: System-1 keeps the base moving between
 System-2 replans, giving smooth motion and dynamic obstacle avoidance. Trained
@@ -124,22 +125,21 @@ VLN and are not consumed.
 **Output:** one 6-D `BODY_TWIST` action `[vx, vy, vz, wx, wy, wz]` per step in
 `base_link` (only forward `vx` + yaw `wz` are non-zero for a planar base).
 
-### Depth: derived from DA3, not a robot sensor
+### Depth: none
 
-The robot only needs **one forward RGB camera**. The **DA3 sidecar**
-(`depth-anything/DA3-SMALL`, the model OpenRAL's SLAM/nvblox stack already runs)
-produces metric depth monocularly from the policy's RGB frame, so depth works
-**identically in sim and on real hardware** (no MuJoCo depth render, no physical
-depth camera). The adapter reuses a running DA3
-sidecar (SLAM's) via a ping when present, else auto-spawns its own (~0.27 GB,
-~27 Hz on an 8 GB card).
+The robot only needs **one forward RGB camera**: no depth sensor and no
+`depth_estimator` rSkill. This checkpoint's System-1 is `nextdit_async`, and
+InternNav's `generate_traj` (at the commit the sidecar pins) passes the depth
+tensor only to the NavDP System-1, so depth is never read. The manifest says so
+explicitly with `policy_extras.depth_input: "none"`; the adapter sends the
+sidecar a unit-metre placeholder because its step wire takes a depth map.
 
-> **DualVLN doesn't actually use depth.** This checkpoint's System-1 is
-> `nextdit_async` (RGB + System-2-latent conditioned); its trajectory head never
-> reads the depth tensor (verified against the InternNav model source). Set
-> `OPENRAL_INTERNVLA_N1_DEPTH=none` to skip DA3 (a unit-metre placeholder is
-> sent, which the model ignores). DA3 stays the default so the `internvla_n1`
-> family is correct for a depth-consuming `navdp`-System-1 checkpoint.
+A NavDP-System-1 checkpoint would declare `depth_input: "metric"`. The adapter
+then checks, before the sidecar boots, that the robot gives its camera depth:
+an RGB-D sensor sharing the camera's mount, or `runtime.estimated_depth_camera`
+naming that camera with a `depth_estimator` rSkill; otherwise it refuses and
+names both fixes. It still refuses when the check passes, because the policy
+observation carries RGB only today (WorldState ingests no depth images).
 
 ## Runtime / manifest summary
 
@@ -195,7 +195,7 @@ OPENRAL_ALLOW_NONCOMMERCIAL=1 \
   `--torch-backend` resolved the CPU-only wheel on aarch64, where the default
   `--device cuda:0` fails with `Torch not compiled with CUDA enabled`.)
   See [`docs/reference/aarch64-support.md`](../../docs/reference/aarch64-support.md).
-- Schema / adapter / manifest / DA3 wiring / robot-compat / dispatch chain:
+- Schema / adapter / manifest / robot-compat / dispatch chain:
   validated (unit tests + `check_compatibility` against `panda_mobile`; full unit
   suite green; mypy + ruff clean).
 - **Closed-loop base actuation in `robocasa/NavigateKitchen`: PASSED.** Via
@@ -207,7 +207,7 @@ OPENRAL_ALLOW_NONCOMMERCIAL=1 \
   (`MUJOCO_GL=osmesa`) so the whole GPU is the sidecar's; co-hosting the 6 GB
   sidecar with a GPU render OOMs the Qwen2.5-VL-7B generate peak.
 - `deploy run` on physical hardware: requires a real mobile base + one RGB
-  camera (DA3 supplies depth); verified to the HAL boundary.
+  camera; verified to the HAL boundary.
 
 ## Benchmarks / provenance
 

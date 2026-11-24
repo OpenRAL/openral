@@ -149,6 +149,13 @@ _rSkill loader — HF Hub download, manifest validation, license guard, local re
 - `resolve_rskill_to_hf(uri) -> str` — Resolve a skill reference to either the underlying HF Hub repo id (`hf://...`) or an absolute local path (`local://...`); both forms are accepted by `from_pretrained` helpers. (L1584)
 - `resolve_rskill_to_hf_with_revision(uri) -> tuple[str, str | None]` — Like `resolve_rskill_to_hf` but splits the optional `@<branch-or-sha>` pin off an `hf://` `weights_uri` into a separate `revision`, since HF drops a pin glued onto the repo id. A directory that already holds `model.safetensors` (or a sharded `model.safetensors.index.json` + shards) next to its `rskill.yaml` — the snapshot `rSkill.from_pretrained` leaves in `~/.cache/openral/rskills` — resolves to **itself** rather than following its `hf://` pointer, which otherwise re-resolved a just-downloaded repo through the *default* HF cache (second fetch online, hard failure offline). In-tree `rskills/<name>/` dirs ship no weights and are unaffected. Runs `rSkill._check_provenance` on every call (cached or not), so `OPENRAL_REQUIRE_SIGNED_SKILLS=1` fails closed for the adapters that bypass `from_pretrained` (sim policies, `behavior serve`). (L1618)
 
+### `python/rskill/src/openral_rskill/depth_estimator.py`
+
+The one rule for which `kind: depth_estimator` rSkill a depth provider may run, shared by `openral deploy` (before launch), `deploy_e2e.launch.py` and `depth_provider_node` (at configure).
+
+- `depth_rskill_manifest(ref, rskills_dir) -> Path` (L21) — The absolute `rskill.yaml` a depth-skill reference names: a directory under `rskills_dir`, or a path to an `rskill.yaml` (a relative one resolves against `rskills_dir`'s parent, the same root). `ROSConfigError` when no manifest is there. `openral deploy` forwards the result as `estimated_depth_rskill:=`; the launch's `_depth_rskill_manifest` wraps it.
+- `depth_skill(manifest_path, *, metric) -> tuple[DepthEstimatorContract, str]` (L50) — The contract and model repo (`weights_uri` minus `hf://` and revision, which every sidecar reply must name), loaded through `rSkill.from_yaml` (schema + license gate: Depth Pro 2's `apple-amlr` needs `OPENRAL_ALLOW_NONCOMMERCIAL=1`). `ROSConfigError` for a non-depth skill, a `relative` skill in metric mode, or one without `predicts_intrinsics` in the SLAM mode.
+
 ### `python/rskill/src/openral_rskill/hub_search.py`
 _Free-text + facet search over an HF Hub org's rSkills — backs `openral rskill search`._
 

@@ -1,7 +1,10 @@
-"""DA3 metric depth for the world-collision map: canonical output to metres, then a cloud.
+"""Monocular depth for the world-collision map: a model's raw output to metres, then a cloud.
 
-``DeployRuntime.estimated_depth_camera`` runs the depth provider on an RGB camera with
-``depth-anything/DA3METRIC-LARGE``, whose output is *canonical* depth: the upstream
+``DeployRuntime.estimated_depth_camera`` runs the depth provider on an RGB camera with a
+``kind: depth_estimator`` rSkill (``DeployRuntime.estimated_depth_rskill``); its
+``DepthEstimatorContract.output`` says how the raw output becomes metres. Depth Pro 2
+(``metric``) is given the camera's focal and returns metres. The default,
+``depth-anything/DA3METRIC-LARGE`` (``canonical_focal``), returns *canonical* depth: the upstream
 README's conversion is ``metric_depth = focal * net_output / 300`` with ``focal`` the
 camera's focal length in pixels (mean of ``fx`` and ``fy``). The network predicts at its
 own processing raster, so the focal used is the camera's ``CameraInfo`` focal scaled to
@@ -22,32 +25,14 @@ from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
+from openral_core import DepthEstimatorContract, DepthOutput
 
 __all__ = [
-    "DA3_CANONICAL_FOCAL_PX",
     "camera_info_problem",
-    "da3_metric_depth",
-    "is_metric_model",
+    "metres_from_output",
     "points_from_depth",
     "scale_intrinsics",
 ]
-
-#: The focal length (pixels) DA3METRIC's canonical depth is expressed at.
-DA3_CANONICAL_FOCAL_PX = 300.0
-
-
-def is_metric_model(model_id: str) -> bool:
-    """Whether a DA3 checkpoint predicts canonical *metric* depth (``DA3METRIC-*``).
-
-    ``DA3-SMALL`` .. ``DA3-GIANT`` are not documented as metric, so their output must
-    never be converted to metres and fed to collision checking.
-
-    Example:
-        >>> is_metric_model("depth-anything/DA3METRIC-LARGE"), is_metric_model("DA3-SMALL")
-        (True, False)
-    """
-    return "DA3METRIC" in model_id.upper()
-
 
 #: Largest relative aspect-ratio difference between an image and its ``CameraInfo`` that
 #: still reads as one uniform resize (integer rounding of a downscale), not another view.
@@ -105,17 +90,35 @@ def scale_intrinsics(
     return (fx * sx, fy * sy, (cx + 0.5) * sx - 0.5, (cy + 0.5) * sy - 0.5)
 
 
-def da3_metric_depth(canonical: Any, *, fx: float, fy: float) -> NDArray[np.float32]:
-    """Metres from DA3METRIC's canonical output, ``fx``/``fy`` at the output's raster.
+def metres_from_output(
+    raw: Any, contract: DepthEstimatorContract, *, fx: float, fy: float
+) -> NDArray[np.float32]:
+    """Metres from a depth estimator's raw output, ``fx``/``fy`` at the output's raster.
 
-    Non-finite or non-positive outputs become ``0.0`` (no return).
+    ``contract.output`` says what ``raw`` is: ``metric`` is already metres;
+    ``canonical_focal`` (DA3METRIC) is ``mean(fx, fy) * raw / canonical_focal_px``; a
+    ``relative`` model has no metric reading and is refused. Non-finite or non-positive
+    values (sky, no return) become ``0.0``.
 
     Example:
-        >>> da3_metric_depth(np.array([[300.0, -1.0]]), fx=150.0, fy=150.0).tolist()
+        >>> from openral_core import DepthEstimatorContract
+        >>> da3 = DepthEstimatorContract(
+        ...     family="da3", output="canonical_focal", canonical_focal_px=300.0
+        ... )
+        >>> metres_from_output(np.array([[300.0, -1.0]]), da3, fx=150.0, fy=150.0).tolist()
         [[150.0, 0.0]]
+        >>> pro = DepthEstimatorContract(family="depth_pro2", output="metric")
+        >>> metres_from_output(np.array([[2.5, np.inf]]), pro, fx=1.0, fy=1.0).tolist()
+        [[2.5, 0.0]]
     """
-    raw = np.asarray(canonical, dtype=np.float64)
-    depth = 0.5 * (fx + fy) * raw / DA3_CANONICAL_FOCAL_PX
+    depth = np.asarray(raw, dtype=np.float64).copy()
+    if contract.output is DepthOutput.CANONICAL_FOCAL:
+        assert contract.canonical_focal_px is not None  # contract validator guarantees it
+        depth *= 0.5 * (fx + fy) / contract.canonical_focal_px
+    elif contract.output is not DepthOutput.METRIC:
+        from openral_core import ROSConfigError
+
+        raise ROSConfigError(f"a {contract.output.value!r} depth model has no metric reading")
     depth[~np.isfinite(depth) | (depth <= 0.0)] = 0.0
     return depth.astype(np.float32)
 

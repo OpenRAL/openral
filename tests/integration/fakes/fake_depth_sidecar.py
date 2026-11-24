@@ -1,10 +1,11 @@
-"""A DA3 depth sidecar stand-in at its network boundary (ZMQ REP + msgpack).
+"""A depth_estimator sidecar stand-in at its network boundary (ZMQ REP + msgpack).
 
-Speaks ``tools/_da3_depth_server.py``'s wire protocol and answers every ``depth``
-request with what DA3METRIC would predict for a fronto-parallel plane at
-``plane_z_m``: canonical depth ``z * 300 / focal`` at its ``(h, w)`` raster, ``focal``
-being the camera focal the test declares scaled to that raster. ``model`` is reported
-like the real server, so the provider's metric-model check can be exercised. Under
+Speaks the wire protocol of ``tools/_da3_depth_server.py`` / ``tools/_depth_pro2_server.py``
+and answers every ``depth`` request with a fronto-parallel plane at ``plane_z_m``: as
+DA3METRIC's canonical depth ``z * 300 / focal`` at its ``(h, w)`` raster (``focal`` being
+the camera focal the test declares scaled to that raster), or, ``metric``, as metres like
+Depth Pro 2. ``model`` is reported like the real servers, so the provider's model check
+can be exercised, and every ``f_px`` it is sent is recorded. Under
 ``tests/integration/fakes/`` per CLAUDE.md §1.11; production code never imports it.
 """
 
@@ -17,19 +18,28 @@ import msgpack
 import numpy as np
 import zmq
 
-__all__ = ["FakeDa3Sidecar"]
+__all__ = ["FakeDepthSidecar"]
 
 
-class FakeDa3Sidecar:
+class FakeDepthSidecar:
     """Serve plane depth on ``tcp://127.0.0.1:<port>`` from a daemon thread."""
 
     def __init__(
-        self, *, model: str, plane_z_m: float, raster_hw: tuple[int, int], focal_px: float
+        self,
+        *,
+        model: str,
+        plane_z_m: float,
+        raster_hw: tuple[int, int],
+        focal_px: float,
+        metric: bool = False,
     ) -> None:
+        """``metric``: answer metres (Depth Pro 2), else DA3METRIC's canonical focal-300."""
         self.model = model
         self.requests = 0
+        self.f_px: list[float] = []  # every ``f_px`` a depth request carried
         h, w = raster_hw
-        self._canonical = np.full((h, w), plane_z_m * 300.0 / focal_px, dtype=np.float32)
+        raw = plane_z_m if metric else plane_z_m * 300.0 / focal_px
+        self._canonical = np.full((h, w), raw, dtype=np.float32)
         self._ctx = zmq.Context()
         self._sock = self._ctx.socket(zmq.REP)
         self._sock.setsockopt(zmq.RCVTIMEO, 200)
@@ -47,6 +57,8 @@ class FakeDa3Sidecar:
             except zmq.Again:
                 continue
             self.requests += 1
+            if "f_px" in req:
+                self.f_px.append(float(req["f_px"]))
             if req.get("op") != "depth":
                 self._sock.send(msgpack.packb({"ok": True, "model": self.model}))
                 continue

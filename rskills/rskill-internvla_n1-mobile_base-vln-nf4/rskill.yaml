@@ -8,9 +8,9 @@
 # val-unseen success rate (64.3) among policies with PUBLICLY RELEASED
 # weights as of 2026-07 (Qwen-RobotNav 64.x and CorrectNav 65.1 score higher
 # but ship no weights). Dual-system: Qwen2.5-VL-7B System-2 plans a
-# pixel-goal waypoint from RGB history + instruction; NavDP
-# diffusion-transformer System-1 turns that goal into a metric trajectory
-# using depth. See README.md.
+# pixel-goal waypoint from RGB history + instruction; a NextDiT
+# diffusion-transformer System-1 (`system1: nextdit_async`) turns that goal
+# into a trajectory from RGB + the System-2 latent. See README.md.
 #
 # OUT-OF-PROCESS: upstream InternNav pins transformers==4.51.0, incompatible
 # with the workspace's transformers 5.x. Like rldx/diffuser_actor, runs in an
@@ -40,13 +40,8 @@ model_family: "internvla_n1"
 embodiment_tags:
   - "mobile_base"
 
-# Egocentric RGB only. The robot needs to provide just one forward RGB camera.
-# Metric DEPTH is NOT a robot-sensor requirement here: the adapter derives it
-# monocularly from the SAME RGB frame via the DA3 sidecar
-# (depth-anything/DA3-SMALL — the model the SLAM/nvblox stack already runs),
-# so it works on a sim-rendered frame and a real camera alike. (DualVLN's
-# `nextdit` System-1 is in fact RGB+latent conditioned and ignores depth; a
-# `navdp` checkpoint would consume the DA3 depth. See README.)
+# Egocentric RGB only. The robot needs to provide just one forward RGB camera;
+# no depth, measured or estimated (see policy_extras.depth_input below).
 sensors_required:
   - modality: "rgb"
     # Forward egocentric navigation view (NOT an arm-mounted manipulation
@@ -62,6 +57,16 @@ actuators_required:
   - kind: "body_twist"
     control_mode_semantics:
       mode: "absolute"
+
+# What depth this checkpoint reads, required by the internvla_n1 adapter.
+# `none`: DualVLN's System-1 is `nextdit_async` (config.json at the pinned
+# weights_uri), and InternNav's `generate_traj` (sidecar's pinned commit) hands
+# depth only to the `navdp` System-1, so depth is never read; the adapter sends
+# the sidecar a unit-metre placeholder. A `navdp` checkpoint would need metric
+# depth from the robot (RGB-D sensor or a depth_estimator rSkill), which the
+# adapter refuses today.
+policy_extras:
+  depth_input: "none"
 
 # ── Runtime / weights ──────────────────────────────────────────────────────
 runtime: "pytorch"
@@ -108,11 +113,9 @@ source_repo: "hf://InternRobotics/InternVLA-N1-DualVLN"
 
 description: >
   InternVLA-N1 / DualVLN — a dual-system Vision-Language Navigation foundation
-  model (Qwen2.5-VL-7B waypoint planner + NavDP diffusion controller). Takes
-  a single forward egocentric RGB camera (metric depth derived monocularly via
-  the DA3 sidecar, not a robot sensor) plus a natural-language navigation
-  instruction and drives a
-  mobile base with body-twist velocity commands, emitting STOP on arrival.
+  model (Qwen2.5-VL-7B waypoint planner + NextDiT diffusion controller). Takes
+  a single forward egocentric RGB camera (no depth) plus a natural-language
+  navigation instruction and drives a mobile base with body-twist velocity commands, emitting STOP on arrival.
   Zero-shot across wheeled and legged bases (paper: Unitree Go2 / H1).
 
 # Reasoner tool-palette vocabulary. `actions` is a controlled enum; `navigate`

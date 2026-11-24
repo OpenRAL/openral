@@ -185,7 +185,8 @@ def test_explicit_octomap_on_a_depthless_sim_robot_refuses_before_launch(tmp_pat
     text = (_REPO_ROOT / "scenes" / "deploy" / "so101_bench.yaml").read_text(encoding="utf-8")
     scene = tmp_path / "so101_octomap.yaml"
     scene.write_text(text.replace("enable_octomap: false", "enable_octomap: true"), "utf-8")
-    with pytest.raises(ROSConfigError, match="so101"):
+    # No depth sensor, and no RGB camera an estimate could place (none has a mount).
+    with pytest.raises(ROSConfigError, match=r"no RGB camera qualifies(.|\n)*no mount ties"):
         _resolve(scene, "sim")
 
 

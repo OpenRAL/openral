@@ -300,6 +300,7 @@ def test_every_intree_rskill_manifest_declares_kind() -> None:
             "ros_service",
             "detector",
             "segmenter",
+            "depth_estimator",
             "vlm",
             "reward",
             "playbook",
