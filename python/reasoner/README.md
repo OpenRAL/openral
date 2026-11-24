@@ -7,16 +7,8 @@ event buffers (failures, perception events, operator prompts) and emits
 **exactly one** typed `ReasonerToolCall` per tick via the LLM's structured
 tool-use API (no free-form JSON); dispatch is direct typed tool calls. The
 ROS-side `reasoner_node` (in
-[`packages/openral_reasoner_ros/`](../../packages/openral_reasoner_ros/)) wraps
+[`packages/openral_reasoner_ros/`](https://github.com/OpenRAL/openral/tree/master/packages/openral_reasoner_ros)) wraps
 this core with rclpy subscriptions and dispatch plumbing.
-
-## Design
-
-- ROS 2 reasoner supervisor: direct typed tool-call dispatch.
-- Symbolic S2 reasoner: authored playbooks, self-maintained memory,
-  success-gated task queue.
-- VLM-adjudicated completion, grounding-before-decompose, detection
-  identity.
 
 ## Public surface
 
@@ -38,7 +30,8 @@ from openral_reasoner import (
   tool palette → validate into a `ReasonerToolCall` → bounded replanning
   ladder on failure (retry → param-tweak → substitute-skill → goal-replan
   → human-handoff).
-- `AnthropicToolUseClient` / `OpenAICompatibleToolUseClient` — concrete
+- `AnthropicToolUseClient` / `OpenAICompatibleToolUseClient` (plus
+  `Cosmos3ToolUseClient` for the local `cosmos3-edge` sidecar) — concrete
   `ToolUseClient` implementations; selected at activate-time from the curated
   `openral_core.REASONER_MODELS` registry via `OPENRAL_REASONER_MODEL`.
   `OPENRAL_REASONER_ENDPOINT` overrides where the model runs. No hidden default.
@@ -47,7 +40,5 @@ from openral_reasoner import (
 - `MemoryStore`, `MissionState`, `evaluate_task_verdict` — self-maintained
   memory and success-gated task queue.
 
-See [`docs/methods/06-reasoning-wam-safety-observability.md`](../../docs/methods/06-reasoning-wam-safety-observability.md)
-for the full symbol inventory and
-[`docs/reference/reasoner-design.md`](../../docs/reference/reasoner-design.md)
-for the design walkthrough.
+See the [symbol inventory](https://github.com/OpenRAL/openral/blob/master/docs/methods/06-reasoning-wam-safety-observability.md)
+and the [reasoner design](https://docs.openral.com/reference/reasoner-design/).

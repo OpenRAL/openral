@@ -1,6 +1,9 @@
 # openral-core
 
-OpenRAL Pydantic schemas — normative contract for the OpenRAL layer interfaces
+OpenRAL Pydantic schemas and exceptions: the normative contract for the layer
+interfaces. Defines `RobotDescription`, `RSkillManifest`, `DeployScene`,
+`WorldState`, the `ROSError` hierarchy and the manifest loaders, with
+geometry, kinematics and time-base helpers shared by every other package.
 
 Part of [**OpenRAL**](https://github.com/OpenRAL/openral) — the open Robot
 Abstraction Layer for vision-language-action robotics. This package is one

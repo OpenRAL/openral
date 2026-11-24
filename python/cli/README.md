@@ -1,6 +1,9 @@
 # openral-cli
 
-OpenRAL command-line tool
+The `openral` command-line tool: robot detection, rSkill install/check, sim and
+benchmark runs, deploy (`deploy run` / `deploy sim`), calibration, e-stop,
+dataset and BEHAVIOR Challenge tooling. Run `openral --help` for the command
+tree; the full reference is at <https://docs.openral.com/reference/cli/>.
 
 Part of [**OpenRAL**](https://github.com/OpenRAL/openral) — the open Robot
 Abstraction Layer for vision-language-action robotics. This package is one
@@ -32,7 +35,8 @@ conda run -n behavior python -m omnigibson.eval.eval \
 ```
 
 The bridge defaults to the official R1Pro contract: three RGB cameras, 61-D
-proprioception, and a 23-D action.
+proprioception (`--state-dim`) and a 23-D action (`--action-dim`); `--host` and
+`--port` set the WebSocket address.
 
 The same contract can run through the full deploy graph:
 

@@ -193,7 +193,7 @@ Full schema: `openral_core.RSkillManifest`.
 10-episode run scored 0.70; the policy sits around 0.5–0.7).
 
 ⚠️ **n=10 is too small to compare.** At binomial SD ~0.16, that 0.50 and the
-0.76 measured at n=50 above are the same result. Use the n=50 numbers in
+0.62 measured at n=50 above (the int8 total) are the same result. Use the n=50 numbers in
 [Why int8](#why-int8-and-not-nf4) to choose a dtype; the recorded 0.50 is
 provenance for the committed eval artifact, not this policy's success rate.
 

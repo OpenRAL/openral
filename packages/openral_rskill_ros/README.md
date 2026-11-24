@@ -1,217 +1,242 @@
 # openral_rskill_ros
 
-`rskill_runner_node` lifecycle node + `ExecuteRskill` action server: Layer 3
-(rSkill) of the ROS 2 reasoner + supervisor graph. One node per robot.
+`rskill_runner_node` (lifecycle node) and the `ExecuteRskill` action server: Layer 3
+(rSkill) of the ROS 2 graph, one node per robot. It also ships `deploy_e2e.launch.py`, the
+robot-agnostic launch that brings up the whole deploy graph.
 
-## Layer
+The runtime path is the in-process
+[`openral_runner.DeployRunner`](../../python/runner/src/openral_runner/deploy_runner.py).
+This package is the ROS surface that accepts a typed goal from external clients (CLI,
+reasoner, dashboard) and routes chunks to the safety boundary. Transition callbacks use
+`log_lifecycle_errors`, and the node calls `refuse_unavailable_transitions`, so an
+unavailable lifecycle transition is refused instead of killing the node.
 
-CLAUDE.md §3 Layer 3 (rSkill). The runtime path is the in-process
-[`openral_runner.DeployRunner`](../../python/runner/src/openral_runner/deploy_runner.py);
-this package is the ROS-side surface that exposes a typed action
-goal to external clients (CLI, reasoner, dashboard) and routes
-chunks to the safety boundary.
+## Run it
 
-## Topic surface (locked)
+Normally through the CLI, which resolves the robot, validates it
+(`RobotDescription.validate_for_e2e_pipeline()`) and launches the graph:
 
-| Direction | Topic / Service / Action | Type |
+```bash
+uv run openral deploy sim --config <DeployScene.yaml>
+```
+
+Direct launch (for debugging the launch itself):
+
+```bash
+ros2 launch openral_rskill_ros deploy_e2e.launch.py \
+    robot_yaml:=$PWD/robots/openarm/robot.yaml \
+    hal_package:=openral_hal_node \
+    hal_executable:=lifecycle_node.py \
+    hal_node_name:=openral_hal_openarm \
+    hal_params_file:=/tmp/openral-hal-params-openarm.yaml
+```
+
+The launch starts, each in its own OS process (the safety boundary is never collapsed into
+the runner): `runtime_node` (the composed `world_state` + `skill_runner`), the C++
+`safety_kernel_node`, the reasoner, the prompt router and the HAL. Optional nodes (object
+tracker, segmenter, octomap bridge, SLAM, Nav2, reward monitor, dashboard, Foxglove) are
+switched by launch arguments. A scene that lists peer robots (`OPENRAL_SCENE_PEERS`, ADR-0137)
+also gets a `peer_voxels` node; the launch fails if the kernel has no world-voxel check to
+receive it.
+
+The launch loads `robot.yaml`, calls `openral_safety.envelope_loader.compute_intersection`
+and passes each field to the safety kernel as a ROS parameter. No envelope file is written;
+the kernel's `envelope_file:=PATH` loader remains for HIL tests and `kernel_only.launch.py`.
+
+Main launch arguments (see the `DeclareLaunchArgument` list for all of them):
+
+| Group | Arguments |
+|---|---|
+| Robot / HAL | `robot_yaml`, `hal_package`, `hal_executable`, `hal_node_name`, `hal_params_file`, `hal_mode`, `hardware_estop_device`, `gripper_convention`, `reset_to_pose_service` |
+| Scene | `deploy_config`, `workcell_json`, `static_geometry_file`, `map_path`, `clock_origin`, `initial_task_prompt` |
+| Declarations | `grasp_declaration_json`, `place_declaration_json`, `place_zones_json`, `success_conditions_json`, `object_queries_json`, `nav_goals_json` |
+| Object tracking | `object_tracking` (`off` / `tracking` / `on`), `object_tracking_cameras`, `grounding_wait_s`, `grounding_required`, `tracked_release_timeout_s` |
+| Perception | `enable_octomap`, `enable_octomap_kernel_check`, `octomap_cloud_topic`, `world_voxel_deadline_s`, `max_octree_age_s`, `robot_self_filter_padding_m`, `enable_object_detector`, `enable_vision_attachment`, `enable_slam`, `enable_nav2` |
+| Skills | `approach_skill_id`, `preload_rskill_id`, `preload_rskill_revision`, `preload_prompt`, `release_rskill_after_goal` |
+| Reasoner / UI | `enable_reasoner`, `reasoner_model`, `reasoner_endpoint`, `enable_dashboard`, `dashboard_port`, `enable_foxglove`, `foxglove_port` |
+| Reward / completion | `enable_reward_monitor`, `enable_completion_check`, `enable_critic` |
+
+## Interfaces
+
+| Direction | Topic / action / service | Type |
 |---|---|---|
-| pub | `/openral/candidate_action` | `openral_msgs/ActionChunk` (via `ROSPublishingHAL`) |
-| pub | `/diagnostics` | `diagnostic_msgs/DiagnosticArray` (1 Hz) |
-| pub | `/openral/place_declaration` | `openral_msgs/PlaceDeclaration` (RELIABLE · TRANSIENT_LOCAL) |
-| pub | `/openral/grasp_declaration` | `openral_msgs/GraspDeclaration` (RELIABLE · TRANSIENT_LOCAL) |
-| pub | `/openral/reward/active_task` | `std_msgs/String` (executing instruction, for the reward monitor) |
-| pub | `/openral/episode` | `openral_msgs/Episode` |
-| sub | `/openral/estop` | `std_msgs/Empty` (defense in depth alongside HAL) |
-| sub | `/openral/estop_cleared` | `std_msgs/Empty` (clears the runner latch after a reset) |
-| sub | `/openral/safety_status` | `openral_msgs/SafetyStatus` (latched; RELIABLE · TRANSIENT_LOCAL · KL=1) |
 | action | `/openral/execute_rskill` | `openral_msgs/action/ExecuteRskill` |
+| pub | `/openral/candidate_action` | `openral_msgs/ActionChunk` (via `ROSPublishingHAL`) |
+| pub | `/openral/place_declaration`, `/openral/grasp_declaration` | `PlaceDeclaration`, `GraspDeclaration` (RELIABLE, TRANSIENT_LOCAL) |
+| pub | `/openral/episode` | `openral_msgs/Episode` |
+| pub | `/openral/reward/active_task` | `std_msgs/String` (instruction being executed) |
+| pub | `/diagnostics` | `diagnostic_msgs/DiagnosticArray` (1 Hz) |
+| sub | `/openral/estop`, `/openral/estop_cleared` | `std_msgs/Empty` (defense in depth beside the HAL; the second clears the runner latch) |
+| sub | `/openral/safety_status` | `openral_msgs/SafetyStatus` (RELIABLE, TRANSIENT_LOCAL) |
+| sub | `/openral/failure/safety` | typed safety failure report (feeds `evidence_json`) |
+| sub | `/openral/tracked_objects` | `openral_msgs/TrackedObjectSet` (grounding wait, success judge) |
+| sub | `/openral/failure/world_state` | `FailureTrigger` (tracker query escalations; only with tracking on) |
+| srv | `/openral/rskill/hold` (`SetBool`), `/openral/rskill/complete` (`Trigger`) | hold the last action; end the goal as completed |
 
-`/openral/safety_status` (ADR-0096) is read-only and feeds the existing
-`safety_abort_getter` seam handed to `ROSPublishingHAL`: when an
-apply-wait blocks, the reported reason names the actual fault
-(`kind_collision`, `drop_envelope_unconfigured`, …) plus the publisher's
-`detail`, instead of collapsing every abort to `/openral/estop`. The
-`/openral/estop` latch is unchanged and still reported alongside it.
-Because the topic is latched, a runner that reconnects
-mid-mission reads the current state immediately. Once a `SafetyStatus`
-has been seen, one that goes silent for more than 3 s (three missed 1 Hz
-liveness refreshes) is reported as *unknown, not safe* — hazard-log
-HZ-0096-1 mitigation 2, failing toward "assume unsafe".
+ROS parameters (declared by the node; the launch sets most from its arguments):
+`rate_hz`, `action_applied_timeout_s`, `execution_wall_cap_factor`, `graph_clock_stall_s`,
+`gripper_convention`, `joint_state_staleness_limit_s`, `starting_pose_max_delta_per_s`,
+`starting_pose_tolerance`, `estop_topic`, `reset_to_pose_service`, `joint_states_topic`,
+`approach_skill_id` / `approach_skill_revision`, `preload_rskill_id` / `_revision` /
+`preload_prompt`, `release_rskill_after_goal`, `place_declaration_json`,
+`grasp_declaration_json`, `success_conditions_json`, `grasp_approach_enabled`,
+`place_approach_enabled`, `place_zones_json`, `object_tracking`, `object_queries_json`,
+`grounding_wait_s`, `grounding_required`, `grounding_wait_wall_s` (60), `grounding_context_wait_s`
+(2), `station_perception_nodes`, `station_perception_service`, `station_perception_timeout_s`
+(120).
 
-### The seam is read from every blocking wait
+## Safety behaviour
 
-`ROSPublishingHAL` waits for `/openral/action_applied` after every active single-slot tick
-and after the final slot of an atomic group. The same bounded wait therefore catches a dead
-HAL for SmolVLA, ACT, diffusion, and multi-surface policies. The loop-level guard remains
-necessary before inference and for pre-goal waits that have no tick id to acknowledge.
+`/openral/safety_status` feeds the `safety_abort_getter` seam handed to `ROSPublishingHAL`
+(ADR-0096): a blocked apply-wait reports the actual fault (`kind_collision`,
+`drop_envelope_unconfigured`, ...), not just `/openral/estop`. The topic is latched, so a
+reconnecting runner reads the current state at once. Once a status has been seen, one silent
+for more than 3 s is reported as unknown, not safe.
 
-`_raise_if_safety_aborted(where)` is the one guard every blocking wait on the
-dispatch path calls, all reading the same `_safety_abort_reason()` the HAL polls:
+`_raise_if_safety_aborted(where)` is the one guard every blocking wait calls. It raises
+`ROSEStopRequested`, which ends the goal as `FAILURE_SAFETY_ESTOP`.
 
-| wait | what a stopped safety layer starves | used to report |
+| Wait | What a stopped safety layer starves |
+|---|---|
+| `ROSPublishingHAL._wait_for_group_applied` | `/openral/action_applied` goes silent |
+| rollout loop, before each inference tick | every chunk dropped |
+| `_wait_for_starting_pose` | a latched HAL stops publishing `/joint_states` |
+| `_run_approach_skill`, per MoveIt waypoint | every replayed waypoint dropped |
+
+A wrapped `ros_action` / `ros_service` skill blocked on its server polls the same
+`stop_check`, so a latch stops it within one 20 ms poll. An action skill cancels the wrapped
+goal and waits up to 5 s each for the cancel response and the result. If the server rejects
+the cancel or never confirms it, the runner **rejects every new goal**, through an e-stop
+reset too, until that goal's result arrives. A service skill cannot be cancelled: the goal
+ends and the reason says the call "may still be running". A latched stop outranks a
+completion or a cancel; such a goal ends `FAILURE_SAFETY_ESTOP`, never as a success.
+
+## Execution budgets
+
+A goal's budget is `deadline_s`, else the manifest's `latency_budget.max_execution_s`, else
+45 s. `openral_rskill.execution_budget.ExecutionBudget` measures it on the clock the robot
+moves on: sim time when `use_sim_time=true` (`openral deploy sim`), `time.monotonic()` on a
+real robot. A NaN `deadline_s` is refused as `FAILURE_CONFIG_ERROR`.
+
+Two wall-clock backstops keep a goal bounded when `/clock` stops or crawls. Both abort with
+`FAILURE_DEADLINE_MISSED`, cannot be disabled (a non-positive or non-finite value fails
+`on_configure`), and apply to wrapped skills too:
+
+| Parameter | Default | Fires as |
 |---|---|---|
-| `ROSPublishingHAL._wait_for_group_applied` | `/openral/action_applied` goes silent | `action tick N…` (single) or `action group tick N…` |
-| rollout loop, before each inference tick | every chunk dropped, nothing to notice | nothing, until `deadline_exceeded` |
-| `_wait_for_starting_pose` | a latched HAL stops publishing `/joint_states` | a timeout warning, then the policy started anyway |
-| `_run_approach_skill`, per MoveIt waypoint | every replayed waypoint dropped | approach "succeeded"; policy started from a pose the arm never reached |
+| `graph_clock_stall_s` | 10 s | `clock_stalled: ...` (also when no `/clock` ever arrived) |
+| `execution_wall_cap_factor` | 20 | `deadline_exceeded: wall elapsed=... exceeds 20x budget=...` |
 
-All of them raise `ROSEStopRequested` naming the reason and the wait, and every
-such raise lands on a branch that stamps `failure_reason="safety_estop:…"` +
-`failure_kind=FAILURE_SAFETY_ESTOP`. The MoveIt approach needs an explicit
-re-raise: `ROSEStopRequested` is a `ROSError`, so without it it fell into
-`_dispatch_moveit_approach`'s planning branch and the goal reported
-`FAILURE_PLANNING_ERROR` — the ladder replanning around an "unreachable"
-pose while the kernel was in fact latched.
+The goal's grasp declaration is a second deadline: the kernel drops its contact exemption
+at `stamp_ns + timeout_s`. The runner ends the goal `DECLARATION_EXPIRY_MARGIN_S` (2 s)
+before that, as `deadline_exceeded: grasp declaration '<target>' expires ...`, rather than
+let the fingers meet an unexplained world-collision stop.
 
-### Execution budgets run on the clock the robot moves on
+## Declarations and station mode
 
-A goal's budget (`deadline_s`, else the manifest's `latency_budget.max_execution_s`, else
-45 s) is measured by `openral_rskill.execution_budget.ExecutionBudget`. Under
-`openral deploy sim` the graph runs with `use_sim_time=true` and Nav2 / MoveIt / the
-controllers time themselves in sim seconds, so the budget does too — measured on
-`time.monotonic()` it fired while a slow simulator was still mid-motion (a rendering
-graph at 0.09x real time lost a 300 s Nav2 budget after 28 s of sim time; adapted from
-DsslRobot/openral). `ROSActionRskill`'s result wait in result-only mode (Nav2: the server
-is moving the robot) follows the same clock; goal acceptance, service responses and a
-MoveIt plan (trajectory mode, CPU planning) stay on the wall clock. Giving up on a
-result wait cancels the wrapped goal, and the wait raises `ROSDeadlineMissed`
-(`FAILURE_DEADLINE_MISSED`, like the runner's own budget). With `use_sim_time=false`
-(every real robot) budgets are `time.monotonic()` exactly as before — never the
-NTP-stepped ROS system clock; `use_sim_time` is re-read per goal, not cached.
+Per goal the runner reads the skill manifest to decide what to declare. Order: refusals,
+station perception on, declarations armed, grounding wait, skill load, starting pose, policy.
 
-Two wall-clock backstops keep the goal bounded when `/clock` stops (sim pause, HAL
-crash, e-stop) or crawls; both abort with `FAILURE_DEADLINE_MISSED`. They are read
-from this node by `openral_rskill.execution_budget.node_execution_budget` for the
-runner's goals and for every wrapped skill's result wait, cannot be disabled (a
-non-positive / non-finite value fails `on_configure`), and a NaN `deadline_s` on a
-goal is rejected as `FAILURE_CONFIG_ERROR` rather than never lapsing:
+- **Manipulation goals only.** With `object_tracking` `tracking` or `on`, a base-only skill
+  (`body_twist` only: Nav2, a VLN policy) arms no declaration and has no grounding wait. A
+  skill that may grasp (a `vla`, or one actuating a gripper / dex hand; not a MoveIt look-at,
+  joint or pose motion) whose grasp declaration has no `target_queries` is refused before
+  anything moves (`ROSReasonerInvalidPlan`, `FAILURE_PLANNING_ERROR`); the reasoner must
+  resend with `grasp_target`. No `place_target` is required: the runner names the place zone
+  from the prompt.
+- **Merge.** The goal's own grasp declaration is completed from the scene's
+  (`merge_grasp_declarations`): the goal keeps `target_id`, queries and `search_box`; the
+  scene fills `search_box`, `workspace_box` and `contact_links` the goal leaves unset, and only
+  when the goal names the scene's hand. Declaration `timeout_s` is the largest of the goal's,
+  the scene's and the execution budget + 10 s, capped at 120 s.
+- **Several stations.** When a prompt matches one slot declared at several map-frame stations,
+  the place declaration names all of them (`zone:<a>|<b>|...`) and the tracker keeps the one
+  in reach (`place_zones_for_prompt`).
+- **Station mode (mobile base, tracking on).** `deploy_e2e` launches `openral_segmenter`
+  inactive and the tracker active with station perception off. A skill that actuates an arm
+  or gripper activates the segmenter and the tracker's station perception
+  (`station_perception_service`) before its declarations; a base-only skill switches them
+  off. A failed activation refuses the goal with `ROSPerceptionStale`; a failed deactivation
+  is only logged. The tracker stays active when off so its held-payload stream keeps the
+  kernel's attachment input fresh.
+- **Isaac twin starting pose.** For the OpenAMRobot 2.0 and OpenArm Isaac scenes the launch
+  sets `starting_pose_tolerance` to 0.08 rad (`_runner_starting_pose_tolerance`) because the
+  arm settles short of the pose without gravity feed-forward; real hardware and MuJoCo keep
+  the manifest value.
 
-| ROS parameter | default | fires as |
+## Results
+
+`ExecuteRskill.Result` carries `failure_kind` (uint8), `failure_reason` (prose),
+`evidence_json`, `task_outcome` and `task_outcome_json`. Consumers classify on the typed
+fields, never on prose. `FAILURE_NONE` on a failed result means "unknown, read the string".
+
+| Kind | Value | Set by |
 |---|---|---|
-| `graph_clock_stall_s` | 10 s | `failure_reason="clock_stalled: graph clock has not advanced for N s of wall time …"` (or `never started` when no `/clock` ever arrived — a sim node reads 0 until then, and the budget does not start counting before its first message). A backward `/clock` jump (sim reset) re-anchors the budget and keeps the elapsed time banked so far. |
-| `execution_wall_cap_factor` | 20 | `failure_reason="deadline_exceeded: wall elapsed=… exceeds 20x budget=…"` — a budget survives intact down to 1/20 = 0.05x real time (the slowest measured rendering graph, 0.09x, needs 11.1x); a frozen clock is caught by the stall guard long before. |
+| `FAILURE_NONE` | 0 | success (or a producer without the field) |
+| `FAILURE_CONFIG_ERROR` | 1 | `ROSConfigError`: bad manifest, unusable approach manifest, bad success condition |
+| `FAILURE_CAPABILITY_MISMATCH` | 2 | `ROSCapabilityMismatch`: a `check_manifest_gates` refusal (kind, `any` tag on an actuating skill, embodiment, capabilities, sensors, gripper encoding) |
+| `FAILURE_RUNTIME_ERROR` | 3 | `ROSRuntimeError` (incl. quantization / GPU OOM); starting pose not reached after the move |
+| `FAILURE_SAFETY_ESTOP` | 4 | `ROSEStopRequested` |
+| `FAILURE_PERCEPTION_STALE` | 5 | `ROSPerceptionStale`, incl. no fresh joint state at the starting pose |
+| `FAILURE_PLANNING_ERROR` | 6 | `ROSPlanningError`: MoveIt approach, invalid grasp target |
+| `FAILURE_DEADLINE_MISSED` | 7 | budget lapsed, clock stalled, or declaration expired; `ROSDeadlineMissed` |
+| `FAILURE_CANCELLED` | 8 | cancel honoured |
+| `FAILURE_OBJECT_NOT_FOUND` | 9 | `ROSObjectNotInMemory`: the tracker exhausted the goal's object search |
+| `FAILURE_UNKNOWN` | 255 | a non-`ROSError` escaped |
 
-Every miss is logged (`rskill_runner.deadline_exceeded` / `rskill_runner.clock_stalled`)
-and recorded as the `deadline_missed` span event with `miss.kind`.
+`ROSSafetyViolation` other than `ROSEStopRequested` has no kind: it goes to the safety
+supervisor, never into a Result. An action the kernel never applied is typed by the kernel's
+drop: a stale or missing input (`DROP_VOXEL_UNAVAILABLE`, `DROP_ATTACHED_UNAVAILABLE`,
+`DROP_STATE_UNAVAILABLE`) gives `FAILURE_PERCEPTION_STALE`; any other drop stays
+`FAILURE_RUNTIME_ERROR`.
 
-The goal's grasp declaration is a second deadline. The kernel drops its contact exemption at
-`stamp_ns + timeout_s`, and the declaration is armed before the start-pose move, so it can
-expire inside the goal's own budget. A goal still running then has its fingers in contact
-with nothing exempting them, and it ends as an unexplained world-collision e-stop (pro#51:
-six of eight restock timeouts). The runner ends the goal
-`DECLARATION_EXPIRY_MARGIN_S` (2 s) before that expiry instead: `failure_reason=
-"deadline_exceeded: grasp declaration '<target>' expires (armed … ago, timeout_s=…)"`,
-`TimeoutEvidence.operation="rskill.execute:grasp_declaration:deadline_exceeded"`. A wrapped
-`ros_action` goal checks it too, in the `stop_check` it polls while blocked. It only ever ends
-a goal earlier.
+### `evidence_json`
 
-`_drain_and_idle_hold`'s fixed 100 ms sleep and `_pace_tick`'s period sleep wait on the
-clock, not the safety layer. `ROSActionRskill._poll_future` (a wrapped `ros_action`/
-`ros_service` skill blocking on its server's result) reads it through the `stop_check` seam
-the runner already injects: a latched `/openral/estop` or `/openral/safety_status` (or a
-silent status publisher, the same `_safety_abort_reason`) makes `stop_check` raise
-`ROSEStopRequested` within one 20 ms poll. An action skill then cancels the wrapped goal and
-waits up to 5 s each for the cancel response and the terminal result, and re-raises the stop,
-so the goal ends `FAILURE_SAFETY_ESTOP` whatever the latch reads by then (an operator reset
-during the handshake does not turn it into a deadline miss). A server that rejects the cancel
-or never confirms it is named in the reason ("may still be running"), and the runner then
-**rejects every new goal**, through an e-stop reset too, until that wrapped goal's result
-arrives. A service skill cannot be cancelled: the stop ends the goal and says the call "may
-still be running". This matters most where the wrapped server drives the robot itself: in a
-standalone deploy the HAL already drops Nav2's `/cmd_vel` once latched, but the Nav2 goal
-stayed alive and resumed after a reset. A latched stop outranks a cancel and a completion:
-a step that completes, or a goal cancelled, while a stop is latched ends `FAILURE_SAFETY_ESTOP`
-("goal ended (…) while a safety stop was latched"), never as a success.
+One `openral_core.FailureEvidence` variant per failed result (`_attach_failure_evidence`):
 
-## Station mode: perception per skill on a mobile base
+| Kind | Evidence |
+|---|---|
+| `FAILURE_SAFETY_ESTOP` | newest `/openral/failure/safety` report this goal: `CollisionEvidence`, `HumanEvidence` or `TimeoutEvidence`. Empty if no publisher explained the stop |
+| `FAILURE_PERCEPTION_STALE` | the kernel's `PerceptionStaleEvidence` (input, age, limit) |
+| `FAILURE_DEADLINE_MISSED` | `TimeoutEvidence` (`operation="rskill.execute:..."`, budget, elapsed) |
+| `FAILURE_OBJECT_NOT_FOUND` | the exhausted `ObjectQueryEvidence` |
+| `FAILURE_RUNTIME_ERROR` | `ControllerEvidence` when known (GPU OOM, quantization mismatch, a kernel drop, starting pose not reached with per-joint residuals) |
 
-On a mobile base with object tracking on, `deploy_e2e` launches `openral_segmenter`
-configured but **inactive** (`station_perception_nodes`) and the object tracker ACTIVE with
-its station perception off (`station_perception_service` =
-`/openral/object_tracker/station_perception`); everywhere else (every fixed-base cell,
-tracking off) both parameters are empty and the nodes autostart as before. Per goal the runner
-reads the skill's manifest (`station_perception_wanted`, from `actuators_required`, not an
-LLM decision): a skill that actuates an arm / gripper (pi0.5, MoveIt) gets the segmenter
-activated and the tracker's station perception switched on before its declarations are
-published (the tracker's search timers start when a declaration arrives); a base-only one
-(`body_twist` only: Nav2, a VLN policy) gets them off before its goal is sent; a skill that
-actuates nothing, and the end of a goal, leave them as they are, so a pick and the place
-after it at one station share one segmenter load. Each transition is logged
-(`rskill_runner.station_perception*`); an activation that fails refuses the goal with
-`ROSPerceptionStale` naming the node or service, a deactivation that fails is only logged (a
-crashed segmenter must not stop every Nav2 goal).
+The safety report and the latch travel on two topics, so the Result waits up to 1 s
+(`_SAFETY_EVIDENCE_WAIT_S`) for the report and logs `rskill_runner.safety_evidence_missing`
+if none arrives. The robot is already stopped; only the Result is delayed.
 
-Why the tracker is switched, not deactivated: Nav2's `/cmd_vel` reaches the base through the
-HAL's `MobileBaseBridge` (`_send_action_traced`, never `/openral/candidate_action`), so it
-never meets the kernel; but a base *policy*'s `BODY_TWIST` chunk does, and the kernel refuses
-every candidate once the attachment stream goes stale. Off, the tracker keeps that stream fresh
-with the hands' held payloads only (no declaration, no region, no tracked key: nothing the
-kernel can read as an allowance), so the base can drive and a payload in a hand stays known
-(the kernel, and Nav2's payload scan filter, which fails open on a stale set). The reasoner's
-`vram_lifecycle_peers` (detector / locators) is a disjoint set.
+### `task_outcome`
 
-**Object grounding is for manipulation goals only.** With `object_tracking` `tracking` or
-`on` (station mode or not) the same manifest predicate decides what a goal declares: a
-base-only skill arms no grasp or place declaration, so no standing `object_queries_json`
-query rides it and there is no grounding wait — it runs as with tracking off
-(`rskill_runner.declarations_skipped why=base_only`). A skill that may grasp (a `vla`, or
-one whose `actuators_required` names a gripper / dex-hand mode; not a MoveIt look-at, joint or
-end-effector-pose motion) whose grasp declaration (the goal's own, else
-`grasp_declaration_json`, else the approach one; plus the standing queries) carries no
-`target_queries`, or that has none in force at all, is refused before any declaration is
-published and before anything moves, with `ROSReasonerInvalidPlan` (`FAILURE_PLANNING_ERROR`): the
-reasoner must re-send the call with `grasp_target` naming the object. Without a query the
-tracker never tracks the object and the kernel checks the held payload as an untracked
-stand-in (Isaac shelf aisle, 2026-11-16). No `place_target` is required: under `tracking`, and under `on`
-when the deploy has no DESTINATION standing query (a reasoner-driven goal; with one, `on`
-places on the tracked destination and names no zone), the runner names the place zone (or
-the station's zone candidates) from the prompt. The tracker resolves a `zone:` target in any
-mode (`TrackerSession.place_region`), and the kernel ingests that place region from the
-attachment snapshot whether or not an exemption provider is loaded (the provider seam has no
-place-region hook). A goal's
-own grasp declaration is completed from the scene's (`merge_grasp_declarations`, logged as
-`rskill_runner.grasp_declaration_merged` with each field's source): the goal keeps its
-`target_id`, queries and any seeded `search_box`; the scene fills `search_box`,
-`workspace_box` and `contact_links` the goal leaves unset, only when the goal names the
-scene's hand (another hand: no scene box or lifetime, a warning, and a `(note: ...)` naming
-both hands appended to that goal's failure reason when the hand can explain it — a safety
-stop, a target not grounded or not found — so the reasoner corrects the hand on its retry;
-the reasoner takes the scene's hand when the LLM names none, `grasp_contact_links`). A scene
-declaration that names its own object (TARGET `target_queries`) lends its boxes only to a
-goal naming that label. The deploy's standing CONTEXT queries ride a goal that names its own
-target.
-A merged non-`sim:` search box seeds the TARGET query, and under `tracking` the tracker counts only a track centred in the
-declared search box as the goal's target (AMR aisle, 2026-11-16: a shelf carton grounded
-"box" while the one to grasp was in the tote). `timeout_s` is the largest of the goal's, the
-scene's and the goal's execution budget + 10 s, capped at 120 s (the reasoner's
-`patience_s=0` declaration got 10 s and ended a 68 s skill 8 s in); the budget counts from
-the run, so a goal declaration the pre-execution waits ate into is republished (same key)
-just before the policy starts. Order per goal: refusals, station perception on, declarations
-armed, grounding wait, skill load, starting pose, policy.
+`success` says the goal ended without a fault. `task_outcome` (`TASK_UNKNOWN` 0,
+`TASK_SUCCEEDED`, `TASK_FAILED`) says whether the task was done; `task_outcome_json` is one
+`openral_core.TaskOutcome` (verdict, source, reason, the tracked objects read).
 
-Place zones at several stations: when the prompt matches the same slot declared at several
-map / odom-frame stations (`s<k>_<slot>` sharing an alias), the goal-scope place declaration
-names all of them (`zone_candidates_target_id`, `zone:<a>|<b>|...`) and the tracker keeps the
-one in reach at the base's pose; one match is named as before, and a fixed-base scene is
-unchanged. A zone named by its own name (`s2_lower_slot_1`) wins over the shared alias; a
-prompt naming two slots, or several base-frame zones, names none
-(`place_zones_for_prompt`).
+| Source | When | Verdict |
+|---|---|---|
+| `success_condition` | the goal carries a `SuccessCondition`, or the scene declares one for the goal's prompt (`DeployScene.success_conditions`); the goal's wins | `succeeded` once `min_count` objects of `object_label` rest released inside `region` for `settle_s`; `failed` when too few rest there and one is held or elsewhere; `unknown` otherwise |
+| `skill` | the skill raised `ROSRskillGoalSatisfied`, and no condition says `failed` | `succeeded` |
+| `checker` | a completion check ended the goal via `/openral/rskill/complete` | `succeeded` |
+| `none` | none of the above | `unknown` |
 
-Starting pose on an Isaac twin: the OpenAMRobot 2.0 and OpenArm Isaac scenes run their arms on
-position gains without gravity feed-forward, so joint4 settles ~0.065 rad short of a stocking
-starting pose. `deploy_e2e` sets the runner's `starting_pose_tolerance` to 0.08 rad for those
-two robots on an Isaac Sim deploy only (`_runner_starting_pose_tolerance`); real hardware and
-MuJoCo keep the manifest's 0.05. The param widens the arrival check only: the ramp is skipped
-only when every joint is within the manifest's tolerance.
+One `SuccessJudge` per goal reads every set on `/openral/tracked_objects`. `settle_s` is
+measured on the tracker's own stamps; a missing set, a backwards stamp or a gap beyond
+`max_evidence_gap_s` restarts it. A condition with `end_on_success: true` also ends the run
+when it settles; it is off by default because the verdict is only as good as the tracks. The
+condition is advisory: it labels or ends a goal and the safety kernel never reads it.
+
+Limits: the region is a box in the tracker's grid frame (a map-frame region reads
+`unknown`); any track of the label counts; with object tracking off every verdict is
+`unknown`. A scene's conditions are keyed by prompt, so a goal with another prompt is not
+judged by them.
 
 ## Composition (one shared `WorldStateAggregator`)
 
-Per the single-aggregator contract the world_state node is the **only** subscriber of
-`/joint_states`. The compose factory in this package builds a single
-`WorldStateAggregator`, hands the same reference to a colocated
-`_WorldStateLifecycleNode`, and lets `RskillRunnerNode` call
-`aggregator.snapshot()` in-process — no ROS topic boundary between
-the aggregator and the skill.
+`world_state` is the only subscriber of `/joint_states`. `compose_runtime` (and the
+`compose_so100_runtime` wrapper) builds one `WorldStateAggregator`, hands it to a colocated
+`_WorldStateLifecycleNode`, and lets `RskillRunnerNode` call `aggregator.snapshot()`
+in-process. The `runtime_node` script is the entry point:
+`ros2 run openral_rskill_ros runtime_node --ros-args -p robot_yaml:=/abs/path/robot.yaml`.
 
 ```python
 from openral_rskill_ros import compose_so100_runtime
@@ -221,230 +246,33 @@ runtime = compose_so100_runtime(robot_name="so100")
 # runtime.aggregator is runtime.rskill_runner_node._aggregator
 ```
 
-One generic launch file ships with this package:
-
-* `launch/deploy_e2e.launch.py` — the robot-agnostic
-  graph: `runtime_node` (composed `world_state` + `skill_runner`) +
-  C++ `safety_kernel_node` + reasoner + prompt router + HAL. Every
-  robot-specific bit is a launch argument resolved at startup by an
-  `OpaqueFunction`: `robot_yaml`, `envelope_file`, `hal_package`,
-  `hal_executable`, `hal_node_name`, `hal_params_file`.
-
-  Normally you use
-  `openral deploy sim --config <DeployScene.yaml>` (see
-  `python/cli/src/openral_cli/deploy_sim.py`). The CLI:
-  1. resolves the robot via the DeployScene's `robot_id` (or
-     `--robot` override) → `$OPENRAL_ROBOTS_DIR/<id>/robot.yaml` or
-     `robots/<id>/robot.yaml`, and derives the HAL package/exec from it
-     (`_derive_hal_spec`: always the one generic `openral_hal_node`
-     package, run under the node name `openral_hal_<id>`);
-  2. validates the manifest via
-     `RobotDescription.validate_for_e2e_pipeline()`;
-  3. runs `ros2 launch openral_rskill_ros deploy_e2e.launch.py …`.
-
-  The launch's `OpaqueFunction` then loads `robot.yaml`, calls
-  `openral_safety.envelope_loader.compute_intersection(robot, None)`,
-  and forwards each `EnvelopeIntersection` field as a ROS parameter
-  on the C++ safety_kernel node. **No envelope YAML file is written
-  or read**; the kernel's legacy `envelope_file:=PATH` loader is kept
-  for HIL safety tests + `kernel_only.launch.py`.
-
-  Direct invocation (for debugging the launch itself):
-
-  ```bash
-  ros2 launch openral_rskill_ros deploy_e2e.launch.py \
-      robot_yaml:=$PWD/robots/openarm/robot.yaml \
-      hal_package:=openral_hal_node \
-      hal_executable:=lifecycle_node.py \
-      hal_node_name:=openral_hal_openarm \
-      hal_params_file:=/tmp/openral-hal-params-openarm.yaml
-  ```
-
-The launch keeps each piece in its own OS process — CLAUDE.md §1.5
-forbids collapsing the safety boundary into the runner. A
-composable-node container that runs the compose factory inside a
-single OS process is a small follow-up — see the single-aggregator
-contract for the constraint and the integration test
-(`test/test_rskill_runner_node.py::test_compose_factory_shares_one_aggregator`)
-for the assertion that the production path satisfies it.
+The default resolver is a `ManifestSkillResolver` (`make_default_skill_resolver`): it
+resolves the goal's manifest (in-tree by name, else the HF Hub manifest alone), runs
+`check_manifest_gates` before evicting the resident skill or loading weights, then builds,
+pinning a Hub policy's weights to the commit whose manifest was gated. A custom resolver
+that is not a `TwoPhaseSkillResolver` is gated only after it has built the skill.
 
 ## License gating
 
-The rSkill lifecycle-node contract mandates two gates:
-
-1. **Install-time** — `openral rskill install` refuses non-commercial weights
-   in a commercial deployment.
-2. **Goal-acceptance** — `rskill_runner_node` re-checks the
-   `RSkillLicensePosture` against the
-   `OPENRAL_COMMERCIAL_DEPLOYMENT` env var. The same skill cannot
-   reach a commercial deployment via a CLI bypass.
+1. Install time: `uv run openral rskill install` refuses non-commercial weights in a
+   commercial deployment.
+2. Goal acceptance: the runner re-checks the manifest's `RSkillLicensePosture` against
+   `OPENRAL_COMMERCIAL_DEPLOYMENT=1`, so a CLI bypass cannot reach a commercial deployment.
 
 ## Tests
 
-`test/test_rskill_runner_node.py` is a real `launch_testing`-equivalent
-integration test (CLAUDE.md §1.11 / §2: no mocks). It composes the
-runtime via `compose_so100_runtime`, brings up a real
-`SafetyPassthroughNode`, and asserts:
-
-1. Single-aggregator contract (identity check).
-2. End-to-end `ExecuteRskill` goal → `/openral/candidate_action` →
-   `safety_node` → `/openral/safe_action` round trip with the right
-   `rskill_id` / `flat` / `n_dof` fields.
-3. `/openral/estop` aborts the in-flight goal with
-   `failure_reason="safety_estop:…"` and
-   `failure_kind=FAILURE_SAFETY_ESTOP`.
-4. A safety latch that lands **while the HAL is blocked** waiting for an
-   active action tick to be applied is still reported as
-   `safety_estop:…` (naming the typed fault from
-   `/openral/safety_status`, `/openral/estop`, and the unapplied tick),
-   not as the `ROSPublishingHAL: action tick N…` / `action group tick N…`
-   timeout that a silenced `/openral/action_applied`
-   produces on its own. The real `SafetyPassthroughNode` decides the
-   violation and fires the estop itself in that test.
-4b. The same is true of pre-goal waits that carry no apply-ack. With the real
-   `SafetyPassthroughNode` taken down mid-goal by its own lifecycle
-   `deactivate` — no `/openral/estop` published, so the estop latch stays
-   `False` — a single-slot policy aborts as
-   `safety_estop:…/openral/safety_status:stale…while about to dispatch
-   inference tick N` instead of running out its budget, and a goal
-   dispatched after the supervisor has gone aborts naming the post-reset
-   joint-state wait rather than starting the policy.
-5. Every other terminal branch carries the matching typed
-   `ExecuteRskill.Result.failure_kind` — capability mismatch, config
-   error, a `ROSRuntimeError` / `ROSPerceptionStale` /
-   `ROSPlanningError` out of `skill.step`, a raw non-`ROSError` escape
-   (`FAILURE_UNKNOWN`), the lapsed execution budget
-   (`FAILURE_DEADLINE_MISSED`), and `FAILURE_NONE` on success.
-
-`test/test_rskill_runner_failure_reason.py` covers the helpers directly:
-the colcon-generated `FAILURE_*` constant set, `_failure_kind_for_exception`
-(the CLAUDE.md §5 hierarchy → uint8 map every failure branch calls), and
-`_classify_runtime_failure` / `_finalize_goal`.
-
-### `failure_kind` — the typed dispatch outcome
-
-`ExecuteRskill.Result` carries `failure_kind` (uint8) alongside the
-free-text `failure_reason`. Machine consumers (the reasoner's replanning
-ladder) classify on it, never by substring-matching operator prose. The field is **additive** (CLAUDE.md §1.6): a consumer
-reading only `success` / `failure_reason` is untouched, and a Result from a
-producer that predates the field decodes as `FAILURE_NONE`. A consumer
-must therefore read `failure_kind == FAILURE_NONE` on a failed result as
-"unknown — fall back to the string", never as "succeeded".
-
-| Kind | Value | Raised by / set on |
-| --- | --- | --- |
-| `FAILURE_NONE` | 0 | Success (also the pre-field default) |
-| `FAILURE_CONFIG_ERROR` | 1 | `ROSConfigError` — bad manifest, non-ACTIVE resolver result, unusable MoveIt approach manifest |
-| `FAILURE_CAPABILITY_MISMATCH` | 2 | `ROSCapabilityMismatch` — a dispatch gate (`check_manifest_gates`): not an ExecuteRskill kind, an actuating skill tagged `any`, embodiment, capability flags, sensors, gripper encoding; or a manifest-less skill not declaring `role: s1` |
-| `FAILURE_RUNTIME_ERROR` | 3 | `ROSRuntimeError` (incl. `ROSQuantizationError` / `ROSGPUMemoryError`), plus a labelled torch OOM / dtype failure; `starting_pose not reached within … s: (joint, target - measured, tolerance) [...]` when a fresh joint state measured after the starting-pose move still misses it |
-| `FAILURE_SAFETY_ESTOP` | 4 | `ROSEStopRequested` |
-| `FAILURE_PERCEPTION_STALE` | 5 | `ROSPerceptionStale`, incl. `no fresh joint state reached starting_pose within … s` (no measured joint state after the move, or the stream stalled) |
-| `FAILURE_PLANNING_ERROR` | 6 | `ROSPlanningError` — the MoveIt starting-pose approach |
-| `FAILURE_DEADLINE_MISSED` | 7 | The execution budget lapsed (`deadline_exceeded: …`) or the graph clock stalled under `use_sim_time` (`clock_stalled: …`); `ROSDeadlineMissed` |
-| `FAILURE_CANCELLED` | 8 | Cancel honoured (no exception) |
-| `FAILURE_UNKNOWN` | 255 | A non-`ROSError` escaped the OpenRAL exception surface |
-
-`ROSSafetyViolation` other than `ROSEStopRequested` has no kind by design:
-it is re-raised to the safety supervisor, never folded into a Result
-(CLAUDE.md §1.1).
-
-An action the kernel never applied (the apply-wait times out) is typed by
-the kernel's drop: a stale or missing kernel input (`DROP_VOXEL_UNAVAILABLE`,
-`DROP_ATTACHED_UNAVAILABLE`, `DROP_STATE_UNAVAILABLE`) raises
-`ROSPerceptionStale` → `FAILURE_PERCEPTION_STALE`; any other drop, or none,
-stays `FAILURE_RUNTIME_ERROR`.
-
-### `evidence_json` — the typed detail behind the kind
-
-`ExecuteRskill.Result.evidence_json` carries one
-`openral_core.FailureEvidence` variant, so the reasoner reads *what* failed,
-not just the kind (`_attach_failure_evidence`, stamped on every failed
-result):
-
-| Kind | `evidence_json` |
-| --- | --- |
-| `FAILURE_SAFETY_ESTOP` | The newest report on `/openral/failure/safety` during this goal: the kernel's (`CollisionEvidence`: which link, against what, how deep), the operator / hardware e-stop's (`HumanEvidence`) or the deadman watchdog's (`TimeoutEvidence`). Empty when no publisher explained the stop |
-| `FAILURE_PERCEPTION_STALE` | The kernel's `PerceptionStaleEvidence` (which input, its age, the limit) when a stale input stalled the action |
-| `FAILURE_DEADLINE_MISSED` | `TimeoutEvidence` (`operation="rskill.execute:<deadline_exceeded\|clock_stalled>"`, or `"rskill.execute:grasp_declaration:deadline_exceeded"` when the grasp declaration expires first; budget, elapsed) |
-| `FAILURE_OBJECT_NOT_FOUND` | The tracker's exhausted `ObjectQueryEvidence` |
-| `FAILURE_RUNTIME_ERROR` | `ControllerEvidence` when the cause is known: `state=gpu_out_of_memory` / `quantization_mismatch` (the skill's own typed fault), or the kernel drop that left the action unapplied (`drop_envelope_unconfigured`, `drop_voxel_overflow`, `drop_attached_overflow`), or `controller_name=rskill_runner`, `state=starting_pose_not_reached` with `detail` a JSON list of `{joint, residual, tolerance}` for each joint that missed the starting pose. Empty otherwise |
-| anything else | Empty: `failure_reason` says it all |
-
-A safety stop's report and its latch travel on two topics, so the latch can wake the goal first. The failed Result waits up to 1 s (`_SAFETY_EVIDENCE_WAIT_S`) for the report of the kind the latched `SafetyStatus` names, and logs `rskill_runner.safety_evidence_missing` when none arrives. The robot is already stopped; only the Result is delayed. The `/openral/failure/safety` subscription has its own callback group, so it never queues behind the stop's own `/openral/estop` callback.
-
-Additive like `failure_kind`: an older producer's Result decodes as `""`.
-The reasoner renders it on the skill's execution line and picks its
-strategy hint from the kind and the evidence (`reflect_on_failure`).
-
-### `task_outcome` — did the run do what it was asked
-
-`success` says the goal ended without a fault. Whether the task was done is a second,
-typed answer on every Result: `task_outcome` (`TASK_UNKNOWN` = 0, `TASK_SUCCEEDED`,
-`TASK_FAILED`) and `task_outcome_json`, one `openral_core.TaskOutcome` (verdict, source,
-reason, and the tracked objects it was read from). The same verdict is on the
-`rskill.execute` span (`rskill.task_outcome`, `.source`, `.reason`) and in the
-`rskill_runner.task_outcome` log line.
-
-| Source | When | Verdict |
-| --- | --- | --- |
-| `success_condition` | The goal carries an `openral_core.SuccessCondition` (`success_condition_valid`), or the deploy scene declares one for the goal's prompt (`DeployScene.success_conditions` → `success_conditions_json`, matched by `success_condition_for_prompt`); the goal's wins | `succeeded` once `min_count` objects of `object_label` have rested released inside `region` for `settle_s`; `failed` when too few rest there and the tracker sees one held or elsewhere; `unknown` when there is no live tracked set, it is in another frame, too few objects of the label are tracked, one is released but not yet re-confirmed, or they have not rested long enough |
-| `skill` | The skill raised `ROSRskillGoalSatisfied` (a wrapped action reached its terminal status), and no condition says `failed` | `succeeded` |
-| `checker` | A completion check ended the goal through `/openral/rskill/complete`, and no condition says `failed` | `succeeded` (a condition perception could not decide is named in the reason) |
-| `none` | None of the above (also a goal refused before its condition was read) | `unknown` |
-
-The condition is judged by one `openral_core.success.SuccessJudge` per goal, fed every
-set the tracker publishes on `/openral/tracked_objects` (its 2 Hz heartbeat included,
-whatever the policy's tick rate). A goal is judged at the moment it ends: a deadline miss
-with the object placed and one with it still in the gripper now read differently. `unknown`
-is never reported as a success.
-
-A condition with `end_on_success: true` also ends the run: each tick, while the world-state
-snapshot holds a live tracked set, a settled condition ends the goal
-(`rskill_runner.success_condition_met`, `success` true) instead of leaving it to its
-budget, and that verdict is the one the Result reports. It is off by default because the
-verdict is only as good as the tracker's tracks: on Isaac SO-101 PickOrange (q5090,
-2026-11-19) the tracker held three confirmed `orange` tracks in the plate with one orange
-there, two of them one object 3 cm apart. Tracks whose centre lies in another counted
-track's box now count once, but a track of something that is not there still counts, and
-ending a run on it would cut the policy short. Off, a wrong `succeeded` costs a label. A condition that does not validate refuses the goal
-(`FAILURE_CONFIG_ERROR`); a goal refused later (a manifest gate, a grounding wait) is still
-judged by its condition. It is advisory: it ends a goal or labels its result, commands
-nothing, and the safety kernel never reads it.
-
-The settle clock is the tracker's evidence, not the runner's patience: `settle_s` is
-measured on the tracked sets' own stamps, a set seen twice counts once, and a missing set, a
-stamp that goes backwards or a gap longer than `max_evidence_gap_s` restarts it. One set
-alone never decides a success (`settle_s` > 0). A `RELEASED` track (its box is frozen at
-the let-go pose until the tracker re-grounds it) does not count as resting.
-
-A scene's conditions are keyed by prompt (case and whitespace aside), so only a goal with
-that prompt is judged by them; a wrapped Nav2 move or another task is not, and is never
-ended early by them (`rskill_runner.success_condition_unmatched` names the prompt). The
-reasoner does not put a condition on its goals yet, so a goal it dispatches is judged only
-when its prompt is one the scene declares.
-
-Limits today: the region is a box in the tracker's grid frame (the robot base frame; a
-map-frame region reads `unknown`), any track of the label counts (an object of that class
-already in the region satisfies it, and so does a track the tracker holds for something
-that is not there), and with object tracking off there is no evidence, so
-every verdict is `unknown` (`openral deploy` says so at launch).
-
-Additive like `failure_kind`: an older producer's Result decodes as `TASK_UNKNOWN` / `""`.
-
-The default resolver is a `ManifestSkillResolver` (`make_default_skill_resolver`):
-the runner resolves the goal's manifest (in-tree by name under the search paths,
-else the HF Hub manifest alone), runs `check_manifest_gates` against the robot
-before evicting the resident skill or loading anything, then builds — a Hub policy's
-weights pinned to the commit whose manifest was gated. Tests override it via
-`compose_so100_runtime(skill_resolver=...)`; a callable that is not a
-`TwoPhaseSkillResolver` is gated only after it has built the skill.
+`test/test_rskill_runner_node.py` composes the runtime via `compose_so100_runtime` with a
+real `SafetyPassthroughNode`, no mocks. It checks the single-aggregator identity, the
+`ExecuteRskill` to `/openral/candidate_action` to `/openral/safe_action` round trip, e-stop
+aborts (including a latch while the HAL is blocked and a supervisor taken down mid-goal), and
+a typed `failure_kind` for every terminal branch. `test/test_rskill_runner_failure_reason.py`
+covers the `FAILURE_*` constants and the exception-to-kind map. The `test/test_deploy_e2e_*`
+files check the launch graph.
 
 ## Related
 
-- `python/runner/src/openral_runner/ros_publishing_hal.py` —
-  `ROSPublishingHAL` HAL adapter that turns `Action` into
-  `openral_msgs/ActionChunk` published on `/openral/candidate_action`.
-- `packages/openral_safety/` — F5 chunk-rate safety boundary
-  (`/openral/candidate_action → /openral/safe_action`).
-- `packages/world_state/` — the colocated lifecycle node sharing the
-  aggregator.
+- `python/runner/src/openral_runner/ros_publishing_hal.py`: `ROSPublishingHAL`, which turns
+  an `Action` into an `ActionChunk` on `/openral/candidate_action`.
+- `packages/openral_safety/`: the chunk-rate safety boundary
+  (`/openral/candidate_action` to `/openral/safe_action`).
+- `packages/world_state/`: the colocated lifecycle node sharing the aggregator.

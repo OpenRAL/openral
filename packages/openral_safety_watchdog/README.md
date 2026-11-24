@@ -4,7 +4,7 @@ Defense-in-depth E-stop sources (reasoner + supervisor graph spec §5), independ
 of the in-band `openral_safety` node and the C++ safety kernel so a crash in
 either still triggers a brake event. Two lifecycle nodes:
 
-| Node | ADR | What it does |
+| Node | Spec | What it does |
 |---|---|---|
 | `deadman_watchdog_node` | §5 bullet 4 | Fires `/openral/estop` if no `/openral/safe_action` arrives within `safe_action_deadline_s` while an execution window is open, or if an open window never produces a first chunk within `first_chunk_deadline_s` (see below). Also emits a `FailureTrigger(KIND_TIMEOUT, SEVERITY_ABORT)` on `/openral/failure/safety` so the reasoner sees a structured `TimeoutEvidence` event, not just a bare estop. |
 | `hardware_estop_node` | §5 bullet 3 | Bridges a hardware estop source (GPIO relay via libgpiod, or a USB-HID pendant via `/dev/input`) onto `/openral/estop`, polling at `poll_rate_hz` (default 100 Hz) and publishing `std_msgs/Empty` + `FailureTrigger(KIND_HUMAN, SEVERITY_ABORT, HumanEvidence)` on the rising edge. The per-vendor device read is an overridable hook; the base class owns the poll loop, edge detection, and publication. **This repo ships no such vendor driver** — see "Hardware pendant" below. |
@@ -16,7 +16,7 @@ GPIO relay / USB pendant ──(rising edge, or read failure)─▶ hardware_est
 
 `/openral/estop` never auto-clears — `/openral/estop_reset` (`std_srvs/Trigger`,
 served by `openral_safety`'s supervisor node and by the C++ kernel) is the only
-recovery path (CLAUDE.md §1.5, §3).
+recovery path (CLAUDE.md §1.1, §3).
 
 ## Bringup
 
@@ -95,8 +95,7 @@ drive), and fires as `operation="result_only_goal"` with the skill in the
 window open and the bound fires. The runner executes one goal at a time, so a goal queued
 behind a result-only goal gets a fresh first-chunk window when that goal ends. A goal
 never announced, an announcement for another goal id, a non-positive or non-finite bound,
-and a start in the future all keep the first-chunk window. The relaxation is a Safety-WG item (hazard log
-Entry 076).
+and a start in the future all keep the first-chunk window. The relaxation is tracked in the hazard log (Entry 076).
 
 The node also **subscribes** `/openral/estop`: an estop from any other source
 latches its internal `_triggered` flag so it never storms the topic behind the
@@ -119,9 +118,21 @@ cleanup, so neither set → retry nor cleanup → set → configure gets a new v
 in. This is the C++ safety kernel's guard (hazard-log Entry 078), applied here
 because the deadman reads `safe_action_deadline_s` / `first_chunk_deadline_s`
 on every tick: a same-host graph peer could otherwise widen them on a running
-node and silence the brake (issue #546). Launch parameters arrive at
+node and silence the brake. Launch parameters arrive at
 declaration and are unaffected, a set before the first configure still works,
 and declaring a new parameter still passes. To change a value, relaunch.
+
+## Lifecycle transitions: an unavailable one is refused, not fatal
+
+On Jazzy, an id-only `change_state` request (a launch_ros `ChangeState` event, a
+hand-typed `ros2 service call`) naming a transition the node's current state lacks, such
+as a second `activate`, makes rclpy raise out of the executor and **kills the node**,
+which for a brake source takes it off the graph. Both nodes therefore call
+`transition_guard.refuse_unavailable_transitions(self)` in `__init__`: such a request is
+answered `success: false`, logged at WARN, and the state is unchanged. Labelled requests,
+valid transitions and failures inside a transition are left to rclpy. The guard is a
+dependency-free copy of `openral_observability.refuse_unavailable_transitions`, so a
+broken observability install cannot keep a brake source from starting.
 
 ## Hardware pendant
 
@@ -170,6 +181,9 @@ other E-stop sources.
   deadman is refused over the real service and the deadlines stay put, also
   across cleanup → configure; a failed hardware-estop configure locks too; a
   new declaration still passes.
+* `test/test_transition_guard.py` — the real guarded `change_state` callback of both
+  nodes refuses an id-only transition the state lacks and leaves the state unchanged
+  (live path: `tests/integration/test_safety_lifecycle_unavailable_transition_live.py`).
 * `tests/integration/test_estop_watchdog_graph_live.py` — a
   real multi-process graph where the in-band safety node is killed and
   `/openral/estop` still fires from this package.

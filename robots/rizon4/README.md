@@ -2,9 +2,9 @@
 
 Canonical `RobotDescription` manifest for the **Flexiv Rizon 4**, a 7-DoF
 collaborative arm with whole-body force sensitivity (0.1 N resolution), 4 kg
-payload and 780 mm reach. One manifest covers the real Rizon 4 (wrapping
-`flexiv_rdk`, planned) and the MuJoCo digital twin (`Rizon4MujocoHAL` on the
-`mujoco_menagerie` MJCF).
+payload and 780 mm reach. The manifest covers the MuJoCo digital twin
+(`Rizon4MujocoHAL` on the `mujoco_menagerie` MJCF). There is no real-hardware HAL
+yet (`hal.real: null`); a wrapper around `flexiv_rdk` is planned.
 
 ## At a glance
 

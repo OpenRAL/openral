@@ -20,7 +20,7 @@ The trailing `\0` byte that the real device-tree shim appends is
 re-added by `_probe_jetson` via `.strip("\x00 \n")`; the fixtures
 omit it for portability across editors.
 
-When a new Jetson generation lands (Spark, …) add a directory
+When a new Jetson generation lands (a new Jetson generation) add a directory
 under this tree with a fresh real-device capture before extending
 `_JETSON_CC_BY_BOARD_KEYWORD` in `python/detect/src/openral_detect/probes/gpu.py`.
 

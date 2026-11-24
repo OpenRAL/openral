@@ -97,8 +97,10 @@ fingers `<side>_link7` / `<side>_link8` are `mimic_joints` rows, as in the
 
 ## Sim usage
 
-There is no scene or rSkill for the station yet; drive the bare twin through
-the HAL:
+The pen-holder task runs on the MuJoCo twin with
+[`scenes/sim/makermods_metal_pen_holder.yaml`](../../scenes/sim/makermods_metal_pen_holder.yaml)
+and the `act-pen-holder-bi` rSkill (`--rskill rskills/act-pen-holder-bi`). To drive the
+bare twin through the HAL:
 
 ```python
 from openral_core import RobotDescription

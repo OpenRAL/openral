@@ -61,15 +61,11 @@ cannot be fixed in the manifest, set the explicit `min_height_m` /
 
 ### Installing the NVIDIA Isaac ROS stack (visual backend only)
 
-cuVSLAM + nvblox are **not bundled**. cuVSLAM is a closed NVIDIA binary
-(NVIDIA license, kept behind the license guard). The nvblox library and
-`isaac_ros_nvblox` / `nvblox_ros` are Apache-2.0 but not vendored; they
-ship prebuilt from the same NVIDIA apt repo. The Isaac ROS NITROS/GXF runtime
-they pull in may carry NVIDIA licensing; review before commercial deployment. On the release-4.x line this install targets,
-`nvblox_ros` depends on `isaac_ros_managed_nitros`, the NITROS image/camera-info
-types and `isaac_ros_gxf` (which installs prebuilt `libgxf_*.so`), all declared
-under the *NVIDIA Isaac ROS Software License*, which limits use to systems with
-NVIDIA GPUs and restricts redistribution. Install both once
+cuVSLAM + nvblox are **not bundled**. cuVSLAM is a closed NVIDIA binary (NVIDIA license,
+kept behind the license guard). The nvblox library and `nvblox_ros` are Apache-2.0 but not
+vendored. On the release-4.x line, `nvblox_ros` depends on the NITROS and `isaac_ros_gxf`
+packages, declared under the *NVIDIA Isaac ROS Software License* (NVIDIA GPUs only, no
+redistribution); review it before commercial deployment. Install both once
 on the GPU host (Ubuntu 24.04 x86_64 / supported
 Jetson, CUDA 13.0+, driver 580+):
 
@@ -77,31 +73,12 @@ Jetson, CUDA 13.0+, driver 580+):
 just install-isaac-ros        # adds the two NVIDIA apt repos + installs cuVSLAM + nvblox (sudo)
 ```
 
-Run it in a **real terminal** (it needs a tty for the sudo password — not the `!`
-session prefix). It runs the [official Isaac ROS apt steps](https://nvidia-isaac-ros.github.io/getting_started/)
-**plus** the NVIDIA Jetson x86_64 repo, which provides the VPI + `nvsci` libraries
-Isaac ROS NITROS depends on (`libnvvpi4` / `vpi4-dev` / `nvsci`) — without it the
-install fails with `libnvvpi4 ... not installable` / `held broken packages` on x86:
-
-```bash
-# Isaac ROS repo (cuVSLAM + nvblox)
-k="/usr/share/keyrings/nvidia-isaac-ros.gpg"
-curl -fsSL https://isaac.download.nvidia.com/isaac-ros/repos.key | sudo gpg --dearmor | sudo tee "$k" > /dev/null
-f="/etc/apt/sources.list.d/nvidia-isaac-ros.list"
-s="deb [signed-by=$k] https://isaac.download.nvidia.com/isaac-ros/release-4 noble main"
-sudo touch "$f"; grep -qxF "$s" "$f" || echo "$s" | sudo tee -a "$f"
-
-# Jetson x86_64 repo (VPI + nvsci — NITROS deps; also used on x86 dGPU)
-jk="/usr/share/keyrings/nvidia-jetson.gpg"
-curl -fsSL https://repo.download.nvidia.com/jetson/jetson-ota-public.asc | sudo gpg --dearmor | sudo tee "$jk" > /dev/null
-jf="/etc/apt/sources.list.d/nvidia-jetson-x86.list"
-js="deb [signed-by=$jk] https://repo.download.nvidia.com/jetson/x86_64/noble r38.2 main"
-sudo touch "$jf"; grep -qxF "$js" "$jf" || echo "$js" | sudo tee -a "$jf"
-
-sudo apt-get update
-sudo apt-get install -y ros-jazzy-isaac-ros-visual-slam ros-jazzy-isaac-ros-nvblox
-# verify: ros2 pkg prefix isaac_ros_visual_slam && ros2 pkg prefix nvblox_ros
-```
+Run it in a **real terminal** (it needs a tty for the sudo password). The recipe adds the
+Isaac ROS apt repo (`release-4`, noble) **and** the NVIDIA Jetson x86_64 repo (`r38.2`),
+which provides the VPI + `nvsci` libraries NITROS depends on, then installs
+`ros-jazzy-isaac-ros-visual-slam` and `ros-jazzy-isaac-ros-nvblox`. Without the Jetson repo the
+install fails on x86 with `libnvvpi4 ... not installable`. Verify with
+`ros2 pkg prefix isaac_ros_visual_slam && ros2 pkg prefix nvblox_ros`.
 
 ### PyCuVSLAM: the same engine without the Isaac ROS apt stack
 
@@ -168,7 +145,7 @@ pair (no `robot_yaml`/`rig_frame`) keeps the baseline path.
 For **mono-only** robots, also start the metric-depth sidecar that feeds nvblox:
 
 ```bash
-python tools/depth_estimator_sidecar.py --port 5771 \
+uv run python tools/depth_estimator_sidecar.py --port 5771 \
   --manifest rskills/rskill-da3_small-any-depth-bf16/rskill.yaml   # DA3-Small
 ```
 

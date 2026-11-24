@@ -13,9 +13,9 @@ traces, metrics, system health, and the reasoner/safety cards. Foxglove is a
 visualization tool, not an observability backend, so the OTel plane does **not**
 port here.
 
-Nothing was removed from the dashboard: Foxglove reads the mirrored telemetry
-from ROS topics, and the dashboard keeps rendering its own OTel-derived copy. Where the two disagree, the dashboard is the one wired to
-the latched `/openral/safety_status` subscriber and to the trace index.
+Foxglove reads the mirrored telemetry from ROS topics; the dashboard keeps its own
+OTel-derived copy. Where the two disagree, the dashboard is the one wired to the latched
+`/openral/safety_status` subscriber and to the trace index.
 
 The surface is **read-only and cannot actuate the robot**. Any path that
 re-enables a write capability (E-stop reset, Publish/Teleop, prompt input) is out
@@ -27,7 +27,7 @@ Wraps upstream `foxglove_bridge` with safety-conscious defaults:
 
 | Choice | This package | Upstream default | Why |
 |---|---|---|---|
-| Bind address | `127.0.0.1` (loopback) | `0.0.0.0` | Matches dashboard posture (issue #44); no auth on the bridge |
+| Bind address | `127.0.0.1` (loopback) | `0.0.0.0` | Matches the dashboard posture; the bridge has no auth. Override with `address:=` / `port:=` (default 8765) |
 | Capabilities | `[connectionGraph, assets]` | adds `clientPublish, services, parameters…` | **Read-only** — a viewer cannot publish topics or call services (no remote actuation / E-stop poke) |
 | Topics | explicit Bucket-1 allowlist | `['.*']` (everything) | Safety/e-stop/action topics are never exposed |
 
@@ -38,7 +38,7 @@ groups, reviewable one at a time:
 |---|---|
 | `SCENE_TOPICS` | Camera images (+ `/compressed` siblings, `camera_info`), `/map`, octomap cloud, `/scan`, `/odom`, `/joint_states`, `/robot_description`, TF |
 | `DEPTH_TOPICS` | Per-camera depth + `points`, the DA3 metric-depth sidecar, nvblox filtered depth + ESDF slice, `/openral/imu`, cuVSLAM odometry |
-| `BUCKET2_TOPICS` | The converter's outputs (`PointCloud2` voxels; attachment, static-geometry and collision `MarkerArray`s) |
+| `BUCKET2_TOPICS` | The converter's outputs (`PointCloud2` voxels and thinned camera clouds; attachment, static-geometry and collision `MarkerArray`s; the latched `sim_scene` GLB URI) |
 | `TELEMETRY_TOPICS` | `world_state_fast`/`_slow`, `policy_state`, `episode`, `critic/score`, `reward/active_task`, `perception/objects`, `attachment_state`(`_applied`), `skill_registry_changed`, `/diagnostics`, `/rosout` |
 
 Every entry is an observation topic a node publishes *about itself*. The
@@ -60,10 +60,9 @@ OpenRAL's topic contract, not a per-vendor one, so "no cloud from my camera" is
 expected, not a fault. Add the vendor topic to `SCENE_TOPICS` only if you want
 the dense cloud on the wire, and mind the bandwidth.
 
-> **Bag size:** `record.launch.py` records exactly what the bridge exposes
-> (one source of truth), so a scene publishing depth images and point clouds
-> produces a much larger MCAP since the depth group was added. Narrow the
-> `--regex` by hand for a long capture.
+> **Bag size:** `record.launch.py` records exactly what the bridge exposes, so a scene
+> publishing depth images and point clouds produces a large MCAP. Narrow the `--regex`
+> by hand for a long capture.
 
 ## Install the bridge (one-time)
 

@@ -1,34 +1,40 @@
 # `openral_perception_ros` (ROS 2)
 
-Standalone ROS-Image object-detection producer (no GStreamer) feeding the
-perception → spatial-memory object lift. An `ament_cmake` package (Python node)
-that subscribes a camera `sensor_msgs/Image`, runs the GStreamer-free
-[`openral_runner.backends.gstreamer.objects_detector.ObjectsDetector`](../../python/runner/src/openral_runner/backends/gstreamer/objects_detector.py)
-(or a manifest-driven backend — see below), and publishes the
-detections on `/openral/perception/objects` — the topic the world-state
-lifecycle node lifts to 3D in deploy-sim. The deploy-sim **default** backend is
-the open-vocabulary `omdet-turbo-indoor` continuous detector (grounds arbitrary
-indoor/kitchen objects); it falls back to the fixed-label RT-DETR COCO ONNX
+Perception nodes that sit on plain ROS image topics (no GStreamer): an object-detection
+producer feeding the spatial-memory object lift, a monocular depth provider, a SAM 2.1
+segmenter for the vision attachment leg, and two on-demand VLM / reward query services.
+An `ament_cmake` package whose nodes are Python programs.
+
+The detector (`ros_image_detector_node`) subscribes a camera `sensor_msgs/Image`, runs the
+GStreamer-free
+[`ObjectsDetector`](../../python/runner/src/openral_runner/backends/gstreamer/objects_detector.py)
+(or a manifest-driven backend) and publishes detections on `/openral/perception/objects`, the
+topic the world-state lifecycle node lifts to 3D. It is the deploy-sim counterpart of the
+on-robot GStreamer perception bus: same `ObjectsDetector` and `ObjectsMetadata` schema, only
+the frame source differs. The deploy default backend is the open-vocabulary
+`omdet-turbo-indoor` detector; it falls back to the fixed-label RT-DETR COCO ONNX
 (`rtdetr-coco-r18`) when the omdet deps are not installed.
 
-It lets the object lift run against a plain ROS image topic in
-`openral deploy sim` without the GStreamer perception bus (the supervisor
-graph's F6 leg) the on-robot path uses. Same `ObjectsDetector` and
-`ObjectsMetadata` schema; only the frame source differs.
+| Node (executable) | ROS node name | Kind | Serves / publishes |
+| --- | --- | --- | --- |
+| `ros_image_detector_node.py` | `openral_ros_image_detector` | lifecycle | `/openral/perception/objects`, `LocateInView` service |
+| `depth_provider_node.py` | `openral_depth_provider` / `openral_estimated_depth_provider` | lifecycle | depth + `CameraInfo` (+ cloud in metric mode) |
+| `segmenter_node.py` | `openral_segmenter` | lifecycle | `/openral/perception/segment_in_view` |
+| `scene_vlm_node.py` | `openral_scene_vlm` | plain node | `/openral/perception/query_scene` |
+| `reward_monitor_node.py` | `openral_reward_monitor` | plain node | `/openral/perception/query_task_progress` |
 
-## Node
+## Detector node
 
-`ros_image_detector_node` (`RosImageObjectDetectorNode`,
-`openral_ros_image_detector`). Best-effort producer: an Image it can't
+`ros_image_detector_node` (`RosImageObjectDetectorNode`). Best-effort producer: an Image it can't
 convert (unsupported encoding, a `step` shorter than a row) is logged at
 WARNING (throttled, naming camera and encoding) and skipped, as is a
 detector error — it never crashes the graph.
 
 The detection image comes from a high-resolution RGB camera (e.g.
 `agentview_left`), but detections are attributed to `sensor_id` (default
-`front_depth`) — the co-located depth camera whose REP-103 optical frame
-the world-state lift projects through. They share the MuJoCo viewpoint,
-so the geometry is consistent (per the object-lift design).
+`front_depth`), the co-located depth camera whose REP-103 optical frame
+the world-state lift projects through. They share the sim viewpoint, so the geometry
+is consistent.
 
 ### Parameters
 
@@ -70,29 +76,29 @@ openral deploy sim --config scenes/deploy/<scene>.yaml   # detector ON by defaul
 ```
 
 `openral deploy sim` brings the detector up **by default** (pass
-`--no-object-detector` to turn the leg off). With no explicit override the
-default backend is the open-vocab `omdet-turbo-indoor` manifest, falling back to
-the RT-DETR COCO ONNX (`rskills/rtdetr-coco-r18/model.onnx`, gitignored — export it with `tools/export_rtdetr_onnx.py`) when the
-omdet deps are absent; the leg auto-downgrades to off only when neither backend
-is available. Use `--object-detector-manifest PATH` to pick a specific detector
+`--no-object-detector` to turn the leg off). The default backend is the open-vocab
+`omdet-turbo-indoor` manifest, falling back to the RT-DETR COCO ONNX
+(`rskills/rtdetr-coco-r18/model.onnx`, gitignored; export it with
+`tools/export_rtdetr_onnx.py`) when the omdet deps are absent. The leg downgrades to off
+only when neither backend is available. Use `--object-detector-manifest PATH` to pick a specific detector
 rSkill or `--object-detector-onnx PATH` to force the fixed-label RT-DETR path.
 The launch forwards `onnx_path`/`manifest_path`, `labels`, `model_id`,
 `input_size`, and the topics as ROS parameters on the node, and throttles by the
-manifest's `DetectorEngine` (`vlm_sidecar` 0.5 Hz, `zeroshot_hf` 2 Hz, ONNX 5 Hz). The detection camera can render at up to 640² with
-resolution-consistent intrinsics so the lift scales `bbox_xyxy` to the
-intrinsics correctly.
+manifest's `DetectorEngine` (`vlm_sidecar` 0.5 Hz, `zeroshot_hf` 2 Hz, ONNX 5 Hz).
 
 **On-demand locators.** Alongside the continuous detector, the deploy
 launch can bring up one or more `mode: on_demand` open-vocab locators — each as
 its **own** lifecycle node serving a namespaced
 `/openral/perception/<alias>/locate_in_view`, so the reasoner picks a model via
 `LocateInViewTool.detector`. Default = `omdet-turbo-locator` (when the omdet deps
-import); add more with the repeatable `--object-detector-locator <manifest|alias>`
-(LocateAnything is opt-in — NVIDIA non-commercial, 5 GB, needs the sidecar venv;
-so is `open-vision-banana-4b`, an Open Vision Banana referring-segmentation locator —
-FLUX non-commercial, one 1-step diffusion run per query — ~2 s on Jetson AGX Orin — throttled to 0.3 Hz).
-Each locator is an independent lifecycle + VRAM peer (per the single-resident-skill VRAM eviction policy), so the reasoner
-can evict it before a co-resident VLA.
+import); add more with the repeatable `--object-detector-locator <manifest|alias>`.
+LocateAnything is opt-in (NVIDIA non-commercial, 5 GB, needs the sidecar venv); so is
+`open-vision-banana-4b`, a referring-segmentation locator (FLUX non-commercial, one
+diffusion step per query, throttled to 0.3 Hz). Each locator is an independent lifecycle
+and VRAM peer, so the reasoner can evict it before a co-resident VLA. Deploy starts
+locators with a bounded one-shot state-poll helper that exits at ACTIVE, so a dropped
+configure response cannot leave grounding unavailable; a later reasoner deactivation
+still releases VRAM.
 
 The `LocateInView` service follows the source-frame and failure contracts in
 [`openral_msgs`](../msgs/README.md#services--srv): an empty `failure_reason` means the
@@ -144,9 +150,8 @@ Load-bearing parts of the contract:
   camera, rescaled to the frame actually received (`projection_geometry`). The
   manifest's `SensorSpec.frame_id` and `SensorSpec.intrinsics` are fallbacks
   only, each logged once at warning: on the OpenArm `head_zed` names the ZED
-  *body* frame (`zed_camera_link`) while the driver stamps its images
-  `zed_left_camera_frame_optical`, and its intrinsics are nominal (fx 960
-  declared vs 1498.18 published on the Thor cell, 2026-10-02). A camera listed
+  *body* frame while the driver stamps its images in the optical frame, and the
+  declared intrinsics are nominal (fx 960 declared vs 1498.18 published). A camera listed
   in `camera_infos` is refused (`ROSPerceptionStale`) until its `CameraInfo`
   arrives, never silently projected through the nominal K. Reply masks carry
   the segmented image's own header (frame + capture stamp). Intrinsics never
@@ -168,17 +173,16 @@ Lifecycle: cameras, tf2, subscriptions and the service live for the
 configured→cleanup span; the model is built **and warmed** on `on_activate`
 (the first forward pass is ~742 ms against ~53 ms warmed, and only the warmed
 figure fits inside the HAL's ~100 ms barrier) and released on `on_deactivate`.
-Activate also burns the service handler's own lazy imports: `openral_hal`'s
-package `__init__` loads every HAL, and on Thor (2026-10-03) that import alone
-made the first real call 1019 ms against the HAL's 0.25 s segmentation deadline
-while the model was already warm. With it burned at activate the first call is
-~0.10-0.15 s end to end at 1920x1080 with three prompt points; the activate log
-line reports the total warm-up time.
+Activate also burns the service handler's own lazy imports (`openral_hal`'s package
+`__init__` loads every HAL, which alone cost the first call about a second against the
+HAL's 0.25 s segmentation deadline). With that done, the first call is ~0.10-0.15 s end
+to end at 1920x1080 with three prompt points; the activate log line reports the total
+warm-up time.
 
 ### The diagnostic mask topic
 
 A service reply cannot be watched with `ros2 topic echo`, and the dashboard's
-camera tiles have rendered segmentation masks since PR #122 with no producer.
+camera tiles render segmentation masks.
 `publish_debug_masks` (**default false**) re-publishes each successful reply
 as an `openral_msgs/SegmentMasks` on `debug_masks_topic`
 (`/openral/perception/masks`), at sensor-class QoS — `BEST_EFFORT` / `VOLATILE`
@@ -204,7 +208,7 @@ scene enables the vision attachment leg, **off by default**:
 ```yaml
 runtime:
   vision_attachment:
-    enabled: false          # pending Safety-WG review on real hardware
+    enabled: false          # off by default
     camera: head_zed        # manifest sensor name
     rgb_topic: /zed/zed_node/rgb/color/rect/image
     rgb_camera_info_topic: /zed/zed_node/rgb/color/rect/camera_info
@@ -235,61 +239,27 @@ removes a published payload whatever the kernel flag.
 | `segment_in_view_service` | string | `/openral/perception/segment_in_view` | Service name. |
 | `publish_debug_masks` | bool | `false` | Re-publish each successful reply on `debug_masks_topic` for the dashboard's mask overlay. Diagnostic only; off creates no publisher. |
 | `debug_masks_topic` | string | `/openral/perception/masks` | Topic for the above (`openral_msgs/SegmentMasks`). |
+| `max_frame_skew_s` | double | `0.1` | A request with a non-zero stamp is served from the cached frame nearest that stamp (8 frames cached per camera) and refused (`ROSPerceptionStale`) when none is within this skew. A zero stamp is served from the newest frame. |
+| `frame_wait_s` | double | `0.2` | When the newest cached frame is older than the request's stamp, wait up to this long for a frame at or after it. The wait is also capped by `request_deadline_s` minus the time already spent. |
+| `request_deadline_s` | double | `0.25` | The requester's deadline per call (the HAL's `vision_attachment_deadline_s`). A reply that still lands late is dropped by the HAL, which falls back. |
+| `camera_request_deadlines` | string[] | `[""]` | `"camera=seconds"`: per-camera frame wait and deadline, for requesters that allow more than the HAL's 0.25 s (the object tracker's cameras). |
+| `camera_max_frame_skews` | string[] | `[""]` | `"camera=seconds"`: per-camera `max_frame_skew_s`; a 1080p BEST_EFFORT stream loses frames under load. |
 | `device` | string | `auto` | `auto` picks CUDA when available; set `cpu` on a pre-sm_70 GPU, where the CUDA wheels ship no kernels for the card. |
 
 ## Tests
 
-- `tests/integration/test_segment_in_view_service.py` — live-ROS
-  (`OPENRAL_TEST_ROS_LIVE=1`) round trip against the **real** node, the real
-  rSkill manifest, the real SO-101 manifest, a real static TF and a real
-  in-tree wrist frame (published as pitch-padded `bgra8`, the ZED's layout):
-  plural `mono8` masks at the source resolution, area
-  ascending, parallel advisory scores, the image's capture stamp echoed, plus the
-  three typed failure branches (un-published camera, un-projectable prompt,
-  deactivated node). A second test covers the diagnostic mask topic: off by
-  default means *no publisher on the graph*, and on means real SAM 2.1 masks
-  reach the dashboard's real `PerceptionOverlaySubscriber` and a real
-  `/api/state` snapshot. A third, model-free test configures the real node
-  and checks a 1920x1080 padded `bgra8` frame lands in the cache as tight BGR
-  while an unsupported encoding is not cached, so the conversion path runs
-  even without `transformers` or a GPU. Listed in `scripts/ros_live_tests.sh`.
-- `tests/unit/test_perception_camera_topics.py` — the shared camera-id → topic
-  resolution, including the `[""]`-for-unset rclpy quirk.
-- `tests/unit/test_segmenter_projection_geometry.py` — which K and optical frame
-  a prompt is projected through, against the real OpenArm `head_zed` and the
-  ZED K measured on the Thor cell, plus the real node's `camera_infos`
-  configure path (no model).
-- `tests/unit/test_image_convert.py` — every accepted encoding → BGR
-  bytes, incl. 1920x1080 ZED `bgra8`/`rgba8` frames with padded rows, and
-  the rejection paths (unknown encoding, short `step`, truncated payload).
-- `tests/unit/test_depth_convert.py` — metric-depth ↔ `32FC1`
-  Image round-trip (metres preserved, NaN preserved), the `CameraInfo`
-  pinhole matrices, and the rejection paths (non-2D, wrong encoding,
-  padded stride).
-- `tests/unit/test_estimated_depth_camera.py` — `estimated_depth_camera`
-  resolution / refusals and the metric round trip.
-- `tests/integration/test_estimated_depth_provider_live.py` — the node's metric
-  mode against a fake DA3 sidecar (`OPENRAL_TEST_ROS_LIVE=1`), driven through its
-  lifecycle `change_state`; deactivating stops the cloud, reactivating resumes it.
-- `tests/unit/test_objects_detector.py` — the reused `ObjectsDetector`
-  against a real deterministic `onnx.helper` fixture (no mocks, per
-  CLAUDE.md §1.11).
-- `tests/unit/test_rtdetr_onnx_detects.py` — gate that the exported
-  RT-DETR ONNX produces real COCO detections via `ObjectsDetector`
-  (skips when the ONNX or onnxruntime/PIL is absent).
+Unit tests live in `tests/unit/` (`test_perception_camera_topics.py`, `test_image_convert.py`,
+`test_depth_convert.py`, `test_estimated_depth_camera.py`, `test_segmenter_projection_geometry.py`,
+`test_objects_detector.py`, `test_rtdetr_onnx_detects.py`). Live-ROS tests
+(`OPENRAL_TEST_ROS_LIVE=1`, listed in `scripts/ros_live_tests.sh`) are
+`tests/integration/test_segment_in_view_service.py` (the real segmenter node, rSkill manifest, SO-101
+manifest and static TF: plural area-ascending masks, the typed failure branches, the diagnostic
+topic) and `test_estimated_depth_provider_live.py` (metric mode against a fake DA3 sidecar,
+deactivate stops the cloud, reactivate resumes it).
 
 ## Related
 
-- The perception → spatial-memory object lift; the deploy-sim integration this
-  node serves.
-- `packages/world_state/` — the consumer; subscribes
-  `/openral/perception/objects` and lifts each 2D detection to a 3D
-  `map`-frame centre.
-- `openral_runner.backends.gstreamer.objects_detector.ObjectsDetector` /
-  `openral_core.ObjectsMetadata` — the detector and metadata schema this
-  node reuses.
+- `packages/world_state/`: subscribes `/openral/perception/objects` and lifts each 2D
+  detection to a 3D `map`-frame centre.
+- `openral_core.ObjectsMetadata` and `ObjectsDetector`: the schema and detector reused here.
 - CLAUDE.md §3 (layer discipline) and §2 (QoS).
-
-Deploy locator startup uses the bounded one-shot state-poll lifecycle helper,
-so a dropped configure response cannot silently leave grounding unavailable.
-The helper exits at ACTIVE; later reasoner deactivation still releases VRAM.

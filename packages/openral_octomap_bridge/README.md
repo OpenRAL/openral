@@ -1,396 +1,53 @@
 # openral_octomap_bridge
 
-Lowers a **3-D OctoMap** into the safety kernel's dense
-`openral_msgs/OccupancyVoxels` grid for the kernel's allocation-free
-capsule-vs-voxel world-collision check.
+Lowers a 3-D OctoMap into the safety kernel's dense `openral_msgs/OccupancyVoxels` grid for
+its allocation-free capsule-vs-voxel world-collision check. The package ships three
+executables:
 
-The grid is published **on the OctoMap's own lattice**, one cell per octree
-cell, with the rotation carried in `OccupancyVoxels.orientation` (not
-base-aligned, since 2026-08-25 — see "How a cell becomes occupied").
+| Executable | Role |
+|---|---|
+| `octomap_voxel_bridge` | OctoMap to `/openral/world_voxels` (this robot's world). |
+| `robot_self_filter` | Removes the robot's own returns from a depth cloud before `octomap_server` inserts it; optionally publishes a robot mask. |
+| `peer_voxels` | The other robots of the scene as `/openral/peer_voxels` (ADR-0137). |
 
-Field-run numbers cited below (round-5's grid timeline, the 2026-08-13
-lattice phase, `robocasa_drawer_utensil`) are catalogued in
+The grid is published on the OctoMap's own lattice, one cell per octree cell, with the
+rotation carried in `OccupancyVoxels.orientation` (not base-aligned). Field-run numbers are
+catalogued in
 [`docs/reference/collision-validation-evidence.md`](../../docs/reference/collision-validation-evidence.md).
 
 ## Why a bridge (and not the kernel)
 
-The C++ safety kernel stays allocation-free on its hot path, so it does not
-parse a raw OctoMap octree (deserialization allocates, querying isn't
-time-bounded, `octomap` is a heavy dependency). This Layer-2 node does the
-octree work off the real-time path and publishes a bounded dense grid the
-kernel rasterizes capsules against ("perception proposes, the kernel
-disposes"):
+The C++ safety kernel stays allocation-free on its hot path, so it does not parse a raw
+octree (deserialisation allocates, queries are not time-bounded, `octomap` is heavy). This
+Layer-2 node does the octree work off the real-time path and publishes a bounded dense grid
+("perception proposes, the kernel disposes"):
 
 ```
 octomap_msgs/Octomap (map frame)          openral_msgs/WorldStateStamped
-   │  msgToMap → octomap::OcTree             │  .attached_objects
-   │  tf2: octomap_frame ← base_frame        │  tf2: base_frame ← attach_link
-   │  cover a ball around the robot,         │
-   │  on the octree's own lattice            │
-   ▼                                         ▼
-   │                                         │  .tracked_objects
-   └───────────▶ identity-validated clearing (only bound track cells)
-openral_msgs/OccupancyVoxels (origin+orientation in base_frame,
-                              cell axes the octree's, /openral/world_voxels)
-   ▼
-C++ safety kernel  ──  check_voxel_collision (allocation-free)
+   | msgToMap -> octomap::OcTree             | .attached_objects, .tracked_objects
+   | tf2: octomap_frame <- base_frame        | tf2: base_frame <- attach_link
+   | cover a ball around the robot,          |
+   | on the octree's own lattice             |
+   v                                         v
+   +-----------> identity-validated clearing (only bound track cells)
+openral_msgs/OccupancyVoxels (origin + orientation in base_frame, /openral/world_voxels)
+   v
+C++ safety kernel: check_voxel_collision
 ```
 
-## How a cell becomes occupied: the grid's lattice IS the octree's
+## Run it
 
-One published cell is one octree cell — same size, same phase, same axes.
-`origin` + `orientation` on the wire (`OccupancyVoxels`) give the pose, in
-`header.frame_id`, of cell (0,0,0)'s minimum corner; **the cell axes are
-`orientation`'s, not `header.frame_id`'s**. Consumers apply it; nobody
-re-rasterizes.
-
-### Why not a base-aligned grid
-
-Two rejected rules, in order:
-
-1. **Centre point-query** (until 2026-08-16): mark a base cell when its centre
-   point-queried occupied — a single sample across two independently-phased
-   lattices. On `robocasa_drawer_utensil` (25 mm cells, ~12.1 mm measured
-   phase) a cabinet door face at base x = +0.0614 came out occupied at
-   x ∈ [0.025, 0.050) — a full voxel closer to the robot, with **zero cells
-   where the panel actually is**.
-2. **Overlap**: mark every base cell whose cube shares volume with an
-   occupied leaf's — the minimum sound cover for a base-aligned output. Sound,
-   but costs a dilation: [issue #173](https://github.com/OpenRAL/openral/issues/173)
-   measured **29–35 mm median extra reach on 25 mm cells, 40 mm worst case**,
-   holding **48% of the live start-state E-stops**. Two mitigations were
-   measured and rejected: snapping the grid origin to the octree's at yaw≈0
-   (half a degree of yaw restores the full 25 mm — sim-only), and shrinking
-   the effective leaf half-extent (0.75× buys 12% of the dilation but leaves
-   9.9% of the leaf uncovered).
-
-Since the dilation belongs to the format, the format changed: grid-on-octree-
-lattice has no phase and no yaw to be exact about. Cost is proportional to
-occupied leaves rather than cell count (integer-arithmetic marking vs. a
-separating-axis test per cell), so it can only be cheaper than the overlap
-rule's measured 0.26–0.30 ms.
-
-Tests (`test_octree_to_grid`, no ROS graph, real `octomap::OcTree`):
-- `TheGridIsTheOctreeCellForCellAtEveryPhaseAndYaw` — no obstacle lost, no
-  reach surrendered, over swept phases/yaws.
-- `TheFieldPanelIsNeverReportedNearerThanTheOctreeItselfSaysAtAnyPhase` —
-  a face is never reported nearer than the octree places it, at any phase.
-- `TheOrientationIsTheOctreeToBaseRotationAndIsAlwaysAUnitQuaternion`,
-  `AnUnplaceableLatticePublishesNoCellsRatherThanWrongOnes`,
-  `AnAbsurdSpecIsRefusedRatherThanAllocated`,
-  `ACoarseLeafMarksEveryCellUnderIt`,
-  `AGridStraddlingTheOctreesKeyRangeStillSeesEveryLeaf`.
-- `RasterizationCostAcrossTreeResolutions`,
-  `RasterizingTheKitchenStaysInsideThePublishBudget` — hold the publish
-  budget to a quarter of the 10 Hz period.
-
-## A stopped octree stops the grid (fail-closed on a dead camera)
-
-The bridge re-rasterizes the **last** octree it received on a
-`publish_rate_hz` timer, so between octrees the grid follows the robot
-through TF and identity-validated clearing follows the tracked object pose.
-`octomap_server` publishes `/octomap_binary` only when it inserts a cloud,
-so a dead camera is a silent octree. Until hazard log Entry 033 the timer
-kept republishing that frozen map, stamped `now()`, forever; the kernel times
-voxel freshness from **receipt**, so its fail-closed `DROP_VOXEL_UNAVAILABLE`
-never fired and anything entering the workspace afterwards was invisible
-(Thor, 2026-09-24: ZED driver stopped, `/octomap_binary` silent,
-`/openral/world_voxels` still arriving at 7.1 Hz).
-
-The republish is now bounded by `max_octree_age_s`, measured from the
-octree's **receipt** on this node's clock (the clock the kernel times voxel
-freshness on; the octree's header stamp is the sensor's and may sit on
-another clock domain). Past the bound the node publishes **nothing** — not
-even a payload-cleared grid, which would be a fresh-looking stale map — and
-logs a throttled WARN. The kernel's own `world_voxel_deadline_ms` then turns
-the silence into `DROP_VOXEL_UNAVAILABLE` (a drop, not a latch). The next
-octree resumes publication automatically (one INFO line). Worst case from
-the last inserted cloud to the kernel's drop: `max_octree_age_s +
-world_voxel_deadline_ms` (1.0 s + 1.0 s with the deploy defaults).
-
-Sizing the bound:
-
-- It must exceed octomap's normal inter-publish gap with margin (0.25–0.31 s
-  measured on the Thor ZED path at 3.2–4.0 Hz, but ~0.45 s in one Thor run at
-  2.2 Hz; ≤ 0.33 s in sim with the depth cast slowed to ~3 Hz) and must not
-  exceed the kernel's deadline, so the kernel, not the bridge, fails closed.
-- Both are per-rig `DeployRuntime` fields: `world_voxel_deadline_s` (default
-  1.0 s) and `max_octree_age_s` (default equal to the deadline; a value above
-  it is refused by the schema and by `deploy_e2e.launch.py`). An earlier
-  half-deadline bound (0.5 s) silenced a healthy camera's grid at 2.2 Hz; a
-  source slower than about 1 Hz needs both raised in its scene, up to the
-  schema's hard cap of 2.0 s on the deadline (2x its pre-2026-09-25 default;
-  above it the scene is refused at load).
-- Too small only costs availability: silence shorter than the kernel's
-  deadline is not a drop. A non-finite or non-positive bound publishes nothing
-  (ERROR at start-up).
-
-Stamps:
-
-- A grid's `header.stamp` is still `now()`: when the grid was placed in
-  `base_frame` (the TF it was rasterized with). Nothing reads it as data age
-  (the kernel and World State time grids from receipt), and the HAL's evidence
-  decoder (`openral_hal.sim_sensor_bridge`) picks "the grid current at time t"
-  by it, which the octree's own stamp would break.
-- The octree's own stamp rides on every grid as `source_stamp` (capture stamp
-  of the newest cloud inserted), and the kernel budgets the world's age from
-  it: `world_voxel_data_age_budget_ms`, from the per-rig
-  `DeployRuntime.world_voxel_data_age_budget_s` (default 1.5 s, the Thor ZED-M
-  tail; hard cap 3.0 s); past it the chunk drops as `voxel_stale`.
-- The kernel enforces the caps itself: with `world_voxel_enabled` it refuses to
-  configure on a `world_voxel_deadline_ms` outside (0, 2000] or a
-  `world_voxel_data_age_budget_ms` outside (0, 3000] (its own default is 1500;
-  0 does not disable the check), so a kernel started with `ros2 run` is held
-  to the same limits as a validated scene.
-
-`robot_self_filter` removes the robot's own returns on robot-visible camera paths
-(real depth and Isaac-rendered depth)
-before `octomap_server` inserts the cloud: it poses the kernel's collision
-parameters at the cloud's capture stamp and drops returns within `padding_m`
-of those robot primitives (from `DeployRuntime.robot_self_filter_padding_m`,
-provisional 0.02 m, hard cap 0.10 m). It filters attached-object returns only
-when `identity_clearing_track` validates one unique `tracked_object` binding
-against the fresh tracked set in the robot root frame. Region, segmentation,
-pinch-fallback, unknown, stale, or ambiguous attachment geometry leaves the
-sensor returns in the cloud. No pose at the capture stamp drops the whole cloud.
-
-The identity check ties the mask to one tracked object, but does not establish
-per-point sensor ownership. A foreign surface overlapping a validated track
-shape may still have its returns suppressed; typed occupancy provenance remains
-unfinished.
-The node enforces the cap itself: a `padding_m` outside [0, 0.10] (or
-non-finite) logs an ERROR and forwards nothing.
-
-Joint positions are linearly interpolated at the capture stamp between the two
-samples around it. The frame is refused (dropped, counted, WARN rate-limited)
-when those samples are more than two `joint_state_period_s` apart or the stamp
-needs more than one period of extrapolation past the newest; a refused frame
-inserts nothing. Each robot primitive's padding grows with its speed:
-`padding_m + |v|·velocity_padding_dt_s`, `|v|·δt` the primitive's motion over
-the interpolated joint rate within δt_sync (default 0.02 s: the stamp error
-interpolation cannot see; 0.5 m/s adds 10 mm). The total stays under the 0.10 m
-cap: a link faster than that is under-padded, which leaves its points in the
-map (a false stop) rather than erasing more of the world.
-
-**Recent sweep** (issue #418, `trailing_sweep_s`, default 0 = off; the deploy
-launch sets 0.2 s in sim only, Safety-WG review pending, hazard row owed). Each
-primitive is also padded by how far it has moved since `stamp − trailing_sweep_s`
-(the same history and interpolation), taking the larger of that and its forward
-motion, under the same 0.10 m cap. A return inside the volume the robot just left is
-then the robot's own trailing or silhouette-edge return. Spark R16: two returns of the
-Robotiq finger edge, 15–21 mm outside its hull, landed 0.13 s after the gripper left
-that cell; OctoMap held them, and the finger stopped on that mid-air voxel 2.4 s later.
-The world there is blind to new returns for at most `trailing_sweep_s` after the robot
-leaves. Obstacles already in the map are never removed. With no joint state that far
-back (a fresh start) the padding is the forward motion alone. A value outside
-[0, `kMaxTrailingSweepS` = 0.5] logs an ERROR and forwards nothing.
-
-**Robot mask** (issue #418, off by default). With `robot_mask_enabled`, the node
-also renders the UNPADDED model into each named depth camera at the depth
-stamp and publishes `/openral/cameras/<cam>/robot_mask` (mono8: 0 free, 128
-uncertain, 255 robot; the depth image's header; BEST_EFFORT, KEEP_LAST 5). A
-pixel is robot iff the rendered robot depth is at most the measured depth +
-5 mm (so a held object in front of a finger stays free) and the return is not seen
-past the robot (a return more than 3 cm behind the rendered front and more than 10 mm
-outside every link is not robot: a convex hull or 26-DOP spans a gripper's open jaw,
-#418), or its back-projected
-return is inside the unpadded hand (`robot_mask_hand_links`) or within 10 mm of
-any other link. Pixels within `robot_mask_uncertain_px` of a robot/non-robot
-boundary, and robot-covered pixels with no return, are uncertain. Each
-primitive is rasterised over its projected bounding box only; a hulled box is
-rendered as its 26-DOP (which contains the hull). The deploy launch turns it on
-with `robot_mask_cameras:=top,wrist` (only where the self-filter runs).
-RGB-only cameras get no mask yet.
-
-A box that carries the kernel's tight geometry (`collision_box_hull` /
-`collision_hull_*`, lowered from `LinkCollisionGeometry.tight_geometry`) is
-filtered against that geometry, not the box: the box's slack (12–27 mm mean on
-the Panda links, more at the corners) would otherwise widen the blind shell.
-The distance is the kernel's staged narrow phase with the voxel cube shrunk to
-a point — the 26-DOP slab bound, then GJK on the exact hull's vertices with an
-exhaustive support scan — so every value is a lower bound on the true distance
-(never an over-report: a return the hull explains is always removed) and the
-converged value is exact to 1e-9 m. `test_self_filter` pins it against the
-kernel's `hull_cell_distance` on panda_mobile's real hulls. A hull the kernel's
-`validate_tight_hull` chain would not prove (vertex outside its DOP, DOP outside
-its box, over 320 vertices, bad arity) refuses the whole model, so the node
-forwards nothing. Cost, dev laptop, panda_mobile, 230 400-point cloud with 10 %
-of it within 8 cm of the arm: 2.4–2.6 ms box-only → 7.0–8.0 ms with hulls
-(the extra is GJK on the points inside a box's shell; not yet measured on Thor).
-
-Pinned by `test_bridge_staleness` (the real node in-process: publishes while
-fresh, silent past the bound for as long as the silence lasts, resumes on
-the next octree, keeps flowing at Thor's 3.2 Hz cadence, publishes nothing
-under an unusable bound; plus the `octree_is_fresh` boundaries) and, end to
-end against the real kernel,
-`tests/sim/safety/test_kernel_voxel_bridge_staleness.py` (certifies while
-octrees arrive, `DROP_VOXEL_UNAVAILABLE` with no latch or E-stop once they
-stop, certifies again when they resume). It was checked by hand to
-discriminate: with the bridge bound set to 1e9 (pre-fix behaviour) the stale
-chunk is certified, reproducing the fail-open. The committed suite does not
-carry that control.
-
-**Not covered:** a camera that keeps publishing garbage, or a frozen image
-re-published by a driver, still reaches `octomap_server` as fresh inserts.
-
-## Publish rate: measure it RELIABLE
-
-The grid goes out on the `publish_rate_hz` timer (10 Hz) whenever the octree
-is fresh. At the then-fixed real-arm deploy geometry (0.02 m, radius 1.05 m) it is
-106³ = 1 191 016 cells, a **1.19 MB** sample. A `BEST_EFFORT` subscriber
-loses such a fragmented sample whole whenever it misses one fragment, so a
-best-effort `ros2 topic hz` or rate probe under-reads it; the safety kernel
-subscribes `RELIABLE` and does not. On the Orin OpenArm cell (mock hardware,
-2026-09-26, 240 s) the same run read **10.01 Hz, max gap 0.36 s** on a reliable
-subscriber, 7.0 Hz (max gap 1.1 s) on a best-effort one, and 5.7 Hz on a
-best-effort all-topics probe (a 4.4–6.1 Hz reading of that probe the day
-before was briefly mistaken for a slow bridge).
-
-The per-octree work is small beside the period: the real Orin map (14k leaves,
-~4.6k occupied cells in the ball, replayed from recorded ZED clouds) costs
-0.7 ms to deserialize and 0.3 ms to rasterize on a dev laptop. Deserializing
-walks the **whole** map, not the ball, so it grows with the mapped volume
-(~60 ms at 437k leaves); rasterizing is bounded by the ball's bbx query.
-`test_bridge_rate_budget` pins both: deserialize + rasterize of a ray-cast
-map under half the period, and the real node reaching a reliable
-`KEEP_LAST(1)` subscriber at more than 7 Hz with the deploy-sized grid.
-
-## What the grid covers: a ball, sized by the robot
-
-`coverage_radius_m` / `coverage_center_*` name a **ball** in `base_frame`,
-not a box — a base-frame box would need its rotated bounding box covered
-(up to 2× the cells at 45°). A ball costs `ceil(2·radius/resolution)³` cells
-at every yaw.
-
-The radius must reach wherever the safety kernel's checked geometry can go —
-a property of the robot manifest, not this node: **unset, the node logs an
-error and publishes nothing.**
-
-The old sim box was 1.6 m (fit the kernel's then 262,144-cell cap).
-Measured against `panda_mobile`'s manifest `collision_geometry`, its checked
-arm reach is **1016 mm** from the grid centre — up to **124 mm** outside the
-old grid. `deploy_e2e.launch.py` then covered a fixed 1.05 m about `(0, 0, 0.5)`,
-which left the OpenArm's hanging arms reaching 108 mm below it (its `base_frame`
-is the torso top). The launch now measures the ball per robot (`_coverage_ball`): over the
-joint limits, against the same collision model the kernel is handed, the centre is
-the middle of the moving links' reach box and the radius the farthest reach from
-it plus 50 mm (OpenArm 0.871 m about `(0.003, 0, 0)`, panda_mobile 1.04 m about
-`(0, 0, 0.432)`, franka_panda 1.089 m about `(0, 0.001, 0.432)`). The kernel's cap
-is derived from that radius, and a ball this node would refuse (`kMaxCells`) is
-refused at launch instead.
-
-### The ≤1-resolution inflation toward the sensor is octomap's, and stays
-
-`insertPointCloud` marks the cell **containing the ray endpoint**, up to one
-tree resolution in front of the true surface — inherent to voxel storage,
-upstream of this bridge (`octomap_server`'s octree, also read directly by
-Nav2/SLAM/the dashboard). Not corrected here. The direction is always safe
-(reports nearer than true, never farther); pinned by
-`TheFieldPanelIsNeverReportedNearerThanTheOctreeItselfSaysAtAnyPhase`.
-
-## Attached objects and world occupancy
-
-The kernel continues checking every occupied world voxel against robot and
-attached-object geometry. The bridge removes world occupancy only for an
-attachment with `evidence_kind == "tracked_object"` when
-`identity_clearing_track` finds exactly one matching track with status
-`bound`, matching `epoch` and `attach_link`, a finite `floor_z`, no conflicting
-track or payload on the link, and a usable tracked-object set in `base_frame`.
-The current-pose grid clear uses the track's bound geometry and tight hull when
-available; malformed or ambiguous geometry clears nothing. Identity sweeps,
-vacated boxes, and the short release window use the same track binding and the
-configured `payload_sweep_clear_service`.
-
-Attachments evidenced by `grasp_target_region`, `vision_segmentation`,
-`pinch_fallback`, gripper closure, unknown evidence, or an ambiguous tracked
-binding remain occupied in the world grid. Primitive geometry, attachment-link
-transforms, and support-contact witnesses do not establish which occupied cells
-belong to an object, so they do not authorize removal. The attachment revision
-in `OccupancyVoxels` acknowledges processing of a fresh state revision and any
-required identity-clearing work; it does not certify that every attached object's
-cells were removed or that asynchronous octree clear requests completed. The kernel
-still checks remaining cells normally.
-
-**Consequence for a deploy without the object tracker (decided posture: fail closed).**
-Only the #418 object tracker (`DeployRuntime.object_tracking: tracking` or `on`, sim-only
-until Safety-WG review) publishes `tracked_object` attachments, and identity clearing
-applies to its bindings under `tracking` and `on` (`tracked_clear_enabled`, set by the launch
-whenever the tracker runs); its `pinch_fallback` holds stay mapped. With `object_tracking: off`
-— every real arm today, the MuJoCo digital twin (`MujocoArmHAL`) and an Isaac
-sidecar scene — the attachment the HAL's vision leg or the sim bridge publishes is
-geometry-only, so nothing the arm holds is cleared
-from the world grid, nor filtered from the self-filter's cloud: the payload stays a
-mapped obstacle and the kernel may stop the arm on the object in its own hand, during
-the carry and at the place. That stop is the accepted cost. There is deliberately no
-pose-based fallback clear, because a pose does not say which cells are the payload's.
-A run that must carry an object with world collision on needs the object tracker (`object_tracking: tracking` or `on`, sim) until a real-cell tracker posture is reviewed. (A MuJoCo `SimAttachedHAL` scene is
-the exception that does not need the bridge: it masks the payload bodies out of its
-rendered depth, so they never enter the map.)
-
-Identity binding is not per-cell occupancy ownership. The bridge constrains
-clearing to a tight track shape and excludes the floor, declared static points,
-and other tracked objects, but an untracked obstacle touching or overlapping
-that shape can still be removed. Typed per-cell contribution provenance is
-unfinished; this residual remains part of the identity-clearing hazard. See
-`identity_clearing.hpp`, `test_identity_clearing`, and
-`BridgeIdentitySweep.*` for the current bounds and tests.
-
-## The frame contract (ADR-0095)
-
-`OccupancyVoxels` carries **no TF of its own**. `header.frame_id` names the
-frame `origin` is measured in; the kernel rasterizes FK'd link capsules
-against the grid directly, no transform applied. So the grid's content and
-the kernel's collision FK root must share one frame — the one `base_frame`
-denotes on `/tf`:
-
-| Party | What it must use |
-|---|---|
-| whatever feeds `octomap_server` (sim HAL depth cloud, real RGB-D driver) | an extrinsic measured against the body `base_frame` denotes |
-| this bridge | `base_frame` as `header.frame_id`, `origin` in that frame |
-| the kernel | per-link `origin_xyz` measured from that same `base_frame` |
-
-On robosuite/RoboCasa mobile manipulators that is not the MJCF chassis root:
-the OmronMobileBase stacks a ground-level root (`mobilebase0_base`, world
-z 0) under a 0.70 m pedestal whose top plate (`mobilebase0_support`) carries
-the arm/cameras, and `base_link` on `/tf` is the **pedestal top**
-(`MobileBaseBridge` publishes `odom -> base_link` from the HAL's
-`base_pose_6dof()` / robosuite's `robot0_base_pos`). Measuring the sim
-camera extrinsic against the chassis root instead made the grid content
-world-referenced while labelled `base_link`; every TF consumer saw obstacles
-a pedestal too high. The kernel agreed with the grid only because PR #103
-had pushed the same 0.70 m into its FK root (cancelling the error for the
-kernel alone).
-
-ADR-0095 fix: `openral_hal.depth_cloud.resolve_base_frame_body_name`
-resolves the arm-mount body for every `base_frame -> …` extrinsic;
-`panda_mobile`'s `panda_joint1` origin is the plain Franka 0.333 m again.
-**Both halves must land together** — a half-applied change leaves the
-kernel a full pedestal away from the obstacles it's checked against (hazard
-HZ-0095-1). Pinned by
-`VoxelCollision.BaseFrameAlignmentPreservesTheProtectiveEnvelope` and
-`…HalfAppliedFrameAlignmentMovesTheKernelByThePedestal`
-(`cpp/openral_safety_kernel/test/test_collision.cpp`), and
-`tests/unit/test_voxel_grid_frame_alignment.py` on the producer side.
-
-## Run
-
-### Integrated (recommended) — via `openral deploy sim`
-
-`openral deploy sim --enable-octomap` brings up the whole world-collision leg:
-octomap_server (from the HAL's depth `PointCloud2`), this bridge, the
-kernel's capsule-vs-voxel check (`world_voxel_enabled:=true`). **Auto-enables**
-when the robot manifest declares a depth `SensorSpec`:
+Normally through the CLI, which wires octomap_server, this bridge and the kernel's
+`world_voxel_enabled:=true`. It turns on by itself when the robot manifest declares a depth
+`SensorSpec`:
 
 ```bash
-openral deploy sim --config scenes/deploy/robocasa_pnp.yaml   # panda_mobile → auto-on
-# or force it / point at a different depth topic:
-openral deploy sim --config <cfg> --enable-octomap
+uv run openral deploy sim --config scenes/deploy/robocasa_pnp.yaml   # panda_mobile: auto-on
+uv run openral deploy sim --config <cfg> --enable-octomap            # force it
 ```
 
-Requires `ros-${ROS_DISTRO}-octomap-server` apt-installed and this package
-colcon-built (both in the deploy Docker images).
-
-### Standalone
+Needs `ros-${ROS_DISTRO}-octomap-server` and this package colcon-built (both are in the deploy
+Docker images). Standalone:
 
 ```bash
 ros2 launch openral_octomap_bridge octomap_voxel_bridge.launch.py \
@@ -398,171 +55,288 @@ ros2 launch openral_octomap_bridge octomap_voxel_bridge.launch.py \
     coverage_radius_m:=<robot reach + margin>   # required: 0 publishes nothing
 ```
 
-and launch the kernel with `world_voxel_enabled:=true` (plus
-`world_voxel_max_cells` ≥ the grid's `size_x*size_y*size_z`).
-
-Requires TF from `base_frame` into the OctoMap's `header.frame_id` (usually
-`map`) — published by your SLAM / localization stack.
-
-## Parameters
-
-| Param | Default | Meaning |
-|---|---|---|
-| `base_frame` | `base_link` | Output frame; the kernel expects obstacles here. |
-| `octomap_topic` | `/octomap_binary` | Input `octomap_msgs/Octomap`. |
-| `output_topic` | `/openral/world_voxels` | Output `OccupancyVoxels`. |
-| `resolution` | `0.05` | Compatibility parameter; output lattice and cell size come from the input octree. |
-| `coverage_radius_m` | `0.0` | Local volume radius around the robot (m). |
-| `coverage_center_{x,y,z}` | `0.0, 0.0, 0.5` | Local volume centre in `base_frame`. |
-| `publish_rate_hz` | `10.0` | Republish rate (the grid follows the robot via TF). |
-| `max_octree_age_s` | `1.0` | Stop publishing once the last octree was received longer ago than this, so the kernel's `world_voxel_deadline_ms` fails closed on a dead camera. Well above octomap's normal gap, not above the kernel's deadline (`deploy_e2e.launch.py`: equal to it). Non-finite, ≤ 0, or above the kernel's 2.0 s deadline cap (`kMaxOctreeAgeS`) publishes nothing. |
-| `static_points_file` | `""` | Base-frame surface points of declared static geometry, marked occupied in every published grid. Only adds occupancy; empty = off; a file that fails to load is fatal. |
-| `attached_clear_enabled` | `true` | Enable identity-validated tracked-object clearing. Attachments with region, segmentation, pinch, unknown, or ambiguous evidence stay occupied. |
-| `tracked_clear_enabled` | `false` | Fail closed: no track drives a clear (identity clear of a `tracked_object` binding, released-box window, carry sweep / vacated box). The attachment revision is still acknowledged. `deploy_e2e.launch.py` sets it for `object_tracking: tracking` and `on`; `off` leaves a carried payload mapped. |
-| `world_state_topic` | `/openral/world_state_fast` | Where the attachment set is read from — the kernel's own source. |
-| `attached_state_timeout_s` | `0.5` | Attachment state older than this clears nothing. |
-| `payload_sweep_clear_service` | `""` (off) | octomap_server `~/clear_bbox`; identity-validated track sweeps, vacated boxes, and release-window clearing only. Geometry-only attachment evidence never authorizes octree clearing. |
-| `payload_sweep_clear_period_s` | `0.2` | Period for identity-validated octree clearing requests. |
-| `attach_link_tf_frames` | `[]` (none) | `"link=frame"` renames for the TF lookup of a payload's attach link: the published `attach_link` is the manifest's name (the kernel's collision model uses manifest names), but a real cell's TF tree may name that body differently (OpenArm: `openarm_left_link7` is `openarm_left_ee_base_link`). Unmapped links are looked up as themselves. `deploy_e2e.launch.py` passes the scene's `vision_attachment.tf_frames` — the strings the HAL gets as `vision_attachment_tf_frames` — and nothing when the leg is off. A malformed or conflicting entry refuses the whole mapping (logged ERROR): every link is then looked up by its own name and, on such a cell, its payload stays in the map. An unmapped link whose lookup fails logs a one-time hint to set this. |
-
-`size_x = size_y = size_z ≤ floor(2·coverage_radius_m / resolution + 1/2) + 1` (the half
-cell is the snap onto the octree's lattice). Keep
-`size_x*size_y*size_z ≤ world_voxel_max_cells` (kernel default 614125 = 85³, 1.05 m at 25 mm
-cells; `deploy_e2e.launch.py` derives it from the robot's ball), or
-the kernel fails closed.
-
-### `robot_self_filter`
-
-The package's second executable (`robot_self_filter`, robot-visible camera path) takes
-`cloud_in` and publishes `cloud_out` (+ `cloud_out_rgb` for viewers). Parameters:
-the kernel's collision model (`collision_*`), `padding_m` (`0.02`),
-`max_joint_state_skew_s` (`0.1`), `joint_state_period_s` (`0.05`; the launch
-normally passes `1 / action_spec.control_freq_hz`). On Isaac sim camera paths
-the filter starts with no admitted period and drops clouds until the connected
-HAL sends its actual simulation tick through `joint_state_period_s`; an invalid
-or missing update leaves it closed. That accepted update clears joint history.
-`joint_state_period_from_hal` is launch-owned and enabled only for this path.
-Real and non-Isaac paths retain the manifest cadence. Nanosecond bounds round up
-to the smallest integer count that represents the configured period; no timing
-margin is added. `velocity_padding_dt_s` (`0.02`), `trailing_sweep_s` (`0.0`),
-`tf_timeout_s` (`0.05`), `joint_state_history_s`
-(`2.0`), `attached_filter_enabled` (`true`, unique tracked-object bindings only), `tracked_clear_enabled` (`false`; the self-filter drops a bound payload's points only when true, i.e. `object_tracking: tracking` or `on`), `attached_state_timeout_s` (`0.5`),
-`joint_states_topic` (`/joint_states`), `world_state_topic`
-(`/openral/world_state_fast`), `collision_base_dofs` (`[]`) and `base_frame` (`""`: a
-mobile manipulator's planar base dofs, the kernel's own, held at zero so the model is posed
-in `base_frame` and every TF lookup starts there; no `world` or fleet map has to exist in TF,
-so each robot under its own `odom` is filtered like a fixed arm; base dofs without a
-`base_frame` forward nothing, and so does a `base_frame` that is not the end of the model's
-planar base chain: the chain from the model root to `base_frame` must be identity-origin
-links that are fixed or plain revolute / prismatic, with no calibration curve, moving on
-exactly `collision_base_dofs`, and no other link may use a base dof. That refuses the root
-itself (`world`), a frame under an arm joint, an extra or missing base dof and any offset.
-The launch refuses the same manifest before either the kernel or the filter starts
-(`_collision_base_dofs`). The base joints are never read from a joint state nor required
-in one; a moving base adds no velocity padding, since the model and every depth camera
-mounted on the robot move with it), and the robot mask's `robot_mask_enabled`
-(`false`), `robot_mask_cameras` / `robot_mask_depth_topics` /
-`robot_mask_camera_info_topics` / `robot_mask_topics` (parallel, `[]`),
-`robot_mask_hand_links` (`[]`), `robot_mask_uncertain_px` (`3`). With no
-collision model, or a period / δt_sync out of range, it forwards nothing.
-
-## Producing the upstream OctoMap
-
-The canonical producer is `octomap_server`
-(`ros-${ROS_DISTRO}-octomap-server`, bundled in dev + inference images with
-`octomap` / `octomap-msgs` / `tf2-geometry-msgs`), built from a 3-D depth
-point cloud (`sensor_msgs/PointCloud2`):
+The standalone launch exposes `base_frame`, `octomap_topic`, `output_topic`, `resolution`,
+`coverage_radius_m`, `coverage_center_z`, `publish_rate_hz` and `max_octree_age_s`; set other
+parameters on the node directly. Launch the kernel with `world_voxel_enabled:=true` and
+`world_voxel_max_cells` at least the grid's `size_x*size_y*size_z`. The bridge needs TF from
+`base_frame` into the OctoMap's `header.frame_id` (usually `map`) from your SLAM or
+localisation stack. The upstream producer is `octomap_server`:
 
 ```bash
 ros2 run octomap_server octomap_server_node \
     --ros-args -p resolution:=0.05 -p frame_id:=map -r cloud_in:=/camera/points
 ```
 
-## Testing
+## `octomap_voxel_bridge`
 
-`test_octree_to_grid` unit-tests `rasterize_octree_to_grid` against a real
-`octomap::OcTree` — no ROS graph. Test list is in "How a cell becomes
-occupied" above. `test_bridge_staleness` runs the real node in-process
-(see "A stopped octree stops the grid"). The octree → bridge → kernel
-chain's liveness is covered by
-`tests/sim/safety/test_kernel_voxel_bridge_staleness.py`, which publishes
-an all-free octree in octomap's binary encoding from Python; a chain with
-a live OctoMap producer (camera → `octomap_server`) is still HIL.
+| Direction | Topic | Type |
+|---|---|---|
+| Sub | `octomap_topic` (`/octomap_binary`) | `octomap_msgs/Octomap` |
+| Sub | `world_state_topic` (`/openral/world_state_fast`) | `WorldStateStamped` (attachment set and tracked objects: the kernel's own source) |
+| Pub | `output_topic` (`/openral/world_voxels`) | `OccupancyVoxels` (RELIABLE; the kernel subscribes RELIABLE) |
+| Client | `payload_sweep_clear_service` | octomap_server `~/clear_bbox` (`BoundingBoxQuery`) |
 
-`test_occupancy_persistence` pins the occupancy semantics the deploy-sim
-launch tunes for, on a real `OcTree` seeded with `occupancy_thres 0.8`,
-`sensor_model.max 0.85`, `hit 0.7`, `miss 0.4`:
-- one hit is **not** a safety voxel (transient rejection), two hits are;
-- a confirmed voxel survives indefinitely when **no ray ever crosses it**
-  (the failure mode a lost self-filter clearing ray creates);
-- one clearing ray retires it; a clearing ray never marks;
-- a cleared cell still comes back when something real is there — four 10 Hz
-  frames (~0.4 s) from the clamping floor.
+| Param | Default | Meaning |
+|---|---|---|
+| `base_frame` | `base_link` | Output frame; the kernel expects obstacles here. |
+| `octomap_topic` / `output_topic` | `/octomap_binary` / `/openral/world_voxels` | Input and output topics. |
+| `resolution` | `0.05` | Compatibility only; lattice and cell size come from the input octree. |
+| `coverage_radius_m` | `0.0` | Radius of the covered ball around the robot. Unset: the node logs an error and publishes nothing. |
+| `coverage_center_{x,y,z}` | `0, 0, 0.5` | Ball centre in `base_frame`. |
+| `publish_rate_hz` | `10.0` | Republish rate (the grid follows the robot via TF). |
+| `max_octree_age_s` | `1.0` | Stop publishing once the last octree was received longer ago than this. Must be in (0, `kMaxOctreeAgeS` = 2.0]; otherwise nothing is published. |
+| `static_points_file` | `""` | Base-frame surface points of declared static geometry, marked occupied in every grid. Only adds occupancy; a file that fails to load is fatal. |
+| `attached_clear_enabled` | `true` | Enable identity-validated tracked-object clearing. |
+| `tracked_clear_enabled` | `false` | Fail closed: no track drives a clear unless set. The launch sets it for `object_tracking: tracking` and `on`. The attachment revision is acknowledged either way. |
+| `attached_state_timeout_s` | `0.5` | Attachment state older than this clears nothing. |
+| `payload_sweep_clear_service` | `""` (off) | octomap_server `~/clear_bbox`, used for identity-validated sweeps, vacated boxes and the release window only. |
+| `payload_sweep_clear_period_s` | `0.2` | Period of those clear requests. |
+| `released_clear_timeout_s` | `3.0` | Release window; must equal the tracker's and the kernel's `tracked_release_timeout_s` (the launch passes one value). |
+| `attach_link_tf_frames` | `[]` | `"link=frame"` renames for the TF lookup of a payload's attach link, when the real TF tree names the body differently from the manifest (OpenArm: `openarm_left_link7` is `openarm_left_ee_base_link`). The launch passes the scene's `vision_attachment.tf_frames`. A malformed or conflicting entry refuses the whole mapping (ERROR) and the payload stays in the map. |
 
-The real-node bridge tests pin the current removal boundary:
-- `BridgePayloadSweep.*` verifies region, segmentation, unknown, pinch-fallback,
-  and gripper-closure evidence preserve occupied cells, issue no `clear_bbox`
-  request, and still publish the processed attachment revision.
-- `BridgeAttachLinkTf.TheMappingDoesNotAuthorizeGeometryOnlyClearing` and
-  `BridgeLiftedPayload.ASupportWitnessDoesNotAuthorizeGeometryOnlyClearing`
-  verify that a valid link mapping or support witness alone preserves occupancy.
-- `BridgeIdentitySweep.*` verifies identity-bound carry backfill, keep-outs,
-  revision acknowledgement, unavailable-state handling, vacated boxes, and the
-  release window. This identity path still removes selected occupancy and retains
-  the residual ownership risk described above.
+`size_x = size_y = size_z <= floor(2*coverage_radius_m / resolution + 1/2) + 1`. Keep the
+product within `world_voxel_max_cells` (kernel default 614125 = 85^3; the launch derives it
+from the robot's ball) or the kernel fails closed.
 
-**Sim status.** Target scene: `scenes/sim/robocasa_panda_mobile_kitchen.yaml`
-(mobile manipulator, cluttered RoboCasa kitchen, only scene with real 3-D
-obstacles + obstacle-avoidance task). Deploy-sim HAL publishes a depth
-`PointCloud2` for it: the panda_mobile node ray-casts each depth `SensorSpec`
-(`robots/panda_mobile/robot.yaml` → `front_depth`) from MuJoCo via
-`openral_sim.backends.depth_camera.synthesize_depth_frame` (one cast/frame,
-back-projected by `openral_hal.depth_cloud.points_from_depth_grid` — raster
-**and** self-filter clearing mask), publishing
-`/openral/cameras/front_depth/points` (camera optical frame) + a live
-`base_link → front_depth_optical_frame` TF. Robot-agnostic: any robot
-declaring a depth `SensorSpec` (with `metadata.mjcf_camera`) gets the same.
+### The grid's lattice is the octree's
 
-```
-panda_mobile HAL  ──/openral/cameras/front_depth/points──▶  octomap_server
-   (depth ray-cast)                                              │ /octomap_binary
-                                                                 ▼
-   openral_octomap_bridge  ──/openral/world_voxels──▶  C++ safety kernel
-```
+One published cell is one octree cell: same size, phase and axes. `origin` plus `orientation`
+give the pose, in `header.frame_id`, of cell (0,0,0)'s minimum corner; the cell axes are
+`orientation`'s, not the frame's. Consumers apply it; nobody re-rasterises. This replaced two
+base-aligned rules: centre point-query (a single sample across two lattices, which put a
+panel a full voxel nearer with no cells where it is) and overlap (sound, but dilated the
+reach by 29-35 mm median on 25 mm cells and held 48% of live start-state e-stops). Cost is
+proportional to occupied leaves. Pinned by `test_octree_to_grid` (real `octomap::OcTree`, no
+ROS graph: no obstacle lost and no reach surrendered at any phase or yaw, a unit orientation,
+absurd specs refused, a publish-budget bound of a quarter of the 10 Hz period).
 
-Run `octomap_server` against the published cloud (see *Producing the
-upstream OctoMap*) and this bridge against its output. Booting the full
-RoboCasa kitchen + octomap_server is a HIL / on-host integration step
-(RoboCasa assets + GPU render); the synth, packing, and TF are unit-tested
-(`tests/unit/test_depth_camera_synth.py`, `tests/unit/test_depth_cloud_helpers.py`),
-the kernel-side voxel check by
-`tests/sim/safety/test_kernel_voxel_collision_synthetic.py` (feeds
-`OccupancyVoxels` directly). The frame contract is pinned by
-`tests/unit/test_voxel_grid_frame_alignment.py` and, against the live
-kitchen, by `tests/sim/safety/test_panda_mobile_robocasa_collision_fk.py`
-(see *The frame contract* above).
+The up-to-one-resolution inflation toward the sensor is octomap's (`insertPointCloud` marks
+the cell holding the ray endpoint). It always reports nearer than true, never farther, and is
+not corrected here.
 
-Robot-mask depth arriving before its camera TF is retained for nonblocking
-exact-source-stamp retries every 5 ms. Each camera holds at most two images;
-oldest overflow and a steady-clock wait reaching `max_joint_state_skew_s` refuse
-that mask with diagnostics. At most 16 cameras and 32 MiB / 8 megapixels per image
-are admitted. CameraInfo is captured with the image. No latest-TF substitution,
-extra joint extrapolation, or payload masking is used; late TF after expiry
-cannot resurrect an image.
+### What the grid covers: a ball sized by the robot
 
-### Capture-time joint-state arrival
+`coverage_radius_m` / `coverage_center_*` name a ball in `base_frame` (a rotated box would
+need up to 2x the cells). The radius must reach wherever the kernel's checked geometry can
+go, which is a property of the robot manifest. `deploy_e2e.launch.py` measures it per robot
+(`_coverage_ball`): over the joint limits, against the same collision model the kernel gets,
+the centre is the middle of the moving links' reach box and the radius is the farthest reach
+from it plus 50 mm (OpenArm 0.871 m about `(0.003, 0, 0)`, panda_mobile 1.04 m about
+`(0, 0, 0.432)`). The kernel's cap derives from that radius; a ball this node would refuse
+(`kMaxCells`) is refused at launch.
 
-Clouds and robot-mask images wait for joint history to cover their capture stamp
-(exact sample or interpolation), rather than extrapolating a removal pose. Cloud
-retention is bounded to two buffers of at most 32 MiB each; a shared 5 ms timer
-retries only within the existing `max_joint_state_skew_s` wall deadline. Overflow
-and expiry refuse the sensor frame. Existing interpolation gap/skew checks,
-TF requirements and padding are unchanged. Only a joint-state message that carries
-at least one of the model's posed joints adds a history sample: a message for
-other joints (a second publisher on the topic) would otherwise re-stamp the last
-arm pose at its own stamp and bracket a cloud with a stale, motionless arm.
+### A stopped octree stops the grid (fail closed on a dead camera)
 
-The recorded R9 fixture reproduces 3/16 gripper returns surviving forward
-extrapolation; all 16 disappear when the matching state arrives 5.1 ms later.
-World-point preservation and real ROS delayed-arrival/expiry/overflow cases
-guard the bounded wait. This is not permission to remove unknown objects.
+The bridge re-rasterises the last octree on the `publish_rate_hz` timer, so between octrees
+the grid follows the robot through TF. `octomap_server` publishes only when it inserts a
+cloud, so a dead camera is a silent octree. The kernel times voxel freshness from receipt, so
+a frozen map republished with a fresh stamp would hide that.
+
+Republishing is bounded by `max_octree_age_s`, measured from the octree's receipt on this
+node's clock. Past it the node publishes nothing (not even a payload-cleared grid) and logs a
+throttled WARN; the kernel's `world_voxel_deadline_ms` then drops chunks as
+`DROP_VOXEL_UNAVAILABLE` (a drop, not a latch). The next octree resumes publishing. Worst case
+from the last cloud to the drop is `max_octree_age_s + world_voxel_deadline_ms` (1 s + 1 s at
+the deploy defaults).
+
+- The bound must exceed octomap's normal inter-publish gap (0.25-0.45 s measured on the Thor
+  ZED path at 2.2-4 Hz) and not exceed the kernel's deadline, so the kernel fails closed. Too
+  small only costs availability.
+- Both are per-rig `DeployRuntime` fields: `world_voxel_deadline_s` (default 1.0 s, hard cap
+  2.0 s) and `max_octree_age_s` (default the deadline; a larger value is refused by the schema
+  and the launch). A source slower than about 1 Hz needs both raised in its scene.
+- `header.stamp` is `now()` (when the grid was placed in `base_frame`; the HAL's evidence
+  decoder picks "the grid current at time t" by it). The octree's own capture stamp rides on
+  every grid as `source_stamp`, and the kernel budgets the world's age from it:
+  `world_voxel_data_age_budget_ms` from `DeployRuntime.world_voxel_data_age_budget_s`
+  (default 1.5 s, cap 3.0 s); past it the chunk drops as `voxel_stale`.
+- The kernel enforces the caps itself: with `world_voxel_enabled` it refuses to configure on
+  a deadline outside (0, 2000] ms or a data-age budget outside (0, 3000] ms.
+
+Not covered: a camera that keeps publishing garbage, or a driver re-publishing a frozen
+image, still reaches `octomap_server` as fresh inserts. Pinned by `test_bridge_staleness`
+(real node in-process) and `tests/sim/safety/test_kernel_voxel_bridge_staleness.py` (against
+the real kernel).
+
+### Publish rate: measure it RELIABLE
+
+At a 0.02 m, 1.05 m-radius deploy geometry the grid is 106^3 = 1.19 M cells, a 1.19 MB
+sample. A BEST_EFFORT subscriber loses a fragmented sample whole if it misses one fragment,
+so a best-effort `ros2 topic hz` under-reads it (7 Hz against 10 Hz reliable on the Orin
+OpenArm cell). The kernel subscribes RELIABLE. Per-octree work is small: a 14k-leaf map
+costs 0.7 ms to deserialise and 0.3 ms to rasterise; deserialising walks the whole map, so
+it grows with mapped volume (about 60 ms at 437k leaves). `test_bridge_rate_budget` pins
+both.
+
+## Attached objects and world occupancy
+
+The kernel checks every occupied world voxel against robot and attached-object geometry. The
+bridge removes world occupancy only for an attachment with `evidence_kind == "tracked_object"`
+when `identity_clearing_track` finds exactly one matching track with status `bound`, matching
+`epoch` and `attach_link`, a finite `floor_z`, no conflicting track or payload on the link,
+and a usable tracked-object set in `base_frame`. The clear uses the track's bound geometry and
+tight hull when available; malformed or ambiguous geometry clears nothing. Identity sweeps,
+vacated boxes and the release window use the same binding and `payload_sweep_clear_service`.
+
+Attachments evidenced by `grasp_target_region`, `vision_segmentation`, `pinch_fallback`,
+gripper closure, unknown evidence or an ambiguous binding stay occupied. Primitive geometry,
+link transforms and support witnesses do not say which cells belong to an object. The
+attachment revision in `OccupancyVoxels` acknowledges a fresh state revision and any
+identity-clearing work; it does not certify that every payload cell was removed.
+
+**Without the object tracker the posture is fail closed.** Only the tracker
+(`DeployRuntime.object_tracking: tracking` or `on`, sim-only) publishes `tracked_object`
+attachments. With `object_tracking: off` (every real arm, the MuJoCo twin, an Isaac sidecar
+scene) the payload stays a mapped obstacle, so the kernel may stop the arm on the object in
+its own hand during carry and place. That is the accepted cost; there is deliberately no
+pose-based fallback clear. A run that carries an object with world collision on needs the
+tracker. (A MuJoCo `SimAttachedHAL` scene masks payload bodies out of its rendered depth and
+does not need this.)
+
+Identity binding is not per-cell ownership: an untracked obstacle touching a tracked shape can
+still be removed. The bridge limits clearing to a tight track shape and excludes the floor,
+declared static points and other tracked objects. See `identity_clearing.hpp`,
+`test_identity_clearing` and `BridgeIdentitySweep.*`.
+
+## `robot_self_filter`
+
+Runs on robot-visible camera paths (real depth and Isaac-rendered depth). It takes `cloud_in`
+and publishes `cloud_out` (and `cloud_out_rgb` for viewers). It poses the kernel's collision
+parameters at the cloud's capture stamp and drops returns within `padding_m` of those
+primitives before `octomap_server` inserts the cloud. It filters attached-object returns only
+when `identity_clearing_track` validates one unique `tracked_object` binding against the fresh
+tracked set. Region, segmentation, pinch, unknown, stale or ambiguous geometry leaves the
+returns in. No pose at the capture stamp drops the whole cloud. A foreign surface overlapping
+a validated track shape may still have its returns suppressed.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `collision_*` | none | The kernel's collision model. With none, the node forwards nothing. |
+| `padding_m` | `0.02` | Padding; must be in [0, 0.10] (hard cap) or nothing is forwarded. |
+| `max_joint_state_skew_s` | `0.1` | Wall deadline for waiting on joint history. |
+| `joint_state_period_s` | `0.05` | Joint-state period; the launch passes `1 / action_spec.control_freq_hz`. |
+| `joint_state_period_from_hal` | `false` | Launch-owned, Isaac camera paths only: the filter drops clouds until the HAL reports its real simulation tick through `joint_state_period_s`. |
+| `velocity_padding_dt_s` | `0.02` | The sync error interpolation cannot see; each primitive grows by `\|v\|*dt`. |
+| `trailing_sweep_s` | `0.0` | Also pad by motion since `stamp - trailing_sweep_s` (max `kMaxTrailingSweepS` = 0.5). The deploy launch sets 0.2 s in sim only. |
+| `tf_timeout_s`, `joint_state_history_s` | `0.05`, `2.0` | TF wait and joint history length. |
+| `attached_filter_enabled`, `tracked_clear_enabled` | `true`, `false` | Drop a bound payload's points only when both are true. |
+| `attached_state_timeout_s` | `0.5` | |
+| `joint_states_topic`, `world_state_topic` | `/joint_states`, `/openral/world_state_fast` | |
+| `base_frame`, `collision_base_dofs` | `""`, `[]` | A mobile manipulator's planar base dofs (the kernel's own), held at zero so the model is posed in `base_frame` and every TF lookup starts there. See below. |
+| `robot_mask_*` | off | The robot mask (below). |
+
+Joint positions are linearly interpolated at the capture stamp. A frame is refused (dropped,
+counted, WARN rate-limited) when the samples around it are more than two
+`joint_state_period_s` apart or it needs more than one period of extrapolation. Clouds and
+mask depth images wait for joint history to cover their capture stamp rather than
+extrapolating; retention is two buffers of at most 32 MiB each and a 5 ms retry timer within
+`max_joint_state_skew_s`. Only a joint-state message carrying at least one of the model's
+posed joints adds a history sample. Total padding stays under the 0.10 m cap: a faster link
+is under-padded, which leaves its points in the map (a false stop) rather than erasing more
+of the world.
+
+Mobile bases: the model is posed in `base_frame`, so no `world` or fleet map need exist in TF
+and each robot under its own `odom` filters like a fixed arm. Base dofs without a
+`base_frame` forward nothing, and so does a `base_frame` that is not the end of the model's
+planar base chain (identity-origin fixed or plain revolute / prismatic links, no calibration
+curve, moving on exactly `collision_base_dofs`, with no other link using a base dof). The
+launch refuses the same manifest first (`_collision_base_dofs`). Base joints are never read
+from a joint state, and a moving base adds no velocity padding.
+
+Boxes that carry the kernel's tight geometry (`collision_box_hull` / `collision_hull_*`) are
+filtered against that geometry, not the slack box, using the kernel's staged narrow phase (a
+26-DOP slab bound, then GJK on the hull vertices). Every value is a lower bound on the true
+distance, so a return the hull explains is always removed. `test_self_filter` pins it against
+the kernel's `hull_cell_distance`. A hull the kernel's `validate_tight_hull` would refuse
+(vertex outside its DOP, over 320 vertices, bad arity) refuses the whole model.
+
+**Recent sweep.** With `trailing_sweep_s > 0` each primitive is also padded by how far it has
+moved since `stamp - trailing_sweep_s`, so a return inside the volume the robot just left is
+read as its own trailing edge. The world is blind to new returns there for at most that long;
+obstacles already mapped are never removed.
+
+**Robot mask** (`robot_mask_enabled`, off by default; the launch sets
+`robot_mask_cameras:=top,wrist` only where the self-filter runs). The node renders the
+unpadded model into each named depth camera at the depth stamp and publishes
+`/openral/cameras/<cam>/robot_mask` (mono8: 0 free, 128 uncertain, 255 robot; depth header;
+BEST_EFFORT, KEEP_LAST 5). A pixel is robot when the rendered robot depth is at most the
+measured depth + 5 mm and the return is not seen past the robot, or its back-projected return
+is inside the unpadded hand (`robot_mask_hand_links`) or within 10 mm of another link. Pixels
+within `robot_mask_uncertain_px` (3) of a boundary, and robot pixels with no return, are
+uncertain. Parameters: `robot_mask_cameras`, `robot_mask_depth_topics`,
+`robot_mask_camera_info_topics`, `robot_mask_topics` (parallel lists), `robot_mask_hand_links`.
+RGB-only cameras get no mask. Depth that arrives before its camera TF is retried every 5 ms
+for the same stamp; each camera holds at most two images, up to 16 cameras and 32 MiB / 8 MP
+per image are admitted, and late TF after expiry cannot resurrect an image.
+
+## `peer_voxels` (several robots in one scene, ADR-0137)
+
+Publishes every other robot of the scene, from its own geometry, as `/openral/peer_voxels`
+(`OccupancyVoxels`, RELIABLE, KEEP_LAST 1) for this robot's kernel. Each peer runs on its own
+ROS domain: the node joins each peer's domain with a context of its own and reads only that
+peer's `/joint_states` and `/tf` (`world -> map -> odom -> base`); it never publishes there.
+The launch lowers each peer's collision model from its manifest as parameters under
+`peer_<name>.`, from `OPENRAL_SCENE_PEERS`.
+
+Fail closed: while any peer's joints (each on its own stamp) or base pose, or this robot's own
+base pose, is missing, older than `max_input_age_s`, or stamped further ahead than that,
+nothing is published, and the kernel's receipt deadline refuses every chunk. A peer is never
+assumed gone. The launch refuses a several-robot scene whose kernel has no world-voxel check.
+
+| Param | Default | Meaning |
+|---|---|---|
+| `peer_names`, `peer_domains` | `[]` | Parallel lists; empty or unequal lengths publish nothing. |
+| `base_frame`, `world_frame` | `base_link`, `world` | Output frame; frame joining the robots. |
+| `coverage_center_{x,y,z}`, `coverage_radius_m`, `resolution` | `0, 0, 0.5`; `1.05`; `0.025` | The grid ball and cell size. |
+| `sweep_horizon_s`, `max_input_age_s` | `0.3`, `0.3` | Motion swept per peer, and input age bound; `sweep_horizon_s >= max_input_age_s > 0`. The launch sets both from the kernel's peer data-age budget. |
+| `pad_m` | `0.02` | Padding on each peer primitive. |
+| `publish_period_s` | `0.05` | Publish period. |
+
+Tested by `test_peer_grid`.
+
+## The frame contract (ADR-0095)
+
+`OccupancyVoxels` carries no TF of its own. `header.frame_id` names the frame `origin` is
+measured in, and the kernel rasterises FK'd link capsules against the grid with no transform.
+So the grid's content and the kernel's collision FK root must share one frame, the one
+`base_frame` denotes on `/tf`:
+
+| Party | What it must use |
+|---|---|
+| whatever feeds `octomap_server` (sim HAL depth cloud, real RGB-D driver) | an extrinsic measured against the body `base_frame` denotes |
+| this bridge | `base_frame` as `header.frame_id`, `origin` in that frame |
+| the kernel | per-link `origin_xyz` measured from that same `base_frame` |
+
+On robosuite / RoboCasa mobile manipulators `base_link` on `/tf` is the pedestal top, not the
+MJCF chassis root; `openral_hal.depth_cloud.resolve_base_frame_body_name` resolves the
+arm-mount body for every `base_frame -> ...` extrinsic. Both halves must land together: a
+half-applied change leaves the kernel a full pedestal away from the obstacles it checks
+(hazard HZ-0095-1). Pinned by
+`VoxelCollision.BaseFrameAlignmentPreservesTheProtectiveEnvelope` and
+`...HalfAppliedFrameAlignmentMovesTheKernelByThePedestal`
+(`cpp/openral_safety_kernel/test/test_collision.cpp`) and
+`tests/unit/test_voxel_grid_frame_alignment.py`.
+
+## Tests
+
+C++ gtests under `test/`: `test_octree_to_grid`, `test_bridge_staleness`,
+`test_bridge_rate_budget`, `test_occupancy_persistence`, `test_identity_clearing`,
+`test_payload_clearing`, `test_bridge_payload_sweep`, `test_bridge_lifted_payload`,
+`test_bridge_attach_link_tf`, `test_self_filter`, `test_robot_self_filter_node`,
+`test_peer_grid`.
+
+- `test_occupancy_persistence` pins the occupancy semantics the deploy launch tunes for
+  (`occupancy_thres 0.8`, `sensor_model.max 0.85`, `hit 0.7`, `miss 0.4`): one hit is not a
+  safety voxel and two are; a confirmed voxel survives when no ray crosses it; one clearing
+  ray retires it and never marks; a cleared cell returns after about four 10 Hz frames.
+- The removal boundary: `BridgePayloadSweep.*` (region, segmentation, unknown, pinch-fallback
+  and gripper-closure evidence keep occupied cells and issue no `clear_bbox`, yet still
+  acknowledge the revision), `BridgeAttachLinkTf.TheMappingDoesNotAuthorizeGeometryOnlyClearing`,
+  `BridgeLiftedPayload.ASupportWitnessDoesNotAuthorizeGeometryOnlyClearing`, and
+  `BridgeIdentitySweep.*` (identity-bound carry backfill, keep-outs, vacated boxes and the
+  release window).
+- Producer side: `tests/unit/test_depth_camera_synth.py`, `tests/unit/test_depth_cloud_helpers.py`.
+  Kernel side: `tests/sim/safety/test_kernel_voxel_collision_synthetic.py` (feeds
+  `OccupancyVoxels` directly) and `tests/sim/safety/test_panda_mobile_robocasa_collision_fk.py`.
+  The self-filter fixtures in `test/data/` replay recorded joint-state arrival cases. A chain
+  with a live camera and `octomap_server` is still HIL.

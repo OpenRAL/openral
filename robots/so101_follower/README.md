@@ -83,7 +83,7 @@ PCA-fit boxes for `base`, `upper_arm`, `lower_arm` and `wrist`, run with the
 negative `self_collision_margin_m` documented in the manifest. `shoulder` is a
 box + exact hull, and so are `gripper` and `jaw`.
 
-`shoulder` is the `openral collision lower --tight-link shoulder` fit of its URDF
+`shoulder` is the `openral collision lower --robot robots/so101_follower/robot.yaml --tight-link shoulder` fit of its URDF
 meshes. The mesh sits inside the hull to 1 nm. It replaces the hand PCA box, whose
 bottom hung 1 mm below the surface the arm is mounted on: the box reached
 z = 0.029 m in the base frame, while the mesh only reaches 0.0487 m. Two LeIsaac

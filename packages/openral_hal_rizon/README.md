@@ -40,8 +40,7 @@ a **private static Fast-DDS 2.14.5 / Fast-CDR 2.2.5** into `~/flexiv_ws/dds_inst
 then `flexiv_rdk` and the three ROS packages. The private DDS is not optional: the vendor
 RDK `.a` is compiled against Fast-CDR 2.2.5, and Jazzy's current Fast-CDR (≥ 2.2.6, whose
 `Cdr` grew from 216 to 296 bytes) makes the RDK's first message deserialize smash the
-stack (`*** stack smashing detected ***` in `RealtimeStatesPubSubType::deserialize`,
-reproduced on q5090 with Fast-CDR 2.2.8). The copy is static and hidden, so it stays
+stack (`*** stack smashing detected ***` in `RealtimeStatesPubSubType::deserialize`). The copy is static and hidden, so it stays
 inside `libflexiv_hardware.so`.
 
 Each arm must be in **Remote mode (Ethernet)** on its controller. The pinned
@@ -52,7 +51,7 @@ so the RDK discovers the arms on every interface; there is no launch argument to
 
 ```bash
 source ~/flexiv_ws/install/setup.bash
-openral deploy run --config scenes/deploy/rizon_dual_bench.yaml
+uv run openral deploy run --config scenes/deploy/rizon_dual_bench.yaml
 ```
 
 **Activation enables both arms.** `FlexivHardwareInterface::on_activate` clears a fault
@@ -63,7 +62,7 @@ E-stop in reach. An arm whose E-stop is pressed never becomes operational, and
 
 **Stopping the deploy does not disable the arms.** On teardown the upstream interface
 calls `Robot::Stop()`, which halts motion but leaves both arms enabled ("operational /
-Ready", brakes released; verified on q5090). Disable them on the controller or press the
+Ready", brakes released). Disable them on the controller or press the
 E-stops before entering the cell.
 
 The launch defaults are the reference rig's serials; `deploy run` forwards no launch

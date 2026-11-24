@@ -158,8 +158,8 @@ Peak GPU memory 14.1 GiB. This is a smoke check of the port, not a benchmark cla
 model card warns that contact-rich LIBERO tasks differ under MuJoCo 3.x versus the
 2.3.7 it was measured with. The card's numbers also ran the preprocessor's video-canvas
 step on the CPU; this adapter runs the whole preprocessor on the policy device, which the
-card notes shifts the inputs and the sampling by small numerical amounts. The 1500 ms
-`per_chunk_ms` budget (2500 ms) covers the timed chunk on Jetson AGX Thor: 2.13–2.17 s
+card notes shifts the inputs and the sampling by small numerical amounts. The 2500 ms
+`per_chunk_ms` budget covers the timed chunk on Jetson AGX Thor: 2.13–2.17 s
 steady, 2.68 s for the first one.
 
 On Thor the adapter's load (bf16 build, weight init skipped, strict) took 19.3 s and

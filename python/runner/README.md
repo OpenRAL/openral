@@ -1,6 +1,9 @@
 # openral-runner
 
-OpenRAL inference runner — closes WorldState → Skill → HAL at a cadence
+OpenRAL inference runner: closes the WorldState → rSkill → HAL loop at a fixed
+rate. Hosts the `InferenceRunner` protocol and rate-limited base class, the
+hardware-side sensor readers and the deploy runner; `openral_sim` is its
+simulation counterpart.
 
 Part of [**OpenRAL**](https://github.com/OpenRAL/openral) — the open Robot
 Abstraction Layer for vision-language-action robotics. This package is one

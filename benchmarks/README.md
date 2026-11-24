@@ -6,7 +6,7 @@ Each YAML here is a **bare list of `openral_core.BenchmarkScene`s** at the YAML
 root. A suite **aggregates** N scene rollouts under uniform protocol
 invariants; the suite id is the filename stem (`benchmarks/libero_spatial.yaml`
 → `"libero_spatial"`). The rSkill (VLA) is the **only** free axis, supplied at
-the CLI: `openral benchmark run --suite <id> --rskill <name>`.
+the CLI: `uv run openral benchmark run --suite <id> --rskill <name>`.
 
 The sibling [`scenes/`](../scenes/) instead holds the three scene tiers
 (`DeployScene` / `SimScene` / `BenchmarkScene`) for single-rollout commands
@@ -57,7 +57,7 @@ a message pointing at the bare-list format. Use YAML anchors (`&scene` /
 | `robotwin.yaml`                    | aloha_agilex   | robotwin (SAPIEN via lerobot, py3.12 sidecar)                           |  5 | 100 | `is_success` | 300 | 500 |
 | `rlbench.yaml`                     | franka_panda   | RLBench PerAct subset: open_drawer / meat_off_grill / close_jar (CoppeliaSim/PyRep, py3.10 sidecar) |  3 | 25 | `is_success` | 25 |  75 |
 | `behavior.yaml`                    | r1pro          | BEHAVIOR-1K 2026 challenge, all 100 public tasks (OmniGibson / Isaac Sim, sidecar) | 100 |  1 | `is_success` | 3224–39090 | 100 |
-| `makermods_metal_pick_place.yaml`  | makermods_metal | metal_pick_place (MuJoCo sim twin of `HappyEthan/metal_pick_place`), 3 scenes in the dataset's layout A (a showcase; the checkpoint never reaches the cube in B/C/D), positions jittered ±1.5 cm and baked in; graded complete / partial / semi / fail |  3 |  3 | `is_success` | 900 |  30 |
+| `makermods_metal_pick_place.yaml`  | makermods_metal | metal_pick_place (MuJoCo sim twin of `HappyEthan/metal_pick_place`), 3 scenes in the dataset's layout A (a showcase; the checkpoint never reaches the cube in B/C/D), positions jittered ±1.5 cm and baked in; graded complete / partial / semi / fail |  3 |  3 | `is_success` | 900 |  9 |
 | `makermods_metal_pen_holder.yaml` | makermods_metal_station | metal_pen_holder (MuJoCo sim twin of `makermods/pen_holder_bi_20260723_161553`), 10 layouts: the dataset mean + a Latin hypercube over the 5th–95th percentile of cup / pen start poses, each jittered ±5 mm / ±2° per seed; graded complete / partial / semi / fail | 10 |  3 | `is_success` | 900 |  30 |
 
 Per-suite `max_steps` mirrors the upstream `lerobot.envs.libero.TASK_SUITE_MAX_STEPS`
@@ -66,7 +66,7 @@ the others. `metaworld_mt50` runs with 5 episodes per scene by default to keep
 the wall-clock under ~4 h on a single GPU; bump per-scene `n_episodes` together
 for a paper-equivalent reproduction. `maniskill3_panda` has per-task `max_steps`
 that differ across its 7 scenes (PickCube-v1=50 … PlugCharger-v1=200); the suite
-aggregator uses `max(scene.task.max_steps)` for the suite-level bound (Task 10).
+aggregator uses `max(scene.task.max_steps)` for the suite-level bound.
 It is OpenRAL-curated (ManiSkill3 has no single canonical suite); `--rskill`
 auto-filters to the tasks a policy declares, so it stays runnable as task-matched
 MS3 Panda policies land.
@@ -101,8 +101,7 @@ Both the scene and the **3D Diffuser Actor** policy (`rskills/3d-diffuser-actor-
 MIT) run in an externally-provisioned py3.10 sidecar venv; the openral side only
 needs `just sync --group rlbench` (pyzmq + msgpack). The scene factory raises a
 typed `ROSConfigError` with the full provisioning recipe when the sidecar venv /
-`COPPELIASIM_ROOT` are absent. Verified live on an 8 GB Ada GPU host
-(open_drawer 4/4, meat_off_grill 3/3, close_jar solved).
+`COPPELIASIM_ROOT` are absent.
 
 `behavior.yaml` carries **all 100 public tasks of the BEHAVIOR-1K 2026
 challenge** on **OmniGibson / Isaac Sim** (BEHAVIOR-1K defines 1,000
@@ -133,4 +132,4 @@ averaged over all public instances, which this suite does not reproduce.
    fixtures, no placeholders).
 4. Single-scene paper claim instead of a suite? Drop a `BenchmarkScene` YAML
    under [`scenes/benchmark/`](../scenes/benchmark/) and run it with
-   `openral benchmark scene --config scenes/benchmark/<id>.yaml --rskill <name>`.
+   `uv run openral benchmark scene --config scenes/benchmark/<id>.yaml --rskill <name>`.

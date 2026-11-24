@@ -55,7 +55,7 @@ normalised:
    `-0.028403 0.621812 -0.00224` (the lens pose, 2.5 mm back along the view, then
    upstream's 30° pitch undone, so `head_camera_pitch_joint` and the bracket keep their
    upstream origins), and `head_camera_optical_joint` xyz `0.0025 0 0`. Mirror the mount
-   joint in `robot.yaml` and re-run `openral collision lower --acm-only`.
+   joint in `robot.yaml` and re-run `openral collision lower --robot robots/openamrobot_v2/robot.yaml --acm-only`.
    Write the result with `ET.indent`.
 
 ## Mass
@@ -259,7 +259,7 @@ Open before the first real run (agreed with the OpenAMRobot project in openral#4
   box + hull per link, only the link names translated), so an OpenArm re-lowering
   reaches this robot; the body is one box per URDF link, bounded
   from the MuJoCo twin's geoms (+1 mm), with `base_link`'s box covering the
-  whole chassis subtree. The ACM is `openral collision lower --acm-only`
+  whole chassis subtree. The ACM is `openral collision lower --robot robots/openamrobot_v2/robot.yaml --acm-only`
   (mjcf route: `select_lowering` now treats the partially resolving URDF as
   not usable for lowering) unioned with `openamrobot_v2.srdf`: OpenArm's six arm
   rows renamed, plus three lift-internal rows (the position flag through the stop

@@ -1,456 +1,299 @@
 # `openral_world_state` (ROS 2)
 
-Lifecycle-node wrapper for `openral_world_state.WorldStateAggregator`
-(Layer 2). Subscribes to joint and
-sensor topics, ticks the aggregator, and publishes a typed
-`openral_msgs/WorldStateStamped` snapshot at two rates (fast 30 Hz,
-slow 5 Hz) for downstream consumers (Skill, Reasoner, dashboards).
+ROS 2 wrapper (Layer 2) for `openral_world_state`. It holds three lifecycle nodes:
 
-## Synopsis
+- `world_state_node`: wraps `WorldStateAggregator`, subscribes to joint and sensor topics and
+  publishes a typed `openral_msgs/WorldStateStamped` at 30 Hz (fast) and 5 Hz (slow) for the
+  skill, the reasoner and dashboards. It also lifts 2D detections to 3D object memory.
+- `object_tracker_node`: grounds and tracks the objects a goal names (sim-only).
+- `instance_mask_propagator_node`: an experimental SAM2 mask-to-voxel node (sim-only).
+
+## Run it
 
 ```bash
 source /opt/ros/jazzy/setup.bash
-just ros2-build
-source install/setup.bash
+just ros2-build && source install/setup.bash
 
 ros2 run openral_world_state world_state_node \
-    --ros-args -p robot_name:=so100 \
-      -p publish_rate_hz_fast:=30.0 \
-      -p publish_rate_hz_slow:=5.0
+    --ros-args -p robot_name:=so100 -p publish_rate_hz_fast:=30.0 -p publish_rate_hz_slow:=5.0
 ```
 
-## What's in here
+`deploy_e2e.launch.py` (in `openral_rskill_ros`) starts the nodes for a deploy and passes the
+parameters below from the scene.
 
 | Path | Role |
 | --- | --- |
-| `openral_world_state_ros/lifecycle_node.py` | The managed lifecycle node. Wraps `WorldStateAggregator`; stub `RobotDescription` is built at `configure` time from the `robot_name` parameter. Owns the fast/slow `WorldStateStamped` publishers and the snapshot-to-message translator (`build_world_state_stamped_msg`). |
-| `scripts/world_state_node` | Console entry point for `ros2 run`. |
-| `openral_world_state_ros/object_tracker_node.py` | The #418 object-tracker lifecycle node (see "Object tracker" below). Wraps `openral_world_state.object_tracker.TrackerSession`. |
-| `scripts/object_tracker_node` | Its console entry point. |
-| `openral_world_state_ros/instance_mask_propagator_node.py` | EXPERIMENT (pro#51, sim-only, `DeployRuntime.instance_cells`): the instance mask propagator lifecycle node (see "Vision + voxel fusion" below). |
-| `CMakeLists.txt` | `ament_cmake_python` install for the Python package + script. |
-| `package.xml` | ROS package manifest (depends on `openral_msgs` for the `WorldStateStamped` IDL). |
+| `openral_world_state_ros/lifecycle_node.py` | `world_state_node`. Builds a stub `RobotDescription` from `robot_name` unless the compose factory injects one; owns the publishers and `build_world_state_stamped_msg`. |
+| `openral_world_state_ros/object_tracker_node.py` | `object_tracker_node`: the ROS wire around the ROS-free `TrackerSession` (`python/world_state/.../object_tracker/session.py`). |
+| `openral_world_state_ros/instance_mask_propagator_node.py` | `instance_mask_propagator_node` (experiment). |
+| `scripts/` | `ros2 run` entry points for the three nodes. |
 
-## Lifecycle contract
+## `world_state_node`
 
 | Transition | Action |
 | --- | --- |
-| `configure` | Build the stub `RobotDescription` (unless one was injected via the compose factory), instantiate `WorldStateAggregator(staleness_limit_s=…)`, subscribe to `/joint_states`, `/openral/policy_state`, the attachment-state topic and one image topic per `camera_names` entry, create fast + slow `WorldStateStamped` publishers, wire the F8 diagnostics heartbeat. |
-| `activate` | Start the fast publish timer at `publish_rate_hz_fast`; slow topic publishes every `round(fast/slow)` ticks from the same snapshot. |
+| `configure` | Build the stub `RobotDescription`, create `WorldStateAggregator(staleness_limit_s=...)`, subscribe, create the fast and slow publishers, wire the `/diagnostics` heartbeat. |
+| `activate` | Start the fast timer; the slow topic publishes every `round(fast/slow)` ticks from the same snapshot. |
 | `deactivate` | Stop the timer. |
-| `cleanup` | Destroy subscriptions, publishers, and aggregator (the latter only when this node owns it; the compose factory keeps the aggregator alive on its behalf). |
+| `cleanup` | Destroy subscriptions and publishers, and the aggregator when this node owns it. |
 
-## Parameters
+Transitions use `log_lifecycle_errors` and `refuse_unavailable_transitions`: a failed
+callback is logged, and a transition the node's state lacks is refused rather than killing the
+node.
 
-| Name | Type | Default | Notes |
-| --- | --- | --- | --- |
-| `robot_name` | string | `robot` | Short id used to build the stub `RobotDescription`. |
-| `publish_rate_hz_fast` | double | `30.0` | Fast-topic snapshot rate (`/openral/world_state_fast`). |
-| `publish_rate_hz_slow` | double | `5.0` | Slow-topic snapshot rate (`/openral/world_state_slow`). |
-| `joint_states_topic` | string | `/joint_states` | JointState input topic. Override in tests or composed graphs that isolate robot buses. |
-| `staleness_limit_s` | double | `0.5` | Age threshold for marking sensors stale (0.5 s clears 10 Hz camera flapping). |
-| `policy_state_staleness_limit_s` | double | `5.0` | Separate staleness window for the step-locked `/openral/policy_state`. |
-| `camera_names` | string[] | `[""]` (none) | One `sensor_msgs/Image` subscription on `camera_topic(<name>)` per entry. |
-| `attachment_state_topic` | string | `/openral/attachment_state` | `AttachmentState` input relayed onto `WorldStateStamped`. |
-| `tracked_objects_topic` | string | `/openral/tracked_objects` | The object tracker's `TrackedObjectSet`, relayed as `WorldStateStamped.tracked_objects`; `tracked_objects_valid` false once no set arrived for 1.5 s (`DEFAULT_TRACKED_OBJECTS_STALE_S`). |
-| `direct_image_frame_sensors` | string[] | `[""]` (none) | Cameras the co-located sensor leg writes directly; their image callback keeps the thumbnail span but does not re-write the aggregator. |
-
-## Topics
+| Parameter | Default | Notes |
+| --- | --- | --- |
+| `robot_name` | `robot` | Id for the stub `RobotDescription`. |
+| `publish_rate_hz_fast` / `_slow` | `30.0` / `5.0` | Rates of `/openral/world_state_fast` / `_slow`. |
+| `joint_states_topic` | `/joint_states` | Override to isolate robot buses. |
+| `staleness_limit_s` | `0.5` | Sensor staleness threshold (clears 10 Hz camera flapping). |
+| `policy_state_staleness_limit_s` | `5.0` | Window for the step-locked `/openral/policy_state`. |
+| `camera_names` | none | One `sensor_msgs/Image` subscription on `camera_topic(<name>)` each. |
+| `direct_image_frame_sensors` | none | Cameras the co-located sensor leg writes directly: the callback keeps the thumbnail span but does not re-write the aggregator. |
+| `attachment_state_topic` | `/openral/attachment_state` | `AttachmentState` relayed onto `WorldStateStamped`. |
+| `tracked_objects_topic` | `/openral/tracked_objects` | Relayed as `tracked_objects`; `tracked_objects_valid` is false after 1.5 s without a set. |
 
 | Direction | Topic | QoS | Message |
 | --- | --- | --- | --- |
-| Sub | `/joint_states` | BEST_EFFORT / VOLATILE / KEEP_LAST=5 | `sensor_msgs/JointState` |
-| Sub | `/openral/policy_state` | BEST_EFFORT / VOLATILE / KEEP_LAST=5 | `std_msgs/Float32MultiArray` |
-| Sub | `/openral/attachment_state` (configurable) | RELIABLE / TRANSIENT_LOCAL / KEEP_LAST=1 | `openral_msgs/AttachmentState` |
-| Sub | `/openral/tracked_objects` (configurable) | RELIABLE / VOLATILE / KEEP_LAST=1 | `openral_msgs/TrackedObjectSet` |
-| Sub | `camera_topic(<name>)` per `camera_names` entry | BEST_EFFORT / VOLATILE / KEEP_LAST=1 | `sensor_msgs/Image` |
-| Pub | `/openral/world_state_fast` | RELIABLE / VOLATILE / KEEP_LAST=1 | `openral_msgs/WorldStateStamped` |
-| Pub | `/openral/world_state_slow` | RELIABLE / VOLATILE / KEEP_LAST=1 | `openral_msgs/WorldStateStamped` |
-| Pub | `/diagnostics` | default | `diagnostic_msgs/DiagnosticArray` (supervisor-graph F8 heartbeat) |
+| Sub | `/joint_states` | BEST_EFFORT / VOLATILE / 5 | `sensor_msgs/JointState` |
+| Sub | `/openral/policy_state` | BEST_EFFORT / VOLATILE / 5 | `std_msgs/Float32MultiArray` |
+| Sub | `/openral/attachment_state` | RELIABLE / TRANSIENT_LOCAL / 1 | `openral_msgs/AttachmentState` |
+| Sub | `/openral/tracked_objects` | RELIABLE / VOLATILE / 1 | `openral_msgs/TrackedObjectSet` |
+| Sub | `camera_topic(<name>)` per camera | BEST_EFFORT / VOLATILE / 1 | `sensor_msgs/Image` |
+| Sub | `/openral/perception/objects`, `/openral/world_voxels` | see Object lift | `PromptStamped`, `OccupancyVoxels` |
+| Pub | `/openral/world_state_fast`, `/openral/world_state_slow` | RELIABLE / VOLATILE / 1 | `openral_msgs/WorldStateStamped` |
+| Pub | `/diagnostics` | default | `diagnostic_msgs/DiagnosticArray` |
 
-`WorldStateStamped` carries: a `sensor_msgs/JointState`, optional
-base pose + twist, parallel arrays of EE names + poses, sensor image
-topic refs, per-component diagnostic status (`DIAG_OK | DIAG_WARN |
-DIAG_STALE | DIAG_ERROR`), per-component staleness in milliseconds,
-battery percentage, and the tf2 `frame_ids[]` consumers should look up
-themselves (per the reasoner/supervisor-graph design). There is no JSON fallback.
+`WorldStateStamped` carries a `JointState`, optional base pose and twist, parallel arrays of
+EE names and poses, sensor image refs, per-component status (`DIAG_OK | DIAG_WARN |
+DIAG_STALE | DIAG_ERROR`) and staleness in ms, battery percentage, the tf2 `frame_ids[]`
+consumers look up themselves, the attachment state, the tracked objects and the
+`detected_object_*` arrays. There is no JSON fallback.
 
-## Wiring
+## Object lift: 2D detections to 3D memory
 
-```
-HAL (openral_hal_node) ──► /joint_states ─┐
-camera_topic(<name>) images ──────────────┤
-/openral/attachment_state ────────────────┼─► world_state_node ──► /openral/world_state_fast (30 Hz)
-/openral/policy_state ────────────────────┘                    └──► /openral/world_state_slow (5 Hz)
-```
+With `object_lift_enabled` (default `True`) the node lifts each 2D detection to a `map`-frame
+3D centre (`VoxelFrustumLifter`), keeps a temporal `ObjectMemory`, and writes it to
+`WorldStateAggregator.update_detected_objects()`. The result rides
+`WorldStateStamped.detected_object_*` (labels, confidences, positions, track ids with `-1`
+unset, frame, existence belief with NaN none), so separate-process readers such as the
+reasoner see it too. It is best effort: a missing, empty or stale depth source publishes
+`detected_objects == []`, and a lift with no `map` TF, intrinsics or in-frustum voxels is
+skipped. The safety kernel does not read it.
 
-The aggregator is the only place joint + sensor state are fused
-into the snapshot consumed by S1 / S2.
-
-## Tests
-
-- Unit (Python only — no ROS 2 required):
-  `tests/unit/test_world_state.py` covers freshness, staleness
-  latching, 30 Hz clock injection, and thread-safety.
-- Integration (`launch_testing` equivalent in-process):
-  `tests/integration/test_world_state_integration.py` exercises the
-  real lifecycle node end-to-end against the typed `WorldStateStamped`
-  topics: fast/slow rate ratio (≥5:1), `DIAG_OK` under steady joint
-  publication, `DIAG_STALE` on dropout, recovery to `DIAG_OK`, and
-  parallel-array consistency under 8 concurrent publishers. CI runs
-  this in docker-build's live-ROS step (`scripts/ros_live_tests.sh`).
-- Package (`test/`): `test_lifecycle_node_image_qos.py` (AST guard: camera subscriptions
-  stay BEST_EFFORT) and `test_lifecycle_node_sigint_shape.py`.
-
-## Build
-
-```bash
-source /opt/ros/jazzy/setup.bash
-just ros2-build       # includes world_state
-just ros2-test        # colcon test
-just test-integration # PYTHONPATH-aware pytest run for the launch tests
-```
-
-## Object-lift — 2D→3D spatial memory
-
-When `object_lift_enabled` is `True` (default), the node subscribes the object-detector
-output and a depth source, lifts each 2D detection to a `map`-frame 3D centre via
-`VoxelFrustumLifter`, and maintains a temporal `ObjectMemory`, writing results into
-`WorldStateAggregator.update_detected_objects()`.
-
-Depth source: `object_voxels_topic` when fresh, else — depth-fallback amendment #11 —
-`object_depth_points_topic` decoded by `depth_cloud_to_centers_base`. Decouples the lift
-from octomap, so spatial-memory ingest and `recall_object` work with `--no-enable-octomap`.
-
-**Best-effort:** missing/empty/stale depth source → `WorldState` publishes with
-`detected_objects == []`, no error/warning. Never fabricates a pose — any path lacking a
-truthful lift (no `map` TF, no intrinsics, no in-frustum voxels, stale grid) silently skips.
-
-**On the wire:** `openral_msgs/WorldStateStamped` carries `detected_object_*` parallel
-arrays (labels / confidences / `geometry_msgs/Point[]` positions / `int32[]` track ids
-(`-1` = unset) / frame / `float32[]` existence belief (NaN = none kept)), serialised by `_fill_detected_objects` in
-`build_world_state_stamped_msg` and read back by `world_state_from_idl` — so separate-process
-consumers (e.g. a reasoner reading `/openral/world_state_slow`) see the spatial memory too.
-
-### Object-lift parameters
+Depth source: `object_voxels_topic` when fresh, else `object_depth_points_topic` (so spatial
+memory works with `--no-enable-octomap`). The launch passes `openral_core.deploy_cloud_topic`:
+the scene's `runtime.octomap_cloud_topic` when set, else in sim the manifest's one depth
+sensor's points topic, else empty.
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
-| `object_lift_enabled` | `True` | Master toggle. `False` → feature fully inert; no subscriptions or timer are created. |
-| `object_detections_topic` | `/openral/perception/objects` | `PromptStamped` topic carrying `ObjectsMetadata` detections. |
-| `object_voxels_topic` | `/openral/world_voxels` | `OccupancyVoxels` topic (base frame, row-major x-fastest). Preferred depth source when fresh. |
-| `object_depth_points_topic` | `""` (disabled) | Depth-fallback amendment (#11) — depth `PointCloud2` used as the lift's depth source when no fresh voxel grid exists (e.g. `--no-enable-octomap`). Empty disables the fallback. `deploy_e2e.launch.py` passes `openral_core.deploy_cloud_topic`: the scene-pinned `runtime.octomap_cloud_topic` (a real driver's cloud) when set, else in sim the manifest's one depth sensor's `camera_topic(<name>, CameraTopicKind.POINTS)`, else empty (a real deploy with nothing pinned, or no depth sensor) — ADR-0108: consumers derive, never guess. |
-| `object_lift_depth_max_points` | `4000` | Cap on depth-cloud points fed to the lift (uniform subsample) so a dense cloud can't stall per-detection projection. |
-| `object_lift_map_frame` | `map` | Fixed frame used to anchor the object memory. |
-| `object_lift_k_nearest` | `25` | K voxels (nearest to box centre) used to estimate the 3D centre. |
-| `object_lift_min_voxels` | `3` | Minimum in-frustum voxels required to lift a detection; below this the detection is skipped. |
-| `object_lift_iou_threshold` | `0.3` | 3D AABB IoU threshold for freeze-on-match association. |
-| `object_lift_memory_cadence_hz` | `2.0` | Rate of the associate+evict memory tick. |
-| `object_lift_hit_log_odds` | `0.85` | Added to an object's existence belief when a detection matches it (one hit per memory tick). |
-| `object_lift_miss_free_log_odds` | `-0.85` | Added when the object went undetected and the depth source shows through its box — the strong miss. |
-| `object_lift_miss_occupied_log_odds` | `-0.1` | Added when it went undetected, its box is still occupied, and its camera's detector delivered a batch this tick. Weak (likely occlusion or a missed detection): a once-seen object lasts 29 such ticks (14 s at 2 Hz), a long-seen one 55. `0` = no evidence — but then a false detection lifted onto a wall is never forgotten. |
-| `object_lift_belief_max` | `3.5` | Upper clamp on the belief: bounds how many clear observations a long-seen object takes to forget (7 at the defaults). |
-| `object_lift_belief_absent` | `-2.0` | Lower clamp and eviction threshold. A once-seen object goes after 4 clear observations at the defaults. |
-| `object_lift_max_range_m` | `5.0` | A miss is weighed only for a box wholly in view and within this range along the optical axis. Set it to the detector's working range. |
-| `object_lift_miss_margin_m` | `0.03` | Tolerance of the miss test: a box's faces are grown by it (the box is a frozen lift of surface points), and points within it above the box's floor are its support, not the object — so the shelf a removed object stood on does not keep it. A box no taller than twice this is counted whole. |
-| `object_memory_path` | `""` (off) | Opt-in persistence: `SceneGraph` JSON the object memory is restored from at configure and saved to whenever its set of objects changes. `deploy_e2e.launch.py` exposes it as the `object_memory_path` launch argument; `openral deploy sim/run --memory-dir <bundle>` sets it when `<bundle>/object_memory.json` exists (create it holding `{}` to opt in). A file that does not validate is neither restored nor overwritten. |
-| `object_lift_voxel_staleness_s` | `1.0` | Voxel grid older than this (seconds) is treated as unavailable. |
+| `object_lift_enabled` | `True` | Master toggle; `False` creates no subscription or timer. |
+| `object_detections_topic` | `/openral/perception/objects` | `PromptStamped` carrying `ObjectsMetadata`. |
+| `object_voxels_topic` | `/openral/world_voxels` | `OccupancyVoxels` (base frame); preferred depth source. |
+| `object_depth_points_topic` | `""` (off) | Depth `PointCloud2` fallback. |
+| `object_lift_depth_max_points` | `4000` | Cap on cloud points fed to the lift (uniform subsample). |
+| `object_lift_map_frame` | `map` | Frame anchoring the memory. |
+| `object_lift_k_nearest` | `25` | Voxels nearest the box centre used for the 3D centre. |
+| `object_lift_min_voxels` | `3` | Fewer in-frustum voxels skips the detection. |
+| `object_lift_iou_threshold` | `0.3` | 3D AABB IoU for freeze-on-match association. |
+| `object_lift_memory_cadence_hz` | `2.0` | Associate and evict tick rate. |
+| `object_lift_voxel_staleness_s` | `1.0` | An older grid counts as unavailable. |
+| `object_memory_path` | `""` (off) | `SceneGraph` JSON restored at configure and saved when the object set changes. `openral deploy sim/run --memory-dir <bundle>` sets it when `<bundle>/object_memory.json` exists. A file that does not validate is neither restored nor overwritten. |
 
-The defaults are the same for sim and real hardware; `object_lift_max_range_m` is the
-one to set per detector.
+Existence-belief parameters (log-odds, see below):
 
-### Existence belief (issue #636)
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `object_lift_hit_log_odds` | `0.85` | Added when a detection matches (once per tick). |
+| `object_lift_miss_free_log_odds` | `-0.85` | Added when undetected and the depth source sees through the box. |
+| `object_lift_miss_occupied_log_odds` | `-0.1` | Added when undetected, the box is still occupied and its camera's detector delivered a batch. `0` means no evidence, but then a false detection is never forgotten. |
+| `object_lift_belief_max` / `_absent` | `3.5` / `-2.0` | Upper clamp; lower clamp and eviction threshold. |
+| `object_lift_max_range_m` | `5.0` | A miss counts only for a box wholly in view within this range. Set it to the detector's working range. |
+| `object_lift_miss_margin_m` | `0.03` | Tolerance of the miss test; a box no taller than twice this is counted whole. |
 
-Each remembered object carries an existence belief in log-odds, the bookkeeping the
-occupancy voxels use. A matched detection adds `hit`; a tick in which nothing matched it
-adds what the depth source says (`build_miss_classifier`):
+### Existence belief
+
+Each remembered object carries a log-odds existence belief. A matched detection adds `hit`;
+an unmatched tick adds what the depth source says (`build_miss_classifier`). A miss is weighed
+once per new depth observation, and an object is evicted when its belief reaches
+`object_lift_belief_absent`, never on one miss.
 
 | Evidence | When | Effect |
 | --- | --- | --- |
-| none | No `bbox_3d`; the box is not wholly inside a detection camera's image, or beyond `object_lift_max_range_m`; `object_lift_min_voxels` or more points in front of the box (an occluder, however partial); fewer than that behind it (a depth hole, nothing mapped there); no fresh depth source, or no TF for the moment it was captured | no change |
-| occupied | `object_lift_min_voxels` or more occupied points still inside the box, at least one above its floor band | `miss_occupied`, and only for a camera whose detector delivered a batch this tick — a detector that published nothing has not missed anything |
-| free | the box is empty and the depth source sees through it to something behind | `miss_free` — no detector needed, the depth source is the witness |
+| none | no `bbox_3d`; box not wholly in a detection camera's view or beyond max range; an occluder in front; a depth hole behind; no fresh depth or TF | no change |
+| occupied | box still occupied, and its camera's detector delivered a batch this tick | `miss_occupied` |
+| free | box empty and the depth source sees something behind it | `miss_free` |
 
-A miss is weighed once per new depth observation (the grid's `source_stamp`, or the
-cloud's stamp): ticking again over the same data adds nothing. The points are placed in
-the map with the base pose of the moment they were captured, and a lifted box is padded
-by half a voxel so one voxel layer still has volume. The object is evicted when its
-belief reaches `object_lift_belief_absent`, never on a single miss. `DetectedObject.existence` carries the belief as a probability
-(`WorldStateStamped.detected_object_existence`): above 0.5 is *present*, at or below it
-*uncertain*. The reasoner's `SpatialMemory` follows it — a node takes its detection's
-state, and a node the remembered set drops is marked *absent* but kept, with its last pose,
-for "where was X". `recall_object` and the `memory_objects` context line flag uncertain
-and absent objects; the `world.scene_objects` span carries `state` per object.
+`DetectedObject.existence` is the belief as a probability: above 0.5 is *present*, else
+*uncertain*. The reasoner's `SpatialMemory` marks a node the set drops as *absent* but keeps
+its last pose for "where was X". With `object_memory_path` set, a restart restores every
+object at belief 0 (*uncertain*): a fresh detection confirms it, a clear view from a camera
+whose detector has delivered a batch removes it. Persist only where `map` is the same place
+every deploy; under a SLAM map that starts where the robot is, restored objects land displaced.
 
-With `object_memory_path` set, a restart restores every remembered object at belief 0
-(*uncertain*) under the track id it had: the first fresh detection confirms it, a clear
-view from a camera whose detector has delivered at least one batch this session removes
-it. Seed the file with a scene graph to have scene-file objects reconciled
-the same way — only its `OBJECT` nodes in the map frame with a `bbox_3d` are taken, and
-the node rewrites the file with its own object set (places and edges are not kept there).
-The poses are map-frame, so persist only where `map` is the same place every deploy (a
-fixed base, a saved map): under a SLAM session that starts its map wherever the robot
-is, restored objects land displaced and only a clear view of the wrong spot removes them.
+Limits: an object no taller than twice the margin is never cleared by the depth source and
+decays only through `miss_occupied`; the see-through test counts points, not rays, so mount
+the depth sensor with the detection camera; a camera whose detector has delivered nothing is
+never used to clear. A node restarted without persistence publishes an empty set, which the
+reasoner reads as every followed object evicted until re-detected.
 
-Known limits:
+## `object_tracker_node`
 
-- An object no taller than twice `object_lift_miss_margin_m` cannot be told from its
-  support and is never cleared by the depth source; with nothing mapped behind an
-  object's place there is no see-through evidence either. Both then decay only through
-  `miss_occupied`.
-- The see-through test counts points, not rays, and the view is the detection camera's
-  while the points are the depth source's: space the depth sensor never observed reads
-  the same as free when something is mapped behind it. Mount the two together (as the
-  AMR's `top` on `head_zed`) or expect false clears where their views differ.
-- A camera's view is known only once its detector has delivered a batch, and a detector
-  publishes nothing when it sees nothing: in a view that has been empty since start,
-  nothing is cleared.
-- An object that goes undetected long enough while its place stays occupied is evicted
-  too (`miss_occupied`), and reads as *absent* downstream exactly like one seen gone.
-- The reasoner learns of an eviction from the object leaving `detected_objects`. A
-  world-state node that restarts *without* persistence publishes an empty set, which
-  the reasoner reads as every followed object evicted; they return to present when
-  re-detected.
-- The safety kernel reads none of this (it uses the voxels and the tracked objects).
+Grounds the objects a goal names (`GraspDeclaration.target_queries`,
+`PlaceDeclaration.destination_query`) as standing queries, fits each to a set that contains
+it, confirms it on the voxel map, tracks its identity, binds it at the HAL trigger's ATTACH and
+releases it at DETACH or when the measured jaw opens. `deploy_e2e.launch.py` starts it when
+`object_tracking` is not `off`. Every mode's heartbeat also publishes `std_msgs/Bool`
+`/openral/object_tracker/hands_clear` (no hand holds anything and every hand is clear of every
+target track); the completion check asks its judge only while it is true.
 
-### Additional topics (when lift is enabled)
-
-| Direction | Topic | QoS | Message |
-| --- | --- | --- | --- |
-| Sub | `/openral/perception/objects` (configurable) | BEST_EFFORT / VOLATILE / KEEP_LAST=5 | `openral_msgs/PromptStamped` (metadata_json = `ObjectsMetadata`) |
-| Sub | `/openral/world_voxels` (configurable) | RELIABLE / VOLATILE / KEEP_LAST=1 | `openral_msgs/OccupancyVoxels` |
-
-### Wiring (with lift)
-
-```
-/openral/perception/objects (PromptStamped → ObjectsMetadata)  ─┐
-/openral/world_voxels       (OccupancyVoxels, base_link)        ─┤
-TF2: base_link→<cam_optical>, base_link→map                     ─┤──► _WorldStateLifecycleNode
-ObjectsMetadata.camera_frame_id + camera_intrinsics             ─┘          │
-  (driver CameraInfo, stamped by the detector; absent → the
-   SensorSpec named by sensor_id, logged once per camera)
-                                                                        memory tick (cadence Hz)
-                                                                             │
-                                                           VoxelFrustumLifter + ObjectMemory
-                                                                             │
-                                                  aggregator.update_detected_objects(...)
-                                                                             │
-                            WorldState.detected_objects (frame_id="map") ──► WorldStateStamped.detected_object_*
-```
-
-## Object tracker (issue #418)
-
-`object_tracker_node` grounds the objects a goal names (`GraspDeclaration.target_queries`,
-`PlaceDeclaration.destination_query`) as standing queries, fits each one to a set that
-contains it, confirms it on the voxel map, tracks its identity, binds it at the HAL
-trigger's ATTACH and releases it at DETACH or when the measured jaw opens. Every decision is
-in the ROS-free `TrackerSession` (`python/world_state/.../object_tracker/session.py`); the
-node owns the wire. `deploy_e2e.launch.py` starts it when `object_tracking` is not `off`.
-Every mode's heartbeat also publishes `std_msgs/Bool` `/openral/object_tracker/hands_clear`
-(RELIABLE / VOLATILE / KEEP_LAST=1): no hand holds anything and every hand is clear of every
-target track. The completion check asks its judge only while it is true.
+**Sim-only.** The node refuses `tracking` and `on` unless `hal_mode:=sim` is set explicitly;
+unset means `real`, as in the kernel. A real deploy runs `object_tracking=off`.
 
 | Mode | What leaves the node |
 | --- | --- |
-| `tracking` | `/openral/tracked_objects` and `/openral/attachment_state`: every hand's binding (`TRACKED_OBJECT` / `PINCH_FALLBACK`) plus the live declarations with the regions the tracker measures: the grasp declaration's `region` (the one CONFIRMED / OCCLUDED TARGET track keyed to it, `TrackerSession.grasp_region`; none once a hold started under that declaration, so the kernel never latches a box riding the hand), its `workspace_region` and the place declaration's `region` (`place_region`). The kernel applies its open box rules over them (ADR-0115 grasp allowance, ADR-0097/0098 place allowance, #349 workspace contact). The HAL vision bridge stops publishing that topic (`vision_attachment_publish_attachment_state:=false`) and runs only its grasp trigger (`/openral/grasp_events`): no segmentation, no grasp/place-target leg; an ATTACH holds the action ack until this node's next attachment revision (at most the leg's `deadline_s`). The octomap bridge clears a `TRACKED_OBJECT` binding's cells by identity (in `on` too); a `PINCH_FALLBACK` hold stays mapped. Sim-only until Safety-WG review. The former `shadow` / `bind` load as deprecated aliases of `tracking`. |
-| `on` | As `tracking` without the grasp `region`; grasp exemptions are keyed on tracked ids (K2), with K5 / K7 / payload-own cells: rules of the exemption provider (OpenRAL Pro, ADR-0121), so `on` is refused without `exemption_provider`. Sim-only. |
+| `tracking` | `/openral/tracked_objects` and `/openral/attachment_state`: every hand's binding (`TRACKED_OBJECT` / `PINCH_FALLBACK`) plus the live declarations with the regions the tracker measures: the grasp `region` (the one CONFIRMED / OCCLUDED TARGET track, `grasp_region`; none once a hold started), the `workspace_region` and the place `region`. The kernel applies its open box rules over them (ADR-0115, ADR-0097/0098, workspace contact). The HAL vision bridge then runs only its grasp trigger (`/openral/grasp_events`); an ATTACH holds the action ack until this node's next attachment revision. The octomap bridge clears a `TRACKED_OBJECT` binding's cells by identity; a `PINCH_FALLBACK` hold stays mapped. The former `shadow` / `bind` load as aliases of `tracking`. |
+| `on` | As `tracking` without the grasp `region`; grasp exemptions key on tracked ids, with their rules in the exemption provider (OpenRAL Pro, ADR-0121), so `on` is refused without `exemption_provider`. |
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
-| `robot_yaml` | — | Manifest; the tracks' frame is its `base_frame`. |
-| `mode` | `tracking` | `tracking` / `on` (both refused with `hal_mode:=real`). |
-| `hal_mode` | `sim` | |
+| `robot_yaml` | none | Manifest; the tracks' frame is its `base_frame`. |
+| `mode` | `tracking` | `tracking` or `on`. |
+| `hal_mode` | `real` | Must be `sim` (see above). |
 | `cameras` | none | Depth cameras: `camera_topic(<cam>, DEPTH_IMAGE / DEPTH_CAMERA_INFO / ROBOT_MASK)`. |
-| `cell_m` | `0.015` | The octomap resolution (the pinch volume is grown by one cell). |
-| `grounding_wait_s` | — (required) | `DeployRuntime.grounding_wait_s`. |
-| `grounding_required` | `false` | `grounding_incomplete` is logged at error level; the skill runner (same param) refuses the goal with `ROSPerceptionStale` when a TARGET query is not grounded within `grounding_wait_s`. |
-| `search_start_s` / `search_max_s` | `5.0` / `60.0` | Addendum G query timing (source s). A query unresolved for `search_start_s` escalates `unresolved`; for `search_max_s`, `exhausted`. Each escalation is a `ROSObjectNotInMemory` (`ObjectQueryEvidence`) carrying the owning action UUID, last refusal reason, declared workspace when present, and at most eight typed refused observations. The reasoner cancels only the matching manipulation and recovers within the persisted task dispatch budget; a spent budget stays blocked until a new operator goal, with no human handoff. |
-| `release_dwell_s` | `0.3` | Jaw-open release dwell (source seconds). Calibration point. Default and the launch's value are `object_tracker.session.RELEASE_DWELL_S` (also the exemption provider's `contact_exemptions.tracked_release_dwell_s`). |
-| `released_clear_timeout_s` | `3.0` (`RELEASED_CLEAR_TIMEOUT_S`) | The longest a released `TRACKED_OBJECT` binding stays on `attachment_state` (frozen by the kernel, its box cleared by the voxel bridge); it leaves sooner once every hand collision box is 4 cm clear of it (the kernel's `tracked_release_clear_m` separation) or a new track of its label is confirmed touching it (the object at rest, tracked again). The RELEASED track is retired with it, and the object is found afresh under a new id. MUST equal the kernel's `tracked_release_timeout_s` and the voxel bridge's `released_clear_timeout_s`; the launch passes one `tracked_release_timeout_s` to all three. |
-| `object_queries_json` | `""` | The deploy's prompt-time `ObjectQuery` list (`deploy_sim._object_queries_json`), grounded at start whatever declarations are in force; a declaration re-keys the tracks it matches. |
-| `locate_contrast_labels` | `false` | Append the contrast labels (`tracking_thresholds.yaml` `locate_contrast_labels`) to the locate query. The launch turns it on only for a `zeroshot_hf` (OmDet) locator: LocateAnything labels a box with no `<ref>` with the whole query, which the label filter would drop. |
-| `locate_service` | `""` | Empty: no open-vocabulary detector, seeds and refreshes only. A completed empty locate is recorded as `locate_found_nothing`; service absence, transport errors, and nonempty `LocateInView.failure_reason` are retained as query refusal causes instead. See the [`LocateInView` contract](../msgs/README.md#services--srv). |
-
-Fixed in the node (module constants, no launch or test sets them): `SegmentInView` at
-`DEFAULT_SEGMENT_SERVICE` (`/openral/perception/segment_in_view`); the last `_DEPTH_KEPT`
-(4) depth frames wait `_MASK_TF_WAIT_S` (1.0 wall s, calibration point) for their robot mask
-and tf, the newest complete one is fed (`pick_depth_frame`), and one still incomplete after
-the wait is used for ageing only (a mask trailing its depth by more than a depth period
-used to starve the loop);
-`_PROCESS_HZ` (15) frame loop; `_HEARTBEAT_HZ` (2) `tracked_objects` (and, while joint
-states are fresh, `attachment_state`) heartbeat; no joint state for
-`_ATTACHMENT_EVIDENCE_TIMEOUT_S` (1.0 s, node clock) stops the `attachment_state` heartbeat
-and the kernel's copy ages out.
-
-For an issued `LocateInView` request, only an empty `failure_reason` means the detector
-completed its check. A nonempty cause is attached to the matching standing query as a
-refusal observation and is carried in later `ObjectQueryEvidence`; it is never converted
-to `locate_found_nothing` or treated as proof that the object is absent.
-
-The tracker sends the captured depth frame's nonzero `source_stamp_ns` with each locate
-request. The detector must return that exact source stamp; missing or mismatched stamps
-discard the boxes and become `locate_source_stamp_missing` or
-`locate_source_stamp_mismatch`. A zero stamp is reserved for callers such as the reasoner
-tool that explicitly accept the latest camera frame.
-
-The tracker also requires every `SegmentInView` mask to echo the requested camera and carry
-the exact depth-frame stamp and optical `frame_id`. It refuses a response with missing or
-mismatched identity before decoding or resizing any mask. Service, response, and mask-read
-failures remain bounded query refusal causes; they do not become an empty segmentation or
-object-absence claim.
-
-Frames missing camera pose or robot mask are recorded against pending queries as
-`no_camera_pose` or `no_robot_mask`, and never count as detector attempts. If no usable
-observation was available, escalation reason is `no_usable_observation`; a completed empty
-locate remains `object_not_found`. The reasoner says visibility is unknown for unavailable
-observations and does not infer object absence.
-
-When an unresolved query and a visible confirmed-track refresh both wait, the scheduler
-alternates their request turns; the query remains active and keeps its normal progress.
-This prevents an unresolved destination from indefinitely starving object refresh. Normal
-`TRACKED_OBJECT` ATTACH requires a nonfuture fit within `TrackerParams.max_age_s`; voxel-map
-confirmation does not refresh fit age. A late ATTACH uses the existing 1.5 s window against
-`last_fit_stamp_ns` and does not fall through to tracking a fit rejected by that window.
-Stale fits and pinch-geometry mismatches are logged as separate refusal causes, and the
-existing pinch-centre and carried-coverage checks still gate late binding. A RELEASED
-track is never a bind candidate: a released object is not followed, and a regrasp binds its
-fresh track or the pinch fallback.
+| `cell_m` | `0.015` | Octomap resolution (the pinch volume grows by one cell). |
+| `grounding_wait_s` | required (> 0) | `DeployRuntime.grounding_wait_s`. |
+| `grounding_required` | `false` | Logs `grounding_incomplete` at error; the skill runner refuses the goal with `ROSPerceptionStale` when a TARGET query is not grounded in time. |
+| `search_start_s` / `search_max_s` | `5.0` / `60.0` | A query unresolved for the first escalates `unresolved`, for the second `exhausted` (a `ROSObjectNotInMemory` with `ObjectQueryEvidence`). The reasoner cancels the matching manipulation and recovers within the task dispatch budget. |
+| `release_dwell_s` | `0.3` | Jaw-open release dwell (`RELEASE_DWELL_S`). |
+| `released_clear_timeout_s` | `3.0` | Longest a released `TRACKED_OBJECT` binding stays on `attachment_state`; it leaves sooner once every hand box is 4 cm clear or a new track of its label is confirmed touching it. Must equal the kernel's `tracked_release_timeout_s` and the voxel bridge's; the launch passes one value to all three. |
+| `wrist_links` | `1` | The kernel's hand-link set (`workspace_contact_wrist_links`). |
+| `object_queries_json` | `""` | The deploy's prompt-time `ObjectQuery` list, grounded at start. |
+| `place_zones_json` | `""` | Map / odom-frame place zones. |
+| `zone_reach_center` / `zone_reach_radius_m` | `[0,0,0]` / `0.0` | Reach ball (the launch's world-map coverage) used to pick one of several same-slot zones. |
+| `declared_object_catalog_json`, `object_surface_model_json` | `""` | Declared object geometry; the surface-model pilot (below). |
+| `static_cells_file` | `""` | Static geometry cells. |
+| `locate_service` | `""` | Empty: no open-vocabulary detector, seeds and refreshes only. See the [`LocateInView` contract](../msgs/README.md#services--srv). |
+| `locate_contrast_labels` | `false` | Append the contrast labels to the locate query; the launch sets it only for a `zeroshot_hf` (OmDet) locator. |
+| `joint_states_topic` | `/joint_states` | |
+| `instance_cells` | `false` | Subscribe `/openral/instance_cells` (experiment, below). |
+| `station_perception_initially_on` | `true` | The launch sets `false` on a mobile base (station mode). |
 
 | Direction | Topic | QoS | Message |
 | --- | --- | --- | --- |
-| Sub | `camera_topic(<cam>, DEPTH_IMAGE)`, `…DEPTH_CAMERA_INFO`, `…ROBOT_MASK` | BEST_EFFORT / VOLATILE / KEEP_LAST=5 | `sensor_msgs/Image`, `CameraInfo`, `Image` (mono8) |
-| Sub | `/openral/world_voxels` | RELIABLE / VOLATILE / KEEP_LAST=1 | `openral_msgs/OccupancyVoxels` |
-| Sub | `/joint_states` | BEST_EFFORT / VOLATILE / KEEP_LAST=5 | `sensor_msgs/JointState` |
-| Sub | `/openral/grasp_events` | RELIABLE / VOLATILE / KEEP_LAST=10 | `openral_msgs/GraspEvent` |
-| Sub | `/openral/grasp_declaration`, `/openral/place_declaration` | RELIABLE / TRANSIENT_LOCAL / KEEP_LAST=1 | `openral_msgs/GraspDeclaration`, `PlaceDeclaration` |
-| Pub | `/openral/tracked_objects` | RELIABLE / VOLATILE / KEEP_LAST=1 | `openral_msgs/TrackedObjectSet` |
-| Pub | `/openral/attachment_state` | RELIABLE / TRANSIENT_LOCAL / KEEP_LAST=1 | `openral_msgs/AttachmentState` |
-| Client | `DEFAULT_SEGMENT_SERVICE`, `locate_service` | | `SegmentInView`, `LocateInView` |
+| Sub | `camera_topic(<cam>, DEPTH_IMAGE)`, `DEPTH_CAMERA_INFO`, `ROBOT_MASK` | BEST_EFFORT / VOLATILE / 5 | `Image`, `CameraInfo`, `Image` (mono8) |
+| Sub | `/openral/world_voxels` | RELIABLE / VOLATILE / 1 | `openral_msgs/OccupancyVoxels` |
+| Sub | `/joint_states` | BEST_EFFORT / VOLATILE / 5 | `sensor_msgs/JointState` |
+| Sub | `/openral/grasp_events` | RELIABLE / VOLATILE / 10 | `openral_msgs/GraspEvent` |
+| Sub | `/openral/safe_action` | RELIABLE / VOLATILE / 10 | `openral_msgs/ActionChunk` (the approved jaw targets, for the stalled-jaw read) |
+| Sub | `/openral/grasp_declaration`, `/openral/place_declaration` | RELIABLE / TRANSIENT_LOCAL / 1 | `GraspDeclaration`, `PlaceDeclaration` |
+| Pub | `/openral/tracked_objects` | RELIABLE / VOLATILE / 1 | `openral_msgs/TrackedObjectSet` |
+| Pub | `/openral/attachment_state` | RELIABLE / TRANSIENT_LOCAL / 1 | `openral_msgs/AttachmentState` |
+| Pub | `/openral/object_tracker/hands_clear` | RELIABLE / VOLATILE / 1 | `std_msgs/Bool` |
+| Client | `/openral/perception/segment_in_view`, `locate_service` | | `SegmentInView`, `LocateInView` |
 | Service | `/openral/object_tracker/station_perception` | | `std_srvs/SetBool` |
 
-**Station mode** (mobile base, tracking on). The node stays lifecycle-ACTIVE; the skill
-runner switches its *station perception* on for a skill that actuates an arm / gripper and off
-for a base-only one (`station_perception_initially_on: false` from the launch). Off, it
-consumes no frame and runs no query, and `/openral/attachment_state` keeps its heartbeat with
-the hands' held payloads only (`TrackerSession.held_attachments`): no released record, no
-grasp / place declaration, so no region and no tracked key reach the kernel, while a payload
-in a hand stays checked and the kernel's attachment stream stays fresh (a stale one refuses
-every candidate, a base twist included). Either edge discards the previous station
-(`TrackerSession.leave_station`), including any segmenter / locator answer still in flight.
-A base that moves while the node runs (a drive, a push, a creep) keeps its tracks (issue
-#651). Once the measured `base_joints` pose leaves the pose the tracks were measured at by more
-than 2 cm or 0.02 rad (`STATION_MOTION_M` / `STATION_ROTATION_RAD` in `tracking_thresholds.yaml`,
-the safety kernel's station thresholds), the session re-expresses every unheld base-frame
-record by the measured base motion: track boxes, hulls, centroids and surface cells, released
-and placed records, query priors and resolved memory-node scopes. It does this once, at the
-source, so association, `grasp_region` and the binder all read the moved state. Held payloads
-ride the hand. On a mobile base a box declared in the base frame can only be on the robot, so a
-track centred in the grasp declaration's base-frame `search_box` (a tote on the lift) rides
-the base too; a robot-mounted object outside it is carried as if world-fixed, fails map
-confirmation within `max_age_s` and is measured again where it is. Grids, depth frames and
-requests from the old pose are refused or dropped and measured again. A track stays where it is in the world, so a goal naming one memory node keeps
-binding its instance after the move, without being detected again.
+### Behaviour notes
 
-The carry is odometry (the base joints in `/joint_states`, as the kernel's station mode reads
-them; a platform that publishes only odom over tf2 gets no carry): a track carried past a shared
-budget of 0.75 m and 0.8 rad since its last fit is dropped (`CARRY_MAX_M` / `CARRY_MAX_RAD`: at
-a 2 % drift, a calibration point, the box stays within the 1.5 cm extrinsic bound). Fail closed:
-a base pose that stops being measured, a sim reset, or a non-planar motion drops every unheld
-track (`object_tracker.base_moved why=base_unmeasured` / `base_measured` / `clock_reset` /
-`base_untrusted`). While the base moves continuously, perception is re-armed at every 2 cm,
-so a whole-body skill that drives the base and the arm together sees few fresh fits. A carried box feeds `grasp_region` and the tracked
-object set like a measured one, odometry error included (see the PR's Safety-WG note). The
-runner's station switch still discards on each edge, as before.
-The switch replies `success=False` while the node is not ACTIVE. A place declaration naming a
-candidate set of same-slot map-frame zones (`zone_candidates_target_id`) resolves to the one
-whose box centre lies in the robot's reach (`zone_reach_center` / `zone_reach_radius_m`: the
-launch's world-map coverage ball); none or several, and no region (logged with every
-candidate's reason). A zone is accepted only in the robot's `map_frame` / `odom_frame`, or its
-base frame on a fixed-base robot; any other is refused and logged
-(`object_tracker.place_zones_refused`), even when `place_zones_json` bypassed the deploy CLI.
+- **Locate and segment evidence.** Only an empty `LocateInView.failure_reason` means the
+  detector completed its check; a non-empty cause becomes a refusal observation on the query
+  and is never read as the object being absent. A completed empty locate is
+  `locate_found_nothing`. The tracker sends the depth frame's non-zero `source_stamp_ns` and
+  discards boxes whose stamp is missing or different. Every `SegmentInView` mask must echo the
+  requested camera, stamp and optical `frame_id` or it is refused before decoding. Frames
+  lacking camera pose or robot mask count against the query as `no_camera_pose` /
+  `no_robot_mask`, never as a detector attempt.
+- **Binding.** A normal `TRACKED_OBJECT` ATTACH needs a non-future fit within
+  `TrackerParams.max_age_s`; voxel confirmation does not refresh fit age. A late ATTACH uses
+  the 1.5 s window on `last_fit_stamp_ns`. A RELEASED track is never a bind candidate.
+- **Scheduling.** When an unresolved query and a visible track refresh both wait, the
+  scheduler alternates their turns.
+- **Fixed constants.** `_PROCESS_HZ` 15 frame loop; `_HEARTBEAT_HZ` 2 for `tracked_objects`
+  (and `attachment_state` while joint states are fresh); no joint state for 1.0 s stops the
+  `attachment_state` heartbeat so the kernel's copy ages out; the last 4 depth frames wait
+  1.0 s for their robot mask and tf.
+- **Clocks.** Lifetimes run on source stamps; the segmenter rate and budget on wall time.
+  Revisions are seeded from wall time at every activate, so a restart never regresses one (the
+  kernel refuses a regressing `tracked_objects` revision).
+- **Backup fill.** A steady-clock timer in a separate callback group republishes cached sets
+  with unchanged stamps and revisions, and stops after 5 s without main activity. It does not
+  renew measurement evidence or change freshness limits.
 
-Clocks: every lifetime runs on source stamps (depth, grid `source_stamp`, joint states,
-grasp events); the segmenter rate and budget on wall time. Revisions are seeded from wall
-time at every activate, so a restarted tracker never regresses one (the kernel refuses a
-regressing `tracked_objects` revision until it is re-activated).
+### Station mode (mobile base, tracking on)
 
-### Vision + voxel fusion (EXPERIMENT, pro#51)
+The node stays ACTIVE. The skill runner switches its *station perception* on for a skill that
+actuates an arm or gripper and off for a base-only one (`station_perception_initially_on:
+false`); the switch replies `success=False` while the node is not ACTIVE. Off, it consumes no
+frame and runs no query, and `attachment_state` keeps its heartbeat with the hands' held
+payloads only (`TrackerSession.held_attachments`): no declaration, region or tracked key
+reaches the kernel, while a payload in a hand stays checked and the kernel's attachment stream
+stays fresh (a stale one refuses every candidate, a base twist included). Either edge discards
+the previous station (`leave_station`).
 
-`DeployRuntime.instance_cells: true` (sim only; refused with tracking `off`) starts
-`openral_instance_mask_propagator` beside the tracker. It follows each TARGET / DESTINATION
-track with a SAM2.1 video mask, seeded from a CONFIRMED track's projected box only (any other
-status keeps its mask or loses it; never re-seeded on a stale box), lifts the mask minus robot
-pixels through the aligned depth at that depth stamp's TF into `/openral/world_voxels`
-cells, and publishes them per track on `/openral/instance_cells` (`openral_msgs/InstanceCells`).
-`configure` loads SAM2, `activate` starts it, `deactivate` / `cleanup` drop every mask (the
-worker drops its video session itself, and a step begun before the transition publishes
-nothing); a tracker re-activation or a clock reset starts a new episode. A grid the shared
-`lattice_from_msg` refuses (an unset orientation, a wrong-length occupancy) lifts no cells. The
-tracker fits those tracks' boxes to the cells (`ObjectTracker.apply_instance_cells`, only on an
-axis-aligned lattice: `InstanceCells` carries no orientation) and re-finds a released target
-once within `recent_s`. Thresholds: the `vision` section of `tracking_thresholds.yaml`. Safety-WG
-review owed.
+A base that moves keeps its tracks. Once the measured `base_joints` pose leaves the pose the
+tracks were measured at by more than 2 cm or 0.02 rad (`STATION_MOTION_M` /
+`STATION_ROTATION_RAD` in `tracking_thresholds.yaml`), the session re-expresses every unheld
+base-frame record by the measured motion, once at the source. Held payloads ride the hand, and
+so does a track centred in the grasp declaration's base-frame `search_box`. The carry is
+odometry (base joints in `/joint_states`; a platform with only tf2 odom gets no carry). A
+track carried past 0.75 m and 0.8 rad since its last fit is dropped (`CARRY_MAX_M` /
+`CARRY_MAX_RAD`). The session fails closed: a base pose that stops being measured, a sim reset
+or a non-planar motion drops every unheld track (`object_tracker.base_moved why=...`). While
+the base moves continuously perception re-arms every 2 cm, so a whole-body skill sees few
+fresh fits. A carried box feeds `grasp_region` like a measured one, odometry error included.
 
-Covered by `tests/unit/test_object_tracker_session.py` and the live
-`tests/integration/test_object_tracker_node_live.py` (real tracker + World State nodes:
-grounding, relay, staleness, the `tracking` grasp region and `TRACKED_OBJECT` binding, no
-region under `on`, restart revision).
+A place declaration naming same-slot map-frame zones (`zone_candidates_target_id`) resolves to
+the one whose box centre lies in the robot's reach (`zone_reach_center` / `zone_reach_radius_m`);
+none or several resolve to no region. A zone is accepted only in the robot's `map_frame` /
+`odom_frame` (or its base frame on a fixed base); another frame is refused and logged
+(`object_tracker.place_zones_refused`).
 
-## Observed object-local surfaces
+## `instance_mask_propagator_node` (experiment, sim-only)
 
-`runtime.object_surface_model` in a deploy scene explicitly enables a bounded,
-observation-only PCL registration pilot in both deployment paths. All convergence
-and resource limits must be supplied; they are evaluation settings, not calibrated
-safety bounds. Build this ROS package with PCL and `pybind11_vendor`, then source
-the installation so `_openral_pcl_registration` is importable. Opting in without
-the native module refuses tracker configuration.
+`DeployRuntime.instance_cells: true` (refused with tracking `off`) starts it beside the
+tracker. It follows each TARGET / DESTINATION track with a SAM2.1 video mask (seeded only
+from a CONFIRMED track's projected box), lifts the mask minus robot pixels through aligned
+depth into `/openral/world_voxels` cells, and publishes them per track on
+`/openral/instance_cells` (`openral_msgs/InstanceCells`). `configure` loads SAM2, `activate`
+starts it, `deactivate` / `cleanup` drop every mask. The tracker fits those tracks' boxes to
+the cells (axis-aligned lattices only) and re-finds a released target once within `recent_s`.
+Thresholds: the `vision` section of `tracking_thresholds.yaml`.
 
-Each identity keeps observed surface voxels in a canonical local frame. New depth
-surfaces register against that model; accepted poses relocate the accumulated
-surface, while rejected registrations preserve the last accepted model and stamp.
-Partial views do not carve unseen cells free. Each identity owns its surface contribution;
-moving or retiring it cannot delete another identity or raw OctoMap occupancy. With
-explicit depth, pose and pixel error bounds, a fresh depth frame at the accepted
-model pose can retire local voxels only when every pixel covering the entire
-uncertainty-grown voxel has a valid, unmasked return behind it. Occlusion, missing
-depth, off-image projections and exhausted work budgets retain cells. Each source
-frame gets one bounded clearing pass, rotating its start across cells so late
-contributions are not starved; no free-space claim is inferred from ICP
-residuals or object disappearance. Model and registration sizes are
-bounded. Lifecycle generation changes reset the model; retired tracks release it.
-The first frame comes from a sensor fit, not an asset's semantic CAD frame.
+## Observed object-local surfaces (opt-in pilot)
 
-The optional `runtime.object_surface_model.free_space_calibration` requires
-`calibration_ref`, `sensor_ids`, `depth_error_m`, `pose_error_m`, `pixel_error`
-and `max_age_s`. The pose bound must cover relative object/camera pose error;
-ICP residual is not that bound. Only named sensors can supply clearing evidence,
-and existing fit minimum/maximum valid depth limits also apply. With this block
-absent the model accumulates surfaces without depth-ray retirement. All retirement
-remains diagnostic and cannot delete background map cells or shrink a payload.
+`runtime.object_surface_model` in a deploy scene enables an observation-only PCL registration
+pilot; every convergence and resource limit must be supplied (evaluation settings, not
+calibrated safety bounds). Build this package with PCL and `pybind11_vendor` so
+`_openral_pcl_registration` imports; without it the tracker refuses to configure.
 
-The node publishes model status, size, source timestamp, residual and overlap on
-`/diagnostics` under `openral_object_tracker: observed surface models`. These
-models never replace containing fits, change the world occupancy map, authorize
-contact, or shrink an attached envelope. Residual/overlap alone cannot certify
-identity, pose observability, hidden extent or rigid shape. Initial acceptance
-and integration with catalog geometry remain distinct validation work.
+Each identity keeps observed surface voxels in a canonical local frame; accepted
+registrations relocate the model and rejected ones keep the last accepted one. Partial views
+never carve unseen cells free, and one identity cannot delete another's cells or raw OctoMap
+occupancy. The optional `free_space_calibration` block (`calibration_ref`, `sensor_ids`,
+`depth_error_m`, `pose_error_m`, `pixel_error`, `max_age_s`) lets a fresh depth frame retire
+local voxels only when every pixel covering the uncertainty-grown voxel has a valid return
+behind it; occlusion, missing depth and exhausted budgets retain cells. The pose bound must
+cover relative object/camera pose error (ICP residual is not that bound). Model status,
+size, residual and overlap go to `/diagnostics` under `openral_object_tracker: observed
+surface models`. These models never replace containing fits, change the world occupancy map,
+authorize contact or shrink an attached envelope.
+
+## Tests
+
+- Unit (no ROS): `tests/unit/test_world_state.py`, `tests/unit/test_object_tracker_session.py`.
+- Integration: `tests/integration/test_world_state_integration.py` (real lifecycle node:
+  fast/slow ratio, `DIAG_OK` / `DIAG_STALE` and recovery, parallel-array consistency) and
+  `tests/integration/test_object_tracker_node_live.py` (real tracker + world state nodes).
+  CI runs both in docker-build's live-ROS step (`scripts/ros_live_tests.sh`).
+- Package `test/`: `test_lifecycle_node_image_qos.py` (camera subscriptions stay
+  BEST_EFFORT) and `test_lifecycle_node_sigint_shape.py`.
+
+Build and test: `just ros2-build`, `just ros2-test`, `just test-integration`.
 
 ## See also
 
-- `python/world_state/README.md` and the package source under
-  `python/world_state/src/openral_world_state/`.
-- `openral_core.WorldState` / `JointState` / `Pose6D` /
-  `RobotDescription` — Pydantic schemas this node produces and consumes.
-- `openral_msgs/msg/WorldStateStamped.msg` — the typed wire format.
-- The ROS 2 reasoner/supervisor-graph design and the
-  capability review's F2 section for the full design rationale.
-- The perception → spatial-memory object-lift design decisions and follow-ups.
-- CLAUDE.md §3 (layer discipline) and §2 (QoS).
-
-The tracker backup fill uses a steady-clock timer in a separate callback group:
-long fitting callbacks can delay the default group's `/clock` subscription.
-It republishes cached tracked sets without changing stamps or revisions and
-stops after five seconds without main activity (attachment fill also requires
-joint receipts within five seconds). Attachment headers use the node ROS clock;
-a delayed clock can still cause conservative kernel expiry. This fill does not
-renew measurement evidence or change freshness/contact limits.
+- [`python/world_state/README.md`](../../python/world_state/README.md): the ROS-free aggregator,
+  tracker and memory.
+- `openral_msgs/msg/WorldStateStamped.msg`: the wire format.
+- CLAUDE.md §3 (layers) and §2 (QoS).

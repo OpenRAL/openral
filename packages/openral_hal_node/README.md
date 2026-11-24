@@ -48,9 +48,11 @@ Declared in `ManifestHALLifecycleNode` / `HALLifecycleNodeBase`
 group (default off). Every one is **read-only**: set it at launch (`-p` / params
 file) — `ros2 param set` and any DDS peer's `~/set_parameters` are refused, because
 `on_configure` re-reads the parameters that name code, files and hardware
-addresses. Publishes `/joint_states` + `~/joint_states`; subscribes
-`/openral/safe_action` and `/openral/estop`; mobile bases also publish `/odom`,
-the `odom -> base_link` TF and consume `/cmd_vel`.
+addresses. Publishes `/joint_states` + `~/joint_states` and `/openral/action_applied`;
+subscribes `/openral/safe_action`, `/openral/estop` and `/openral/estop_cleared` (the
+reset broadcast that releases the HAL's own stop latch); mobile bases also publish `/odom`,
+the `odom -> base_link` TF and consume `/cmd_vel`. A lifecycle transition the current
+state lacks (a repeated deactivate) is refused and logged rather than killing the node.
 
 ## Tests
 

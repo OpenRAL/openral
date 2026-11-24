@@ -42,11 +42,11 @@ uv run openral doctor
 
 ### Reference
 
-- Core: [API](reference/api.md), [Glossary](reference/glossary.md), [Design decisions](decisions.md)
+- Core: [CLI](reference/cli.md), [API](reference/api.md), [Glossary](reference/glossary.md), [Design decisions](decisions.md)
 - Robots and skills: [Robot descriptions](reference/robots.md), [rSkills](reference/rskills.md), [VLA × Robot × Sim compatibility](reference/vla_compatibility.md), [Sensor catalog](reference/sensors_landscape.md)
 - Reasoner: [Reasoner (S2)](reference/reasoner.md), [design](reference/reasoner-design.md), [Cosmos 3 Edge](reference/cosmos3-edge-reasoner.md)
-- Runtime and ops: [Sim environments](reference/sim-environments.md), [Telemetry](reference/telemetry.md), [Compliance log](reference/compliance-log.md), [ROS graph security](reference/ros-graph-security.md), [DDS large messages](reference/dds-large-messages.md), [aarch64 hosts](reference/aarch64-support.md)
-- Safety evidence: the collision-stack pages listed under Reference in the site navigation
+- Runtime and ops: [Sim environments](reference/sim-environments.md), [Sim backend installs](reference/sim-backend-installs.md), [USD object catalog](reference/usd-object-catalog.md), [Telemetry](reference/telemetry.md), [Compliance log](reference/compliance-log.md), [ROS graph security](reference/ros-graph-security.md), [DDS large messages](reference/dds-large-messages.md), [aarch64 hosts](reference/aarch64-support.md)
+- Investigations: [design records and dated studies](reference/investigations.md) behind the safety kernel, object tracking and pick and place
 
 ### Contributing
 
