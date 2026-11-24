@@ -251,7 +251,9 @@ def test_derive_height_band_keeps_the_floor_for_a_manifest_without_collision_geo
     narrower than "the extent is unknown": it fires only when the manifest
     declares volumes the derivation then cannot place.
     """
-    description = RobotDescription.from_yaml(str(_REPO_ROOT / "robots/aloha_agilex/robot.yaml"))
+    # sawyer declares no collision volumes (aloha_agilex, the earlier fixture, gained
+    # its fitted geometry with its MuJoCo twin in #740).
+    description = RobotDescription.from_yaml(str(_REPO_ROOT / "robots/sawyer/robot.yaml"))
     assert description.collision_geometry == []
 
     band = derive_robot_relative_height_band(description)

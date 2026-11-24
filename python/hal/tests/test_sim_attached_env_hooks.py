@@ -293,9 +293,10 @@ def test_plain_shell_drives_the_twin_through_step_action_group(plain_shell: Plai
     """The shell's send path drives a twin with no MujocoArmHAL around it (#683).
 
     The twin composes and validates its own commands (``step_action_group``): a 6-wide
-    SO-101 row moves the arm, and a mode the arm does not take is refused before
-    anything moves — never packed into the wrong ctrl slots (a gripper command zeroing
-    the arm) or written into arm-joint qpos (a twist on a robot without a base).
+    SO-101 row moves the arm; a gripper command drives the jaw's actuator alone (its
+    ``[0, 1]`` opening mapped onto ``ctrl_range``, #750), never packed into the arm's
+    ctrl slots; and a mode the arm does not take is refused before anything moves —
+    never written into arm-joint qpos (a twist on a robot without a base).
     """
     hal, twin = plain_shell("so101_follower")
     assert twin.data is not None
@@ -304,11 +305,16 @@ def test_plain_shell_drives_the_twin_through_step_action_group(plain_shell: Plai
     hal.send_action(Action(control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[row]))
     assert hal.sim_time_ns() != t0
     arm_ctrl = twin.data.ctrl.copy()
+    hal.send_action(
+        Action(control_mode=ControlMode.GRIPPER_POSITION, gripper=[0.5], ee_name="gripper")
+    )
+    (jaw,) = twin.grippers_by_joint.values()
+    low, high = jaw.ctrl_range
+    assert jaw.actuator_index is None  # the jaw's own slot: the manifest's sixth joint
+    np.testing.assert_array_equal(twin.data.ctrl[:5], arm_ctrl[:5])
+    assert float(twin.data.ctrl[5]) == pytest.approx(low + 0.5 * (high - low))
+    arm_ctrl = twin.data.ctrl.copy()
     qpos = twin.data.qpos.copy()
-    with pytest.raises(ROSConfigError):
-        hal.send_action(
-            Action(control_mode=ControlMode.GRIPPER_POSITION, gripper=[0.5], ee_name="gripper")
-        )
     with pytest.raises(ROSConfigError):
         hal.send_action(
             Action(control_mode=ControlMode.BODY_TWIST, body_twist=[(0.1, 0, 0, 0, 0, 0)])
@@ -316,7 +322,7 @@ def test_plain_shell_drives_the_twin_through_step_action_group(plain_shell: Plai
     np.testing.assert_array_equal(twin.data.ctrl, arm_ctrl)
     np.testing.assert_array_equal(twin.data.qpos, qpos)
     assert hal.last_applied_action is not None
-    assert hal.last_applied_action.joint_targets == [row]
+    assert hal.last_applied_action.control_mode is ControlMode.GRIPPER_POSITION
     hal.disconnect()
 
 
