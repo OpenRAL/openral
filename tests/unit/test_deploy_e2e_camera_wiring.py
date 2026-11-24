@@ -189,6 +189,14 @@ def test_real_launch_publishes_every_optical_child_a_consumer_names(
 
 def _compose(launch_module: object, monkeypatch: pytest.MonkeyPatch, **overrides: str) -> list[str]:
     """Node names of the real ``compose_runtime_graph``, every other arg at its default."""
+    actions, _ = _compose_actions(launch_module, monkeypatch, **overrides)
+    return [n for a in actions if (n := getattr(a, "_Node__node_name", None))]
+
+
+def _compose_actions(
+    launch_module: object, monkeypatch: pytest.MonkeyPatch, **overrides: str
+) -> tuple[list[object], object]:
+    """The real ``compose_runtime_graph``'s actions and the context it ran in."""
     from launch import LaunchContext
     from launch.actions import DeclareLaunchArgument
 
@@ -202,8 +210,7 @@ def _compose(launch_module: object, monkeypatch: pytest.MonkeyPatch, **overrides
         if isinstance(action, DeclareLaunchArgument):
             default = "".join(s.perform(context) for s in action.default_value or [])
             context.launch_configurations[action.name] = overrides.get(action.name, default)
-    actions = launch_module.compose_runtime_graph(context)  # type: ignore[attr-defined]
-    return [n for a in actions if (n := getattr(a, "_Node__node_name", None))]
+    return launch_module.compose_runtime_graph(context), context  # type: ignore[attr-defined]
 
 
 def test_real_launch_publishes_the_optical_child_once(
@@ -244,3 +251,42 @@ def test_sim_launch_leaves_the_optical_child_to_the_bridge(
         hal_mode="sim",
     )
     assert not [n for n in names if n.endswith("_optical_frame")]
+
+
+def test_octomap_without_a_cloud_runs_an_active_reasoner_peer_depth_provider(
+    launch_module: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A direct ``ros2 launch`` of the WidowX twin with octomap on and no cloud.
+
+    The launch picks ``top`` (``auto_estimated_depth_camera``), runs the provider as a
+    lifecycle node autostarted ACTIVE, and lists it as a reasoner lifecycle peer but not as
+    a VRAM peer (deactivating it frees no VRAM: the model lives in the sidecar).
+    """
+    from launch.actions import ExecuteProcess
+    from launch_ros.actions import LifecycleNode
+    from launch_ros.utilities import evaluate_parameters
+
+    # The twin's coverage ball exceeds the voxel cap at the default 0.015 m.
+    monkeypatch.setenv("OPENRAL_OCTOMAP_RESOLUTION_M", "0.03")
+    actions, context = _compose_actions(
+        launch_module,
+        monkeypatch,
+        robot_yaml=str(REPO_ROOT / "robots/widowx/robot.yaml"),
+        hal_mode="sim",
+        enable_octomap="true",
+        enable_reasoner="true",
+    )
+    nodes = {n: a for a in actions if (n := getattr(a, "_Node__node_name", None))}
+    assert isinstance(nodes["openral_estimated_depth_provider"], LifecycleNode)
+    params: dict[str, object] = {}
+    for p in evaluate_parameters(context, nodes["openral_reasoner"]._Node__parameters):  # type: ignore[attr-defined]
+        if isinstance(p, dict):
+            params.update(p)
+    assert "openral_estimated_depth_provider" in params["lifecycle_peer_node_ids"]  # type: ignore[operator]
+    assert "openral_estimated_depth_provider" not in params.get("vram_lifecycle_peers", ())  # type: ignore[operator]
+    autostarts = [
+        " ".join("".join(s.perform(context) for s in arg) for arg in a.cmd)  # type: ignore[attr-defined]
+        for a in actions
+        if type(a) is ExecuteProcess  # a Node is one too, with ROS-only substitutions
+    ]
+    assert any("/openral_estimated_depth_provider --target active" in c for c in autostarts)

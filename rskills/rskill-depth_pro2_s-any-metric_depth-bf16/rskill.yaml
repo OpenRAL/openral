@@ -1,0 +1,74 @@
+# rSkill manifest — Apple Depth Pro 2, S size (kind: depth_estimator).
+#
+# Metric depth in metres from one RGB frame, given the camera's focal length in pixels:
+# the depth provider sends the rectified frame's calibrated fx with every request (the
+# checkpoint has no field-of-view head, config.json fov: false). A drop-in alternative
+# to DA3METRIC for DeployRuntime.estimated_depth_camera via estimated_depth_rskill.
+#
+# LICENSE: weights under the Apple Machine Learning Research Model license — research
+# use only, no commercial product, revocable. The loader refuses it without
+# OPENRAL_ALLOW_NONCOMMERCIAL=1. Weights are pulled from apple/DepthPro2-S, never
+# re-hosted. Code (ml-depth-pro-2) is installed into the sidecar venv at a pinned commit.
+
+schema_version: "0.2"
+name: "OpenRAL/rskill-depth_pro2_s-any-metric_depth-bf16"
+version: "0.1.0"
+license: "apple-amlr"
+kind: "depth_estimator"
+
+embodiment_tags: ["any"]
+
+sensors_required:
+  - modality: "rgb"
+    min_width: 320
+    min_height: 240
+
+actuators_required: []
+
+runtime: "pytorch"  # in-tree sidecar: tools/depth_pro2_sidecar.py (depth_pro_2 venv)
+quantization:
+  dtype: "bf16"  # bf16 autocast, the upstream default on CUDA
+  backend: "pytorch"
+# MEASURED 2026-11-24, RTX 5070 Laptop 8 GB, tools/depth_estimator_sidecar.py, 12 frames each,
+# whole sidecar process (CUDA context included) from nvidia-smi; latency = the server's own
+# inference time, the first call (CUDA warm-up) excluded.
+# 560 MiB at 640x480, 1140 MiB at 1280x720: memory grows with the frame (native res).
+min_vram_gb:
+  bf16: 1.2
+
+weights_uri: "hf://apple/DepthPro2-S@903a1c1ade918831d138adcc4aedbcc8f4da0078"
+
+chunk_size: 1
+# Warm median 13.5 ms (p90 18.7) at 640x480, 33.0 ms (p90 35.1) at 1280x720; first call
+# 698 ms. Budget = 1280x720's p90 with headroom for a shared GPU.
+latency_budget:
+  per_chunk_ms: 60.0
+
+depth_estimator:
+  family: "depth_pro2"
+  output: "metric"  # metres along the optical axis, at the input's own resolution
+  # process_res omitted: Depth Pro 2 runs at the input's native size (upstream advice:
+  # resizing can shift the scale of the depth).
+
+paper_url: "https://arxiv.org/abs/2611.26603"
+source_repo: "hf://apple/DepthPro2-S"
+
+description: >
+  Apple Depth Pro 2 (S, 24M parameters) packaged as a monocular metric depth
+  estimator. Given the camera's calibrated focal length it returns metres per pixel at
+  the input's own resolution, which the depth provider back-projects into the
+  world-collision cloud on a robot with no depth sensor. Wraps apple/DepthPro2-S.
+  Research-only weights (Apple ML Research Model license). An estimate, not a
+  measurement. Emits no actions and drives no actuators.
+
+actions:
+  - "detect"
+
+objects:
+  - "scene geometry"
+
+scenes:
+  - "tabletop"
+  - "kitchen"
+  - "indoor"
+  - "warehouse"

@@ -1,29 +1,44 @@
 #!/usr/bin/env python3
-"""Monocular metric-depth provider node (RGB -> depth for nvblox).
+"""Monocular depth provider node (RGB -> depth for nvblox or the world-collision map).
 
-Subscribes a mono RGB camera stream, forwards each frame to the DA3 depth
-sidecar (`tools/_da3_depth_server.py`, default `depth-anything/DA3-SMALL` —
-measured 0.27 GB / ~27 Hz on an 8 GB Ada), and republishes the returned metric
-depth as a `32FC1` `sensor_msgs/Image` (+ `CameraInfo`) that **nvblox** fuses
-with cuVSLAM's pose into the Nav2 cost map. This is what gives a lidar-less,
-camera-only robot a navigable `/map`.
+Subscribes a mono RGB camera stream, forwards each frame to the sidecar of a
+``kind: depth_estimator`` rSkill (``manifest_path``; booted by
+``tools/depth_estimator_sidecar.py``: Depth Anything 3 or Depth Pro 2 in their own venvs,
+or an OpenRAL Pro TensorRT backend), and republishes the returned depth as a ``32FC1``
+``sensor_msgs/Image`` (+ ``CameraInfo``). The manifest's ``DepthEstimatorContract`` says
+how the raw output becomes metres; every reply must come from the manifest's model repo.
 
-The model runs out-of-process (the DA3 package is not transformers-native and
-wants its own venv) — this node is the thin ZMQ client + ROS bridge, reusing the
-tested `depth_convert` encoders. The depth/camera_info topics it publishes are
-the ones `nvblox.launch.py` remaps onto nvblox's `depth/image` + `depth/camera_info`.
+**SLAM mode** (``rgb_camera_info_topic`` empty, ``DeployRuntime.slam_mono_camera``): the
+skill must predict its own camera (``predicts_intrinsics``, DA3-SMALL measured
+0.27 GB / ~27 Hz on an 8 GB Ada); depth + that K feed **nvblox** and cuVSLAM, which is
+what gives a lidar-less, camera-only robot a navigable ``/map``. DA3-SMALL's output is
+``relative`` (not documented as metric): this mode publishes it unconverted, as
+*approximately* metres, so the ``/map`` and cuVSLAM's scale carry that scale error. It
+never reaches the safety kernel's world map (metric mode refuses a ``relative`` skill).
 
 **Metric mode** (``DeployRuntime.estimated_depth_camera``, world collision): with
-``rgb_camera_info_topic`` set, the sidecar must serve ``DA3METRIC-*`` (checked on every
-reply). Its canonical output becomes metres through the camera's own ``CameraInfo``
-focal scaled to DA3's raster (``metric_depth``) — after the frame is rectified to an
+``rgb_camera_info_topic`` set, the skill's ``output`` must be ``metric`` or
+``canonical_focal`` (a ``relative`` skill is refused at startup). The output becomes
+metres through the camera's own ``CameraInfo`` focal (``metric_depth``): scaled to the
+model's raster for ``canonical_focal`` (DA3METRIC), sent as ``f_px`` with the frame for
+``metric`` (Depth Pro 2) — after the frame is rectified to an
 exact pinhole with that ``CameraInfo``'s lens model (``lens_rectify``; or read through
 ``CameraInfo.p`` when ``rgb_image_rectified`` declares the stream already rectified) —
 the depth + that scaled ``CameraInfo``
 are published in the ``CameraInfo``'s optical frame, and, with ``points_topic`` set, the
 depth back-projected (clipped at ``max_range_m``) as a ``PointCloud2`` for octomap. A
-frame with no ``CameraInfo`` yet, or from a non-metric model, is dropped and logged —
+frame with no ``CameraInfo`` yet, or a reply from another model, is dropped and logged —
 never converted with a guessed focal.
+
+**Lifecycle.** A managed lifecycle node (``openral_depth_provider`` /
+``openral_estimated_depth_provider`` in ``deploy_e2e``, autostarted ACTIVE): configure
+reads the parameters, refuses an unusable rSkill
+(``openral_rskill.depth_estimator.depth_skill``, license gate included) and opens the
+sidecar socket and topics; only ACTIVE forwards frames and publishes; deactivate stops
+both (the sidecar is its own process and keeps its weights, so no VRAM is freed);
+cleanup / shutdown close the socket. The estimated-depth provider is a reasoner
+lifecycle peer: while it is inactive octomap gets no cloud and the kernel's world-voxel
+deadline stops motion.
 
 Live bring-up is operator-run (needs the sidecar venv + a GPU); the pure
 conversion half is covered by `tests/unit/test_depth_convert.py` and the
@@ -37,12 +52,16 @@ from typing import Any
 
 
 def main(args: Any = None) -> None:
-    """Entry point: init ROS, spin the depth-provider node, shut down cleanly."""
+    """Entry point: init ROS, spin the depth-provider lifecycle node, shut down cleanly.
+
+    The node starts UNCONFIGURED; ``deploy_e2e.launch.py`` drives it to ACTIVE
+    (``tools/lifecycle_autostart.py``).
+    """
     import numpy as np
     import rclpy
     from openral_observability.rclpy_spin import spin_node_until_shutdown
     from PIL import Image as PILImage
-    from rclpy.node import Node
+    from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
     from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
     from sensor_msgs.msg import CameraInfo, Image
 
@@ -59,17 +78,22 @@ def main(args: Any = None) -> None:
     )
     from openral_perception_ros.metric_depth import (
         camera_info_problem,
-        da3_metric_depth,
-        is_metric_model,
+        metres_from_output,
         points_from_depth,
         scale_intrinsics,
     )
 
-    class DepthProviderNode(Node):  # type: ignore[misc]  # reason: rclpy.node.Node is untyped
-        """Subscribe RGB, call the DA3 depth sidecar, publish 32FC1 depth + CameraInfo."""
+    class DepthProviderNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy is untyped
+        """Subscribe RGB, call the depth_estimator sidecar, publish 32FC1 depth + CameraInfo.
 
-        def __init__(self) -> None:
-            super().__init__("openral_depth_provider")
+        A managed lifecycle node: ``configure`` reads the parameters, checks the manifest
+        and opens the sidecar socket, publishers and subscriptions; only an ACTIVE node
+        calls the sidecar and publishes; ``deactivate`` stops both (the sidecar keeps its
+        weights: it is its own process); ``cleanup`` / ``shutdown`` close the socket.
+        """
+
+        def __init__(self, node_name: str = "openral_depth_provider") -> None:
+            super().__init__(node_name)
             # No topic defaults (ADR-0108): deploy_e2e passes the mono camera's
             # ``camera_topic(<name>, IMAGE / DEPTH_IMAGE / DEPTH_CAMERA_INFO)``.
             self.declare_parameter("image_topic", "")
@@ -80,7 +104,8 @@ def main(args: Any = None) -> None:
             self.declare_parameter("depth_frame_id", "")
             self.declare_parameter("sidecar_host", "127.0.0.1")
             self.declare_parameter("sidecar_port", 5771)
-            self.declare_parameter("process_res", 504)
+            # The kind: depth_estimator rSkill the sidecar serves (its contract and model).
+            self.declare_parameter("manifest_path", "")
             self.declare_parameter("request_timeout_ms", 2000)
             # Metric mode (world collision): the RGB camera's own CameraInfo, and where
             # the cloud goes. Empty = the SLAM/nvblox mode above (DA3's estimated K).
@@ -90,24 +115,57 @@ def main(args: Any = None) -> None:
             # The image is already rectified (image_pipeline's image_rect shares the raw
             # stream's CameraInfo): take its pinhole from CameraInfo.p, never undistort.
             self.declare_parameter("rgb_image_rectified", False)
+            self._active = False
+            self._sock: Any = None
+            self._entities: list[tuple[str, Any]] = []
+            self._points_pub: Any = None
+            # rclpy (Jazzy) raises out of the executor on a change_state request whose
+            # transition id the current state lacks (a second ``deactivate``: the reasoner
+            # sends ids, not labels), killing the node. Answer it ``success: false``.
+            change_state = self._service_change_state
+            serve = change_state.callback
+
+            def guarded(req: Any, resp: Any) -> Any:
+                try:
+                    return serve(req, resp)
+                except RuntimeError as exc:  # rclpy's RCLError; its type is private
+                    self.get_logger().warning(f"change_state refused: {exc}")
+                    resp.success = False
+                    return resp
+
+            change_state.callback = guarded
+
+        # ── lifecycle ────────────────────────────────────────────────────────
+
+        def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
+            """Read parameters, check the rSkill, open the socket, topics (idle until ACTIVE)."""
+            del state
+            from openral_core import ROSConfigError
+            from openral_rskill.depth_estimator import depth_skill
 
             gp = self.get_parameter
             missing = [
                 p
-                for p in ("image_topic", "depth_topic", "camera_info_topic")
+                for p in ("image_topic", "depth_topic", "camera_info_topic", "manifest_path")
                 if not gp(p).get_parameter_value().string_value
             ]
-            if missing:
-                from openral_core import ROSConfigError
-
-                raise ROSConfigError(f"depth_provider: {missing} empty; pass camera_topic(...)")
+            rgb_info_topic = gp("rgb_camera_info_topic").get_parameter_value().string_value
+            self._metric = bool(rgb_info_topic)
+            try:
+                if missing:
+                    raise ROSConfigError(f"depth_provider: {missing} empty")
+                self._contract, self._model = depth_skill(
+                    gp("manifest_path").get_parameter_value().string_value, metric=self._metric
+                )
+            except ROSConfigError as exc:
+                self.get_logger().error(f"configure refused: {exc}")
+                return TransitionCallbackReturn.FAILURE
             self._depth_frame = gp("depth_frame_id").get_parameter_value().string_value
             self._max_range_m = gp("max_range_m").get_parameter_value().double_value
             self._rgb_info: Any = None
             self._image_rectified = gp("rgb_image_rectified").get_parameter_value().bool_value
             self._rectifier: PinholeRectifier | None = None
             self._rectifier_key: tuple[Any, ...] = ()
-            self._process_res = gp("process_res").get_parameter_value().integer_value
 
             import zmq
 
@@ -136,16 +194,16 @@ def main(args: Any = None) -> None:
             self._info_pub = self.create_publisher(
                 CameraInfo, gp("camera_info_topic").get_parameter_value().string_value, info_qos
             )
-            self._sub = self.create_subscription(
+            self._entities = [("pub", self._depth_pub), ("pub", self._info_pub)]
+            sub = self.create_subscription(
                 Image,
                 gp("image_topic").get_parameter_value().string_value,
-                self._on_image,
+                self._on_frame,
                 sensor_qos,
             )
-            rgb_info_topic = gp("rgb_camera_info_topic").get_parameter_value().string_value
+            self._entities.append(("sub", sub))
             points_topic = gp("points_topic").get_parameter_value().string_value
-            self._metric = bool(rgb_info_topic)
-            self._points_pub: Any = None
+            self._points_pub = None
             if self._metric:
                 from sensor_msgs.msg import PointCloud2
 
@@ -157,31 +215,71 @@ def main(args: Any = None) -> None:
                     reliability=QoSReliabilityPolicy.BEST_EFFORT,
                     durability=QoSDurabilityPolicy.VOLATILE,
                 )
-                self._info_sub = self.create_subscription(
+                info_sub = self.create_subscription(
                     CameraInfo, rgb_info_topic, self._on_rgb_info, rgb_info_qos
                 )
+                self._entities.append(("sub", info_sub))
                 if points_topic:
                     self._points_pub = self.create_publisher(PointCloud2, points_topic, sensor_qos)
+                    self._entities.append(("pub", self._points_pub))
                 self.get_logger().warning(
-                    f"depth_provider: ESTIMATED metric depth (DA3) from {rgb_info_topic}"
+                    f"depth_provider: ESTIMATED metric depth ({self._model}) from "
+                    f"{rgb_info_topic}"
                     + (f" -> {points_topic} (world-collision cloud)" if points_topic else "")
                     + "; a monocular estimate, not a measurement"
                 )
             self.get_logger().info(
                 f"depth_provider: {gp('image_topic').get_parameter_value().string_value} "
                 f"-> {gp('depth_topic').get_parameter_value().string_value} "
-                f"(sidecar {host}:{port}, frame {self._depth_frame!r})"
+                f"(sidecar {host}:{port} serving {self._model}, frame {self._depth_frame!r})"
             )
+            return TransitionCallbackReturn.SUCCESS
+
+        def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
+            """Start calling the sidecar and publishing."""
+            self._active = True
+            self.get_logger().info("depth_provider: active (estimating + publishing)")
+            return super().on_activate(state)
+
+        def on_deactivate(self, state: LifecycleState) -> TransitionCallbackReturn:
+            """Stop calling the sidecar and publishing (its weights stay in the sidecar)."""
+            self._active = False
+            self.get_logger().warning(
+                "depth_provider: deactivated; no depth"
+                + (" or cloud" if self._points_pub is not None else "")
+                + " is published until it is activated again"
+            )
+            return super().on_deactivate(state)
+
+        def on_cleanup(self, state: LifecycleState) -> TransitionCallbackReturn:
+            """Close the socket; destroy the publishers and subscriptions."""
+            del state
+            self._active = False
+            if self._sock is not None:
+                self._sock.close(linger=0)
+                self._sock = None
+            for kind, entity in self._entities:
+                if kind == "pub":
+                    self.destroy_publisher(entity)
+                else:
+                    self.destroy_subscription(entity)
+            self._entities = []
+            self._points_pub = None
+            return TransitionCallbackReturn.SUCCESS
+
+        def on_shutdown(self, state: LifecycleState) -> TransitionCallbackReturn:
+            """Same teardown as cleanup, from any state."""
+            return self.on_cleanup(state)
 
         def _on_rgb_info(self, msg: Any) -> None:
             self._rgb_info = msg
 
         def _metric_input(self, msg: Any, rgb: Any) -> tuple[Any, Any] | None:
-            """Metric mode: the pinhole image DA3 must see, and its K; ``None`` drops it.
+            """Metric mode: the pinhole image the model must see, and its K; ``None`` drops it.
 
             The camera's ``CameraInfo`` is checked against the image (an unset focal,
             another aspect ratio), then the frame is rectified with that ``CameraInfo``'s
-            lens model to an exact pinhole: DA3's metric scale and the back-projection both
+            lens model to an exact pinhole: the metric scale and the back-projection both
             assume one. The remap is rebuilt only when the calibration or size changes.
             """
             info = self._rgb_info
@@ -229,20 +327,12 @@ def main(args: Any = None) -> None:
         def _publish_metric(
             self, msg: Any, rep: dict[str, Any], canonical: Any, rectifier: Any
         ) -> None:
-            """Metric mode: canonical DA3 output -> metres, CameraInfo and the cloud."""
-            model = str(rep.get("model", ""))
-            if not is_metric_model(model):
-                self.get_logger().error(
-                    f"depth_provider: sidecar serves {model or 'an unnamed model'!r}, not "
-                    "DA3METRIC-*; its depth is not metric, frame dropped",
-                    throttle_duration_sec=5.0,
-                )
-                return
+            """Metric mode: raw model output -> metres, CameraInfo and the cloud."""
             info = self._rgb_info
-            # DA3 saw the rectified image: its pinhole K, scaled to DA3's raster.
+            # The model saw the rectified image: its pinhole K, scaled to the output raster.
             dh, dw = canonical.shape
             fx, fy, cx, cy = scale_intrinsics(rectifier.k, rectifier.size, (dw, dh))
-            depth = da3_metric_depth(canonical, fx=fx, fy=fy)
+            depth = metres_from_output(canonical, self._contract, fx=fx, fy=fy)
             # The launch's resolved optical frame wins over the CameraInfo's own frame_id.
             frame = self._depth_frame or str(info.header.frame_id)
             stamp = msg.header.stamp
@@ -273,6 +363,10 @@ def main(args: Any = None) -> None:
             sock.connect(self._endpoint)
             return sock
 
+        def _on_frame(self, msg: Any) -> None:
+            if self._active:  # configured or deactivated: no sidecar call, nothing out
+                self._on_image(msg)
+
         def _on_image(self, msg: Any) -> None:
             import msgpack
 
@@ -292,14 +386,15 @@ def main(args: Any = None) -> None:
                 rgb, rectifier = prepared
             buf = io.BytesIO()
             PILImage.fromarray(np.ascontiguousarray(rgb), "RGB").save(buf, format="PNG")
+            req: dict[str, Any] = {"op": "depth", "image": buf.getvalue()}
+            if self._contract.process_res is not None:
+                req["process_res"] = self._contract.process_res
+            if rectifier is not None and self._contract.output.value == "metric":
+                # Depth Pro 2 scales by the focal of the image it is sent: the rectified fx.
+                req["f_px"] = float(rectifier.k[0])
 
             try:
-                self._sock.send(
-                    msgpack.packb(
-                        {"op": "depth", "image": buf.getvalue(), "process_res": self._process_res},
-                        use_bin_type=True,
-                    )
-                )
+                self._sock.send(msgpack.packb(req, use_bin_type=True))
                 rep = msgpack.unpackb(self._sock.recv(), raw=False)
             except Exception as exc:  # a sidecar hiccup must not kill the node
                 # A REQ socket is a strict send/recv state machine: after a
@@ -311,7 +406,17 @@ def main(args: Any = None) -> None:
                 self.get_logger().warning(f"sidecar request failed (socket reset): {exc}")
                 return
             if not rep.get("ok"):
-                self.get_logger().warning(f"sidecar error: {rep.get('error')}")
+                dropped = f"sidecar error {rep.get('error')!r}"
+            elif rep.get("model") != self._model:
+                dropped = (
+                    f"the sidecar serves {rep.get('model')!r}, not the rSkill's {self._model!r}"
+                )
+            else:
+                dropped = ""
+            if dropped:
+                self.get_logger().warning(
+                    f"depth_provider: frame dropped: {dropped}", throttle_duration_sec=5.0
+                )
                 return
 
             dh, dw = int(rep["h"]), int(rep["w"])
@@ -320,10 +425,10 @@ def main(args: Any = None) -> None:
                 self._publish_metric(msg, rep, depth, rectifier)
                 return
             if not all(np.isfinite(float(rep.get(c, np.nan))) for c in ("fx", "fy", "cx", "cy")):
-                # A DA3METRIC sidecar predicts no camera (NaN K): never hand nvblox NaN.
+                # A model that predicts no camera replies NaN K: never hand nvblox NaN.
                 self.get_logger().error(
                     f"depth_provider: sidecar {rep.get('model', '?')!r} returned no finite "
-                    "intrinsics; SLAM mode needs DA3's own K, frame dropped",
+                    "intrinsics; SLAM mode needs the model's own K, frame dropped",
                     throttle_duration_sec=5.0,
                 )
                 return

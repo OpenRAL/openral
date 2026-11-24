@@ -168,7 +168,8 @@ pair (no `robot_yaml`/`rig_frame`) keeps the baseline path.
 For **mono-only** robots, also start the metric-depth sidecar that feeds nvblox:
 
 ```bash
-python tools/da3_depth_sidecar.py --port 5771   # DA3-Small, ~0.27 GB / ~27 Hz on an 8 GB Ada
+python tools/depth_estimator_sidecar.py --port 5771 \
+  --manifest rskills/rskill-da3_small-any-depth-bf16/rskill.yaml   # DA3-Small
 ```
 
 > **cuVSLAM is the camera-based backend for lidar-less robots.** It produces

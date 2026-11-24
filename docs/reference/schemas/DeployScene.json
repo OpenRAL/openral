@@ -656,6 +656,18 @@
           "default": null,
           "title": "Estimated Depth Camera"
         },
+        "estimated_depth_rskill": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimated Depth Rskill"
+        },
         "vision_attachment": {
           "anyOf": [
             {

@@ -16,7 +16,6 @@ from typing import Any
 
 import numpy as np
 import pytest
-from numpy.typing import NDArray
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -75,21 +74,7 @@ class _FakeClient:
         pass
 
 
-class _FakeDa3:
-    """In-process stand-in for the DA3 depth client — records the RGB it saw."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[int, int]] = []
-
-    def infer(self, rgb: NDArray[np.uint8]) -> NDArray[np.float32]:
-        self.calls.append((int(rgb.shape[0]), int(rgb.shape[1])))
-        return np.full(rgb.shape[:2], 2.5, dtype=np.float32)  # metric metres
-
-    def close(self) -> None:
-        pass
-
-
-def _make_adapter(client: _FakeClient, da3: Any = None) -> Any:
+def _make_adapter(client: _FakeClient) -> Any:
     import sys
 
     for p in (_REPO_ROOT / "python").glob("*/src"):
@@ -101,7 +86,6 @@ def _make_adapter(client: _FakeClient, da3: Any = None) -> Any:
         device="cuda",
         _client=client,  # type: ignore[arg-type]  # reason: in-process fake at the sidecar boundary
         _camera_key="camera1",
-        _da3=da3,
     )
 
 
@@ -151,24 +135,12 @@ def test_adapter_requires_the_rgb_camera_slot() -> None:
         adapter.step(obs, "go")
 
 
-def test_adapter_sources_depth_from_da3_when_present() -> None:
+def test_adapter_sends_unit_depth_placeholder() -> None:
+    # depth_input: none (DualVLN's nextdit System-1 never reads depth): a
+    # unit-metre placeholder is sent (nonzero, so the sidecar's broken-sensor
+    # guard accepts it).
     client = _FakeClient([{"twist": [0.1, 0.0], "stop": False}])
-    da3 = _FakeDa3()
-    adapter = _make_adapter(client, da3=da3)
-    adapter.step(_obs(), "go")
-    # DA3 was called with the RGB frame, and its metric depth reached the sidecar.
-    assert da3.calls == [(224, 224)]
-    step_data = next(d for ep, d in client.calls if ep == "step")
-    assert step_data is not None
-    assert float(step_data["depth"].mean()) == pytest.approx(2.5)
-
-
-def test_adapter_sends_unit_depth_placeholder_when_da3_disabled() -> None:
-    # OPENRAL_INTERNVLA_N1_DEPTH=none path (_da3 is None): DualVLN's nextdit
-    # System-1 ignores depth, so a unit-metre placeholder is sent (nonzero, so
-    # the sidecar's broken-sensor guard accepts it).
-    client = _FakeClient([{"twist": [0.1, 0.0], "stop": False}])
-    adapter = _make_adapter(client, da3=None)
+    adapter = _make_adapter(client)
     adapter.step(_obs(), "go")
     step_data = next(d for ep, d in client.calls if ep == "step")
     assert step_data is not None
@@ -228,3 +200,72 @@ def test_adapter_passes_the_manifest_revision_to_the_sidecar(
     env = type("Env", (), {"vla": VLASpec(id="internvla_n1", weights_uri=str(skill))})()
     with pytest.raises(ROSConfigError, match=f"--revision {_SHA}"):
         _build_internvla_n1(env)  # only .vla is read before connect
+
+
+def test_shipped_manifest_declares_no_depth_input() -> None:
+    """The DualVLN rSkill states it reads no depth, so no robot depth is required."""
+    from openral_core import RSkillManifest, SensorModality
+
+    manifest = RSkillManifest.from_yaml(str(_SKILL / "rskill.yaml"))
+    assert manifest.policy_extras["depth_input"] == "none"
+    assert [r.modality for r in manifest.sensors_required] == [SensorModality.RGB]
+
+
+def _skill_with_depth_input(tmp_path: Path, depth_input: str | None) -> Path:
+    """A copy of the shipped rSkill whose ``policy_extras.depth_input`` is replaced."""
+    import shutil
+
+    skill = tmp_path / _SKILL.name
+    shutil.copytree(_SKILL, skill)
+    manifest = skill / "rskill.yaml"
+    replacement = "" if depth_input is None else f'policy_extras:\n  depth_input: "{depth_input}"\n'
+    text, n = re.subn(r'policy_extras:\n  depth_input: "none"\n', replacement, manifest.read_text())
+    assert n == 1, "shipped manifest lost its depth_input declaration"
+    manifest.write_text(text)
+    return skill
+
+
+def _build_env(skill: Path, robot: str | None, **extra: Any) -> Any:
+    from openral_core import RobotDescription, VLASpec
+
+    description = (
+        None
+        if robot is None
+        else RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / robot / "robot.yaml"))
+    )
+    extra = {"camera_keys": ["head"], **extra}
+    vla = VLASpec(id="internvla_n1", weights_uri=str(skill), extra=extra)
+    return type("Env", (), {"vla": vla, "robot_description": description})()
+
+
+@pytest.mark.parametrize(
+    ("depth_input", "robot", "extra", "match"),
+    [
+        # No declaration at all: the manifest must say what depth it reads.
+        (None, "panda_mobile", {}, "must declare policy_extras.depth_input"),
+        # Reads depth, but panda_mobile's `head` is RGB only (front_depth is another
+        # camera) and no estimator is configured: refused naming both fixes.
+        ("metric", "panda_mobile", {}, "Set runtime.estimated_depth_camera: head"),
+        # The estimator covers `head`: the robot check passes, the missing
+        # observation transport is what refuses.
+        ("metric", "panda_mobile", {"estimated_depth_camera": "head"}, "carries RGB only"),
+        ("metric", None, {}, "none was given"),
+    ],
+)
+def test_build_checks_depth_input_before_any_sidecar_boots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    depth_input: str | None,
+    robot: str | None,
+    extra: dict[str, Any],
+    match: str,
+) -> None:
+    from openral_core.exceptions import ROSConfigError
+    from openral_sim.policies.internvla_n1 import _build_internvla_n1
+
+    # No sidecar may be contacted: every refusal precedes SidecarClient.connect.
+    monkeypatch.setenv("OPENRAL_INTERNVLA_N1_AUTO_SPAWN", "0")
+    monkeypatch.setenv("OPENRAL_QUANTIZATION_DTYPE", "bf16")
+    env = _build_env(_skill_with_depth_input(tmp_path, depth_input), robot, **extra)
+    with pytest.raises(ROSConfigError, match=match):
+        _build_internvla_n1(env)

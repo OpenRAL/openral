@@ -606,8 +606,9 @@ def build_tool_palette(
             continue
         # Everything else that is not an ExecuteRskill kind has no actuating
         # tool: a segmenter answers the HAL's attachment-evidence producer (the
-        # LLM never asks for a mask), and vlm / reward / playbook are S2. The
-        # robot manifest offers skills by the same predicate (ADR-0129).
+        # LLM never asks for a mask), a depth_estimator feeds the depth provider,
+        # and vlm / reward / playbook are S2. The robot manifest offers skills by
+        # the same predicate (ADR-0129).
         if not rskill_matches_robot(
             skill, robot_capabilities, commercial_deployment=commercial_deployment
         ):

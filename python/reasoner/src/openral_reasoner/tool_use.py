@@ -374,6 +374,19 @@ DEFAULT_SYSTEM_PROMPT: str = (
 
 _TOOL_ADAPTER: TypeAdapter[ReasonerToolCall] = TypeAdapter(ReasonerToolCall)
 
+#: What driving a well-known lifecycle peer does, appended to the ``lifecycle_transition``
+#: tool description for each peer this deploy configures (the schema enum alone gives
+#: the LLM bare node names).
+LIFECYCLE_PEER_NOTES: dict[str, str] = {
+    "openral_estimated_depth_provider": (
+        "the estimated (monocular, not measured) depth of one RGB camera, the world-"
+        "collision map's only cloud; ACTIVE at boot. deactivate stops that cloud: the "
+        "world map goes stale and the safety kernel's world check (on by default) then "
+        "stops arm motion until you activate it again; it frees no GPU memory. activate "
+        "resumes the cloud."
+    ),
+}
+
 
 def render_robot_context_prompt(
     capabilities: RobotCapabilities | None,
@@ -1734,6 +1747,11 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
             # given that set instead of guessing names from a free-text description.
             if palette.node_ids:
                 schema["properties"]["node"]["enum"] = sorted(palette.node_ids)
+                text += "".join(
+                    f" {node}: {LIFECYCLE_PEER_NOTES[node.lstrip('/')]}"
+                    for node in sorted(palette.node_ids)
+                    if node.lstrip("/") in LIFECYCLE_PEER_NOTES
+                )
             else:
                 text += " No lifecycle peers are configured here: every call is refused."
         tools.append({"name": kind, "description": text, "input_schema": schema})

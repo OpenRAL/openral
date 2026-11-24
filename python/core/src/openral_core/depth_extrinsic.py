@@ -23,6 +23,7 @@ import math
 from collections.abc import Collection, Sequence
 from typing import TYPE_CHECKING, Final, NamedTuple
 
+from openral_core.exceptions import ROSConfigError
 from openral_core.tracking_thresholds import load_tracking_thresholds
 
 if TYPE_CHECKING:
@@ -45,6 +46,10 @@ MAX_TILT_DEG: Final[float] = math.degrees(math.atan(MAX_HEIGHT_ERR_M / CHECKED_R
 #: ``CHECKED_RANGE_M``.
 MAX_PLANAR_ERR_M: Final[float] = 0.75 * REAL_WORLD_VOXEL_MARGIN_M
 MAX_YAW_DEG: Final[float] = math.degrees(math.atan(MAX_PLANAR_ERR_M / CHECKED_RANGE_M))
+#: The ``kind: depth_estimator`` rSkill (a ``rskills/`` directory) an estimated-depth camera
+#: runs when ``DeployRuntime.estimated_depth_rskill`` names none: DA3METRIC-LARGE,
+#: canonical focal-300 depth, Apache-2.0.
+DEFAULT_ESTIMATED_DEPTH_RSKILL: Final[str] = "rskill-da3metric_large-any-metric_depth-bf16"
 
 
 def depth_extrinsic_problems(
@@ -297,6 +302,83 @@ def resolve_estimated_depth_camera(
     return EstimatedDepthMount("", None, mount.name, problems)
 
 
+def auto_estimated_depth_camera(
+    sensors: Sequence[SensorSpec],
+    *,
+    hal_mode: str,
+    scene_sensor_names: Collection[str] = (),
+    calibrated_intrinsics: Collection[str] = (),
+) -> str:
+    """The one RGB camera whose estimated depth feeds an octomap nothing else gives a cloud.
+
+    ``runtime.enable_octomap: true`` (explicit) with no cloud source (no pinned
+    ``octomap_cloud_topic``, no measured depth sensor's cloud) and no
+    ``runtime.estimated_depth_camera``: rather than refuse, the deploy estimates depth from
+    the RGB camera :func:`resolve_estimated_depth_camera` accepts (same arguments). Only
+    when exactly one does: the choice of which camera feeds the safety kernel's world
+    voxels is never "first one wins". An unset ``enable_octomap`` never gets here (an
+    estimate never auto-enables octomap). Shared by ``openral deploy`` and
+    ``deploy_e2e.launch.py`` (a direct ``ros2 launch``).
+
+    Raises:
+        ROSConfigError: no RGB camera qualifies (every camera's problems listed, e.g. the
+            HZ-0382-6 refusal when a measured sensor exists), or several do (named; set
+            ``runtime.estimated_depth_camera``).
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> widowx = RobotDescription.from_yaml("robots/widowx/robot.yaml").sensors
+        >>> auto_estimated_depth_camera(widowx, hal_mode="sim")
+        'top'
+        >>> so101 = RobotDescription.from_yaml("robots/so101_follower/robot.yaml").sensors
+        >>> try:
+        ...     auto_estimated_depth_camera(so101, hal_mode="sim")
+        ... except ROSConfigError as exc:
+        ...     print("no RGB camera qualifies" in str(exc), "wrist: no mount ties" in str(exc))
+        True True
+        >>> metal = RobotDescription.from_yaml("robots/makermods_metal/robot.yaml").sensors
+        >>> auto_estimated_depth_camera(metal, hal_mode="sim")  # wrist has no mount
+        'top'
+    """
+    ok: list[str] = []
+    problems: list[str] = []
+    for spec in sensors:
+        if spec.modality != "rgb":
+            continue
+        found = resolve_estimated_depth_camera(
+            sensors,
+            spec.name,
+            hal_mode=hal_mode,
+            scene_sensor_names=scene_sensor_names,
+            calibrated_intrinsics=calibrated_intrinsics,
+        ).problems
+        if found:
+            problems.extend(found)
+        else:
+            ok.append(spec.name)
+    if len(ok) == 1:
+        return ok[0]
+    fixes = (
+        "pin runtime.octomap_cloud_topic to a depth driver's PointCloud2 topic "
+        "(zed_wrapper: /<name>/point_cloud/cloud_registered, RealSense: "
+        "/camera/depth/color/points) or set runtime.enable_octomap: false"
+    )
+    if ok:
+        raise ROSConfigError(
+            "octomap is enabled but nothing publishes a cloud for it, and RGB cameras "
+            f"{', '.join(ok)} could each feed it an estimated depth cloud: set "
+            "runtime.estimated_depth_camera to the one to map, or " + fixes + "."
+        )
+    raise ROSConfigError(
+        "octomap is enabled but nothing publishes a cloud for it, and no RGB camera "
+        "qualifies for an estimated depth cloud:\n  "
+        + "\n  ".join(problems or ["the deploy declares no RGB camera"])
+        + "\nFix one of those, or "
+        + fixes
+        + "."
+    )
+
+
 def optical_frame_id(frame_id: str) -> str:
     """The REP-103 optical frame (z forward, y down) of a camera mount frame.
 
@@ -395,3 +477,57 @@ def optical_mount(spec: SensorSpec, sensors: Sequence[SensorSpec]) -> OpticalMou
         mount = spec
     frame = str(mount.frame_id)
     return OpticalMount(mount, frame, optical_frame_id(frame))
+
+
+#: ``SensorModality.DEPTH``'s value, compared as a str so this module never imports schemas.
+_DEPTH: Final[str] = "depth"
+
+
+def policy_depth_source(
+    sensors: Sequence[SensorSpec], camera: str, *, estimated_depth_camera: str | None = None
+) -> str:
+    """The camera whose ``DEPTH_IMAGE`` stream carries depth for RGB ``camera``, or why none does.
+
+    A policy that reads metric depth for ``camera`` gets it from one of, in order:
+
+    * an estimate: ``camera`` is ``DeployRuntime.estimated_depth_camera``, so the depth
+      provider runs the configured ``depth_estimator`` rSkill on its frames;
+    * ``camera`` itself, when it is a ``depth`` sensor;
+    * the same physical device: a ``depth`` sensor that ``camera`` ``shares_mount_with``,
+      or one that ``shares_mount_with`` ``camera`` (an RGB-D camera's two streams).
+
+    A depth sensor elsewhere on the robot does not count: its pixels are not ``camera``'s.
+
+    Raises:
+        ROSConfigError: ``camera`` is not one of ``sensors``, or nothing gives it depth
+            (the message names both fixes).
+
+    Example:
+        >>> from openral_core import SensorModality, SensorSpec
+        >>> rgb = SensorSpec(name="top", modality=SensorModality.RGB, frame_id="f", rate_hz=30)
+        >>> policy_depth_source([rgb], "top", estimated_depth_camera="top")
+        'top'
+        >>> zed = SensorSpec(name="zed", modality=SensorModality.DEPTH, frame_id="z", rate_hz=30)
+        >>> paired = rgb.model_copy(update={"shares_mount_with": "zed"})
+        >>> policy_depth_source([paired, zed], "top")
+        'zed'
+    """
+    by_name = {s.name: s for s in sensors}
+    spec = by_name.get(camera)
+    if spec is None:
+        raise ROSConfigError(f"policy camera {camera!r} is not a sensor ({sorted(by_name)})")
+    if camera == estimated_depth_camera or spec.modality == _DEPTH:
+        return camera
+    partner = by_name.get(spec.shares_mount_with or "")
+    if partner is not None and partner.modality == _DEPTH:
+        return partner.name
+    for s in sensors:
+        if s.modality == _DEPTH and s.shares_mount_with == camera:
+            return s.name
+    raise ROSConfigError(
+        f"camera {camera!r} has no depth: no depth sensor shares its mount and it is not "
+        f"the estimated-depth camera (estimated_depth_camera={estimated_depth_camera!r}). "
+        f"Set runtime.estimated_depth_camera: {camera} (with runtime.estimated_depth_rskill "
+        "naming a metric depth_estimator rSkill, or its default), or declare an RGB-D depth "
+        f"sensor with shares_mount_with: {camera} in the robot manifest."
+    )

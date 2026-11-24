@@ -53,6 +53,7 @@ _KIND_NOUN = {
     "vla": "Vision-Language-Action policy",
     "detector": "object detector",
     "segmenter": "promptable segmenter",
+    "depth_estimator": "monocular depth estimator",
     "vlm": "vision-language model",
     "reward": "task-progress / reward monitor",
     "ros_action": "ROS action skill (weightless)",

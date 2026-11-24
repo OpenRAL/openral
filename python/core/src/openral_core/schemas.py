@@ -7507,6 +7507,9 @@ class RSkillLicensePosture(str, Enum):
     # OpenMDW 1.1 (Linux Foundation; NVIDIA Cosmos 3 weights): commercial and
     # non-commercial use permitted, keep the license and NOTICE when redistributing.
     OPENMDW_1_1 = "openmdw-1.1"
+    # Apple Machine Learning Research Model License (Depth Pro 2 weights): research use
+    # only, no commercial product, revocable; redistribution keeps the license + notice.
+    APPLE_AMLR = "apple-amlr"
     PROPRIETARY = "proprietary"  # Helix, Skild, Gemini Robotics
     UNKNOWN = "unknown"
 
@@ -9493,6 +9496,7 @@ RSkillKind: TypeAlias = Literal[
     "ros_service",
     "detector",
     "segmenter",
+    "depth_estimator",
     "vlm",
     "reward",
     "playbook",
@@ -9533,6 +9537,15 @@ RSkillKind: TypeAlias = Literal[
   ``image_preprocessing``, ``n_action_steps`` and ``starting_pose`` are
   FORBIDDEN, and ``actuators_required`` MUST be empty — a segmenter actuates
   nothing.
+* ``"depth_estimator"`` — perception producer that estimates a dense depth
+  raster from one RGB frame (Depth Anything 3, Depth Pro 2). Its consumer is the
+  depth provider node, which publishes the raster for nvblox / the world-collision
+  map. Requires a ``DepthEstimatorContract`` block and
+  ``RSkillManifest.weights_uri``; ``runtime`` picks the backend (``pytorch`` = the
+  in-tree sidecar for the contract's ``family``, ``tensorrt`` = a backend
+  registered under the ``openral.depth_estimator_backends`` entry-point group,
+  shipped by OpenRAL Pro). The same VLA-only fields ``"segmenter"`` forbids are
+  forbidden, and ``actuators_required`` MUST be empty.
 * ``"vlm"`` — vision/video-language model used as a scene-understanding
   perception component (e.g. Qwen3.5-4B NF4). Accepts RGB image or video
   frames and a natural-language query; returns a text answer. Emits no
@@ -9578,6 +9591,7 @@ RSKILL_ROLE_BY_KIND: dict[RSkillKind, Literal["s1", "s2"]] = {
     "ros_service": "s1",
     "detector": "s1",
     "segmenter": "s1",
+    "depth_estimator": "s1",
     "vlm": "s2",
     "reward": "s2",
     "playbook": "s2",
@@ -9589,9 +9603,9 @@ S0 cerebellar control ships as ros2_control controllers, never as an rSkill."""
 
 EXECUTE_RSKILL_KINDS: frozenset[str] = POLICY_KINDS | ROS_WRAPPER_KINDS
 """Kinds the ExecuteRskill runner can dispatch: policies and wrapped ROS servers. Every
-other kind is a perception producer (detector / segmenter), a scene-query or reward model
-(vlm / reward), or a decision procedure the reasoner reads (playbook). The reasoner palette,
-the runner's resolver and its pre-load gate all read this one set."""
+other kind is a perception producer (detector / segmenter / depth_estimator), a scene-query
+or reward model (vlm / reward), or a decision procedure the reasoner reads (playbook). The
+reasoner palette, the runner's resolver and its pre-load gate all read this one set."""
 
 # Embodiment-agnostic rSkills (perception kinds detector / vlm / reward, and
 # ``playbook`` decision procedures) do not target a specific embodiment. They
@@ -10008,6 +10022,108 @@ class SegmenterContract(BaseModel):
     max_prompt_points: int = Field(default=8, ge=1)
     multimask: bool = True
     min_mask_area_px: int = Field(default=64, ge=1)
+
+
+class DepthEstimatorFamily(str, Enum):
+    """Model family of a ``kind: "depth_estimator"`` rSkill: which network the backend runs.
+
+    Attributes:
+        DA3: Depth Anything 3 (``depth-anything/DA3*``), the ``depth-anything-3``
+            package. ``DA3METRIC-*`` predicts canonical depth; the main series
+            (``DA3-SMALL`` ..) predicts relative depth plus its own camera.
+        DEPTH_PRO2: Apple Depth Pro 2 (``apple/DepthPro2-*``), the ``depth_pro_2``
+            package. Predicts metres given the camera's focal length in pixels.
+
+    Example:
+        >>> DepthEstimatorFamily.DEPTH_PRO2.value
+        'depth_pro2'
+    """
+
+    DA3 = "da3"
+    DEPTH_PRO2 = "depth_pro2"
+
+
+class DepthOutput(str, Enum):
+    """What a depth estimator's raw output means, so the consumer knows how to get metres.
+
+    Attributes:
+        METRIC: Metres along the optical axis. The backend is given the camera's focal
+            length in pixels of the image it sees (Depth Pro 2's ``f_px``).
+        CANONICAL_FOCAL: Depth at a fixed canonical focal length:
+            ``metres = mean(fx, fy) * raw / canonical_focal_px``, with ``fx``/``fy`` the
+            camera focal scaled to the output raster (DA3METRIC, focal 300).
+        RELATIVE: Not documented as metric (DA3 main series). Never converted to metres
+            and never fed to the safety kernel's world map (metric mode refuses it). Only
+            the SLAM path uses it, with the model's own K, and publishes it unconverted:
+            nvblox and cuVSLAM read it as approximately metres, so the ``/map`` and the
+            odometry scale carry the model's scale error.
+
+    Example:
+        >>> DepthOutput.CANONICAL_FOCAL.value
+        'canonical_focal'
+    """
+
+    METRIC = "metric"
+    CANONICAL_FOCAL = "canonical_focal"
+    RELATIVE = "relative"
+
+
+class DepthEstimatorContract(BaseModel):
+    """Manifest contract for ``kind: "depth_estimator"`` rSkills.
+
+    A monocular depth model turns one RGB frame into a dense depth raster. The
+    depth provider node (``openral_perception_ros``) sends it frames over the
+    sidecar wire and converts the raw output to metres with the camera's own
+    calibrated focal length, never a focal the model guesses: a cloud placed for
+    collision checking must scale with the real lens.
+
+    Required when ``RSkillManifest.kind`` is ``"depth_estimator"``; forbidden for
+    every other kind. ``RSkillManifest.runtime`` picks the backend: ``pytorch`` runs
+    the in-tree sidecar for ``family``; any other runtime (``tensorrt``) is looked up
+    in the ``openral.depth_estimator_backends`` entry-point group.
+
+    Attributes:
+        family: Which network the backend runs (``DepthEstimatorFamily``).
+        output: What the raw output means (``DepthOutput``).
+        canonical_focal_px: The focal length (pixels) ``canonical_focal`` output is
+            expressed at. REQUIRED for ``canonical_focal``, forbidden otherwise.
+        process_res: Longest side the backend resizes a frame to before inference;
+            ``None`` = the model's native input resolution (Depth Pro 2 runs at the
+            input's own size).
+        predicts_intrinsics: The backend returns its own pinhole estimate with every
+            raster. Only such a model can serve the SLAM path, which has no
+            ``CameraInfo`` to convert with.
+
+    Example:
+        >>> c = DepthEstimatorContract(
+        ...     family=DepthEstimatorFamily.DA3,
+        ...     output=DepthOutput.CANONICAL_FOCAL,
+        ...     canonical_focal_px=300.0,
+        ...     process_res=504,
+        ... )
+        >>> (c.output.value, c.canonical_focal_px, c.predicts_intrinsics)
+        ('canonical_focal', 300.0, False)
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    family: DepthEstimatorFamily
+    output: DepthOutput
+    canonical_focal_px: float | None = Field(default=None, gt=0.0)
+    process_res: int | None = Field(default=None, ge=14)
+    predicts_intrinsics: bool = False
+
+    @model_validator(mode="after")
+    def _check_canonical_focal(self) -> DepthEstimatorContract:
+        """``canonical_focal_px`` is set exactly when ``output`` is ``canonical_focal``."""
+        canonical = self.output is DepthOutput.CANONICAL_FOCAL
+        if canonical != (self.canonical_focal_px is not None):
+            raise ValueError(
+                "DepthEstimatorContract: canonical_focal_px is required for "
+                "output='canonical_focal' and forbidden otherwise "
+                f"(output={self.output.value!r}, canonical_focal_px={self.canonical_focal_px!r})"
+            )
+        return self
 
 
 class RewardContract(BaseModel):
@@ -10630,6 +10746,11 @@ class RSkillManifest(BaseModel):
     # point prompt with a mask instead of a vocabulary with labelled boxes.
     segmenter: SegmenterContract | None = None
 
+    # Monocular depth contract. REQUIRED when ``kind == "depth_estimator"``;
+    # FORBIDDEN otherwise. Names the network family and what its raw output means,
+    # so the depth provider converts it to metres with the camera's own focal.
+    depth_estimator: DepthEstimatorContract | None = None
+
     # Reward / progress-monitor model contract. REQUIRED when
     # ``kind == "reward"``; FORBIDDEN otherwise. Carries the rolling-window +
     # sampling-rate + progress-range config a robotic reward model (Robometer)
@@ -10772,6 +10893,10 @@ class RSkillManifest(BaseModel):
           ``detector`` branch forbids are forbidden here, plus
           ``detector`` itself (the two contracts are alternatives, never
           both); ``actuators_required`` MUST be empty.
+        * ``kind == "depth_estimator"`` → ``depth_estimator`` REQUIRED;
+          ``weights_uri`` REQUIRED; the fields ``segmenter`` forbids are
+          forbidden, plus ``segmenter`` itself; ``actuators_required`` MUST be
+          empty. ``depth_estimator`` is forbidden for every other kind.
         * ``kind == "wam"`` → the same rules as ``"vla"``.
         * ``base_weights_uri`` → policy kinds only, and never equal to
           ``weights_uri``.
@@ -10793,6 +10918,13 @@ class RSkillManifest(BaseModel):
                 f"RSkillManifest({self.name!r}): kind={self.kind!r} forbids "
                 "`reward_rskill_name` (it pairs a VLA with its reward model; "
                 "kind='vla' only)."
+            )
+
+        # A ``depth_estimator`` block belongs only to kind='depth_estimator'.
+        if self.kind != "depth_estimator" and self.depth_estimator is not None:
+            raise ValueError(
+                f"RSkillManifest({self.name!r}): kind={self.kind!r} forbids "
+                "`depth_estimator` (it is for kind='depth_estimator' depth producers only)."
             )
 
         if self.kind not in POLICY_KINDS and self.base_weights_uri is not None:
@@ -10967,6 +11099,50 @@ class RSkillManifest(BaseModel):
                     f"RSkillManifest({self.name!r}): kind='segmenter' requires "
                     f"`actuators_required` to be empty (got "
                     f"{len(self.actuators_required)} entries). A segmenter actuates nothing."
+                )
+            return self
+
+        if self.kind == "depth_estimator":
+            if self.depth_estimator is None:
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): kind='depth_estimator' requires a "
+                    "`depth_estimator` block (family, output)."
+                )
+            if self.weights_uri is None:
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): kind='depth_estimator' requires "
+                    "`weights_uri` (the Hugging Face depth-model repository)."
+                )
+            forbidden_depth = {
+                "detector": self.detector,
+                "segmenter": self.segmenter,
+                "reward": self.reward,
+                "model_family": self.model_family,
+                "ros_integration": self.ros_integration,
+                "action_contract": self.action_contract,
+                "state_contract": self.state_contract,
+                "processors": self.processors,
+                "n_action_steps": self.n_action_steps,
+                "image_preprocessing": self.image_preprocessing,
+                "starting_pose": self.starting_pose,
+            }
+            set_depth_forbidden = sorted(
+                name for name, value in forbidden_depth.items() if value is not None
+            )
+            if set_depth_forbidden:
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): kind='depth_estimator' forbids "
+                    f"these fields: {set_depth_forbidden!r}. A depth estimator is a "
+                    "pure perception producer — one RGB frame in, one depth raster "
+                    "out — with no VLA policy family, no ROS wrapper and no VLA "
+                    "inference lifecycle."
+                )
+            if self.actuators_required:
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): kind='depth_estimator' requires "
+                    f"`actuators_required` to be empty (got "
+                    f"{len(self.actuators_required)} entries). A depth estimator actuates "
+                    "nothing."
                 )
             return self
 
@@ -11234,8 +11410,11 @@ CANONICAL_MODEL_TOKENS: frozenset[str] = frozenset(
         "nat_vla",  # family nat_vla (NaT VLA, LFM2-VL + NAT action tokens)
         "lingbot_va_a1",  # family lingbot_va_a1
         "internvla_n1",  # family internvla_n1 (InternVLA-N1 / DualVLN)
-        # Non-VLA tool-model tokens (detector / segmenter / vlm / reward).
+        # Non-VLA tool-model tokens (detector / segmenter / depth_estimator / vlm / reward).
         "sam2_1",  # SAM 2.1 Hiera promptable segmenter
+        "da3metric_large",  # Depth Anything 3 metric (large) depth estimator
+        "da3_small",  # Depth Anything 3 small depth estimator (relative + own K)
+        "depth_pro2_s",  # Apple Depth Pro 2 S metric depth estimator
         "omdet_turbo",
         "rtdetr_coco_r18",
         "rtdetr_v2_r50vd",
@@ -13219,6 +13398,14 @@ class DeployRuntime(BaseModel):
     enable_slam: bool | None = None
     enable_nav2: bool | None = None
     enable_octomap: bool | None = None
+    """The octomap world-collision leg (``octomap_server`` -> ``/openral/world_voxels``).
+    ``None`` = auto: on when the deploy has a cloud to map (``deploy_cloud_topic``: a
+    pinned ``octomap_cloud_topic``, ``estimated_depth_camera``'s cloud, the sim bridge's
+    depth camera) or, on real hardware, any depth / point-cloud sensor; an RGB camera alone
+    never auto-enables it. ``true`` with no such cloud and no ``estimated_depth_camera``
+    estimates depth from the one RGB camera that qualifies
+    (``openral_core.depth_extrinsic.auto_estimated_depth_camera``; refused when none or
+    several do). ``false`` = off."""
     enable_octomap_kernel_check: bool | None = None
     octomap_cloud_topic: str | None = None
     """The ``PointCloud2`` topic ``octomap_server`` consumes as ``cloud_in``,
@@ -13415,8 +13602,8 @@ class DeployRuntime(BaseModel):
     impl has its own RGB-D wiring). Mutually exclusive with
     ``slam_stereo_cameras``; ``None`` = stereo/multi-camera."""
     slam_depth_sidecar_autostart: bool = True
-    """Whether the deploy launch spawns the DA3 metric-depth sidecar
-    (``tools/da3_depth_sidecar.py``, ZMQ port 5771) alongside the mono visual
+    """Whether the deploy launch spawns the depth sidecar of the DA3-SMALL rSkill
+    (``tools/depth_estimator_sidecar.py``, ZMQ port 5771) alongside the mono visual
     SLAM graph. Only meaningful when ``slam_mono_camera`` is set. ``False`` =
     the sidecar is operator-run / shared (e.g. one sidecar serving several
     deploys, or a dev venv via ``$OPENRAL_DA3_DEPTH_SIDECAR_VENV``). First
@@ -13434,7 +13621,8 @@ class DeployRuntime(BaseModel):
 
     An ESTIMATE, not a measurement: it can misplace or miss surfaces (glass, low texture,
     far range), and it reaches the safety kernel's world voxels. The launch logs that at
-    WARN. Any RGB camera with ``intrinsics`` qualifies (top, context or wrist) once it is
+    WARN. ``estimated_depth_rskill`` swaps the model (e.g. Depth Pro 2). Any RGB camera
+    with ``intrinsics`` qualifies (top, context or wrist) once it is
     tied to the robot by a declared mount: ``parent_frame`` + ``static_transform_xyz_rpy``
     on it or on the sensor it ``shares_mount_with``; in sim, an ``*_optical_frame``
     camera the bridge places from the MJCF also does
@@ -13449,7 +13637,21 @@ class DeployRuntime(BaseModel):
     (``depth_extrinsic_problems``).
     Mutually exclusive with ``octomap_cloud_topic`` (which cloud is mapped must be one
     answer) and with ``slam_mono_camera`` naming the same camera (both would publish
-    its depth topics). ``None`` = off. Backward-compatible addition."""
+    its depth topics). ``None`` = off, unless ``enable_octomap: true`` (explicit) has no
+    other cloud (no pinned ``octomap_cloud_topic``, no measured depth sensor's): then the
+    deploy picks the one RGB camera this accepts
+    (``openral_core.depth_extrinsic.auto_estimated_depth_camera``), with a loud WARN, and
+    refuses naming them when several qualify (set this to choose) or each camera's problems
+    when none does. Backward-compatible addition."""
+    estimated_depth_rskill: str | None = None
+    """The ``kind: depth_estimator`` rSkill that estimates ``estimated_depth_camera``'s
+    depth: a directory under ``rskills/`` or a path to its ``rskill.yaml``. ``None`` =
+    ``rskill-da3metric_large-any-metric_depth-bf16`` (Depth Anything 3 metric, Apache-2.0).
+    Its contract's ``output`` must be ``metric`` or ``canonical_focal``; a ``relative``
+    model is refused by the depth provider. A non-commercial skill (Depth Pro 2,
+    ``apple-amlr``) needs ``OPENRAL_ALLOW_NONCOMMERCIAL=1``. Only valid with
+    ``estimated_depth_camera`` set, or with ``enable_octomap: true`` (the camera the deploy
+    then picks, ``auto_estimated_depth_camera``). Backward-compatible addition."""
     vision_attachment: VisionAttachmentRuntime | None = None
     """The vision attachment leg (segmenter + the HAL's attachment-evidence bridge).
     ``None`` or ``enabled: false`` = not launched, and the graph is exactly as without
@@ -13711,6 +13913,17 @@ class DeployRuntime(BaseModel):
                 raise ValueError(
                     f"slam_stereo_cameras must name two distinct cameras, got {left!r} twice"
                 )
+        if (
+            self.estimated_depth_rskill is not None
+            and self.estimated_depth_camera is None
+            and self.enable_octomap is not True
+        ):
+            # With ``enable_octomap: true`` the deploy may pick the camera itself
+            # (``auto_estimated_depth_camera``); this rSkill then estimates its depth.
+            raise ValueError(
+                "estimated_depth_rskill needs estimated_depth_camera set (or "
+                "enable_octomap: true, which picks the camera)"
+            )
         if self.estimated_depth_camera is not None:
             if not self.estimated_depth_camera:
                 raise ValueError("estimated_depth_camera must be a non-empty camera name")
