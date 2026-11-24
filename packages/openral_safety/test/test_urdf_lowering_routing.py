@@ -43,7 +43,7 @@ _ROUTES: dict[str, str | None] = {
     "droid_franka_robotiq": "srdf",
     "franka_panda": "srdf",
     "g1": "sampling",
-    "galaxea_a1": "sampling",  # galaxea:a1 URDF (#726); no assets before
+    "galaxea_a1": "srdf",  # galaxea:a1 URDF + galaxea_a1.srdf finger-pair row (#740)
     "google_robot": None,
     "gr1": "sampling",
     "h1": "sampling",
@@ -55,7 +55,7 @@ _ROUTES: dict[str, str | None] = {
     "panda_mobile": "srdf",
     "panda_mobile_vslam": "srdf",
     "pusht_2d": None,
-    "r1pro": "sampling",  # behavior:r1pro URDF, visual-only: lowering surfaces the gap (#726)
+    "r1pro": "mjcf",  # behavior:r1pro URDF is visual-only, so the twin MJCF lowers it (#740)
     "rizon4": "srdf",
     "rizon_dual": "srdf",
     "sawyer": "mjcf",
