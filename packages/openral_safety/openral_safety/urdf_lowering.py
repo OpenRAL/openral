@@ -1512,53 +1512,81 @@ def _xyzrpy_matrix(origin: _Origin) -> _Arr:
     return out
 
 
-def _manifest_welded_joints(robot: RobotDescription, urdf_ref: str) -> frozenset[str]:
-    """URDF joints the manifest models as rigid: a ``fixed_attachments`` row's child.
+def _urdf_zero_path(
+    model: Any, child: str, parent: str
+) -> list[Any] | None:  # reason: yourdfpy URDF / joints are untyped
+    """The URDF joints from ``parent`` down to ``child`` (child-most first); None if apart."""
+    into = {str(j.child): j for j in model.robot.joints}
+    path, link = [], child
+    while link != parent:
+        joint = into.get(link)
+        if joint is None:
+            return None
+        path.append(joint)
+        link = str(joint.parent)
+    return path
 
-    A twin may weld URDF-movable joints (aloha_agilex's rear arms, wheels): the
-    manifest then carries the welded link as a ``fixed_attachments`` row at that
-    joint's zero pose, which is all the kernel ever poses it at. The always-colliding
-    proof must use the same kinematics, or it cannot certify a pair the kernel holds
-    rigid and would trip on forever.
+
+def _check_attachment_rows(
+    robot: RobotDescription, model: Any
+) -> frozenset[str]:  # reason: yourdfpy URDF
+    """Refuse a ``fixed_attachments`` row the kernel's rigid pose cannot honour; its welds.
+
+    The kernel holds a row's child rigid at the row's origin. Where the URDF connects the
+    two links, the row must be the URDF's parent -> child transform at zero, and no joint
+    on that path may be one the manifest keeps as a kernel DoF: the kernel would move one
+    side of it while holding the row's child still, so a pair certified rigid could
+    separate. Every other movable URDF joint on the path is welded by the row (aloha_agilex
+    welds each castor swivel and wheel axle with one wheel row). Rows between links the
+    URDF does not connect (a mount off a frame the URDF lacks) are left alone.
+
+    Returns:
+        The URDF joints the rows weld.
+
+    Raises:
+        ROSConfigError: A row is not its URDF zero pose, or spans a manifest joint.
     """
     import numpy as np
     from openral_core.kinematics import transform_from_xyz_rpy
 
-    model: Any = _load_urdf(urdf_ref)
-    rows = {a.child_link: a for a in robot.fixed_attachments}
-    into = {str(j.child): j for j in model.robot.joints}
-
-    def zero_pose(child: str, parent: str) -> Any:
-        """``parent`` → ``child`` with every URDF joint between them at zero; None if apart."""
-        tf, link = np.eye(4), child
-        while link != parent:
-            joint = into.get(link)
-            if joint is None:
-                return None
-            tf = np.asarray(_origin_matrix(joint.origin), dtype=np.float64) @ tf
-            link = str(joint.parent)
-        return tf
-
+    dofs = {j.sim_joint_name or j.name for j in robot.joints} | {j.name for j in robot.joints}
     welded: set[str] = set()
-    for j in model.robot.joints:
-        row = rows.get(str(j.child))
-        if row is None or str(j.type) not in _MOVABLE_JOINT_TYPES:
+    for row in robot.fixed_attachments:
+        path = _urdf_zero_path(model, row.child_link, row.parent_link)
+        if path is None:
             continue
-        # The proof holds the joint at its URDF zero pose; the kernel poses the link from
-        # the manifest row (which may compose fixed links in between). They must be the
-        # same transform, or a pair certified here is not the pair the kernel checks.
-        urdf_tf = zero_pose(row.child_link, row.parent_link)
+        spanned = [str(j.name) for j in path if str(j.name) in dofs]
+        if spanned:
+            raise ROSConfigError(
+                f"{robot.name}: fixed_attachments row {row.name!r} spans manifest joints "
+                f"{spanned}; the kernel would hold {row.child_link!r} rigid while they move."
+            )
+        tf = np.eye(4)
+        for joint in path:
+            tf = np.asarray(_origin_matrix(joint.origin), dtype=np.float64) @ tf
         row_tf = np.asarray(transform_from_xyz_rpy(row.origin_xyz, row.origin_rpy))
         # 1e-4: the manifests round angles to 5 decimals (pi as 3.14159, 2.7e-6 rad).
-        if urdf_tf is None or not np.allclose(urdf_tf, row_tf, atol=1e-4):
+        if not np.allclose(tf, row_tf, atol=1e-4):
             raise ROSConfigError(
-                f"{robot.name}: fixed_attachments row {row.name!r} welds URDF joint "
-                f"{j.name!r} but is not the URDF's {row.parent_link!r} -> {row.child_link!r} "
-                "transform at zero; the always-colliding proof would certify pairs the "
-                "kernel does not hold."
+                f"{robot.name}: fixed_attachments row {row.name!r} is not the URDF's "
+                f"{row.parent_link!r} -> {row.child_link!r} transform at zero."
             )
-        welded.add(str(j.name))
+        welded.update(str(j.name) for j in path if str(j.type) in _MOVABLE_JOINT_TYPES)
     return frozenset(welded)
+
+
+def _manifest_welded_joints(robot: RobotDescription, urdf_ref: str) -> frozenset[str]:
+    """URDF joints the manifest models as rigid: each movable joint a row spans.
+
+    A twin may weld URDF-movable joints (aloha_agilex's rear arms, wheels): the
+    manifest then carries the welded link as a ``fixed_attachments`` row at that
+    chain's zero pose, which is all the kernel ever poses it at. The always-colliding
+    proof must use the same kinematics, or it cannot certify a pair the kernel holds
+    rigid and would trip on forever. ``_check_attachment_rows`` refuses a row that
+    spans a manifest joint or is not its URDF zero pose.
+    """
+    model: Any = _load_urdf(urdf_ref)
+    return _check_attachment_rows(robot, model)
 
 
 def acm_for_geometry(
@@ -1832,7 +1860,9 @@ def _urdf_link_meshes(
     A manifest link is matched to the URDF link that a joint of the same
     ``sim_joint_name`` (or name) connects, its child or parent. The joint's URDF
     origin must equal the manifest's (``_TWIN_FRAME_TOL``), or the two frames
-    differ and nothing is unioned: that raises. Fails closed like
+    differ and nothing is unioned: that raises. A ``fixed_attachments`` child the MJCF
+    maps a body for joins too, its row checked against the URDF (``_check_attachment_rows``).
+    Fails closed like
     ``_static_link_meshes``: geometry that does not load raises. A link the URDF
     has no geometry for, or a robot with no URDF, contributes nothing.
 
@@ -1870,6 +1900,15 @@ def _urdf_link_meshes(
             )
         pairs.setdefault(joint.child_link, urdf_joint.child)
         pairs.setdefault(joint.parent_link, urdf_joint.parent)
+    # A fixed_attachments child the MJCF maps a body for is fitted on the MJCF path, so its
+    # URDF geometry joins the union too (the static path no longer reaches it), once its row
+    # is checked to be the URDF's own frame.
+    mapped_rows = [a for a in robot.fixed_attachments if a.child_link in link_body]
+    if any(a.child_link in model.link_map for a in mapped_rows):
+        _check_attachment_rows(robot, model)
+    for row in mapped_rows:
+        if row.child_link in model.link_map:
+            pairs.setdefault(row.child_link, row.child_link)
     handler = _static_mesh_filename_handler(urdf_path)
     out: dict[str, Any] = {}
     for link_name, urdf_link_name in pairs.items():
