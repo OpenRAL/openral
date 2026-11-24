@@ -20,6 +20,8 @@
   <depend>lifecycle_msgs</depend>
   <depend>std_msgs</depend>
   <depend>openral_msgs</depend>
+  <!-- transition_guard: the dependency-free lifecycle guard the E-stop sources share. -->
+  <exec_depend>openral_safety_watchdog</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_cmake_pytest</test_depend>

@@ -15,6 +15,7 @@ import sys
 from typing import Any
 
 import rclpy
+from openral_safety_watchdog.transition_guard import refuse_unavailable_transitions
 from rclpy.executors import ExternalShutdownException
 from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
 
@@ -33,6 +34,9 @@ class HumanEstopForwarderNode(LifecycleNode):  # type: ignore[misc]  # reason: r
     def __init__(self, node_name: str = "openral_human_estop_forwarder") -> None:
         """Declare parameters; opens no resources until on_configure."""
         super().__init__(node_name)
+        # An id-only change_state the current state lacks (a repeated activate) is refused,
+        # not raised out of the executor (rclpy would kill this E-stop source).
+        refuse_unavailable_transitions(self)
         self.declare_parameter("channel_label", "unknown_human_channel")
 
         self._human_sub: Any = None

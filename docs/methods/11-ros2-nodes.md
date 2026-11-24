@@ -222,13 +222,13 @@ _C++ ros2_control plugin (`openral_hal_unitree/GuardedInferenceController`, issu
 
 ### `packages/openral_human_estop/openral_human_estop/forwarder_node.py`
 
-- `class HumanEstopForwarderNode(LifecycleNode)` (L24) — Subscribes `/openral/human_estop` and republishes onto `/openral/estop` plus a `FailureTrigger` on `/openral/failure/safety`. No in-repo node currently publishes `/openral/human_estop` — the dashboard stop button publishes `/openral/estop` directly.
-  - `on_configure(state) -> TransitionCallbackReturn` (L42) — Opens the estop publisher, the `FailureTrigger` publisher, and the `/openral/human_estop` subscription.
-  - `on_activate(state) -> TransitionCallbackReturn` (L68) — No additional resources to start.
-  - `on_deactivate(state) -> TransitionCallbackReturn` (L73) — No additional resources to stop.
-  - `on_cleanup(state) -> TransitionCallbackReturn` (L78) — Releases the subscription + publishers.
-  - `on_shutdown(state) -> TransitionCallbackReturn` (L92) — Forces cleanup (delegates to `on_cleanup`).
-- `main(args=None) -> int` (L122) — Entry point for `ros2 run openral_human_estop forwarder_node`.
+- `class HumanEstopForwarderNode(LifecycleNode)` (L25) — Subscribes `/openral/human_estop` and republishes onto `/openral/estop` plus a `FailureTrigger` on `/openral/failure/safety`. No in-repo node currently publishes `/openral/human_estop` — the dashboard stop button publishes `/openral/estop` directly.
+  - `on_configure(state) -> TransitionCallbackReturn` (L46) — Opens the estop publisher, the `FailureTrigger` publisher, and the `/openral/human_estop` subscription.
+  - `on_activate(state) -> TransitionCallbackReturn` (L72) — No additional resources to start.
+  - `on_deactivate(state) -> TransitionCallbackReturn` (L77) — No additional resources to stop.
+  - `on_cleanup(state) -> TransitionCallbackReturn` (L82) — Releases the subscription + publishers.
+  - `on_shutdown(state) -> TransitionCallbackReturn` (L96) — Forces cleanup (delegates to `on_cleanup`).
+- `main(args=None) -> int` (L126) — Entry point for `ros2 run openral_human_estop forwarder_node`.
 
 ### `packages/openral_compliance/openral_compliance/recorder_node.py`
 
@@ -251,24 +251,25 @@ _C++ ros2_control plugin (`openral_hal_unitree/GuardedInferenceController`, issu
 - `estop_qos() -> QoSProfile` (_qos.py L19) — QoS for `/openral/estop`: `RELIABLE` / `VOLATILE` / `KEEP_LAST=10`.
 - `failure_qos() -> QoSProfile` (_qos.py L30) — QoS for `/openral/failure/safety`: `RELIABLE` / `VOLATILE` / `KEEP_LAST=50`. Both factories are the single shared definition both nodes' `on_configure` calls, keeping their QoS identical by construction.
 - `install_parameter_guard(node, locked) -> None` (_param_guard.py L23) — Registers an `on_set_parameters` callback refusing every change to an existing parameter while `locked()` is true; a batch of only undeclared names (a declaration) passes. Both nodes latch their lock at the start of `on_configure` and in `on_cleanup` — the C++ kernel's guard (Entry 078) in one flag: fixed after any configure, failed or not (issue #546).
-- `class DeadmanWatchdogNode(LifecycleNode)` (deadman_watchdog_node.py L127) — Fires `/openral/estop` plus a timeout `FailureTrigger` when `/openral/safe_action` dies, in its own process so a kernel crash still brakes. `arm_status_topic` gates the deadline to an active goal; the post-estop latch releases only on a genuine `SafetyStatus` transition to clear.
-- `prop DEFAULT_SAFE_ACTION_DEADLINE_S, DEFAULT_CHECK_PERIOD_S, DEFAULT_FIRST_CHUNK_DEADLINE_S, DEFAULT_SAFETY_STATUS_TOPIC, SAFETY_STATUS_LIVENESS_S` (deadman_watchdog_node.py L66–95) — Defaults for the safe-action deadline (0.2 s), the deadline-check timer period (50 ms), the goal-accepted→first-chunk grace (60 s), the latched `SafetyStatus` topic, and the HZ-0096-1 liveness window (3 s) past which a `SafetyStatus` sample is treated as unknown-not-safe.
-- `prop DEFAULT_RESULT_ONLY_TOPIC, DEFAULT_RESULT_ONLY_GRACE_S, DEFAULT_RESULT_ONLY_MAX_S` (deadman_watchdog_node.py L77–85) — `/openral/result_only_goal`, 15 s and 1800 s: a live goal the runner announced as publishing no chunks (`ResultOnlyGoal`) is bounded by its announced wall bound + grace, capped, from the announcement, instead of the first-chunk window (ADR-0127 D5).
-- `_LIVE_GOAL_STATUS_NAMES` (deadman_watchdog_node.py L104) — `("STATUS_ACCEPTED", "STATUS_EXECUTING", "STATUS_CANCELING")`; resolved to values off the generated message class rather than hardcoded, so an upstream renumbering cannot silently widen or narrow the gate.
-  - `DeadmanWatchdogNode.on_configure(state) -> TransitionCallbackReturn` (deadman_watchdog_node.py L217) — Opens the `/openral/safe_action` subscription, the estop/failure publishers (QoS from `_qos.estop_qos`/`_qos.failure_qos`), and (if `arm_status_topic` is set) the goal-status subscription.
-  - `DeadmanWatchdogNode.on_activate(state) -> TransitionCallbackReturn` (deadman_watchdog_node.py L314) — Arms the deadline check; opens the execution window immediately when free-running, else waits for the first live goal status.
-  - `DeadmanWatchdogNode.on_deactivate(state) -> TransitionCallbackReturn` (deadman_watchdog_node.py L328) — Disarms — deadline checks become no-ops until the next activate.
-  - `DeadmanWatchdogNode.on_cleanup(state) -> TransitionCallbackReturn` (deadman_watchdog_node.py L334) — Releases the timer, subscriptions and publishers.
-  - `DeadmanWatchdogNode.on_shutdown(state) -> TransitionCallbackReturn` (deadman_watchdog_node.py L354) — Forces cleanup (delegates to `on_cleanup`).
-- `main(args=None) -> int` (deadman_watchdog_node.py L546) — Entry point for `ros2 run openral_safety_watchdog deadman_watchdog_node`.
-- `class HardwareEstopNode(LifecycleNode)` (hardware_estop_node.py L50) — Polls a hardware E-stop source and publishes `/openral/estop` plus a `FailureTrigger` on the rising edge. With no device declared, `on_configure` refuses to activate rather than coming up ACTIVE over a stub; a read that raises latches as unknown-therefore-unsafe.
-- `DEFAULT_POLL_RATE_HZ` (hardware_estop_node.py L46) — `100.0`; how often to query the hardware estop state.
-  - `HardwareEstopNode.on_configure(state) -> TransitionCallbackReturn` (hardware_estop_node.py L105) — Opens publishers and starts the polling timer only if a device is really there; returns `FAILURE` (leaving the node UNCONFIGURED) when this host has no hardware E-stop this node could read.
-  - `HardwareEstopNode.on_activate(state) -> TransitionCallbackReturn` (hardware_estop_node.py L141) — Starts braking; a button already held at activation brakes on the first poll.
-  - `HardwareEstopNode.on_deactivate(state) -> TransitionCallbackReturn` (hardware_estop_node.py L149) — Stops braking; the timer keeps running but `_poll` is a no-op.
-  - `HardwareEstopNode.on_cleanup(state) -> TransitionCallbackReturn` (hardware_estop_node.py L155) — Releases the timer + publishers.
-  - `HardwareEstopNode.on_shutdown(state) -> TransitionCallbackReturn` (hardware_estop_node.py L170) — Forces cleanup (delegates to `on_cleanup`).
-- `main(args=None) -> int` (hardware_estop_node.py L273) — Entry point for `ros2 run openral_safety_watchdog hardware_estop_node`.
+- `refuse_unavailable_transitions(node) -> None` (transition_guard.py L22) — Dependency-free copy of `openral_observability.refuse_unavailable_transitions` for the E-stop sources: an id-only `change_state` naming a transition the current state lacks is logged and answered `success: false` (state unchanged) instead of rclpy raising `RCLError` out of the executor and taking the brake source off the graph. Installed in `__init__` by `DeadmanWatchdogNode`, `HardwareEstopNode` and `openral_human_estop`'s `HumanEstopForwarderNode` (which `exec_depend`s on this package for it).
+- `class DeadmanWatchdogNode(LifecycleNode)` (deadman_watchdog_node.py L128) — Fires `/openral/estop` plus a timeout `FailureTrigger` when `/openral/safe_action` dies, in its own process so a kernel crash still brakes. `arm_status_topic` gates the deadline to an active goal; the post-estop latch releases only on a genuine `SafetyStatus` transition to clear.
+- `prop DEFAULT_SAFE_ACTION_DEADLINE_S, DEFAULT_CHECK_PERIOD_S, DEFAULT_FIRST_CHUNK_DEADLINE_S, DEFAULT_SAFETY_STATUS_TOPIC, SAFETY_STATUS_LIVENESS_S` (deadman_watchdog_node.py L67–96) — Defaults for the safe-action deadline (0.2 s), the deadline-check timer period (50 ms), the goal-accepted→first-chunk grace (60 s), the latched `SafetyStatus` topic, and the HZ-0096-1 liveness window (3 s) past which a `SafetyStatus` sample is treated as unknown-not-safe.
+- `prop DEFAULT_RESULT_ONLY_TOPIC, DEFAULT_RESULT_ONLY_GRACE_S, DEFAULT_RESULT_ONLY_MAX_S` (deadman_watchdog_node.py L78–86) — `/openral/result_only_goal`, 15 s and 1800 s: a live goal the runner announced as publishing no chunks (`ResultOnlyGoal`) is bounded by its announced wall bound + grace, capped, from the announcement, instead of the first-chunk window (ADR-0127 D5).
+- `_LIVE_GOAL_STATUS_NAMES` (deadman_watchdog_node.py L105) — `("STATUS_ACCEPTED", "STATUS_EXECUTING", "STATUS_CANCELING")`; resolved to values off the generated message class rather than hardcoded, so an upstream renumbering cannot silently widen or narrow the gate.
+  - `DeadmanWatchdogNode.on_configure(state) -> TransitionCallbackReturn` (deadman_watchdog_node.py L221) — Opens the `/openral/safe_action` subscription, the estop/failure publishers (QoS from `_qos.estop_qos`/`_qos.failure_qos`), and (if `arm_status_topic` is set) the goal-status subscription.
+  - `DeadmanWatchdogNode.on_activate(state) -> TransitionCallbackReturn` (deadman_watchdog_node.py L318) — Arms the deadline check; opens the execution window immediately when free-running, else waits for the first live goal status.
+  - `DeadmanWatchdogNode.on_deactivate(state) -> TransitionCallbackReturn` (deadman_watchdog_node.py L332) — Disarms — deadline checks become no-ops until the next activate.
+  - `DeadmanWatchdogNode.on_cleanup(state) -> TransitionCallbackReturn` (deadman_watchdog_node.py L338) — Releases the timer, subscriptions and publishers.
+  - `DeadmanWatchdogNode.on_shutdown(state) -> TransitionCallbackReturn` (deadman_watchdog_node.py L358) — Forces cleanup (delegates to `on_cleanup`).
+- `main(args=None) -> int` (deadman_watchdog_node.py L550) — Entry point for `ros2 run openral_safety_watchdog deadman_watchdog_node`.
+- `class HardwareEstopNode(LifecycleNode)` (hardware_estop_node.py L51) — Polls a hardware E-stop source and publishes `/openral/estop` plus a `FailureTrigger` on the rising edge. With no device declared, `on_configure` refuses to activate rather than coming up ACTIVE over a stub; a read that raises latches as unknown-therefore-unsafe.
+- `DEFAULT_POLL_RATE_HZ` (hardware_estop_node.py L47) — `100.0`; how often to query the hardware estop state.
+  - `HardwareEstopNode.on_configure(state) -> TransitionCallbackReturn` (hardware_estop_node.py L109) — Opens publishers and starts the polling timer only if a device is really there; returns `FAILURE` (leaving the node UNCONFIGURED) when this host has no hardware E-stop this node could read.
+  - `HardwareEstopNode.on_activate(state) -> TransitionCallbackReturn` (hardware_estop_node.py L145) — Starts braking; a button already held at activation brakes on the first poll.
+  - `HardwareEstopNode.on_deactivate(state) -> TransitionCallbackReturn` (hardware_estop_node.py L153) — Stops braking; the timer keeps running but `_poll` is a no-op.
+  - `HardwareEstopNode.on_cleanup(state) -> TransitionCallbackReturn` (hardware_estop_node.py L159) — Releases the timer + publishers.
+  - `HardwareEstopNode.on_shutdown(state) -> TransitionCallbackReturn` (hardware_estop_node.py L174) — Forces cleanup (delegates to `on_cleanup`).
+- `main(args=None) -> int` (hardware_estop_node.py L277) — Entry point for `ros2 run openral_safety_watchdog hardware_estop_node`.
 
 ### `packages/openral_rskill_ros/openral_rskill_ros/`
 
