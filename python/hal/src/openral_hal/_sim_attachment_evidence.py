@@ -30,6 +30,7 @@ from openral_core import (
     SupportContactWitness,
 )
 from openral_core.exceptions import ROSConfigError
+from openral_core.kinematics import transform_from_xyz_rpy
 from openral_core.schemas import (
     DOP_AXES,
     MAX_TIGHT_HULL_VERTICES,
@@ -340,22 +341,39 @@ def _body_subtree(
     return bodies
 
 
+def _sim_joint_id(
+    model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    sim_joint_name: str,
+) -> int:
+    """The MJCF joint a manifest ``sim_joint_name`` names, or ``-1``.
+
+    The exact name, else robosuite's prefixed one (``gripper0_finger_joint1`` for
+    ``finger_joint1`` in a LIBERO / RoboCasa scene), resolved as ``SimAttachedHAL``
+    resolves joint state (``normalized_joint_index``: an ambiguous strip stays unresolved).
+    """
+    import mujoco  # noqa: PLC0415  # reason: optional sim dependency
+
+    exact = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, sim_joint_name))
+    if exact >= 0:
+        return exact
+    from openral_hal.sim_attached import (  # noqa: PLC0415  # reason: heavy module, sim-only path
+        normalized_joint_index,
+    )
+
+    names = [
+        mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, j) or "" for j in range(int(model.njnt))
+    ]
+    return normalized_joint_index(names).get(sim_joint_name, -1)
+
+
 def _sim_joint_body_id(
     model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
     joint: JointSpec,
 ) -> int:
     """Resolve one manifest joint to its MuJoCo child body."""
-    import mujoco  # noqa: PLC0415  # reason: optional sim dependency
-
     if not joint.sim_joint_name:
         raise ROSConfigError(f"Joint {joint.name!r} needs sim_joint_name for contact evidence.")
-    joint_id = int(
-        mujoco.mj_name2id(
-            model,
-            mujoco.mjtObj.mjOBJ_JOINT,
-            joint.sim_joint_name,
-        )
-    )
+    joint_id = _sim_joint_id(model, joint.sim_joint_name)
     if joint_id < 0:
         raise ROSConfigError(f"Sim joint {joint.sim_joint_name!r} is missing.")
     return int(model.jnt_bodyid[joint_id])
@@ -411,6 +429,10 @@ class _Hand:
     # The manifest attach/touch link names, kept when ``bind_kernel_links`` renames the hand
     # to its sim bodies: a grasp declaration names the hand in the manifest's namespace.
     manifest_links: frozenset[str] = frozenset()
+    # Manifest link -> the kernel model's name for it, when the hand was renamed (an
+    # MJCF-lowered kernel, or names adopted from the kernel's twin): a grasp declaration
+    # leaves this producer with its ``contact_links`` in the kernel's naming.
+    kernel_names: dict[str, str] = field(default_factory=dict)
 
 
 def _joint_gripper_hands(
@@ -435,6 +457,8 @@ def _joint_gripper_hands(
             # A fixed hand link (the R1 Pro's ``*_gripper_link``) is no joint's child; the
             # MJCF body of the same name is that link's frame.
             attach_body_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, attach_link))
+            if attach_body_id < 0:
+                attach_body_id = _fixed_attach_body(model, description, attach_link, jaw_bodies)
         # The attach frame must carry the jaws: a same-named body elsewhere would pose the
         # payload in the wrong frame.
         if attach_body_id < 0 or not all(
@@ -442,6 +466,17 @@ def _joint_gripper_hands(
             for body in jaw_bodies
         ):
             raise ROSConfigError(f"Cannot resolve sim body for attach link {attach_link!r}.")
+        body_groups = _jaw_body_groups(model, jaw_bodies)
+        # A fixed jaw on the hand body itself (the SO-ARM's ``fixed_jaw_link``) is that
+        # gripper's second contact branch: only the attach body, never its subtree, which
+        # holds the moving jaw. The kernel already exempts the attach link for the payload.
+        for fixed_jaw in {j.fixed_jaw_link for j in jaws if j.fixed_jaw_link}:
+            if fixed_jaw != attach_link or attach_body_id in body_groups:
+                raise ROSConfigError(
+                    f"fixed_jaw_link {fixed_jaw!r} must be the jaws' parent link "
+                    f"{attach_link!r} for sim contact evidence."
+                )
+            body_groups[attach_body_id] = attach_body_id
         hands.append(
             _Hand(
                 attach_link=attach_link,
@@ -451,10 +486,67 @@ def _joint_gripper_hands(
                 touch_links=list(
                     description.grasp_contact_links(gripper_joints={j.name for j in jaws})
                 ),
-                body_groups=_jaw_body_groups(model, jaw_bodies),
+                body_groups=body_groups,
             )
         )
     return hands
+
+
+def _fixed_attach_body(
+    model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    description: RobotDescription,
+    attach_link: str,
+    jaw_bodies: Sequence[int],
+    *,
+    tolerance: float = 1e-3,
+) -> int:
+    """The MJCF body of a hand link bolted on through ``fixed_attachments`` under another name.
+
+    Menagerie's Panda calls the hand ``hand``; robosuite's (LIBERO, RoboCasa) calls it
+    ``robot0_right_hand``, with the fingers on a ``gripper0_right_gripper`` mount below it;
+    the manifest calls it ``panda_hand``, a ``fixed_attachments`` child of
+    ``panda_link7``. The candidates are the jointless bodies from the one the jaws hang
+    from up to the parent link's sim body; the nearest whose pose there matches the
+    row's ``origin_xyz`` / ``origin_rpy`` within ``tolerance`` (m, rad) is the hand, so
+    the payload is posed in the frame the manifest names.
+
+    Returns:
+        The body id, or ``-1`` when no body qualifies.
+    """
+    import mujoco  # noqa: PLC0415  # reason: optional sim dependency
+
+    row = next((a for a in description.fixed_attachments if a.child_link == attach_link), None)
+    parent_joint = (
+        None
+        if row is None
+        else next(
+            (j for j in description.joints if j.child_link == row.parent_link and j.sim_joint_name),
+            None,
+        )
+    )
+    mounts = {int(model.body_parentid[body]) for body in jaw_bodies}
+    if row is None or parent_joint is None or len(mounts) != 1:
+        return -1
+    parent_body = _sim_joint_body_id(model, parent_joint)
+    chain: list[int] = []
+    body = mounts.pop()
+    while body != parent_body:
+        if body <= 0 or int(model.body_jntnum[body]) > 0:
+            return -1
+        chain.append(body)
+        body = int(model.body_parentid[body])
+    data = mujoco.MjData(model)
+    mujoco.mj_kinematics(model, data)
+    parent_rot = data.xmat[parent_body].reshape(3, 3)
+    expected = transform_from_xyz_rpy(row.origin_xyz, row.origin_rpy)
+    for candidate in chain:
+        rotation = parent_rot.T @ data.xmat[candidate].reshape(3, 3)
+        translation = parent_rot.T @ (data.xpos[candidate] - data.xpos[parent_body])
+        cos = (float(np.trace(expected[:3, :3].T @ rotation)) - 1) / 2
+        angle = math.acos(max(-1.0, min(1.0, cos)))
+        if np.linalg.norm(translation - expected[:3, 3]) <= tolerance and angle <= tolerance:
+            return candidate
+    return -1
 
 
 def _end_effector_gripper_hands(
@@ -476,8 +568,7 @@ def _end_effector_gripper_hands(
         for joint in description.joints
         if joint.sim_joint_name
         # A joint the twin does not model is no EE attach link (as _resolve_robot_bodies).
-        and (joint_id := mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint.sim_joint_name))
-        >= 0
+        and (joint_id := _sim_joint_id(model, joint.sim_joint_name)) >= 0
     }
     hands: list[_Hand] = []
     for gripper in description.sim.grippers:
@@ -524,24 +615,34 @@ def _end_effector_gripper_hands(
     return hands
 
 
+def twin_drives_gripper(description: RobotDescription) -> bool:
+    """Whether the robot's MuJoCo twin can close a gripper on a payload.
+
+    True when a ``sim.grippers`` entry drives one, or a ``role: gripper`` joint names its
+    twin joint. A twin with neither (the Sawyer and UR twins model a bare flange) carries
+    nothing, so an empty attachment set is the truth there.
+
+    Example:
+        >>> twin_drives_gripper(RobotDescription.from_yaml("robots/franka_panda/robot.yaml"))
+        True
+        >>> twin_drives_gripper(RobotDescription.from_yaml("robots/ur5e/robot.yaml"))
+        False
+    """
+    if description.sim is not None and description.sim.grippers:
+        return True
+    return any(j.role == "gripper" and j.sim_joint_name for j in description.joints)
+
+
 def _resolve_robot_bodies(
     model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
     joints: list[JointSpec],
 ) -> set[int]:
     """Resolve all manifest-backed robot body subtrees present in MuJoCo."""
-    import mujoco  # noqa: PLC0415  # reason: optional sim dependency
-
     bodies: set[int] = set()
     for joint in joints:
         if not joint.sim_joint_name:
             continue
-        joint_id = int(
-            mujoco.mj_name2id(
-                model,
-                mujoco.mjtObj.mjOBJ_JOINT,
-                joint.sim_joint_name,
-            )
-        )
+        joint_id = _sim_joint_id(model, joint.sim_joint_name)
         if joint_id >= 0:
             bodies.update(_body_subtree(model, int(model.jnt_bodyid[joint_id])))
     return bodies
@@ -1688,6 +1789,45 @@ def probe_contact_force(
     )
 
 
+def _chain_signature(
+    model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    description: RobotDescription,
+) -> tuple[int | None, dict[str, tuple[int, float, float]]]:
+    """What ``adopt_kernel_names`` compares two models of one robot by.
+
+    The body the first manifest joint hangs from (the arm's fixed mount), and every
+    non-gripper manifest joint's qpos address with the range it is posed over (its
+    ``position_limits`` clipped to one turn). Empty when any non-gripper manifest joint
+    does not resolve in the model: the arm moves by it, so a check that skipped it could
+    adopt a hand frame that differs.
+    """
+    anchor = next(
+        (
+            int(model.body_parentid[int(model.jnt_bodyid[joint_id])])
+            for joint in description.joints
+            if joint.sim_joint_name
+            and (joint_id := _sim_joint_id(model, joint.sim_joint_name)) >= 0
+        ),
+        None,
+    )
+    posable: dict[str, tuple[int, float, float]] = {}
+    for joint in description.joints:
+        if joint.role == "gripper":
+            continue
+        joint_id = _sim_joint_id(model, joint.sim_joint_name) if joint.sim_joint_name else -1
+        if joint_id < 0:
+            # A commanded arm joint this model cannot pose: no comparison can cover it,
+            # so no chain signature (``adopt_kernel_names`` refuses).
+            return anchor, {}
+        low, high = joint.position_limits or (-math.pi, math.pi)
+        posable[joint.name] = (
+            int(model.jnt_qposadr[joint_id]),
+            max(low, -math.pi),
+            min(high, math.pi),
+        )
+    return anchor, posable
+
+
 class SimAttachmentEvidenceTracker:
     """Confirm free-object grasp/release from exact MuJoCo contacts and motion.
 
@@ -1725,7 +1865,7 @@ class SimAttachmentEvidenceTracker:
         translation_tolerance_m: float = 0.01,
         rotation_tolerance_rad: float = 0.15,
     ) -> None:
-        self._model = model
+        self._model, self._description = model, description
         self._stable_ticks = stable_ticks
         self._release_ticks = release_ticks
         self._translation_tolerance_m = translation_tolerance_m
@@ -1817,6 +1957,7 @@ class SimAttachmentEvidenceTracker:
         for hand in self._hands:
             robot_bodies.update(hand.body_groups)
         self._robot_body_ids = frozenset(robot_bodies)
+        self._anchor_body_id, self._posable_joints = _chain_signature(model, description)
 
         # The body the robot's ``base_frame`` TF denotes (ADR-0095), which is the
         # frame the octomap bridge publishes the occupancy grid in and therefore
@@ -1834,6 +1975,108 @@ class SimAttachmentEvidenceTracker:
 
             resolved = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, base_body_name))
             self._base_body_id = resolved if resolved >= 0 else None
+
+    def adopt_kernel_names(
+        self, twin: SimAttachmentEvidenceTracker, *, tolerance: float = 1e-3
+    ) -> bool:
+        """Name every hand as ``twin`` does: the same robot's tracker on the kernel's own MJCF.
+
+        A scene model (LIBERO's robosuite Panda: ``robot0_right_hand``,
+        ``gripper0_leftfinger``) names neither the manifest's links nor the bodies of the
+        MJCF the kernel's collision model was lowered from (menagerie: ``hand``,
+        ``left_finger``). ``twin``, already bound to the kernel (``bind_kernel_links``
+        returned nothing), carries the kernel's names for the same hands. They are taken
+        only when both models have the same hands and resolve the same non-gripper manifest
+        joints, and each attach body sits at the same pose relative to the arm's fixed mount
+        (the first manifest joint's parent body), within ``tolerance`` (m and rad), at
+        ``qpos0`` and at four spread configurations of those joints across their limits.
+        So the two chains move each hand alike, and a payload posed in this model's attach
+        body is posed in the frame the kernel's link denotes wherever the arm goes.
+        Contacts stay measured on this model's bodies; only the published names change.
+
+        Returns:
+            Whether the names were adopted; on ``False`` nothing changed.
+        """
+        if (
+            len(self._hands) != len(twin._hands)
+            or not self._posable_joints
+            or self._posable_joints.keys() != twin._posable_joints.keys()
+        ):
+            return False
+        for config in (None, 0.2, 0.4, 0.6, 0.8):
+            mine, theirs = self._attach_poses(config), twin._attach_poses(config)
+            if mine is None or theirs is None:
+                return False
+            for (t_a, r_a), (t_b, r_b) in zip(mine, theirs, strict=True):
+                cos = (float(np.trace(r_a.T @ r_b)) - 1) / 2
+                if (
+                    np.linalg.norm(t_a - t_b) > tolerance
+                    or math.acos(max(-1.0, min(1.0, cos))) > tolerance
+                ):
+                    return False
+        for hand, other in zip(self._hands, twin._hands, strict=True):
+            manifest = other.manifest_links or frozenset((hand.attach_link, *hand.touch_links))
+            # The twin's own map when it was renamed; else its names ARE the manifest's.
+            hand.kernel_names = dict(other.kernel_names) or {name: name for name in manifest}
+            hand.manifest_links = manifest
+            hand.attach_link, hand.touch_links = other.attach_link, list(other.touch_links)
+        return True
+
+    def _link_bodies(self, links: Collection[str]) -> dict[str, str]:
+        """Manifest links -> this model's body names.
+
+        A link is the body of the joint (or mimic joint) whose ``child_link`` it is, through
+        that joint's ``sim_joint_name``, or for a ``fixed_attachments`` child the body of its
+        own name (the collision lowering's own rules, so the names match a kernel model
+        lowered from this MJCF). Links neither resolves are left out.
+        """
+        rows = [(j.child_link, j.sim_joint_name) for j in self._description.joints] + [
+            (m.child_link, m.sim_joint_name) for m in self._description.mimic_joints
+        ]
+        out: dict[str, str] = {}
+        for child_link, sim_joint_name in rows:
+            if child_link in links and sim_joint_name:
+                joint_id = _sim_joint_id(self._model, sim_joint_name)
+                if joint_id >= 0:
+                    body = int(self._model.jnt_bodyid[joint_id])
+                    out[child_link] = str(self._model.body(body).name)
+        # A ``fixed_attachments`` child (a finger rigid on a mimic link) is the MJCF body of
+        # its own name, as the collision lowering maps it.
+        import mujoco  # noqa: PLC0415  # reason: optional sim dependency
+
+        for row in self._description.fixed_attachments:
+            if row.child_link in links and row.child_link not in out:
+                body = int(mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_BODY, row.child_link))
+                if body >= 0:
+                    out[row.child_link] = row.child_link
+        return out
+
+    def _attach_poses(
+        self, config: float | None
+    ) -> list[tuple[NDArray[np.float64], NDArray[np.float64]]] | None:
+        """Each hand's attach body pose in the anchor body's frame.
+
+        At ``qpos0`` for ``config=None``; else every posable manifest joint ``i`` at the
+        fraction ``(config + 0.37 i) mod 1`` of its range, so the joints spread apart.
+        """
+        import mujoco  # noqa: PLC0415  # reason: optional sim dependency
+
+        anchor = self._anchor_body_id
+        if anchor is None:
+            return None
+        data = mujoco.MjData(self._model)
+        if config is not None:
+            for i, (addr, low, high) in enumerate(self._posable_joints.values()):
+                data.qpos[addr] = low + ((config + 0.37 * i) % 1.0) * (high - low)
+        mujoco.mj_kinematics(self._model, data)
+        rot = data.xmat[anchor].reshape(3, 3)
+        return [
+            (
+                rot.T @ (data.xpos[hand.attach_body_id] - data.xpos[anchor]),
+                rot.T @ data.xmat[hand.attach_body_id].reshape(3, 3),
+            )
+            for hand in self._hands
+        ]
 
     def bind_kernel_links(self, kernel_link_names: Collection[str]) -> list[str]:
         """Name every hand's attach/touch links as the safety kernel's collision model does.
@@ -1855,6 +2098,7 @@ class SimAttachmentEvidenceTracker:
             touch = [str(self._model.body(body).name) for body in sorted(hand.body_groups)]
             if all(name in kernel_link_names for name in (attach, *touch)):
                 hand.manifest_links = frozenset(names)
+                hand.kernel_names = {hand.attach_link: attach} | self._link_bodies(names)
                 hand.attach_link, hand.touch_links = attach, touch
                 continue
             unknown += [name for name in names if name not in kernel_link_names]
@@ -2377,14 +2621,21 @@ class SimAttachmentEvidenceTracker:
             if self._grasp_frozen
             else self._grasp_region(data, stamp_ns=stamp_ns)
         )
+        # In the kernel's naming: it matches contact links against its own collision links.
+        names = {k: v for hand in self._hands for k, v in hand.kernel_names.items()}
+        contact_links = tuple(names.get(link, link) for link in declaration.contact_links)
         try:
             # Re-validated, not model_copy'd: the grasp caps are far tighter than
             # PlaceRegion's, and a model_copy would skip them.
             return GraspDeclaration.model_validate(
-                {**declaration.model_dump(exclude={"region"}), "region": region}
+                {
+                    **declaration.model_dump(exclude={"region", "contact_links"}),
+                    "contact_links": contact_links,
+                    "region": region,
+                }
             )
         except ValueError:
-            return declaration.model_copy(update={"region": None})
+            return declaration.model_copy(update={"region": None, "contact_links": contact_links})
 
     def set_voxel_resolution(self, resolution_m: float) -> None:
         """Record the occupancy lattice's cell edge (from ``/openral/world_voxels``).

@@ -3033,6 +3033,9 @@ class SimSensorBridge:
         self._attachment_desired: list[Any] = []
         self._attachment_pending: list[Any] | None = None
         self._attachment_tracker: Any = None
+        # The tracker on the manifest's own twin MJCF whose names the kernel knows, when the
+        # HAL's scene model names its bodies otherwise (``_bind_attachment_tracker``).
+        self._attachment_twin_tracker: Any = None
         self._attachment_depth_frames_remaining: int = 0
         self._attachment_voxel_updates_remaining: int = 0
         self._attachment_expect_voxel_update: bool = False
@@ -4030,6 +4033,13 @@ class SimSensorBridge:
         subscriptions and the MuJoCo evidence tracker that drive real
         attach/release transitions — needs the API.
 
+        When the tracker cannot be armed for a twin that drives a gripper
+        (``twin_drives_gripper``: the tracker refuses the robot, or names links
+        the kernel's model lacks), the publisher and heartbeat are withdrawn:
+        the twin could carry a payload nobody measures, so the kernel's attached
+        check must fail closed rather than read "nothing carried" (#752). A twin
+        with no gripper keeps the heartbeat.
+
         ``attachment_heartbeat=False`` opens no publisher, no timer and no
         evidence tracker, whatever the HAL; the staging subscriptions stay, so a
         HAL with the attachment API still masks what the other authority attaches
@@ -4073,6 +4083,7 @@ class SimSensorBridge:
                 0.2,
                 self._publish_attachment_state,
             )
+            self._withdraw_if_unmeasured()
         update = getattr(self._hal, "update_attached_objects", None)
         read = getattr(self._hal, "read_attached_objects", None)
         if not callable(update) or not callable(read):
@@ -4124,29 +4135,20 @@ class SimSensorBridge:
         elif handles is not None and self._attachment_heartbeat:
             from openral_core.exceptions import ROSConfigError
 
-            from openral_hal._sim_attachment_evidence import SimAttachmentEvidenceTracker
+            from openral_hal._sim_attachment_evidence import (
+                SimAttachmentEvidenceTracker,
+                twin_drives_gripper,
+            )
 
             model, _data = handles
             try:
                 tracker = SimAttachmentEvidenceTracker(model, self._description, stable_ticks=1)
-                unknown = (
-                    []
-                    if self._attachment_kernel_link_names is None
-                    else tracker.bind_kernel_links(self._attachment_kernel_link_names)
-                )
+                unknown = self._bind_attachment_tracker(tracker)
                 if unknown:
                     # The robot can grasp, but every set naming these links would be rejected.
-                    # A fresh empty heartbeat would tell the kernel "nothing carried" while the
-                    # sim holds a payload: withdraw the stream instead, so the kernel's attached
-                    # check fails closed (attachment state unavailable) until this is fixed.
-                    if self._attachment_timer is not None:
-                        self._node.destroy_timer(self._attachment_timer)
-                        self._attachment_timer = None
-                    self._attachment_pub = None
-                    self._node.get_logger().error(
+                    self._withdraw_attachment_stream(
                         "automatic sim attachment evidence refused: attach/touch links "
-                        f"{unknown} are not in the safety kernel's collision model; "
-                        "/openral/attachment_state withdrawn, so the kernel fails closed"
+                        f"{unknown} are not in the safety kernel's collision model"
                     )
                     return
                 self._attachment_tracker = tracker
@@ -4159,13 +4161,111 @@ class SimSensorBridge:
                     self._setup_place_declaration()
                     self._setup_grasp_declaration()
                 else:
-                    self._node.get_logger().warning(
+                    # Never fed, the tracker would leave the heartbeat certifying "nothing
+                    # carried" while the twin's gripper can hold a payload.
+                    self._attachment_tracker = None
+                    self._withdraw_attachment_stream(
                         "automatic sim attachment evidence has no post-step observer"
                     )
             except ROSConfigError as exc:
-                self._node.get_logger().warning(
-                    f"automatic sim attachment evidence disabled: {exc}"
+                if not twin_drives_gripper(self._description):
+                    # No gripper in the twin: an empty set is the truth, keep heartbeating it.
+                    self._node.get_logger().warning(
+                        f"automatic sim attachment evidence disabled: {exc}"
+                    )
+                    return
+                # The twin can close a gripper on a payload but nothing measures it.
+                self._withdraw_attachment_stream(
+                    f"automatic sim attachment evidence refused: {exc}"
                 )
+
+    def _withdraw_if_unmeasured(self) -> None:
+        """Withdraw the heartbeat when the kernel checks payloads nothing here can measure.
+
+        The launch turns the kernel's attached check on for a MuJoCo scene (this HAL's
+        contact tracker measures grasps there) and off for an Isaac / SAPIEN one with no
+        tracking or vision leg. A scene whose declared backend says MuJoCo but whose HAL
+        has no MuJoCo handles (ManiSkill scenes historically declare ``mujoco``) would
+        otherwise heartbeat "nothing carried" to a kernel that trusts it (#754 review).
+        """
+        if (
+            self._attachment_kernel_checked
+            and getattr(self._hal, "mujoco_handles", lambda: None)() is None
+        ):
+            from openral_hal._sim_attachment_evidence import twin_drives_gripper
+
+            if twin_drives_gripper(self._description):
+                self._withdraw_attachment_stream(
+                    "the safety kernel checks attached payloads but this sim HAL has no "
+                    "MuJoCo contacts to measure grasps"
+                )
+
+    def _bind_attachment_tracker(self, tracker: Any) -> list[str]:
+        """Name ``tracker``'s hands as the kernel's collision model does; the links it can't.
+
+        ``bind_kernel_links`` first (manifest links, or this model's own bodies). A scene
+        model whose bodies neither the manifest nor the kernel names (LIBERO's robosuite
+        Panda, ``robot0_right_hand``, beside a kernel lowered from the menagerie twin's
+        ``hand``) then takes the names of the same robot's tracker on that twin MJCF
+        (``description.assets.mjcf``), when the twin binds and every attach frame agrees
+        (``SimAttachmentEvidenceTracker.adopt_kernel_names``).
+        """
+        names = self._attachment_kernel_link_names
+        if names is None:
+            return []
+        unknown: list[str] = tracker.bind_kernel_links(names)
+        if not unknown:
+            return []
+        twin = self._attachment_twin_tracker or self._kernel_twin_tracker(names)
+        if twin is not None and tracker.adopt_kernel_names(twin):
+            self._attachment_twin_tracker = twin
+            self._node.get_logger().info(
+                f"sim attachment evidence names this scene's hands as the kernel's twin: "
+                f"{list(tracker.attach_links)}"
+            )
+            return []
+        return unknown
+
+    def _kernel_twin_tracker(self, names: tuple[str, ...]) -> Any:
+        """A tracker on the manifest's twin MJCF bound to ``names``, or ``None`` (logged)."""
+        mjcf = self._description.assets.mjcf
+        if not mjcf:
+            return None
+        import mujoco
+        from openral_core.assets import AssetFetchError, AssetRefError, resolve_asset
+        from openral_core.exceptions import ROSConfigError
+
+        from openral_hal._sim_attachment_evidence import SimAttachmentEvidenceTracker
+
+        try:
+            path = resolve_asset(mjcf, "mjcf")
+            if path is None:
+                return None
+            model = mujoco.MjModel.from_xml_path(str(path))
+            twin = SimAttachmentEvidenceTracker(model, self._description, stable_ticks=1)
+        except (AssetFetchError, AssetRefError, ROSConfigError, ValueError) as exc:
+            self._node.get_logger().warning(f"sim attachment evidence: no kernel twin: {exc}")
+            return None
+        return None if twin.bind_kernel_links(names) else twin
+
+    def _withdraw_attachment_stream(self, reason: str) -> None:
+        """Stop the attachment heartbeat so the kernel's attached check fails closed.
+
+        A fresh empty set would tell the kernel "nothing carried" while the twin may hold
+        a payload nobody measures; with the stream gone the attachment state goes stale
+        and the kernel refuses motion until the cause is fixed (#752).
+        """
+        if self._attachment_timer is not None:
+            self._node.destroy_timer(self._attachment_timer)
+            self._attachment_timer = None
+        if self._attachment_pub is not None:
+            # Destroyed, not just dropped: rclpy keeps a node's publishers alive, and a
+            # silent one would still be advertised as an authority on the topic.
+            self._node.destroy_publisher(self._attachment_pub)
+            self._attachment_pub = None
+        self._node.get_logger().error(
+            f"{reason}; /openral/attachment_state withdrawn, so the kernel fails closed"
+        )
 
     def _setup_place_declaration(self) -> None:
         """Subscribe dispatch's place-phase declarations (ADR-0097).
@@ -4464,21 +4564,11 @@ class SimSensorBridge:
             # Named as setup named the one it replaces: on a model the kernel lowered from the
             # MJCF (the WidowX's `wx250s/*`), the constructor's manifest names are ones the
             # kernel rejects, and its never-acknowledged revision would stall the bridge.
-            unknown = (
-                []
-                if self._attachment_kernel_link_names is None
-                else fresh.bind_kernel_links(self._attachment_kernel_link_names)
-            )
+            unknown = self._bind_attachment_tracker(fresh)
             if unknown:  # same model and names as setup, which armed: not expected
-                # Withdraw the stream as setup does: an empty heartbeat would tell the kernel
-                # "nothing carried" while the sim may hold a payload.
-                if self._attachment_timer is not None:
-                    self._node.destroy_timer(self._attachment_timer)
-                    self._attachment_timer = None
-                self._attachment_pub = None
-                self._node.get_logger().error(
+                self._withdraw_attachment_stream(
                     f"sim attachment evidence disarmed at reset: links {unknown} are not in "
-                    "the safety kernel's collision model; /openral/attachment_state withdrawn"
+                    "the safety kernel's collision model"
                 )
             self._attachment_tracker = None if unknown else fresh
         update = getattr(self._hal, "update_attached_objects", None)

@@ -17,6 +17,7 @@ Skip/xfail policy — no faked passes:
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -170,7 +171,14 @@ def test_declared_srdf_parses(mf: Path) -> None:
     assert p is not None
     pairs = parse_srdf_disabled_pairs(str(p))
     assert isinstance(pairs, (list, set))
-    assert pairs, f"{mf.parent.name}: SRDF declared but yielded no disabled pairs"
+    # An SRDF may disable nothing (rizon_dual's only carries the rest pose; its ACM is the
+    # lowering's adjacent pairs), but rows it does declare must not be lost.
+    rows = {
+        frozenset({one, two})
+        for el in ET.parse(p).getroot().iter("disable_collisions")
+        if (one := el.get("link1")) and (two := el.get("link2")) and one != two
+    }
+    assert len(pairs) == len(rows), f"{mf.parent.name}: {len(rows)} rows, {len(pairs)} pairs"
 
 
 def test_urdf_less_robots_declare_no_urdf() -> None:

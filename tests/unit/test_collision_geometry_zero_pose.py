@@ -239,6 +239,11 @@ _UNADJUDICATED: dict[str, str] = {
     # is no declared rest pose (no SRDF) to check instead. Needs a measured
     # rest pose or a WG call on the resting contact, never an exemption.
     "so100_follower": "folded q = 0: the upper arm rests on the base (exact hulls touch)",
+    # q = 0 points both ViperX arms at each other across the table: in the gym-aloha MJCF
+    # the real meshes interpenetrate up to 45 mm there (left gripper_link into the right
+    # one), so the kernel trips correctly. The twin rests at keyframe 0 instead, checked
+    # below; a declared rest pose (an SRDF home) is the WG item that retires this entry.
+    "aloha_bimanual": "q = 0 crosses the two arms (meshes 45 mm deep); its rest is keyframe 0",
 }
 
 
@@ -488,3 +493,30 @@ def test_real_self_collision_still_trips(
     q = {j.name: 0.0 for j in robot.joints} | q_overrides
     tripped = {frozenset((a, b)) for a, b, _gap in _tripping_pairs(robot, q)}
     assert frozenset(pair) in tripped, f"{name}: {pair} no longer trips at {q_overrides}"
+
+
+def test_aloha_rests_clear_at_its_twins_keyframe() -> None:
+    """At gym-aloha's keyframe 0 (where its twin and HAL start) the kernel trips on nothing.
+
+    The pose is read from the MJCF's own ``<key qpos>`` through each manifest joint's
+    ``sim_joint_name``; the finger slide is read back as the [0, 1] opening the gripper's
+    ``urdf_curve`` maps (the inverse of its affine). Skips without gym-aloha.
+    """
+    mujoco = pytest.importorskip("mujoco")
+    pytest.importorskip("gym_aloha", reason="the ALOHA twin ships with gym-aloha")
+    from openral_core.assets import resolve_asset
+
+    robot = _load("aloha_bimanual")
+    assert robot.assets.mjcf is not None
+    model = mujoco.MjModel.from_xml_path(str(resolve_asset(robot.assets.mjcf, "mjcf")))
+    key = model.key_qpos[0]
+    q: dict[str, float] = {}
+    for joint in robot.joints:
+        assert joint.sim_joint_name is not None
+        jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint.sim_joint_name)
+        value = float(key[int(model.jnt_qposadr[jid])])
+        if joint.urdf_curve:
+            (u0, x0), (u1, x1) = joint.urdf_curve[0], joint.urdf_curve[-1]
+            value = u0 + (value - x0) * (u1 - u0) / (x1 - x0)
+        q[joint.name] = value
+    assert _tripping_pairs(robot, q) == []

@@ -36,7 +36,21 @@
 robot_id: "openamrobot_v2"
 
 runtime:
+  # Object tracking (#418, sim-only): the tracker owns /openral/attachment_state, so the
+  # kernel checks what the hand carries. Without it this Isaac scene measures no grasps
+  # and the launch turns the attached-payload check off (#752 review). Needs the octomap
+  # leg and the vision leg on the head_zed depth camera.
   enable_octomap: true
+  object_tracking: tracking
+  grounding_wait_s: 15.0
+  object_detector_locators: [omdet-turbo-locator]
+  vision_attachment:
+    enabled: true
+    camera: head_zed
+    rgb_topic: /openral/cameras/head_zed/image
+    rgb_camera_info_topic: /openral/cameras/head_zed/camera_info
+    depth_topic: /openral/cameras/head_zed/depth/image
+    depth_camera_info_topic: /openral/cameras/head_zed/depth/camera_info
 
 # Named navigation goals (DeployScene.nav_goals, ADR-0133), in the map frame Nav2 plans in.
 # With SLAM the map starts at the spawn, facing down the aisle: map +x is world +y, map +y

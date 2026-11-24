@@ -858,6 +858,7 @@ def _self_filter_params(
     *,
     base_dofs: list[int] | None = None,
     runtime_period_from_hal: bool = False,
+    kernel_link_name: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Parameters for ``openral_octomap_bridge``'s ``robot_self_filter``.
 
@@ -903,7 +904,9 @@ def _self_filter_params(
         params["joint_state_period_from_hal"] = True
         params["joint_state_period_s"] = 0.0
     hand_links = getattr(description, "hand_links", None)
-    hands = list(hand_links()) if callable(hand_links) else []
+    # In the collision model's naming (an MJCF-lowered model names links by body).
+    rename = kernel_link_name or {}
+    hands = [rename.get(h, h) for h in hand_links()] if callable(hand_links) else []
     if hands:  # omitted when empty: launch_ros rejects an empty list; the node defaults to none
         params["robot_mask_hand_links"] = hands
     if robot_mask_cameras:
@@ -1114,6 +1117,107 @@ class _ReachModel:
                 keep = v.argmax(axis=1)
                 best[:, j] = grid[keep]
         return float(max(values.max(), score(*self.extremes(best)).max()))
+
+
+def _mjcf_kernel_link_names(
+    description: RobotDescription,
+    model: Any,  # reason: mujoco.MjModel has no type stubs
+) -> dict[str, str]:
+    """Manifest link -> its name in a kernel model lowered from this MJCF (its body name).
+
+    ``lower_collision_params`` names each link after its MJCF body, so link-name
+    parameters written in the manifest's naming (``grasp_contact_links``,
+    ``tracked_grasp_extra_contact_links``) are refused by a kernel loaded from it: the
+    SO-100's ``gripper_finger`` / ``gripper_base`` are ``Moving_Jaw`` / ``Fixed_Jaw`` there.
+    Mapped as the collision lowering maps them (``_mjcf_link_bodies``).
+    """
+    from openral_safety.urdf_lowering import _mjcf_link_bodies
+
+    return {
+        link: str(model.body(body).name)
+        for link, body in _mjcf_link_bodies(description, model).items()
+    }
+
+
+def _refuse_tracking_on_a_renamed_kernel(
+    object_tracking: str, kernel_link_name: Mapping[str, str], robot: str
+) -> None:
+    """Refuse the object tracker beside a kernel that names the hand's links differently.
+
+    The tracker publishes grasp declarations and payloads in the manifest's links and their
+    URDF / TF frames. A kernel lowered from the MJCF names (and frames) them after its
+    bodies: a renamed link is refused (``link_not_allowed``), and renaming alone would place
+    each payload in the wrong frame (#754 review).
+
+    Raises:
+        ROSConfigError: tracking is on and ``kernel_link_name`` renames a link.
+
+    Example:
+        >>> _refuse_tracking_on_a_renamed_kernel("tracking", {"base": "base"}, "so101_follower")
+        >>> _refuse_tracking_on_a_renamed_kernel("off", {"hand": "panda_hand"}, "franka_panda")
+    """
+    renamed = sorted(k for k, v in kernel_link_name.items() if k != v)
+    if object_tracking != "off" and renamed:
+        from openral_core.exceptions import ROSConfigError
+
+        raise ROSConfigError(
+            f"object_tracking={object_tracking} needs a kernel model in the manifest's link "
+            f"naming, but {robot!r}'s is lowered from its MJCF, which renames {renamed[:4]}. "
+            "Give the manifest collision_geometry (`openral collision lower`) or run with "
+            "object_tracking off."
+        )
+
+
+def _refuse_twin_only_geometry_on_real(description: RobotDescription, hal_mode: str) -> None:
+    """Refuse a real deploy whose kernel collision model was fitted to a sim twin alone.
+
+    A manifest with ``collision_geometry`` but no ``assets.urdf`` has no vendor description
+    of the real robot behind that geometry: it was lowered from the MJCF twin (ALOHA's from
+    gym-aloha, whose arm placement and finger travel need not match a real cell). Sim may
+    use it; a real cell must be measured first (a URDF of the rig, then
+    ``openral collision lower``).
+
+    Raises:
+        ROSConfigError: ``hal_mode == "real"`` with such a manifest.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> d = RobotDescription.from_yaml("robots/aloha_bimanual/robot.yaml")
+        >>> _refuse_twin_only_geometry_on_real(d, "sim")
+    """
+    if hal_mode == "real" and description.collision_geometry and not description.assets.urdf:
+        from openral_core.exceptions import ROSConfigError
+
+        raise ROSConfigError(
+            f"{description.name}: its collision_geometry was fitted to the sim twin only (no "
+            "assets.urdf of the real robot), so the safety kernel would check a real cell "
+            "against the twin's layout. Measure the rig (a URDF, then `openral collision "
+            "lower`) before a real deploy."
+        )
+
+
+def _hand_links_in_kernel_naming(
+    params: Mapping[str, object], kernel_link_name: Mapping[str, str]
+) -> dict[str, object]:
+    """``params`` with the workspace-contact and exemption-provider hand links renamed.
+
+    Both rules name ``RobotDescription.hand_links()`` in the manifest's naming; a kernel
+    model lowered from the MJCF knows those links by their body names
+    (``_mjcf_kernel_link_names``) and refuses any other name.
+
+    Example:
+        >>> _hand_links_in_kernel_naming(
+        ...     {"workspace_contact_links": ["gripper_finger"], "other": 1},
+        ...     {"gripper_finger": "Moving_Jaw"},
+        ... )
+        {'workspace_contact_links': ['Moving_Jaw'], 'other': 1}
+    """
+    out = dict(params)
+    for key in ("workspace_contact_links", "exemption_provider_links"):
+        links = out.get(key)
+        if isinstance(links, list):
+            out[key] = [kernel_link_name.get(str(link), str(link)) for link in links]
+    return out
 
 
 def _mjcf_dof_mismatches(
@@ -1471,17 +1575,51 @@ def _build_estimated_depth_nodes(
     ]
 
 
-def _attached_collision_enabled(hal_mode: str, vision_attachment_enabled: bool) -> bool:
-    """Whether the kernel checks attached payloads: where something publishes attachments.
+#: Scene backends whose sim HAL exposes MuJoCo handles, so the HAL's contact tracker
+#: measures every grasp (``SimAttachmentEvidenceTracker``). A deploy with no scene runs the
+#: robot's MuJoCo twin.
+_MUJOCO_SCENE_BACKENDS: frozenset[str | None] = frozenset({None, "", "mujoco", "mujoco_mjx"})
 
-    Sim: the sim attachment manager. Real: only with the vision attachment leg
-    (``DeployRuntime.vision_attachment``), and then ALWAYS. The coupling rule is that the
-    vision leg on real turns the kernel's attached check on with it, never the leg alone:
-    the octomap bridge clears a published payload from the map and the robot self-filter
-    removes it from the cloud regardless of this flag, so a leg without the kernel check
-    would leave the payload checked by nothing (an invisible payload).
+
+def _attached_collision_enabled(
+    hal_mode: str,
+    vision_attachment_enabled: bool,
+    *,
+    object_tracking: str = "off",
+    scene_backend: str | None = None,
+) -> bool:
+    """Whether the kernel checks attached payloads: only where something measures them.
+
+    Real: only with the vision attachment leg (``DeployRuntime.vision_attachment``), and
+    then ALWAYS. The coupling rule is that the vision leg on real turns the kernel's
+    attached check on with it, never the leg alone: the octomap bridge clears a published
+    payload from the map and the robot self-filter removes it from the cloud regardless of
+    this flag, so a leg without the kernel check would leave the payload checked by
+    nothing (an invisible payload). Sim: with the vision leg, with object tracking (its
+    tracker publishes the attachments; tracking requires the vision leg anyway), or on a
+    MuJoCo scene, whose HAL measures grasps from contacts. An Isaac / SAPIEN / PyBullet /
+    CoppeliaSim scene with neither has no grasp evidence: its HAL could only heartbeat
+    "nothing carried", so the check stays off there, exactly as on real without the leg,
+    rather than certify motion against a payload set nobody measured (#752). The rest of
+    the kernel (self-collision, world voxels, envelope, E-stop) is unaffected.
+
+    Example:
+        >>> _attached_collision_enabled("sim", False)
+        True
+        >>> _attached_collision_enabled("sim", False, scene_backend="isaacsim")
+        False
+        >>> _attached_collision_enabled(
+        ...     "sim", True, object_tracking="tracking", scene_backend="isaacsim"
+        ... )
+        True
+        >>> _attached_collision_enabled("real", False)
+        False
     """
-    return hal_mode == "sim" or vision_attachment_enabled
+    if vision_attachment_enabled:
+        return True
+    if hal_mode != "sim":
+        return False
+    return object_tracking != "off" or scene_backend in _MUJOCO_SCENE_BACKENDS
 
 
 def _attached_collision_deadline_ms(hal_mode: str) -> float:
@@ -3532,9 +3670,14 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     margin_m = _effective_self_collision_margin(
         description, workcell.safety if workcell is not None else None
     )
+    _refuse_twin_only_geometry_on_real(description, hal_mode)
     collision_params: dict[str, object] = collision_params_from_description(
         description, margin_m=margin_m
     )
+    # Manifest link -> the kernel's link name. Identity unless the model is lowered from
+    # the MJCF, whose links are its body names (SO-100's `gripper_base` is `Fixed_Jaw`):
+    # link-name parameters handed to the kernel are translated through it.
+    kernel_link_name: dict[str, str] = {}
     if description.assets.mjcf:
         try:
             import mujoco
@@ -3573,6 +3716,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 )
             elif mjcf_params.get("self_collision_enabled"):
                 collision_params = mjcf_params
+                kernel_link_name = _mjcf_kernel_link_names(description, model)
             else:
                 print(
                     "[deploy_e2e] MJCF has no primitive collision geometry; "
@@ -3682,7 +3826,13 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             hal_mode, scene_backend, estimated_depth=bool(estimated_depth_camera)
         )
     )
-    if vision_attachment_enabled and not has_collision_capsules:
+    hal_file_params = _hal_file_params(hal_params_file, hal_node_name)
+    # The vision leg runs if either the launch argument or the HAL params file turns it on, and
+    # the coupling rule (never without the kernel's attached check) holds for both (#754 review).
+    vision_leg_runs = bool(vision_attachment_enabled) or (
+        hal_file_params.get("vision_attachment_enabled") is True
+    )
+    if vision_leg_runs and not has_collision_capsules:
         from openral_core.exceptions import ROSConfigError
 
         # Coupling rule: the vision leg never runs without the kernel's attached check, and
@@ -3692,8 +3842,19 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             "collision geometry, so the kernel could not check the payload the leg publishes."
         )
     kernel_checks_attachments = has_collision_capsules and _attached_collision_enabled(
-        hal_mode, vision_attachment_enabled
+        hal_mode,
+        vision_leg_runs,
+        object_tracking=object_tracking,
+        scene_backend=scene_backend,
     )
+    if has_collision_capsules and hal_mode == "sim" and not kernel_checks_attachments:
+        print(
+            f"[deploy_e2e] attached-payload check OFF: the {scene_backend} scene measures no "
+            "grasps (no MuJoCo contacts, object_tracking off, no vision attachment leg), so "
+            "a carried object is not collision-checked; enable object_tracking or the "
+            "vision leg to check it. Self-collision and world-voxel checks stay on.",
+            flush=True,
+        )
     if kernel_checks_attachments:
         kernel_params = {
             **kernel_params,
@@ -3717,7 +3878,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # the kernel resolves the same names either way and a GraspDeclaration can never name a
     # link the robot does not grip with. Omitted when empty (an empty list has no ROS
     # parameter type), and refused when the flag is on.
-    grasp_contact_links = list(description.grasp_contact_links())
+    grasp_contact_links = [
+        kernel_link_name.get(link, link) for link in description.grasp_contact_links()
+    ]
     if grasp_allowance_enabled and not grasp_contact_links:
         from openral_core.exceptions import ROSConfigError
 
@@ -3725,7 +3888,6 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             f"grasp_allowance_enabled is on but robot {description.name!r} declares no "
             "role: gripper joint, so there is no contact link the exemption could apply to."
         )
-    hal_file_params = _hal_file_params(hal_params_file, hal_node_name)
     # On real the HAL's vision target leg is the only grasp-region producer (in sim the HAL's
     # MuJoCo evidence tracker is), so the exemption must not arm without it — checked here as
     # well as in `openral deploy run`, so a bare `ros2 launch` cannot skip it.
@@ -3766,7 +3928,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # A fixed jaw that is a body link (the SO-101's `gripper`), K2 only: the legacy
     # allowlist above is unchanged. Omitted when empty (no ROS parameter type).
     if kernel_params["tracked_grasp_exemption_enabled"] and description.fixed_jaw_links():
-        kernel_params["tracked_grasp_extra_contact_links"] = list(description.fixed_jaw_links())
+        kernel_params["tracked_grasp_extra_contact_links"] = [
+            kernel_link_name.get(link, link) for link in description.fixed_jaw_links()
+        ]
     # How old a producer-measured grasp/place region may be and still exempt anything. The
     # regions are measured off the voxel map, so the bound is derived from that map's own
     # freshness deadline: twice it (the kernel's own default, passed explicitly so the
@@ -3794,6 +3958,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             wrist_links=workspace_contact_wrist_links,
         )
     )
+    kernel_params = _hand_links_in_kernel_naming(kernel_params, kernel_link_name)
+    _refuse_tracking_on_a_renamed_kernel(object_tracking, kernel_link_name, description.name)
     # Issue #418 K7: in `on`, workspace contact is tolerated only on explained cells; the
     # declared static geometry explains its own cells (the bridge's cells, one centre each).
     explained_requested = (
@@ -5336,6 +5502,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                                 ),
                                 base_dofs=base_dofs,
                                 runtime_period_from_hal=self_filter_period_from_hal,
+                                kernel_link_name=kernel_link_name,
                             ),
                             "trailing_sweep_s": _self_filter_trailing_sweep_s(hal_mode),
                             # A tracked payload's points are dropped whenever the tracker runs.

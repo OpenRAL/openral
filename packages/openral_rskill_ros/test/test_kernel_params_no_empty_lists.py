@@ -92,15 +92,72 @@ def test_the_self_filter_runs_wherever_the_cloud_shows_the_robot() -> None:
 
 
 def test_attached_collision_follows_the_attachment_producer() -> None:
-    """Sim has its attachment manager; real only with the vision leg, and then always."""
+    """On only where something measures grasps (#752).
+
+    A MuJoCo scene (or the bare twin) has the HAL's contact tracker; tracking and the vision
+    leg publish attachments on any backend; real only with the vision leg, and then always.
+    An Isaac / SAPIEN scene with neither has nothing measuring, so the check is off.
+    """
     module = _import_launch_module(_LAUNCH_FILE)
 
     assert module._attached_collision_enabled("sim", False) is True
     assert module._attached_collision_enabled("sim", True) is True
+    assert module._attached_collision_enabled("sim", False, scene_backend="mujoco") is True
+    assert module._attached_collision_enabled("sim", False, scene_backend="isaacsim") is False
+    assert module._attached_collision_enabled("sim", False, scene_backend="sapien") is False
+    assert module._attached_collision_enabled("sim", True, scene_backend="isaacsim") is True
+    assert (
+        module._attached_collision_enabled(
+            "sim", False, object_tracking="tracking", scene_backend="isaacsim"
+        )
+        is True
+    )
     assert module._attached_collision_enabled("real", False) is False
     assert module._attached_collision_enabled("real", True) is True
+    assert module._attached_collision_enabled("real", False, object_tracking="tracking") is False
     assert module._attached_collision_deadline_ms("sim") == 5000.0
     assert module._attached_collision_deadline_ms("real") == 1000.0
+
+
+def test_a_hal_file_vision_leg_turns_the_attached_check_on(tmp_path: Path) -> None:
+    """The vision leg a HAL params file enables couples to the attached check too (#754).
+
+    An Isaac scene with ``object_tracking`` off measures no grasps, so the check is off; a
+    params file that turns ``vision_attachment_enabled`` on (no launch argument) must turn
+    it back on, or the kernel would receive a payload it never checks.
+    """
+    scene = str(_REPO_ROOT / "scenes" / "deploy" / "isaac_franka_urdf.yaml")
+    off = _safety_kernel_params("franka_panda", deploy_config=scene)
+    assert off.get("attached_collision_enabled", False) is False
+    hal_file = tmp_path / "hal.yaml"
+    hal_file.write_text(
+        "openral_hal_test:\n  ros__parameters:\n    vision_attachment_enabled: true\n",
+        encoding="utf-8",
+    )
+    on = _safety_kernel_params("franka_panda", deploy_config=scene, hal_params_file=str(hal_file))
+    assert on["attached_collision_enabled"] is True
+
+
+def test_object_tracking_refuses_an_mjcf_named_kernel() -> None:
+    """The tracker speaks the manifest's links and frames; an MJCF-lowered kernel does not.
+
+    Franka's kernel is lowered from the menagerie MJCF, whose bodies rename the manifest's
+    links, so the tracker's grasp declarations and payloads would be refused or misplaced
+    (#754).
+    """
+    import mujoco
+    from openral_core import RobotDescription
+    from openral_core.assets import resolve_asset
+    from openral_core.exceptions import ROSConfigError
+
+    module = _import_launch_module(_LAUNCH_FILE)
+    desc = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / "franka_panda" / "robot.yaml"))
+    assert desc.assets.mjcf is not None
+    model = mujoco.MjModel.from_xml_path(str(resolve_asset(desc.assets.mjcf, "mjcf")))
+    names = module._mjcf_kernel_link_names(desc, model)
+    with pytest.raises(ROSConfigError, match="object_tracking=tracking needs a kernel"):
+        module._refuse_tracking_on_a_renamed_kernel("tracking", names, desc.name)
+    module._refuse_tracking_on_a_renamed_kernel("off", names, desc.name)
 
 
 def _make_launch_context(robot_yaml: Path) -> object:
@@ -148,7 +205,7 @@ def _make_launch_context(robot_yaml: Path) -> object:
     return ctx
 
 
-def _safety_kernel_params(robot_id: str) -> dict[str, object]:
+def _safety_kernel_params(robot_id: str, **extra: str) -> dict[str, object]:
     """Compose the launch graph and return the safety_kernel's evaluated params.
 
     Drives ``compose_runtime_graph`` end-to-end and resolves the
@@ -162,6 +219,7 @@ def _safety_kernel_params(robot_id: str) -> dict[str, object]:
 
     module = _import_launch_module(_LAUNCH_FILE)
     ctx = _make_launch_context(_REPO_ROOT / "robots" / robot_id / "robot.yaml")
+    ctx.launch_configurations.update(extra)  # type: ignore[attr-defined]  # reason: LaunchContext
     entities = module.compose_runtime_graph(ctx)
 
     # ``LifecycleNode.node_name`` only resolves after the action has

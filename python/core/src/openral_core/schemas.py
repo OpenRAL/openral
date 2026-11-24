@@ -1393,8 +1393,11 @@ class JointSpec(BaseModel):
         fixed_jaw_link: For a ``role: "gripper"`` joint whose fixed jaw is
             part of a body link rather than a finger link of its own (the
             SO-101: the fixed jaw is the ``gripper`` link, the joint's
-            ``parent_link``), the link that carries that fixed jaw. Read only
-            by the tracked grasp exemption (issue #418 K2, an exemption-provider
+            ``parent_link``), the link that carries that fixed jaw. Read by
+            the MuJoCo sim attachment evidence, which counts that link's body as
+            the gripper's second contact branch (it must be the joint's
+            ``parent_link``; #752), and by the tracked grasp exemption (issue
+            #418 K2, an exemption-provider
             rule since ADR-0121 step 3; the kernel's
             ``tracked_grasp_extra_contact_links``), which may then exempt it
             against the selected tracked object's box like the moving jaw;

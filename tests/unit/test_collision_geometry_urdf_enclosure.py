@@ -79,3 +79,20 @@ def test_every_urdf_mesh_vertex_is_inside_its_links_primitives(robot_id: str) ->
         worst[link] = float(escape.max())
     outside = {ln: round(d * 1000, 2) for ln, d in worst.items() if d > TOLERANCE_M}
     assert not outside, f"{robot_id}: URDF mesh outside its primitives (mm): {outside}"
+
+
+@pytest.mark.parametrize("robot_id", ["so100_follower", "so101_follower"])
+def test_a_twin_joint_name_the_urdf_lacks_still_checks_the_urdf(robot_id: str) -> None:
+    """The SO-ARMs' twin joint names (``Rotation``, ``1``) are not URDF joint names.
+
+    Looked up by ``sim_joint_name`` alone, every joint missed and the union silently fitted
+    the twin alone (#754 review). The manifest name is looked up too, so the URDF frames are
+    checked: both manifests leave ``wrist_roll`` / ``gripper`` at a zero origin the URDF
+    does not have, and the union refuses rather than mixing frames. (Neither robot lowers
+    through this path today: ``select_lowering`` picks ``sampling`` for both.)
+    """
+    manifest = REPO / "robots" / robot_id / "robot.yaml"
+    robot = RobotDescription.from_yaml(str(manifest))
+    links = {ln: 0 for j in robot.joints for ln in (j.parent_link, j.child_link)}
+    with pytest.raises(ROSConfigError, match="different one in"):
+        _urdf_link_meshes(robot, links, manifest.parent)

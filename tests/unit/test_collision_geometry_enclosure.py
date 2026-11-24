@@ -316,8 +316,8 @@ _UNCOVERED_TWIN_BODIES: dict[str, str] = {
 def test_every_twin_mesh_vertex_is_inside_its_links_primitives(robot_id: str) -> None:
     from openral_safety.urdf_lowering import (
         _mjcf_link_bodies,
-        mjcf_coupled_joints,
         select_lowering,
+        twin_coupled_joints,
     )
 
     manifest = REPO / "robots" / robot_id / "robot.yaml"
@@ -354,7 +354,7 @@ def test_every_twin_mesh_vertex_is_inside_its_links_primitives(robot_id: str) ->
     # MuJoCo's world body (id 0) is the scene, not the robot: a mobile base's
     # planar joints map the manifest's `world` root to it, and its floor plane
     # is no part of any link.
-    coupled = mjcf_coupled_joints(model)
+    coupled = twin_coupled_joints(robot, model)
     driven: dict[int, int] = {}  # MJCF joint the manifest drives -> its qpos address
     bodies_of: dict[str, list[int]] = {ln: [b] for ln, b in link_body.items() if b != 0}
     own_body = {

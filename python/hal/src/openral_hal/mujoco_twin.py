@@ -944,15 +944,20 @@ class MujocoTwinRollout:
         Checked on the gripper the command resolved to, so naming it by its joint cannot
         skip a convention its end effector declares.
 
+        A ``PASSTHROUGH`` gripper writes the slot verbatim in joint units, so it also
+        carries ``raw_joint_rad`` (the OpenAMR and Anvil OpenArm jaws).
+
         Raises:
             ROSConfigError: The owning end effector declares another convention.
         """
         parents = {j.name: j.parent_link for j in self.description.joints}
+        gripper = self.grippers_by_joint.get(joint or "")
+        raw = gripper is not None and gripper.write_mode is GripperWriteMode.PASSTHROUGH
         for ee in self.description.end_effectors:
             owns = ee.name == joint or (
                 ee.parent_link is not None and ee.parent_link == parents.get(joint or "")
             )
-            if owns:
+            if owns and not (raw and ee.command_convention == "raw_joint_rad"):
                 self._require_open_unit(ee.name)
 
     def _split_end_effector_grippers(
