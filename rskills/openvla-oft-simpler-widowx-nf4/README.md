@@ -72,7 +72,9 @@ with the default VLA groups.
 - **Input:** one 224×224 RGB frame (the SimplerEnv 3rd-view, surfaced as
   `camera1`) and the prompt
   `In: What action should the robot take to {instruction.lower()}?\nOut: `. No
-  proprioception (`use_proprio=False`).
+  proprioception (`use_proprio=False`). The manifest's `state_contract`
+  (`layout: simpler_widowx`, `dim: 8`) describes the state SimplerEnv sends,
+  not a model input: the adapter drops it.
 - **Output:** 256-bin discrete action tokens decoded to `[-1, 1]`, then
   de-normalized with the embedded `unnorm_key=bridge_orig` stats (BOUNDS_Q99):
   6 end-effector deltas (3 position + 3 rotation) rescaled, gripper passed

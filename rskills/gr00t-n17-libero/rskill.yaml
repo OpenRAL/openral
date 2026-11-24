@@ -10,7 +10,7 @@ role: "s1"
 kind: "vla"
 
 # In-process GR00T N1.7 (following a later amendment to the GR00T backend
-# design). lerobot 0.6.0 ships a native
+# design). lerobot ships a native
 # `GrootPolicy` (Cosmos-Reason2 / Qwen3-VL backbone) that loads under the
 # workspace's Python 3.12, so the openral `gr00t` adapter now runs the 3B model
 # in-process (NF4 backbone rewrite, ~5.2 GiB peak) instead of the retired
@@ -111,7 +111,7 @@ description: >
   NVIDIA Isaac GR00T N1.7 (3B, Cosmos-Reason2-2B VLM backbone) finetuned on
   the LIBERO benchmark, packaged for OpenRAL. 7-D LIBERO action space
   (delta end-effector 6-DoF + gripper) over two RGB views. Runs in-process via
-  lerobot 0.6.0's native GrootPolicy with an NF4-quantized backbone (~5.2 GiB
+  lerobot's native GrootPolicy with an NF4-quantized backbone (~5.2 GiB
   peak, fits an 8 GB GPU). Open Model License — commercial use
   permitted.
 
