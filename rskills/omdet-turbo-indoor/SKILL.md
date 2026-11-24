@@ -1,7 +1,7 @@
 ---
 name: omdet-turbo-indoor
 description: >-
-  S1 object detector. Capabilities: detect on kitchenware (cup, mug, bottle, bowl, plate, pot, pan, kettle, utensils), food (fruit, vegetables, bread, packaged food), appliances (fridge, microwave, oven, toaster, kettle, TV), electronics (laptop, monitor, keyboard, phone, remote, charger, cables), furniture (chair, sofa, table, desk, bed, shelf, cabinet, drawer), bathroom items (toilet, sink, towel, soap, toothbrush, mirror). OmDet-Turbo (Swin-tiny) real-time open-vocabulary detector, run in-process over a fixed curated indoor vocabulary (~230 household/kitchen/office/ manipulation classes). An unprompted background producer: publishes ObjectsMetadata to /openral/perception/objects every frame without reasoner prompting, giving the world model far more classes than the 80 COCO categories. Apache-2.0 weights from omlab/omdet-turbo-swin-tiny-hf. This is the zeroshot_hf detector engine. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
+  S1 object detector. Capabilities: detect on kitchenware (cup, mug, bottle, bowl, plate, pot, pan, kettle, utensils), food (fruit, vegetables, bread, packaged food), appliances (fridge, microwave, oven, toaster, kettle, TV), electronics (laptop, monitor, keyboard, phone, remote, charger, cables), furniture (chair, sofa, table, desk, bed, shelf, cabinet, drawer), bathroom items (toilet, sink, towel, soap, toothbrush, mirror). OmDet-Turbo (Swin-tiny) real-time open-vocabulary detector, run in-process over a fixed curated indoor vocabulary (~266 household/kitchen/office/ manipulation classes). An unprompted background producer: publishes ObjectsMetadata to /openral/perception/objects every frame without reasoner prompting, giving the world model far more classes than the 80 COCO categories. Apache-2.0 weights from omlab/omdet-turbo-swin-tiny-hf. This is the zeroshot_hf detector engine. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
 metadata:
   openral_rskill: true            # generated discovery view of an rSkill
   schema_version: 0.1
@@ -45,7 +45,7 @@ metadata:
 
 ## What it is
 
-An OpenRAL **object detector** (`role: s1`, `kind: detector`). OmDet-Turbo (Swin-tiny) real-time open-vocabulary detector, run in-process over a fixed curated indoor vocabulary (~230 household/kitchen/office/ manipulation classes). An unprompted background producer: publishes ObjectsMetadata to /openral/perception/objects every frame without reasoner prompting, giving the world model far more classes than the 80 COCO categories. Apache-2.0 weights from omlab/omdet-turbo-swin-tiny-hf. This is the zeroshot_hf detector engine.
+An OpenRAL **object detector** (`role: s1`, `kind: detector`). OmDet-Turbo (Swin-tiny) real-time open-vocabulary detector, run in-process over a fixed curated indoor vocabulary (~266 household/kitchen/office/ manipulation classes). An unprompted background producer: publishes ObjectsMetadata to /openral/perception/objects every frame without reasoner prompting, giving the world model far more classes than the 80 COCO categories. Apache-2.0 weights from omlab/omdet-turbo-swin-tiny-hf. This is the zeroshot_hf detector engine.
 
 ## Capabilities
 

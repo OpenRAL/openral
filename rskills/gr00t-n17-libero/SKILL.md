@@ -1,7 +1,7 @@
 ---
 name: gr00t-n17-libero
 description: >-
-  S1 Vision-Language-Action policy. Capabilities: pick, place, open, close on bowl, cup, drawer, object. NVIDIA Isaac GR00T N1.7 (3B, Cosmos-Reason2-2B VLM backbone) finetuned on the LIBERO benchmark, packaged for OpenRAL. 7-D LIBERO action space (delta end-effector 6-DoF + gripper) over two RGB views. Runs in-process via lerobot 0.6.0's native GrootPolicy with an NF4-quantized backbone (~5.2 GiB peak, fits an 8 GB GPU). Open Model License — commercial use permitted. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
+  S1 Vision-Language-Action policy. Capabilities: pick, place, open, close on bowl, cup, drawer, object. NVIDIA Isaac GR00T N1.7 (3B, Cosmos-Reason2-2B VLM backbone) finetuned on the LIBERO benchmark, packaged for OpenRAL. 7-D LIBERO action space (delta end-effector 6-DoF + gripper) over two RGB views. Runs in-process via lerobot's native GrootPolicy with an NF4-quantized backbone (~5.2 GiB peak, fits an 8 GB GPU). Open Model License — commercial use permitted. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
 metadata:
   openral_rskill: true            # generated discovery view of an rSkill
   schema_version: 0.1
@@ -39,7 +39,7 @@ metadata:
 
 ## What it is
 
-An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). NVIDIA Isaac GR00T N1.7 (3B, Cosmos-Reason2-2B VLM backbone) finetuned on the LIBERO benchmark, packaged for OpenRAL. 7-D LIBERO action space (delta end-effector 6-DoF + gripper) over two RGB views. Runs in-process via lerobot 0.6.0's native GrootPolicy with an NF4-quantized backbone (~5.2 GiB peak, fits an 8 GB GPU). Open Model License — commercial use permitted.
+An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). NVIDIA Isaac GR00T N1.7 (3B, Cosmos-Reason2-2B VLM backbone) finetuned on the LIBERO benchmark, packaged for OpenRAL. 7-D LIBERO action space (delta end-effector 6-DoF + gripper) over two RGB views. Runs in-process via lerobot's native GrootPolicy with an NF4-quantized backbone (~5.2 GiB peak, fits an 8 GB GPU). Open Model License — commercial use permitted.
 
 ## Capabilities
 
