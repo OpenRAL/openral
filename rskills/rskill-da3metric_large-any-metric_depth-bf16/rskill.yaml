@@ -1,0 +1,69 @@
+# rSkill manifest — Depth Anything 3 metric, large (kind: depth_estimator).
+#
+# The default model behind DeployRuntime.estimated_depth_camera: one RGB frame in,
+# canonical depth out, converted to metres by the depth provider with the camera's
+# own calibrated focal (metres = mean(fx, fy) * out / 300, the focal scaled to the
+# model's processing raster). The cloud it makes feeds the world-collision map on a
+# robot with no depth sensor. An ESTIMATE, not a measurement.
+
+schema_version: "0.2"
+name: "OpenRAL/rskill-da3metric_large-any-metric_depth-bf16"
+version: "0.1.0"
+license: "apache-2.0"
+kind: "depth_estimator"  # perception producer; emits a depth raster, no Action
+
+embodiment_tags: ["any"]  # explicit embodiment-agnostic wildcard
+
+sensors_required:
+  - modality: "rgb"
+    min_width: 320
+    min_height: 240
+
+actuators_required: []
+
+runtime: "pytorch"  # in-tree sidecar: tools/da3_depth_sidecar.py (depth-anything-3 venv)
+quantization:
+  dtype: "bf16"  # fp32 weights, bf16 autocast inside DepthAnything3.inference
+  backend: "pytorch"
+# MEASURED 2026-11-24, RTX 5070 Laptop 8 GB, tools/depth_estimator_sidecar.py, 12 frames each,
+# whole sidecar process (CUDA context included) from nvidia-smi; latency = the server's own
+# inference time, the first call (CUDA warm-up) excluded.
+# 1988 MiB at 640x480 and 1280x720 (process_res 504 caps the raster).
+min_vram_gb:
+  bf16: 2.0
+
+weights_uri: "hf://depth-anything/DA3METRIC-LARGE@4010e39f3634a45bc60553321fb49fb760bd594e"
+
+chunk_size: 1
+# Warm median 75.9 ms (p90 107.5) at 640x480, 63.6 ms (p90 72.3) at 1280x720; first call
+# 927 ms. Budget = the worst p90 with ~40% headroom.
+latency_budget:
+  per_chunk_ms: 150.0
+
+depth_estimator:
+  family: "da3"
+  output: "canonical_focal"
+  canonical_focal_px: 300.0  # upstream README: metric_depth = focal * net_output / 300
+  process_res: 504
+
+paper_url: "https://arxiv.org/abs/2511.10647"
+source_repo: "hf://depth-anything/DA3METRIC-LARGE"
+
+description: >
+  Depth Anything 3 metric (large) packaged as a monocular depth estimator. Estimates
+  canonical depth from one RGB frame; the depth provider turns it into metres with the
+  camera's own calibrated focal and back-projects it into the world-collision cloud on
+  a robot with no depth sensor. Wraps depth-anything/DA3METRIC-LARGE. An estimate,
+  not a measurement. Emits no actions and drives no actuators.
+
+actions:
+  - "detect"
+
+objects:
+  - "scene geometry"
+
+scenes:
+  - "tabletop"
+  - "kitchen"
+  - "indoor"
+  - "warehouse"

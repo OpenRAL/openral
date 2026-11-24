@@ -42,7 +42,7 @@ openral rskill new pi05-pick-cube
 Valid `--family` values: `act | smolvla | pi05 | xvla | diffusion`.
 `--license` is any `RSkillLicensePosture` value: `apache-2.0 | mit | bsd |
 permissive_research | nvidia_non_commercial | nvidia_open_model |
-rlwrld_non_commercial | cc-by-nc-sa-4.0 | flux_non_commercial | lfm1.0 | openmdw-1.1 | proprietary |
+rlwrld_non_commercial | cc-by-nc-sa-4.0 | flux_non_commercial | apple-amlr | lfm1.0 | openmdw-1.1 | proprietary |
 unknown`. `--embodiment-tag` must be a
 tag some `robots/*/robot.yaml` declares, or `any` / `custom` / `multi`
 (e.g. `so100_follower`, `franka_panda`, `aloha`). This writes `rskills/pi05-pick-cube/{rskill.yaml,README.md,eval/}`.
@@ -57,7 +57,7 @@ Open `rskills/<id>/rskill.yaml`. The fields that matter most to consumers
 | --- | --- |
 | `name` | `<owner>/rskill-<model>-<robot>-<task>-<quant>` — the Hub repo id (enforced; see [Naming convention](#naming-convention)). |
 | `license` | License **posture**; drives `commercial_use_allowed`. |
-| `role` | Optional — the slot the `kind` runs in (`RSKILL_ROLE_BY_KIND`), filled in when omitted: `s1` for `vla` / `wam` / `ros_action` / `ros_service` / `detector` / `segmenter`, `s2` for `vlm` / `reward` / `playbook`. A declared value that disagrees fails validation under `schema_version: "0.2"` (a `0.1` file is migrated with a warning); `s0` is never an rSkill (S0 ships as ros2_control controllers). |
+| `role` | Optional — the slot the `kind` runs in (`RSKILL_ROLE_BY_KIND`), filled in when omitted: `s1` for `vla` / `wam` / `ros_action` / `ros_service` / `detector` / `segmenter` / `depth_estimator`, `s2` for `vlm` / `reward` / `playbook`. A declared value that disagrees fails validation under `schema_version: "0.2"` (a `0.1` file is migrated with a warning); `s0` is never an rSkill (S0 ships as ros2_control controllers). |
 | `kind` | `vla` for a learnable policy; detector kinds also exist. |
 | `embodiment_tags` | Must match a robot's `RobotCapabilities.embodiment_tags`. |
 | `sensors_required` | Modality + `vla_feature_key` + min resolution per camera. |

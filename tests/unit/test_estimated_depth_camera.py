@@ -23,6 +23,7 @@ import yaml
 from openral_core import (
     DeployRuntime,
     RobotDescription,
+    RSkillManifest,
 )
 from openral_core.depth_extrinsic import (
     depth_extrinsic_problems,
@@ -36,15 +37,19 @@ from openral_core.schemas import (
     deploy_cloud_topic,
 )
 from openral_perception_ros.metric_depth import (
-    DA3_CANONICAL_FOCAL_PX,
     camera_info_problem,
-    da3_metric_depth,
+    metres_from_output,
     points_from_depth,
     scale_intrinsics,
 )
 from pydantic import ValidationError
 
 _REPO = Path(__file__).resolve().parents[2]
+_DA3 = RSkillManifest.from_yaml(
+    str(_REPO / "rskills/rskill-da3metric_large-any-metric_depth-bf16/rskill.yaml")
+).depth_estimator
+assert _DA3 is not None and _DA3.canonical_focal_px is not None
+_DA3_FOCAL = _DA3.canonical_focal_px
 _VSLAM = _REPO / "robots" / "panda_mobile_vslam" / "robot.yaml"
 
 
@@ -261,14 +266,56 @@ class TestMetricDepth:
         row = round(fy * point[1] / point[2] + cy)
         canonical = np.zeros((dh, dw), dtype=np.float32)
         # What DA3METRIC predicts for a surface at depth z, seen with focal f at its raster.
-        canonical[row, col] = point[2] * DA3_CANONICAL_FOCAL_PX / (0.5 * (fx + fy))
-        depth = da3_metric_depth(canonical, fx=fx, fy=fy)
+        canonical[row, col] = point[2] * _DA3_FOCAL / (0.5 * (fx + fy))
+        depth = metres_from_output(canonical, _DA3, fx=fx, fy=fy)
         (got,) = points_from_depth(depth, fx=fx, fy=fy, cx=cx, cy=cy, max_range_m=3.0)
         # Within one raster pixel of the true point at that range.
         assert np.allclose(got, point, atol=point[2] / fx)
 
+    def test_depth_pro2_metres_pass_through_and_sky_is_dropped(self) -> None:
+        """A ``metric`` skill (Depth Pro 2) is already metres; infinite sky is no return."""
+        pro = RSkillManifest.from_yaml(
+            str(_REPO / "rskills/rskill-depth_pro2_s-any-metric_depth-bf16/rskill.yaml")
+        ).depth_estimator
+        assert pro is not None
+        raw = np.array([[1.25, np.inf, -0.1]], dtype=np.float32)
+        assert metres_from_output(raw, pro, fx=900.0, fy=901.0).tolist() == [[1.25, 0.0, 0.0]]
+
+    def test_a_relative_skill_has_no_metric_reading(self) -> None:
+        """DA3-SMALL (``relative``) never becomes metres for the collision map."""
+        small = RSkillManifest.from_yaml(
+            str(_REPO / "rskills/rskill-da3_small-any-depth-bf16/rskill.yaml")
+        ).depth_estimator
+        assert small is not None
+        with pytest.raises(ValueError, match="no metric reading"):
+            metres_from_output(np.ones((2, 2)), small, fx=1.0, fy=1.0)
+
+    @pytest.mark.parametrize(
+        ("skill", "metric", "refusal"),
+        [
+            ("rskill-da3metric_large-any-metric_depth-bf16", True, None),
+            ("rskill-depth_pro2_s-any-metric_depth-bf16", True, None),
+            ("rskill-da3_small-any-depth-bf16", False, None),
+            ("rskill-da3_small-any-depth-bf16", True, "relative depth"),
+            ("rskill-depth_pro2_s-any-metric_depth-bf16", False, "predicts no camera"),
+            ("rskill-sam2_1-any-grasped_object_mask-bf16", True, "not a depth_estimator"),
+        ],
+    )
+    def test_the_provider_accepts_only_a_skill_that_fits_its_mode(
+        self, skill: str, metric: bool, refusal: str | None
+    ) -> None:
+        """Metric mode needs metres; the SLAM mode needs the model's own camera."""
+        depth_skill = pytest.importorskip("openral_perception_ros.depth_provider_node").depth_skill
+        manifest = str(_REPO / "rskills" / skill / "rskill.yaml")
+        if refusal is None:
+            _, repo = depth_skill(manifest, metric=metric)
+            assert "/" in repo and "@" not in repo
+        else:
+            with pytest.raises(ROSConfigError, match=refusal):
+                depth_skill(manifest, metric=metric)
+
     def test_far_and_invalid_returns_are_dropped(self) -> None:
-        depth = da3_metric_depth(np.array([[300.0, np.nan, 3000.0]]), fx=300.0, fy=300.0)
+        depth = metres_from_output(np.array([[300.0, np.nan, 3000.0]]), _DA3, fx=300.0, fy=300.0)
         assert depth.tolist() == [[300.0, 0.0, 3000.0]]
         pts = points_from_depth(depth / 100.0, fx=1.0, fy=1.0, cx=0.0, cy=0.0, max_range_m=5.0)
         assert pts[:, 2].tolist() == [3.0]

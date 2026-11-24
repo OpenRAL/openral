@@ -296,7 +296,7 @@ class LaunchInvocation:
     ``slam_mono_camera`` is set and the scene opts out (operator-run /
     shared sidecar)."""
     estimated_depth_camera: str | None
-    """The RGB camera whose DA3METRIC depth feeds the world-collision map, from
+    """The RGB camera whose estimated depth feeds the world-collision map, from
     ``DeployRuntime.estimated_depth_camera``. Forwarded as
     ``estimated_depth_camera:=<name>`` only when set; its cloud is octomap's input
     (``deploy_cloud_topic``)."""
@@ -1709,7 +1709,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             )
         _console.print(
             f"[yellow]World-collision depth for {estimated_depth_camera!r} is ESTIMATED "
-            "(DA3METRIC, monocular), not measured: it can misplace or miss surfaces.[/yellow]"
+            "(monocular depth_estimator rSkill), not measured: it can misplace or miss "
+            "surfaces.[/yellow]"
         )
     cloud_topic = deploy_cloud_topic(
         description.sensors,
@@ -2150,6 +2151,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         argv_template.append(f"octomap_cloud_topic:={octomap_cloud_topic}")
     if estimated_depth_camera:
         argv_template.append(f"estimated_depth_camera:={estimated_depth_camera}")
+    if rt is not None and rt.estimated_depth_rskill:
+        argv_template.append(f"estimated_depth_rskill:={rt.estimated_depth_rskill}")
     # Grasp-target exemption: forwarded only when enabled, so the off path's argv is
     # unchanged. The launch always passes the kernel the manifest's gripper links.
     if rt is not None and rt.grasp_allowance_enabled:

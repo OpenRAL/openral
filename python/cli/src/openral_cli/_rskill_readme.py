@@ -51,6 +51,7 @@ _LICENSE_MAP: dict[RSkillLicensePosture, tuple[str, str | None]] = {
     RSkillLicensePosture.NVIDIA_OPEN_MODEL: ("other", "nvidia-open-model-license"),
     RSkillLicensePosture.RLWRLD_NON_COMMERCIAL: ("other", "rlwrld-non-commercial"),
     RSkillLicensePosture.FLUX_NON_COMMERCIAL: ("other", "flux-non-commercial-license"),
+    RSkillLicensePosture.APPLE_AMLR: ("other", "apple-amlr"),
     RSkillLicensePosture.LFM_OPEN_1_0: ("other", "lfm1.0"),
     RSkillLicensePosture.OPENMDW_1_1: ("other", "openmdw-1.1"),
     RSkillLicensePosture.PROPRIETARY: ("other", "proprietary"),
@@ -66,11 +67,13 @@ _NON_QUANTIZED_DTYPES = frozenset({"fp32", "bf16", "fp16", "float32", "float16"}
 _KIND_PIPELINE_TAG: dict[str, str] = {
     "detector": "object-detection",
     "segmenter": "mask-generation",
+    "depth_estimator": "depth-estimation",
 }
 _KIND_EXTRA_TAGS: dict[str, list[str]] = {
     "vla": ["vision-language-action"],
     "detector": ["detector", "object-detection"],
     "segmenter": ["segmenter", "mask-generation", "promptable-segmentation"],
+    "depth_estimator": ["depth-estimator", "depth-estimation", "monocular-depth"],
 }
 
 

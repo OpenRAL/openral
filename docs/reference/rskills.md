@@ -142,6 +142,16 @@ Unlike LocateAnything it is not query-driven: the backend exposes `set_query`, b
 
 The `locate_in_view` tool description lists the continuous detectors' class counts + keywords, so the LLM's rule is mechanical: object within continuous coverage → read world state; outside it (novel / attribute-qualified) → `locate_in_view`.
 
+## Depth-estimator rSkills (`kind: depth_estimator`)
+
+One RGB frame in, one depth raster out. The depth provider (`openral_perception_ros/depth_provider_node.py`) loads the skill's manifest and converts its output to metres by its `DepthEstimatorContract`, always with the camera's own calibrated focal (ADR-0138). `tools/depth_estimator_sidecar.py --manifest <rskill.yaml>` starts the backend: `runtime: pytorch` runs the in-tree sidecar for the contract's `family`; any other runtime (`tensorrt`, OpenRAL Pro) resolves through the `openral.depth_estimator_backends` entry-point group.
+
+| Skill | Model | Output | Used by |
+|---|---|---|---|
+| [`rskill-da3metric_large-any-metric_depth-bf16`](https://github.com/OpenRAL/openral/tree/master/rskills/rskill-da3metric_large-any-metric_depth-bf16/) | Depth Anything 3 metric large, Apache-2.0 | `canonical_focal` (focal 300) | `DeployRuntime.estimated_depth_camera` (default) |
+| [`rskill-da3_small-any-depth-bf16`](https://github.com/OpenRAL/openral/tree/master/rskills/rskill-da3_small-any-depth-bf16/) | Depth Anything 3 small, Apache-2.0 | `relative` + its own K | `DeployRuntime.slam_mono_camera` |
+| [`rskill-depth_pro2_s-any-metric_depth-bf16`](https://github.com/OpenRAL/openral/tree/master/rskills/rskill-depth_pro2_s-any-metric_depth-bf16/) | Apple Depth Pro 2 S, research only (`apple-amlr`) | `metric` (given `f_px`) | `estimated_depth_rskill` alternative |
+
 ## Scene-VLM rSkills (`kind: vlm`)
 
 `kind: vlm` rSkills are vision/video-language models used as **S2 scene-understanding** components: they answer open-ended natural-language questions about the current camera view (task-progress / success verification — "has the robot grasped the mug?", "did we drop the object?", "is the task complete?") and emit **text**, never actions. They are not localizers — use a `kind: detector` rSkill (`locate_in_view`) to find *where* an object is. A scene VLM is reached through the read-only `query_scene` reasoner tool, never `ExecuteRskill` (so `role: s2`, excluded from the actuation palette by design).
@@ -220,5 +230,6 @@ See [CLAUDE.md §3](https://github.com/OpenRAL/openral/blob/master/CLAUDE.md) fo
 - **LocateAnything-3B** — NVIDIA License, non-commercial research/evaluation; private HF rSkill, requires `OPENRAL_ALLOW_NONCOMMERCIAL=1` and remote-code acceptance.
 - **π0 / π0.5 weights** — permissive research (not full Apache-2.0 for commercial deployment).
 - **RLDX-1** — RLWRLD non-commercial; runs as an out-of-process sidecar.
+- **Depth Pro 2** — Apple Machine Learning Research Model license (`apple-amlr`): research only, revocable; requires `OPENRAL_ALLOW_NONCOMMERCIAL=1`. Weights are pulled from `apple/DepthPro2-*`, never re-hosted.
 
 Provenance signing via sigstore is planned but not yet implemented — the loader emits an `rskill.unverified_provenance` warning on every load. Set `OPENRAL_REQUIRE_SIGNED_SKILLS=1` to fail closed.

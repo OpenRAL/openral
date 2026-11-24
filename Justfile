@@ -517,7 +517,7 @@ install-isaac-ros:
     @echo '    Then bring up the visual backend on a has_vision_slam robot:'
     @echo '      openral deploy sim --config <scene> --enable-slam   # slam_backend resolves to visual'
     @echo '    For mono-only robots also start the depth sidecar:'
-    @echo '      python tools/da3_depth_sidecar.py --port 5771'
+    @echo '      python tools/depth_estimator_sidecar.py --port 5771 --manifest rskills/rskill-da3_small-any-depth-bf16/rskill.yaml'
 
 # ROS 2 test — scope must match `ros2-build`'s `--packages-select` set,
 # otherwise colcon discovers (and tries to test) packages it never built
