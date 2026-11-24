@@ -214,3 +214,53 @@ def test_pose_reset_keeps_the_jaws_in_step(
     for side in ("left", "right"):
         assert got[f"{side}_gripper_finger_joint1"] == pytest.approx(0.5, abs=1e-6)
         assert got[f"{side}_gripper_finger_joint2"] == pytest.approx(0.025, abs=1e-6)
+
+
+def test_a_slot_group_applies_its_arm_row_and_an_end_effector_named_gripper(
+    connected: tuple[RobotDescription, MujocoArmHAL],
+) -> None:
+    """One tick of two slots: every joint but the left gripper, and ``left_gripper`` by name.
+
+    ``compose_slot_group`` places a gripper slot by joint name; the twin resolves the
+    end-effector name (the one the safety kernel bounds) to ``left_gripper_finger_joint1``
+    first, so the tick applies both the arm row and the gripper instead of refusing.
+    """
+    import time
+
+    desc, hal = connected
+    names = [j.name for j in desc.joints]
+    row = [*_TORSO, *_LEFT_ARM, 1.0, 0.0, *_RIGHT_ARM, 1.0, 0.0]
+    rest = [n for n in names if n != "left_gripper_finger_joint1"]
+    tick_s = hal.sim_dt_per_tick_s
+    assert tick_s is not None and tick_s > 0.0
+    for tick in range(1, round(_SETTLE_SIM_S / tick_s) + 1):
+        hal.send_action(
+            Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                horizon=1,
+                joint_targets=[row],
+                joint_names=rest,
+                tick_index=tick,
+                tick_group_size=2,
+                stamp_ns=time.time_ns(),
+            )
+        )
+        hal.send_action(
+            Action(
+                control_mode=ControlMode.GRIPPER_POSITION,
+                horizon=1,
+                gripper=[0.0],
+                ee_name="left_gripper",
+                tick_index=tick,
+                tick_group_size=2,
+                stamp_ns=time.time_ns(),
+            )
+        )
+    got = dict(zip(hal.read_state().name, hal.read_state().position, strict=True))
+    for joint, commanded in zip(desc.joints, row, strict=True):
+        want = commanded
+        if joint.name.startswith("left_gripper_finger"):
+            want = 0.0  # the gripper slot closed the left hand
+        elif joint.name.endswith("finger_joint2"):
+            want = 0.05  # the right follower slide, open, in metres
+        assert abs(got[joint.name] - want) < _tolerance(joint), f"{joint.name}: {got[joint.name]}"

@@ -6018,6 +6018,82 @@ ScaleOutcome run_witnessed_support_chunk(const std::string& node_name, bool supp
 
 }  // namespace
 
+TEST_F(LifecycleKernelTest, AWitnessKeepsItsStateWhenItsRecordMovesSlot) {
+  // Review finding (#750): witness re-arming compared keys slot by slot, so a record that moved
+  // slot when another payload joined ahead of it re-armed a witness the kernel had already seen
+  // (a bimanual partial grasp). The key is looked up across every previous slot: only a key new
+  // to the set arms. The control: a fresh attestation stamp for the same object does re-arm.
+  LogCapture logs;
+  auto params = with_param(place_declaration_params(), "attached_max_objects",
+                           rclcpp::ParameterValue(std::int64_t{2}));
+  params = with_param(params, "attached_max_primitives", rclcpp::ParameterValue(std::int64_t{2}));
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides(params);
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_witness_slot_move", opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  ASSERT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  rclcpp::Node helper("kernel_witness_slot_move_helper");
+  rclcpp::QoS reliable(rclcpp::KeepLast(1));
+  reliable.reliable();
+  auto ws_pub = helper.create_publisher<openral_msgs::msg::WorldStateStamped>(
+      "/openral/world_state_fast", reliable);
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  const auto payload = [](const std::string& id, double x, std::int64_t witness_stamp) {
+    openral_msgs::msg::AttachedCollisionObject obj;
+    obj.object_id = id;
+    obj.attach_link = "link0";
+    obj.pose_in_link.position.x = x;
+    obj.pose_in_link.orientation.w = 1.0;
+    openral_msgs::msg::AttachedCollisionPrimitive prim;
+    prim.shape_type = openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_BOX;
+    prim.shape_dimensions = {0.02, 0.02, 0.02};
+    prim.pose_in_object.orientation.w = 1.0;
+    obj.primitives.push_back(prim);
+    if (witness_stamp > 0) {
+      obj.support_contact_valid = true;
+      obj.support_contact.support_id = "sim:counter_main";
+      obj.support_contact.contact_point_in_object.x = -0.02;
+      obj.support_contact.contact_normal_in_object.x = 1.0;
+      obj.support_contact.patch_radius_m = 0.02;
+      obj.support_contact.max_penetration_m = 0.002;
+      obj.support_contact.evidence_kind = "sim_geom_distance";
+      obj.support_contact.stamp_ns = witness_stamp;
+    }
+    return obj;
+  };
+  const auto publish = [&](std::uint64_t revision,
+                           const std::vector<openral_msgs::msg::AttachedCollisionObject>& objs) {
+    openral_msgs::msg::WorldStateStamped ws;
+    ws.attachment_revision = revision;
+    ws.attached_objects = objs;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+    while (std::chrono::steady_clock::now() < until) {
+      ws.attachment_stamp_ns = node->now().nanoseconds();
+      ws_pub->publish(ws);
+      exec.spin_some(std::chrono::milliseconds(10));
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  };
+  const std::string armed = "safety.support_witness_armed object=sim:obj_main";
+  publish(1, {payload("sim:obj_main", 0.30, 1)});
+  ASSERT_EQ(logs.count(armed), 1U) << logs.joined();
+  // Another payload joins AHEAD of it: the witnessed record moves from slot 0 to slot 1.
+  publish(2, {payload("sim:obj_other", 0.05, 0), payload("sim:obj_main", 0.30, 1)});
+  EXPECT_EQ(logs.count(armed), 1U) << "a moved record re-armed its witness: " << logs.joined();
+  // The control: a fresh attestation (new stamp) of the same object arms again.
+  publish(3, {payload("sim:obj_other", 0.05, 0), payload("sim:obj_main", 0.30, 2)});
+  EXPECT_EQ(logs.count(armed), 2U) << logs.joined();
+  exec.remove_node(node->get_node_base_interface());
+  rclcpp_lifecycle::State active(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "ac");
+  node->on_deactivate(active);
+  node->on_cleanup(inactive);
+}
+
 TEST_F(LifecycleKernelTest, APayloadOnItsWitnessedSupportStillLeavesTheChunkScaled) {
   // Review finding: ANY exempted pair (the support witness, the embedded
   // attach-time residue, the grasp target) reads a negative distance, and the

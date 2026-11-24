@@ -21,7 +21,8 @@ What is proved:
   never a candidate for the other, and a record that moves to another slot of the
   published set is published unchanged, its support witness included. This checks the
   tracker's snapshot only; how the safety kernel keeps a moved record's witness (it
-  keys re-arming across slots) is tested in the kernel suite.
+  keys re-arming across slots) is
+  `AWitnessKeepsItsStateWhenItsRecordMovesSlot` in the kernel's lifecycle suite.
 
 No mocks (CLAUDE.md §1.11): when ``mujoco`` is missing or a twin's upstream files
 cannot be fetched (``AssetFetchError``), that case skips with the reason.
