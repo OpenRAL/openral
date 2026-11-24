@@ -753,6 +753,11 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
 
         def __init__(self) -> None:  # noqa: PLR0915 # reason: one declare per node parameter
             super().__init__("openral_object_tracker")
+            from openral_observability import refuse_unavailable_transitions
+
+            # A change_state the current state lacks (a repeated deactivate) is refused,
+            # not raised out of the executor (rclpy kills the node on an unknown id).
+            refuse_unavailable_transitions(self)
             self.declare_parameter("robot_yaml", "")
             self.declare_parameter("mode", "tracking")
             # Fail closed: unset means a real cell (the kernel defaults the same way). Only an

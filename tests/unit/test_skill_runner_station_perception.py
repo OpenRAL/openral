@@ -126,6 +126,33 @@ def test_activate_then_deactivate_a_real_lifecycle_peer(graph: tuple[Any, Any, A
     assert _state(peer) == "inactive"
 
 
+def test_an_activation_raced_by_another_activator_is_accepted(
+    graph: tuple[Any, Any, Any],
+) -> None:
+    """Another activator wins between the runner's state read and its ACTIVATE: no failure.
+
+    The peer answers ``get_state`` with ``inactive`` and then activates (standing in for a
+    reasoner ``lifecycle_transition`` or a launch handler), so the runner's ACTIVATE is
+    redundant. rclpy refuses it (``success: false``); the runner re-reads the state, finds
+    the goal reached and returns instead of raising ``ROSPerceptionStale``.
+    """
+    runner, peer, _ = graph
+    serve = peer._service_get_state.callback
+    raced: list[bool] = []
+
+    def get_state_then_activate(req: Any, resp: Any) -> Any:
+        resp = serve(req, resp)
+        if not raced:
+            raced.append(True)
+            peer.trigger_activate()
+        return resp
+
+    peer._service_get_state.callback = get_state_then_activate
+    runner._station_transition("station_peer", active=True, raise_on_failure=True)
+    assert raced == [True]
+    assert _state(peer) == "active"
+
+
 def test_a_failed_activation_refuses_the_goal_naming_the_node(
     graph: tuple[Any, Any, Any],
 ) -> None:

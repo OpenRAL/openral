@@ -49,6 +49,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
 
 from openral_safety_watchdog._param_guard import install_parameter_guard
+from openral_safety_watchdog.transition_guard import refuse_unavailable_transitions
 
 __all__ = [
     "DEFAULT_CHECK_PERIOD_S",
@@ -169,6 +170,9 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
     def __init__(self, node_name: str = "openral_deadman_watchdog") -> None:
         """Declare parameters; resources open at on_configure."""
         super().__init__(node_name)
+        # An id-only change_state the current state lacks (a repeated activate) is refused,
+        # not raised out of the executor (rclpy would kill this E-stop source).
+        refuse_unavailable_transitions(self)
         self.declare_parameter("safe_action_deadline_s", DEFAULT_SAFE_ACTION_DEADLINE_S)
         self.declare_parameter("check_period_s", DEFAULT_CHECK_PERIOD_S)
         self.declare_parameter("arm_status_topic", "")

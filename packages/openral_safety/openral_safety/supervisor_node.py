@@ -45,7 +45,7 @@ import time
 from typing import Any, Protocol
 
 import rclpy
-from openral_observability import safety_span, semconv
+from openral_observability import refuse_unavailable_transitions, safety_span, semconv
 from rclpy.executors import ExternalShutdownException
 from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
 
@@ -174,6 +174,9 @@ class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rcl
         from rcl_interfaces.msg import ParameterDescriptor
 
         super().__init__(node_name)
+        # An id-only change_state the current state lacks (a repeated activate) is refused,
+        # not raised out of the executor (rclpy would kill this E-stop source).
+        refuse_unavailable_transitions(self)
         self.declare_parameter("robot_name", "robot")
         # n_dof default -1 keeps the node usable in tests that do not
         # care about envelope enforcement (just verifying pass-through).

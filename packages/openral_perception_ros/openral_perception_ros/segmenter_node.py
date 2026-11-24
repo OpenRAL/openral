@@ -490,6 +490,11 @@ def _node_class() -> type:
         def __init__(self, node_name: str = "openral_segmenter") -> None:
             """Declare parameters; no ROS entities and no model yet."""
             super().__init__(node_name)
+            from openral_observability import refuse_unavailable_transitions
+
+            # A change_state the current state lacks (a repeated deactivate) is refused,
+            # not raised out of the executor (rclpy kills the node on an unknown id).
+            refuse_unavailable_transitions(self)
             self.declare_parameter("cameras", [""])
             self.declare_parameter("camera_infos", [""])
             self.declare_parameter("primary_camera", "default")

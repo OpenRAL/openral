@@ -375,6 +375,11 @@ def main(args: Any = None) -> None:
 
         def __init__(self) -> None:
             super().__init__("openral_ros_image_detector")
+            from openral_observability import refuse_unavailable_transitions
+
+            # A change_state the current state lacks (a repeated deactivate) is refused,
+            # not raised out of the executor (rclpy kills the node on an unknown id).
+            refuse_unavailable_transitions(self)
             self.declare_parameter("cameras", [""])
             self.declare_parameter("camera_infos", [""])
             self.declare_parameter("primary_camera", "default")

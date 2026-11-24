@@ -617,6 +617,11 @@ if _ROS2_AVAILABLE:
         ) -> None:
             """Store references; opens no ROS resources until ``on_configure``."""
             super().__init__(node_name)
+            from openral_observability import refuse_unavailable_transitions
+
+            # A change_state the current state lacks (a repeated deactivate) is refused,
+            # not raised out of the executor (rclpy kills the node on an unknown id).
+            refuse_unavailable_transitions(self)
             # 0 = the manifest's `action_spec.control_freq_hz` (issue #303: the
             # HAL derives every trajectory deadline from that field, so the
             # runner must tick at the same value), else 30 Hz.
@@ -3723,8 +3728,16 @@ if _ROS2_AVAILABLE:
                 req.transition.id = (
                     Transition.TRANSITION_ACTIVATE if active else Transition.TRANSITION_DEACTIVATE
                 )
+                # The label makes rclpy refuse a transition made redundant by another
+                # activator since the read above, instead of raising in the target.
+                req.transition.label = "activate" if active else "deactivate"
                 reply = call(change_client, req)
                 ok = reply is not None and bool(reply.success)
+                if not ok:
+                    # Refused or unanswered: the state, not the reply, decides (another
+                    # activator may have reached the goal first).
+                    state = call(get_client, GetState.Request())
+                    ok = state is not None and int(state.current_state.id) == goal_id
             if ok:
                 self.get_logger().info(
                     f"rskill_runner.station_perception_transition node={node} state={target}"
