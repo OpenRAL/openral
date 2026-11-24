@@ -986,7 +986,8 @@ class SimAttachedHAL:
                 mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, j)
                 for j in range(int(model.njnt))
             ]
-            self._joint_index = normalized_joint_index([n for n in names if n])
+            # Unnamed joints keep their slot (as ""): the index is the MJCF joint id.
+            self._joint_index = normalized_joint_index([n or "" for n in names])
         for joint in self.description.joints:
             sim_name = joint.sim_joint_name or joint.name
             jid = self._joint_index.get(sim_name, -1)
