@@ -27,6 +27,15 @@ depth back-projected (clipped at ``max_range_m``) as a ``PointCloud2`` for octom
 frame with no ``CameraInfo`` yet, or a reply from another model, is dropped and logged —
 never converted with a guessed focal.
 
+**Lifecycle.** A managed lifecycle node (``openral_depth_provider`` /
+``openral_estimated_depth_provider`` in ``deploy_e2e``, autostarted ACTIVE): configure
+reads the parameters, refuses an unusable rSkill (:func:`depth_skill`) and opens the
+sidecar socket and topics; only ACTIVE forwards frames and publishes; deactivate stops
+both (the sidecar is its own process and keeps its weights, so no VRAM is freed);
+cleanup / shutdown close the socket. The estimated-depth provider is a reasoner
+lifecycle peer: while it is inactive octomap gets no cloud and the kernel's world-voxel
+deadline stops motion.
+
 Live bring-up is operator-run (needs the sidecar venv + a GPU); the pure
 conversion half is covered by `tests/unit/test_depth_convert.py` and the
 ``metric_depth`` doctests.
@@ -79,12 +88,16 @@ def depth_skill(manifest_path: str, *, metric: bool) -> tuple[DepthEstimatorCont
 
 
 def main(args: Any = None) -> None:
-    """Entry point: init ROS, spin the depth-provider node, shut down cleanly."""
+    """Entry point: init ROS, spin the depth-provider lifecycle node, shut down cleanly.
+
+    The node starts UNCONFIGURED; ``deploy_e2e.launch.py`` drives it to ACTIVE
+    (``tools/lifecycle_autostart.py``).
+    """
     import numpy as np
     import rclpy
     from openral_observability.rclpy_spin import spin_node_until_shutdown
     from PIL import Image as PILImage
-    from rclpy.node import Node
+    from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
     from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
     from sensor_msgs.msg import CameraInfo, Image
 
@@ -106,11 +119,17 @@ def main(args: Any = None) -> None:
         scale_intrinsics,
     )
 
-    class DepthProviderNode(Node):  # type: ignore[misc]  # reason: rclpy.node.Node is untyped
-        """Subscribe RGB, call the depth_estimator sidecar, publish 32FC1 depth + CameraInfo."""
+    class DepthProviderNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy is untyped
+        """Subscribe RGB, call the depth_estimator sidecar, publish 32FC1 depth + CameraInfo.
 
-        def __init__(self) -> None:
-            super().__init__("openral_depth_provider")
+        A managed lifecycle node: ``configure`` reads the parameters, checks the manifest
+        and opens the sidecar socket, publishers and subscriptions; only an ACTIVE node
+        calls the sidecar and publishes; ``deactivate`` stops both (the sidecar keeps its
+        weights: it is its own process); ``cleanup`` / ``shutdown`` close the socket.
+        """
+
+        def __init__(self, node_name: str = "openral_depth_provider") -> None:
+            super().__init__(node_name)
             # No topic defaults (ADR-0108): deploy_e2e passes the mono camera's
             # ``camera_topic(<name>, IMAGE / DEPTH_IMAGE / DEPTH_CAMERA_INFO)``.
             self.declare_parameter("image_topic", "")
@@ -132,6 +151,32 @@ def main(args: Any = None) -> None:
             # The image is already rectified (image_pipeline's image_rect shares the raw
             # stream's CameraInfo): take its pinhole from CameraInfo.p, never undistort.
             self.declare_parameter("rgb_image_rectified", False)
+            self._active = False
+            self._sock: Any = None
+            self._entities: list[tuple[str, Any]] = []
+            self._points_pub: Any = None
+            # rclpy (Jazzy) raises out of the executor on a change_state request whose
+            # transition id the current state lacks (a second ``deactivate``: the reasoner
+            # sends ids, not labels), killing the node. Answer it ``success: false``.
+            change_state = self._service_change_state
+            serve = change_state.callback
+
+            def guarded(req: Any, resp: Any) -> Any:
+                try:
+                    return serve(req, resp)
+                except RuntimeError as exc:  # rclpy's RCLError; its type is private
+                    self.get_logger().warning(f"change_state refused: {exc}")
+                    resp.success = False
+                    return resp
+
+            change_state.callback = guarded
+
+        # ── lifecycle ────────────────────────────────────────────────────────
+
+        def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
+            """Read parameters, check the rSkill, open the socket, topics (idle until ACTIVE)."""
+            del state
+            from openral_core import ROSConfigError
 
             gp = self.get_parameter
             missing = [
@@ -139,15 +184,17 @@ def main(args: Any = None) -> None:
                 for p in ("image_topic", "depth_topic", "camera_info_topic", "manifest_path")
                 if not gp(p).get_parameter_value().string_value
             ]
-            if missing:
-                from openral_core import ROSConfigError
-
-                raise ROSConfigError(f"depth_provider: {missing} empty")
             rgb_info_topic = gp("rgb_camera_info_topic").get_parameter_value().string_value
             self._metric = bool(rgb_info_topic)
-            self._contract, self._model = depth_skill(
-                gp("manifest_path").get_parameter_value().string_value, metric=self._metric
-            )
+            try:
+                if missing:
+                    raise ROSConfigError(f"depth_provider: {missing} empty")
+                self._contract, self._model = depth_skill(
+                    gp("manifest_path").get_parameter_value().string_value, metric=self._metric
+                )
+            except ROSConfigError as exc:
+                self.get_logger().error(f"configure refused: {exc}")
+                return TransitionCallbackReturn.FAILURE
             self._depth_frame = gp("depth_frame_id").get_parameter_value().string_value
             self._max_range_m = gp("max_range_m").get_parameter_value().double_value
             self._rgb_info: Any = None
@@ -182,14 +229,16 @@ def main(args: Any = None) -> None:
             self._info_pub = self.create_publisher(
                 CameraInfo, gp("camera_info_topic").get_parameter_value().string_value, info_qos
             )
-            self._sub = self.create_subscription(
+            self._entities = [("pub", self._depth_pub), ("pub", self._info_pub)]
+            sub = self.create_subscription(
                 Image,
                 gp("image_topic").get_parameter_value().string_value,
-                self._on_image,
+                self._on_frame,
                 sensor_qos,
             )
+            self._entities.append(("sub", sub))
             points_topic = gp("points_topic").get_parameter_value().string_value
-            self._points_pub: Any = None
+            self._points_pub = None
             if self._metric:
                 from sensor_msgs.msg import PointCloud2
 
@@ -201,11 +250,13 @@ def main(args: Any = None) -> None:
                     reliability=QoSReliabilityPolicy.BEST_EFFORT,
                     durability=QoSDurabilityPolicy.VOLATILE,
                 )
-                self._info_sub = self.create_subscription(
+                info_sub = self.create_subscription(
                     CameraInfo, rgb_info_topic, self._on_rgb_info, rgb_info_qos
                 )
+                self._entities.append(("sub", info_sub))
                 if points_topic:
                     self._points_pub = self.create_publisher(PointCloud2, points_topic, sensor_qos)
+                    self._entities.append(("pub", self._points_pub))
                 self.get_logger().warning(
                     f"depth_provider: ESTIMATED metric depth ({self._model}) from "
                     f"{rgb_info_topic}"
@@ -217,6 +268,43 @@ def main(args: Any = None) -> None:
                 f"-> {gp('depth_topic').get_parameter_value().string_value} "
                 f"(sidecar {host}:{port} serving {self._model}, frame {self._depth_frame!r})"
             )
+            return TransitionCallbackReturn.SUCCESS
+
+        def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
+            """Start calling the sidecar and publishing."""
+            self._active = True
+            self.get_logger().info("depth_provider: active (estimating + publishing)")
+            return super().on_activate(state)
+
+        def on_deactivate(self, state: LifecycleState) -> TransitionCallbackReturn:
+            """Stop calling the sidecar and publishing (its weights stay in the sidecar)."""
+            self._active = False
+            self.get_logger().warning(
+                "depth_provider: deactivated; no depth"
+                + (" or cloud" if self._points_pub is not None else "")
+                + " is published until it is activated again"
+            )
+            return super().on_deactivate(state)
+
+        def on_cleanup(self, state: LifecycleState) -> TransitionCallbackReturn:
+            """Close the socket; destroy the publishers and subscriptions."""
+            del state
+            self._active = False
+            if self._sock is not None:
+                self._sock.close(linger=0)
+                self._sock = None
+            for kind, entity in self._entities:
+                if kind == "pub":
+                    self.destroy_publisher(entity)
+                else:
+                    self.destroy_subscription(entity)
+            self._entities = []
+            self._points_pub = None
+            return TransitionCallbackReturn.SUCCESS
+
+        def on_shutdown(self, state: LifecycleState) -> TransitionCallbackReturn:
+            """Same teardown as cleanup, from any state."""
+            return self.on_cleanup(state)
 
         def _on_rgb_info(self, msg: Any) -> None:
             self._rgb_info = msg
@@ -309,6 +397,10 @@ def main(args: Any = None) -> None:
             sock.setsockopt(zmq.LINGER, 0)
             sock.connect(self._endpoint)
             return sock
+
+        def _on_frame(self, msg: Any) -> None:
+            if self._active:  # configured or deactivated: no sidecar call, nothing out
+                self._on_image(msg)
 
         def _on_image(self, msg: Any) -> None:
             import msgpack

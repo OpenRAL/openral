@@ -297,9 +297,10 @@ class LaunchInvocation:
     shared sidecar)."""
     estimated_depth_camera: str | None
     """The RGB camera whose estimated depth feeds the world-collision map, from
-    ``DeployRuntime.estimated_depth_camera``. Forwarded as
-    ``estimated_depth_camera:=<name>`` only when set; its cloud is octomap's input
-    (``deploy_cloud_topic``)."""
+    ``DeployRuntime.estimated_depth_camera``, or the one qualifying RGB camera when an
+    explicit ``enable_octomap`` has no other cloud (``auto_estimated_depth_camera``).
+    Forwarded as ``estimated_depth_camera:=<name>`` only when set; its cloud is octomap's
+    input (``deploy_cloud_topic``)."""
     enable_nav2: bool
     """Opt-in for the Nav2 navigation stack. Set by
     ``openral deploy sim --enable-nav2``; forwarded into the launch as
@@ -1690,17 +1691,50 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # a pinned driver topic, the sim bridge's back-projected depth camera, or, on real
     # hardware, any depth / point-cloud sensor (whose driver topic must then be pinned).
     # ``--enable-octomap`` / ``--no-enable-octomap`` overrides.
+    # The scene the launch reads (``deploy_config`` when given), as the launch resolves it.
+    estimated_scene_sensors = launched_scene.sensors if launched_scene is not None else []
+    estimated_sensors = merge_deploy_sensors(description.sensors, estimated_scene_sensors)
+    estimated_scene_names = {s.name for s in estimated_scene_sensors}
+    calibrated_intrinsics = {o.name for o in overlays or () if o.intrinsics is not None}
+    if (
+        enable_octomap
+        and not estimated_depth_camera
+        and not deploy_cloud_topic(
+            description.sensors, pinned=octomap_cloud_topic, hal_mode=hal_mode
+        )
+    ):
+        # Octomap asked for explicitly, and nothing gives it a cloud: estimate one from the
+        # one RGB camera that qualifies (refused when none or several do).
+        from openral_core.depth_extrinsic import (
+            DEFAULT_ESTIMATED_DEPTH_RSKILL,
+            auto_estimated_depth_camera,
+        )
+
+        estimated_depth_camera = auto_estimated_depth_camera(
+            estimated_sensors,
+            hal_mode=hal_mode,
+            scene_sensor_names=estimated_scene_names,
+            calibrated_intrinsics=calibrated_intrinsics,
+        )
+        skill = (rt.estimated_depth_rskill if rt is not None else None) or (
+            DEFAULT_ESTIMATED_DEPTH_RSKILL
+        )
+        _console.print(
+            f"[bold yellow]WARN: runtime.enable_octomap is true and nothing publishes a cloud: "
+            f"the world map (the safety kernel's world voxels) is fed an ESTIMATED depth "
+            f"cloud from camera {estimated_depth_camera!r} ({skill}), auto-picked as the one "
+            "RGB camera that qualifies. Set runtime.estimated_depth_camera to make it explicit, "
+            "or pin runtime.octomap_cloud_topic to a measured cloud.[/bold yellow]"
+        )
     if estimated_depth_camera:
         from openral_core.depth_extrinsic import resolve_estimated_depth_camera
 
-        # The scene the launch reads (``deploy_config`` when given), as the launch resolves it.
-        estimated_scene_sensors = launched_scene.sensors if launched_scene is not None else []
         problems = resolve_estimated_depth_camera(
-            merge_deploy_sensors(description.sensors, estimated_scene_sensors),
+            estimated_sensors,
             estimated_depth_camera,
             hal_mode=hal_mode,
-            scene_sensor_names={s.name for s in estimated_scene_sensors},
-            calibrated_intrinsics={o.name for o in overlays or () if o.intrinsics is not None},
+            scene_sensor_names=estimated_scene_names,
+            calibrated_intrinsics=calibrated_intrinsics,
         ).problems
         if problems:
             raise ROSConfigError(

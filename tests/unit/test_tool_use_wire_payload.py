@@ -153,6 +153,23 @@ def test_lifecycle_transition_offers_exactly_the_palette_node_ids() -> None:
         assert ("every call is refused" in str(tool["description"])) is (enum is None)
 
 
+def test_lifecycle_transition_explains_the_estimated_depth_peer() -> None:
+    """What deactivating the estimated-depth provider does reaches the LLM, only when listed."""
+    for ids, listed in (
+        ({"openral_estimated_depth_provider", "openral_ros_image_detector"}, True),
+        ({"openral_ros_image_detector"}, False),
+    ):
+        palette = ToolPalette(execute_rskill_ids=frozenset(), node_ids=frozenset(ids))
+        (tool,) = (
+            t
+            for t in _tool_palette_to_anthropic_tools(palette)
+            if t["name"] == "lifecycle_transition"
+        )
+        text = str(tool["description"])
+        assert ("openral_estimated_depth_provider:" in text) is listed
+        assert ("stops arm motion until you activate it again" in text) is listed
+
+
 def test_lifecycle_transition_outside_palette_node_ids_is_refused() -> None:
     """A model-chosen lifecycle target not in ``node_ids`` (e.g. the deadman) is refused."""
     palette = ToolPalette(

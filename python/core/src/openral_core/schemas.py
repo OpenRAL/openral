@@ -13395,6 +13395,14 @@ class DeployRuntime(BaseModel):
     enable_slam: bool | None = None
     enable_nav2: bool | None = None
     enable_octomap: bool | None = None
+    """The octomap world-collision leg (``octomap_server`` -> ``/openral/world_voxels``).
+    ``None`` = auto: on when the deploy has a cloud to map (``deploy_cloud_topic``: a
+    pinned ``octomap_cloud_topic``, ``estimated_depth_camera``'s cloud, the sim bridge's
+    depth camera) or, on real hardware, any depth / point-cloud sensor; an RGB camera alone
+    never auto-enables it. ``true`` with no such cloud and no ``estimated_depth_camera``
+    estimates depth from the one RGB camera that qualifies
+    (``openral_core.depth_extrinsic.auto_estimated_depth_camera``; refused when none or
+    several do). ``false`` = off."""
     enable_octomap_kernel_check: bool | None = None
     octomap_cloud_topic: str | None = None
     """The ``PointCloud2`` topic ``octomap_server`` consumes as ``cloud_in``,
@@ -13626,7 +13634,12 @@ class DeployRuntime(BaseModel):
     (``depth_extrinsic_problems``).
     Mutually exclusive with ``octomap_cloud_topic`` (which cloud is mapped must be one
     answer) and with ``slam_mono_camera`` naming the same camera (both would publish
-    its depth topics). ``None`` = off. Backward-compatible addition."""
+    its depth topics). ``None`` = off, unless ``enable_octomap: true`` (explicit) has no
+    other cloud (no pinned ``octomap_cloud_topic``, no measured depth sensor's): then the
+    deploy picks the one RGB camera this accepts
+    (``openral_core.depth_extrinsic.auto_estimated_depth_camera``), with a loud WARN, and
+    refuses naming them when several qualify (set this to choose) or each camera's problems
+    when none does. Backward-compatible addition."""
     estimated_depth_rskill: str | None = None
     """The ``kind: depth_estimator`` rSkill that estimates ``estimated_depth_camera``'s
     depth: a directory under ``rskills/`` or a path to its ``rskill.yaml``. ``None`` =
@@ -13634,7 +13647,8 @@ class DeployRuntime(BaseModel):
     Its contract's ``output`` must be ``metric`` or ``canonical_focal``; a ``relative``
     model is refused by the depth provider. A non-commercial skill (Depth Pro 2,
     ``apple-amlr``) needs ``OPENRAL_ALLOW_NONCOMMERCIAL=1``. Only valid with
-    ``estimated_depth_camera`` set. Backward-compatible addition."""
+    ``estimated_depth_camera`` set, or with ``enable_octomap: true`` (the camera the deploy
+    then picks, ``auto_estimated_depth_camera``). Backward-compatible addition."""
     vision_attachment: VisionAttachmentRuntime | None = None
     """The vision attachment leg (segmenter + the HAL's attachment-evidence bridge).
     ``None`` or ``enabled: false`` = not launched, and the graph is exactly as without
@@ -13896,8 +13910,17 @@ class DeployRuntime(BaseModel):
                 raise ValueError(
                     f"slam_stereo_cameras must name two distinct cameras, got {left!r} twice"
                 )
-        if self.estimated_depth_rskill is not None and self.estimated_depth_camera is None:
-            raise ValueError("estimated_depth_rskill needs estimated_depth_camera set")
+        if (
+            self.estimated_depth_rskill is not None
+            and self.estimated_depth_camera is None
+            and self.enable_octomap is not True
+        ):
+            # With ``enable_octomap: true`` the deploy may pick the camera itself
+            # (``auto_estimated_depth_camera``); this rSkill then estimates its depth.
+            raise ValueError(
+                "estimated_depth_rskill needs estimated_depth_camera set (or "
+                "enable_octomap: true, which picks the camera)"
+            )
         if self.estimated_depth_camera is not None:
             if not self.estimated_depth_camera:
                 raise ValueError("estimated_depth_camera must be a non-empty camera name")
