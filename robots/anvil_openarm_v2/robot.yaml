@@ -139,6 +139,7 @@ joints:
   # ── Left gripper (1 revolute) — drives finger_joint1; the outer
   # finger follows via the MJCF <equality> constraint ────────────────
   - name: "left_gripper"
+    sim_joint_name: "openarm_left_finger_joint1"
     origin_xyz: [-0.00143, -0.018, -0.068]
     origin_rpy: [0, 0, 0]
     axis_xyz: [-1, 0, 0]
@@ -246,6 +247,7 @@ joints:
     sim_joint_name: "openarm_right_joint7"
   # ── Right gripper (1 revolute) — mirrored negative range vs left ──
   - name: "right_gripper"
+    sim_joint_name: "openarm_right_finger_joint1"
     origin_xyz: [-0.00143, 0.018, -0.068]
     origin_rpy: [0, 0, 0]
     axis_xyz: [-1, 0, 0]

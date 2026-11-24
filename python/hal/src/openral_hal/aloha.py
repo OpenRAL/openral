@@ -178,7 +178,7 @@ def _aloha_joint_specs() -> list[JointSpec]:
             start=1,
         ):
             child_link = f"{side}_link{idx}"
-            parent_link = "world" if suffix == "waist" else prev_link
+            parent_link = f"vx300s_{side}" if suffix == "waist" else prev_link
             specs.append(
                 JointSpec(
                     name=f"{side}_{suffix}",
@@ -190,6 +190,7 @@ def _aloha_joint_specs() -> list[JointSpec]:
                     velocity_limit=3.0,
                     effort_limit=4.0,
                     actuator_kind="servo",
+                    sim_joint_name=f"vx300s_{side}/{suffix}",
                 )
             )
             prev_link = child_link
@@ -205,6 +206,8 @@ def _aloha_joint_specs() -> list[JointSpec]:
                 velocity_limit=0.5,
                 effort_limit=4.0,
                 actuator_kind="servo",
+                # The twin's driven finger; the other finger is its mirror actuator.
+                sim_joint_name=f"vx300s_{side}/left_finger",
             )
         )
     return specs

@@ -867,6 +867,37 @@ def test_mobile_twin_arm_and_twist_tick_is_one_control_period(
         )
 
 
+def test_a_passthrough_jaw_still_refuses_a_convention_it_cannot_write(
+    openamr: OpenAMRobotV2MujocoHAL,
+) -> None:
+    """A PASSTHROUGH jaw writes joint units: ``raw_joint_rad`` only, never a width."""
+    twin = openamr._twin
+    ees = [
+        ee.model_copy(update={"command_convention": "width_meters"})
+        if ee.name == "left_gripper"
+        else ee
+        for ee in twin.description.end_effectors
+    ]
+    twin.description = twin.description.model_copy(update={"end_effectors": ees})
+    names = [j.name for j in openamr.description.joints]
+    state = openamr.read_state()
+    ticked = {
+        "tick_index": openamr.last_committed_tick + 1,
+        "tick_group_size": 2,
+        "runner_session_id": 0x683,
+    }
+    grip = Action(
+        control_mode=ControlMode.GRIPPER_POSITION,
+        horizon=1,
+        gripper=[state.position[names.index("left_gripper")]],
+        ee_name="left_gripper",
+        **ticked,
+    )
+    with pytest.raises(ROSConfigError, match="writes only"):
+        openamr.send_action(grip)
+        openamr.send_action(_twist(0.0, **ticked))
+
+
 # ── One time base, one clock, one estop; a refused connect leaves nothing (#683) ──
 
 
