@@ -33,6 +33,7 @@ assets:
 joints:
   # 14-DoF: 2 arms × (6 revolute joints + 1 gripper)
   - name: "left_waist"
+    sim_joint_name: "vx300s_left/waist"
     joint_type: "revolute"
     parent_link: "world"
     child_link: "left_link1"
@@ -42,6 +43,7 @@ joints:
     effort_limit: 4.0
     actuator_kind: "servo"
   - name: "left_shoulder"
+    sim_joint_name: "vx300s_left/shoulder"
     joint_type: "revolute"
     parent_link: "left_link1"
     child_link: "left_link2"
@@ -51,6 +53,7 @@ joints:
     effort_limit: 4.0
     actuator_kind: "servo"
   - name: "left_elbow"
+    sim_joint_name: "vx300s_left/elbow"
     joint_type: "revolute"
     parent_link: "left_link2"
     child_link: "left_link3"
@@ -60,6 +63,7 @@ joints:
     effort_limit: 4.0
     actuator_kind: "servo"
   - name: "left_forearm_roll"
+    sim_joint_name: "vx300s_left/forearm_roll"
     joint_type: "revolute"
     parent_link: "left_link3"
     child_link: "left_link4"
@@ -69,6 +73,7 @@ joints:
     effort_limit: 4.0
     actuator_kind: "servo"
   - name: "left_wrist_angle"
+    sim_joint_name: "vx300s_left/wrist_angle"
     joint_type: "revolute"
     parent_link: "left_link4"
     child_link: "left_link5"
@@ -78,6 +83,7 @@ joints:
     effort_limit: 4.0
     actuator_kind: "servo"
   - name: "left_wrist_rotate"
+    sim_joint_name: "vx300s_left/wrist_rotate"
     joint_type: "revolute"
     parent_link: "left_link5"
     child_link: "left_link6"
@@ -87,6 +93,7 @@ joints:
     effort_limit: 4.0
     actuator_kind: "servo"
   - name: "left_gripper"
+    sim_joint_name: "vx300s_left/left_finger"
     joint_type: "prismatic"
     parent_link: "left_link6"
     child_link: "left_finger"
@@ -97,6 +104,7 @@ joints:
     actuator_kind: "servo"
     role: "gripper"
   - name: "right_waist"
+    sim_joint_name: "vx300s_right/waist"
     joint_type: "revolute"
     parent_link: "world"
     child_link: "right_link1"
@@ -106,6 +114,7 @@ joints:
     effort_limit: 4.0
     actuator_kind: "servo"
   - name: "right_shoulder"
+    sim_joint_name: "vx300s_right/shoulder"
     joint_type: "revolute"
     parent_link: "right_link1"
     child_link: "right_link2"
@@ -115,6 +124,7 @@ joints:
     effort_limit: 4.0
     actuator_kind: "servo"
   - name: "right_elbow"
+    sim_joint_name: "vx300s_right/elbow"
     joint_type: "revolute"
     parent_link: "right_link2"
     child_link: "right_link3"
@@ -124,6 +134,7 @@ joints:
     effort_limit: 4.0
     actuator_kind: "servo"
   - name: "right_forearm_roll"
+    sim_joint_name: "vx300s_right/forearm_roll"
     joint_type: "revolute"
     parent_link: "right_link3"
     child_link: "right_link4"
@@ -133,6 +144,7 @@ joints:
     effort_limit: 4.0
     actuator_kind: "servo"
   - name: "right_wrist_angle"
+    sim_joint_name: "vx300s_right/wrist_angle"
     joint_type: "revolute"
     parent_link: "right_link4"
     child_link: "right_link5"
@@ -142,6 +154,7 @@ joints:
     effort_limit: 4.0
     actuator_kind: "servo"
   - name: "right_wrist_rotate"
+    sim_joint_name: "vx300s_right/wrist_rotate"
     joint_type: "revolute"
     parent_link: "right_link5"
     child_link: "right_link6"
@@ -151,6 +164,7 @@ joints:
     effort_limit: 4.0
     actuator_kind: "servo"
   - name: "right_gripper"
+    sim_joint_name: "vx300s_right/left_finger"
     joint_type: "prismatic"
     parent_link: "right_link6"
     child_link: "right_finger"

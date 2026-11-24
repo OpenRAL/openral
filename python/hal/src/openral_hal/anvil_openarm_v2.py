@@ -194,6 +194,8 @@ def _anvil_gripper_joint_spec(
         has_torque_sensor=False,
         actuator_kind="servo",
         role="gripper",
+        # The driven jaw's MJCF joint: the sim attachment evidence resolves the jaw by it.
+        sim_joint_name=f"openarm_{side}_finger_joint1",
     )
 
 

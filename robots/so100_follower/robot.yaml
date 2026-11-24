@@ -25,6 +25,7 @@ assets:
 
 joints:
   - name: "shoulder_pan"
+    sim_joint_name: "Rotation"
     origin_xyz: [0, -0.0452, 0.0165]
     origin_rpy: [1.57079, 0, 0]
     axis_xyz: [0, 1, 0]
@@ -36,6 +37,7 @@ joints:
     effort_limit: 5.0
     actuator_kind: "servo"
   - name: "shoulder_lift"
+    sim_joint_name: "Pitch"
     origin_xyz: [0, 0.1025, 0.0306]
     origin_rpy: [-1.8, 0, 0]
     axis_xyz: [1, 0, 0]
@@ -47,6 +49,7 @@ joints:
     effort_limit: 5.0
     actuator_kind: "servo"
   - name: "elbow_flex"
+    sim_joint_name: "Elbow"
     origin_xyz: [0, 0.11257, 0.028]
     origin_rpy: [1.57079, 0, 0]
     axis_xyz: [1, 0, 0]
@@ -58,6 +61,7 @@ joints:
     effort_limit: 5.0
     actuator_kind: "servo"
   - name: "wrist_flex"
+    sim_joint_name: "Wrist_Pitch"
     origin_xyz: [0, 0.0052, 0.1349]
     origin_rpy: [-1, 0, 0]
     axis_xyz: [1, 0, 0]
@@ -69,6 +73,7 @@ joints:
     effort_limit: 3.0
     actuator_kind: "servo"
   - name: "wrist_roll"
+    sim_joint_name: "Wrist_Roll"
     joint_type: "revolute"
     parent_link: "wrist"
     child_link: "gripper_base"
@@ -78,6 +83,7 @@ joints:
     effort_limit: 3.0
     actuator_kind: "servo"
   - name: "gripper"
+    sim_joint_name: "Jaw"
     joint_type: "revolute"
     parent_link: "gripper_base"
     child_link: "gripper_finger"
@@ -93,6 +99,11 @@ joints:
     effort_limit: 1.5
     actuator_kind: "servo"
     role: "gripper"
+    # The fixed jaw is the `gripper_base` link (this joint's parent_link; the twin's
+    # `Fixed_Jaw` body), as on the SO-101. The sim attachment evidence counts it as the
+    # gripper's second contact branch (#752); the tracked grasp exemption may exempt it
+    # like the moving jaw (issue #418 K2, hazard OT-6). Safety-WG review pending.
+    fixed_jaw_link: "gripper_base"
 
 end_effectors:
   - name: "gripper"

@@ -190,6 +190,7 @@ def _aloha_joint_specs() -> list[JointSpec]:
                     velocity_limit=3.0,
                     effort_limit=4.0,
                     actuator_kind="servo",
+                    sim_joint_name=f"vx300s_{side}/{suffix}",
                 )
             )
             prev_link = child_link
@@ -205,6 +206,8 @@ def _aloha_joint_specs() -> list[JointSpec]:
                 velocity_limit=0.5,
                 effort_limit=4.0,
                 actuator_kind="servo",
+                # The twin's driven finger; the other finger is its mirror actuator.
+                sim_joint_name=f"vx300s_{side}/left_finger",
             )
         )
     return specs

@@ -34,9 +34,9 @@ sim attachment tracker and its grasp-region producer, ``openral_msgs`` on a real
 
 What is not, and why:
 
-* **The twin.** The OpenArm twin has two gripper parent links and the tracker refuses it
-  (``_sim_attachment_evidence.py``, "needs one gripper parent link"); Franka's attach link
-  does not resolve. So the twin is the same kind of rig
+* **The twin.** A rig of its own, so the kernel's collision model can be the twin's
+  geometry exactly (the robot twins' tracker coverage is
+  ``tests/sim/test_twin_attachment_evidence_hal_mujoco.py``). The twin is the same kind of rig
   ``tests/unit/test_sim_place_phase_witness.py`` uses — a compiled MJCF behind the
   ``SimRollout`` boundary recorder
   ``tests/unit/fakes/fake_sim_env.FakeSimEnv`` — reshaped into a 2-DoF gantry (``slide_x``,

@@ -30,6 +30,7 @@ from openral_core import (
     SupportContactWitness,
 )
 from openral_core.exceptions import ROSConfigError
+from openral_core.kinematics import transform_from_xyz_rpy
 from openral_core.schemas import (
     DOP_AXES,
     MAX_TIGHT_HULL_VERTICES,
@@ -435,6 +436,8 @@ def _joint_gripper_hands(
             # A fixed hand link (the R1 Pro's ``*_gripper_link``) is no joint's child; the
             # MJCF body of the same name is that link's frame.
             attach_body_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, attach_link))
+            if attach_body_id < 0:
+                attach_body_id = _fixed_attach_body(model, description, attach_link, jaw_bodies)
         # The attach frame must carry the jaws: a same-named body elsewhere would pose the
         # payload in the wrong frame.
         if attach_body_id < 0 or not all(
@@ -442,6 +445,17 @@ def _joint_gripper_hands(
             for body in jaw_bodies
         ):
             raise ROSConfigError(f"Cannot resolve sim body for attach link {attach_link!r}.")
+        body_groups = _jaw_body_groups(model, jaw_bodies)
+        # A fixed jaw on the hand body itself (the SO-ARM's ``fixed_jaw_link``) is that
+        # gripper's second contact branch: only the attach body, never its subtree, which
+        # holds the moving jaw. The kernel already exempts the attach link for the payload.
+        for fixed_jaw in {j.fixed_jaw_link for j in jaws if j.fixed_jaw_link}:
+            if fixed_jaw != attach_link or attach_body_id in body_groups:
+                raise ROSConfigError(
+                    f"fixed_jaw_link {fixed_jaw!r} must be the jaws' parent link "
+                    f"{attach_link!r} for sim contact evidence."
+                )
+            body_groups[attach_body_id] = attach_body_id
         hands.append(
             _Hand(
                 attach_link=attach_link,
@@ -451,10 +465,62 @@ def _joint_gripper_hands(
                 touch_links=list(
                     description.grasp_contact_links(gripper_joints={j.name for j in jaws})
                 ),
-                body_groups=_jaw_body_groups(model, jaw_bodies),
+                body_groups=body_groups,
             )
         )
     return hands
+
+
+def _fixed_attach_body(
+    model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    description: RobotDescription,
+    attach_link: str,
+    jaw_bodies: Sequence[int],
+    *,
+    tolerance: float = 1e-3,
+) -> int:
+    """The MJCF body of a hand link bolted on through ``fixed_attachments`` under another name.
+
+    Menagerie's Panda calls the hand ``hand``; the manifest calls it ``panda_hand``, a
+    ``fixed_attachments`` child of ``panda_link7``. The candidate is the one body the jaws
+    hang from. It is accepted only when it hangs rigidly (no joint) under the parent link's
+    sim body and its pose there matches the row's ``origin_xyz`` / ``origin_rpy`` within
+    ``tolerance`` (m, rad), so the payload is posed in the frame the manifest names.
+
+    Returns:
+        The body id, or ``-1`` when no body qualifies.
+    """
+    import mujoco  # noqa: PLC0415  # reason: optional sim dependency
+
+    row = next((a for a in description.fixed_attachments if a.child_link == attach_link), None)
+    parent_joint = (
+        None
+        if row is None
+        else next(
+            (j for j in description.joints if j.child_link == row.parent_link and j.sim_joint_name),
+            None,
+        )
+    )
+    candidates = {int(model.body_parentid[body]) for body in jaw_bodies}
+    if row is None or parent_joint is None or len(candidates) != 1:
+        return -1
+    candidate = candidates.pop()
+    parent_body = _sim_joint_body_id(model, parent_joint)
+    body = candidate
+    while body != parent_body:
+        if body <= 0 or int(model.body_jntnum[body]) > 0:
+            return -1
+        body = int(model.body_parentid[body])
+    data = mujoco.MjData(model)
+    mujoco.mj_kinematics(model, data)
+    parent_rot = data.xmat[parent_body].reshape(3, 3)
+    rotation = parent_rot.T @ data.xmat[candidate].reshape(3, 3)
+    translation = parent_rot.T @ (data.xpos[candidate] - data.xpos[parent_body])
+    expected = transform_from_xyz_rpy(row.origin_xyz, row.origin_rpy)
+    angle = math.acos(max(-1.0, min(1.0, (float(np.trace(expected[:3, :3].T @ rotation)) - 1) / 2)))
+    if np.linalg.norm(translation - expected[:3, 3]) > tolerance or angle > tolerance:
+        return -1
+    return candidate
 
 
 def _end_effector_gripper_hands(
@@ -522,6 +588,24 @@ def _end_effector_gripper_hands(
             )
         )
     return hands
+
+
+def twin_drives_gripper(description: RobotDescription) -> bool:
+    """Whether the robot's MuJoCo twin can close a gripper on a payload.
+
+    True when a ``sim.grippers`` entry drives one, or a ``role: gripper`` joint names its
+    twin joint. A twin with neither (the Sawyer and UR twins model a bare flange) carries
+    nothing, so an empty attachment set is the truth there.
+
+    Example:
+        >>> twin_drives_gripper(RobotDescription.from_yaml("robots/franka_panda/robot.yaml"))
+        True
+        >>> twin_drives_gripper(RobotDescription.from_yaml("robots/ur5e/robot.yaml"))
+        False
+    """
+    if description.sim is not None and description.sim.grippers:
+        return True
+    return any(j.role == "gripper" and j.sim_joint_name for j in description.joints)
 
 
 def _resolve_robot_bodies(

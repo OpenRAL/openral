@@ -41,7 +41,7 @@ pytest.importorskip("mujoco")
 import mujoco
 import numpy as np
 from openral_core import AttachedCollisionObject, RobotDescription
-from openral_core.assets import AssetFetchError, resolve_asset
+from openral_core.assets import AssetFetchError, AssetRefError, resolve_asset
 from openral_core.exceptions import ROSConfigError
 from openral_core.tracking_thresholds import load_tracking_thresholds
 from openral_hal._sim_attachment_evidence import (
@@ -63,6 +63,8 @@ class _Gripper:
     actuator: int
     open_ctrl: float
     closed_ctrl: float
+    #: The mirror finger's actuator (gym-aloha), driven at ``-ctrl`` as the HAL does.
+    mirror: int | None = None
 
 
 @dataclass
@@ -94,7 +96,7 @@ class _Rig:
     def set_gripper(self, hand: int, *, closed: bool) -> None:
         """Drive the gripper of tracker hand ``hand`` (the hand whose payload is ``hand``)."""
         (g,) = (g for g in self.grippers if g.hand == hand)
-        self.data.ctrl[g.actuator] = g.closed_ctrl if closed else g.open_ctrl
+        _drive(self.data, g.actuator, g.mirror, g.closed_ctrl if closed else g.open_ctrl)
 
     def nudge_away(self, payload: int) -> None:
         """Push a released box out of the open jaws, as a lifting arm would."""
@@ -107,8 +109,8 @@ def _description(robot: str) -> tuple[RobotDescription, Path]:
     assert desc.assets.mjcf is not None
     try:
         path = resolve_asset(desc.assets.mjcf, "mjcf")
-    except AssetFetchError as exc:
-        pytest.skip(f"{robot} twin files not fetchable on this host: {exc}")
+    except (AssetFetchError, AssetRefError) as exc:
+        pytest.skip(f"{robot} twin files not available on this host: {exc}")
     assert path is not None
     return desc, path
 
@@ -136,7 +138,13 @@ def _compile(
         )
         body.add_freejoint(name=f"payload{i}_free")
         body.add_geom(
-            type=mujoco.mjtGeom.mjGEOM_BOX, size=half, mass=0.05, friction=[2.0, 0.05, 0.01]
+            type=mujoco.mjtGeom.mjGEOM_BOX,
+            size=half,
+            mass=0.05,
+            friction=[2.0, 0.05, 0.01],
+            # Group 4: gym-aloha's compiler takes inertia only from geom groups 4-5
+            # (`inertiagrouprange`); every other twin's default range includes it.
+            group=4,
         )
         if not support:
             backstop = spec.worldbody.add_body(name=f"platform{i}", pos=pos, quat=quat, mocap=True)
@@ -169,16 +177,70 @@ def _gripper_actuators(
         else:
             sim_name = next(j.sim_joint_name for j in desc.joints if j.name == gripper.joint)
             joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, sim_name)
-            actuator = next(a for a in range(model.nu) if model.actuator_trnid[a, 0] == joint)
-        body = int(model.jnt_bodyid[int(model.actuator_trnid[actuator, 0])])
+            actuator = next(a for a in range(model.nu) if _actuated_joint(model, a) == joint)
+        body = int(model.jnt_bodyid[_actuated_joint(model, actuator)])
         hand = next(i for i, h in enumerate(hands) if body in h.body_groups)
         out.append((hand, actuator))
     return out
 
 
+def _actuated_joint(model: Any, actuator: int) -> int:
+    """The joint an actuator drives: its own, or a tendon's first (the Panda's split fingers)."""
+    target = int(model.actuator_trnid[actuator, 0])
+    if model.actuator_trntype[actuator] == mujoco.mjtTrn.mjTRN_TENDON:
+        return int(model.wrap_objid[int(model.tendon_adr[target])])
+    return target
+
+
+def _drive(data: Any, actuator: int, mirror: int | None, value: float) -> None:
+    """Command a gripper actuator, and its mirror finger at ``-value`` (``MujocoArmHAL``)."""
+    data.ctrl[actuator] = value
+    if mirror is not None:
+        data.ctrl[mirror] = -value
+
+
+def _mirror_actuators(
+    desc: RobotDescription, actuators: list[tuple[int, int]]
+) -> dict[int, int | None]:
+    """Each gripper actuator's ``sim.grippers[].mirror_actuator_index``."""
+    assert desc.sim is not None
+    return {
+        actuator: gripper.mirror_actuator_index
+        for gripper, (_, actuator) in zip(desc.sim.grippers, actuators, strict=True)
+    }
+
+
+def _ctrl_ranges(
+    model: Any, desc: RobotDescription, actuators: list[tuple[int, int]]
+) -> dict[int, tuple[float, float]]:
+    """Each gripper actuator's control range: the MJCF's, or the manifest's when it has none.
+
+    The SO-101 twin's jaw actuator declares no ``ctrlrange``; the HAL drives it over the
+    manifest's ``sim.grippers[].ctrl_range``.
+    """
+    assert desc.sim is not None
+    out = {}
+    for gripper, (_, actuator) in zip(desc.sim.grippers, actuators, strict=True):
+        low, high = (float(v) for v in model.actuator_ctrlrange[actuator])
+        lo, hi = gripper.ctrl_range
+        out[actuator] = (low, high) if high > low else (float(lo), float(hi))
+    return out
+
+
 def _jaw_roots(model: Any, data: Any, hand: _Hand) -> tuple[Any, Any]:
-    """World origins of the hand's two jaw roots (the finger bodies its joints move)."""
-    first, second = (data.xpos[root].copy() for root in sorted(set(hand.body_groups.values())))
+    """World positions of the hand's two jaw roots (the finger bodies its joints move).
+
+    A sliding jaw's origin; a hinged jaw's (the SO-ARM's, the OpenArm's) centre of mass,
+    since it turns about its origin and only its mass centre opens and closes.
+    """
+
+    def at(root: int) -> Any:
+        hinged = int(model.body_jntnum[root]) > 0 and model.jnt_type[
+            int(model.body_jntadr[root])
+        ] == int(mujoco.mjtJoint.mjJNT_HINGE)
+        return (data.xipos if hinged else data.xpos)[root].copy()
+
+    first, second = (at(root) for root in sorted(set(hand.body_groups.values())))
     return first, second
 
 
@@ -213,9 +275,14 @@ def _rig(robot: str, *, support: bool = True, unnamed: frozenset[int] = frozense
     """
     desc, path = _description(robot)
     model, data = _compile(path, [])
+    # The HAL's start pose: gym-aloha's fingers sit outside their limits at qpos 0.
+    if desc.sim is not None and desc.sim.keyframe_index is not None:
+        mujoco.mj_resetDataKeyframe(model, data, desc.sim.keyframe_index)
     mujoco.mj_forward(model, data)
     hands = SimAttachmentEvidenceTracker(model, desc)._hands
     actuators = _gripper_actuators(model, desc, hands)
+    ranges = _ctrl_ranges(model, desc, actuators)
+    mirrors = _mirror_actuators(desc, actuators)
     # Every joint-driven actuator holds its joint where it is.
     for a in range(model.nu):
         if model.actuator_trntype[a] == mujoco.mjtTrn.mjTRN_JOINT:
@@ -224,14 +291,15 @@ def _rig(robot: str, *, support: bool = True, unnamed: frozenset[int] = frozense
     spreads = {}
     for end in (0, 1):
         for _, actuator in actuators:
-            data.ctrl[actuator] = model.actuator_ctrlrange[actuator][end]
+            _drive(data, actuator, mirrors[actuator], ranges[actuator][end])
         _settle(model, data)
         spreads[end] = [
             float(np.linalg.norm(np.subtract(*_jaw_roots(model, data, h)))) for h in hands
         ]
-    open_end = 0 if sum(spreads[0]) > sum(spreads[1]) else 1
-    for _, actuator in actuators:
-        data.ctrl[actuator] = model.actuator_ctrlrange[actuator][open_end]
+    # Per hand: the OpenArm's mirrored grippers open at opposite ends of their ranges.
+    open_end = [0 if spreads[0][i] > spreads[1][i] else 1 for i in range(len(hands))]
+    for owner, actuator in actuators:
+        _drive(data, actuator, mirrors[actuator], ranges[actuator][open_end[owner]])
     _settle(model, data)
     qpos, ctrl = data.qpos.copy(), data.ctrl.copy()
     placements = []
@@ -246,7 +314,7 @@ def _rig(robot: str, *, support: bool = True, unnamed: frozenset[int] = frozense
         mujoco.mju_mat2Quat(
             quat, np.stack([axis, np.cross(approach, axis), approach], axis=1).flatten()
         )
-        half = [abs(spreads[open_end][index] - spreads[1 - open_end][index]) / 3, 0.015, 0.015]
+        half = [abs(spreads[0][index] - spreads[1][index]) / 3, 0.015, 0.015]
         placements.append((middle, approach, quat, half))
     for slide in np.arange(0.0, 0.08, 0.005):
         boxes = [(m + slide * a, q, h) for m, a, q, h in placements]
@@ -263,8 +331,9 @@ def _rig(robot: str, *, support: bool = True, unnamed: frozenset[int] = frozense
         _Gripper(
             hand=hand,
             actuator=actuator,
-            open_ctrl=float(model.actuator_ctrlrange[actuator][open_end]),
-            closed_ctrl=float(model.actuator_ctrlrange[actuator][1 - open_end]),
+            mirror=mirrors[actuator],
+            open_ctrl=float(ranges[actuator][open_end[hand]]),
+            closed_ctrl=float(ranges[actuator][1 - open_end[hand]]),
         )
         for hand, actuator in actuators
     ]
@@ -280,18 +349,27 @@ def _rig(robot: str, *, support: bool = True, unnamed: frozenset[int] = frozense
 
 
 @pytest.mark.parametrize(
-    ("robot", "attach_links", "witnessed"),
+    ("robot", "attach_links", "support", "witnessed"),
     [
         # aloha_agilex's box rests flush on its platform at attach: a support witness.
-        ("aloha_agilex", ("fl_link6", "fr_link6"), True),
+        ("aloha_agilex", ("fl_link6", "fr_link6"), True, True),
         # r1pro's narrow jaws need the backstop pad, which attests no support: none.
-        ("r1pro", ("left_gripper_link", "right_gripper_link"), False),
+        ("r1pro", ("left_gripper_link", "right_gripper_link"), False, False),
+        # anvil_openarm_v2's hinged fingers close on a box over a pad they lift it off (#752).
+        (
+            "anvil_openarm_v2",
+            ("openarm_left_ee_base_link", "openarm_right_ee_base_link"),
+            True,
+            False,
+        ),
+        # aloha_bimanual: the gym-aloha ViperX twin, resolved by sim_joint_name (#752).
+        ("aloha_bimanual", ("left_link6", "right_link6"), True, False),
     ],
 )
 def test_each_hand_attaches_and_releases_independently(
-    robot: str, attach_links: tuple[str, str], witnessed: bool
+    robot: str, attach_links: tuple[str, str], support: bool, witnessed: bool
 ) -> None:
-    rig = _rig(robot, support=witnessed)
+    rig = _rig(robot, support=support)
     assert rig.tracker.attach_links == attach_links
     assert rig.run(50) == [], "a box touching no jaw attached"
 
@@ -313,10 +391,11 @@ def test_each_hand_attaches_and_releases_independently(
     # record that moves slot keeps its witness; aloha_agilex proves it on a real one.
     assert (right.support_contact is not None) == witnessed
 
+    # A hinged jaw (anvil_openarm_v2) can lose contact and release while it opens.
     rig.set_gripper(0, closed=False)
-    rig.run(100)
+    sets = rig.run(100)
     rig.nudge_away(0)
-    sets = rig.run(400)
+    sets += rig.run(400)
     released = [s for s in sets if [o.object_id for o in s] == ["sim:payload1"]]
     assert released, f"left release never left the right payload alone: {sets}"
     # The right record moved from slot 1 to slot 0 unchanged, witness included: the
@@ -324,9 +403,9 @@ def test_each_hand_attaches_and_releases_independently(
     assert released[0][0] == right
 
     rig.set_gripper(1, closed=False)
-    rig.run(100)
+    final = rig.run(100)
     rig.nudge_away(1)
-    final = rig.run(400)
+    final += rig.run(400)
     assert final and final[-1] == []
 
 
@@ -351,7 +430,20 @@ def test_end_effector_gripper_attaches_and_releases() -> None:
     assert final and final[-1] == []
 
 
-@pytest.mark.parametrize("robot", ["aloha_agilex", "r1pro", "galaxea_a1", "widowx"])
+@pytest.mark.parametrize(
+    "robot",
+    [
+        "aloha_agilex",
+        "r1pro",
+        "galaxea_a1",
+        "widowx",
+        "franka_panda",
+        "so100_follower",
+        "so101_follower",
+        "anvil_openarm_v2",
+        "aloha_bimanual",
+    ],
+)
 def test_no_hand_is_looser_than_a_single_gripper(robot: str) -> None:
     """Every hand needs both of its own jaws; hands share no jaw and no touch link."""
     desc, path = _description(robot)
@@ -366,6 +458,73 @@ def test_no_hand_is_looser_than_a_single_gripper(robot: str) -> None:
         assert not seen_links & set(hand.touch_links)
         seen_bodies |= set(hand.body_groups)
         seen_links |= set(hand.touch_links)
+
+
+@pytest.mark.parametrize(
+    ("robot", "attach_link", "support"),
+    [
+        # The hand is a fixed child of panda_link7 named `hand` in the twin (#752).
+        ("franka_panda", "panda_hand", True),
+        # One moving jaw against the fixed jaw on the hand body (`fixed_jaw_link`, #752).
+        ("so100_follower", "gripper_base", True),
+        ("so101_follower", "gripper", False),
+    ],
+)
+def test_single_gripper_twin_attaches_and_releases(
+    robot: str, attach_link: str, support: bool
+) -> None:
+    """The twins issue #752 left publishing "nothing carried" while they held a payload."""
+    rig = _rig(robot, support=support)
+    assert rig.tracker.attach_links == (attach_link,)
+    assert rig.run(50) == [], "a box touching no jaw attached"
+
+    rig.set_gripper(0, closed=True)
+    sets = rig.run(400)
+    assert [[(o.object_id, o.attach_link) for o in s] for s in sets] == [
+        [("sim:payload0", attach_link)]
+    ]
+    assert set(sets[0][0].touch_links) == set(rig.tracker._hands[0].touch_links)
+
+    rig.set_gripper(0, closed=False)
+    released = rig.run(100)
+    rig.nudge_away(0)
+    released += rig.run(400)
+    assert released and released[-1] == []
+
+
+def test_a_fixed_hand_link_resolves_only_at_its_declared_pose() -> None:
+    """The Panda's `panda_hand` is the twin's `hand` only while the manifest transform fits."""
+    desc, path = _description("franka_panda")
+    model, _ = _compile(path, [])
+    (row,) = (a for a in desc.fixed_attachments if a.child_link == "panda_hand")
+    shifted = row.model_copy(update={"origin_xyz": [0.0, 0.0, 0.112]})  # 5 mm off the flange
+    others = [a for a in desc.fixed_attachments if a is not row]
+    with pytest.raises(ROSConfigError, match="attach link 'panda_hand'"):
+        SimAttachmentEvidenceTracker(
+            model, desc.model_copy(update={"fixed_attachments": [*others, shifted]})
+        )
+
+
+def test_the_fixed_jaw_is_the_second_contact_branch() -> None:
+    """Without `fixed_jaw_link` the SO-101 has one jaw; one elsewhere than the hand refuses."""
+    desc, path = _description("so101_follower")
+    model, _ = _compile(path, [])
+
+    def with_fixed_jaw(link: str | None) -> RobotDescription:
+        joints = [
+            j.model_copy(update={"fixed_jaw_link": link}) if j.role == "gripper" else j
+            for j in desc.joints
+        ]
+        return desc.model_copy(update={"joints": joints})
+
+    with pytest.raises(ROSConfigError, match="needs 2 physical contact branches, found 1"):
+        SimAttachmentEvidenceTracker(model, with_fixed_jaw(None))
+    with pytest.raises(ROSConfigError, match="fixed_jaw_link 'wrist'"):
+        SimAttachmentEvidenceTracker(model, with_fixed_jaw("wrist"))
+    (hand,) = SimAttachmentEvidenceTracker(model, desc)._hands
+    assert hand.attach_body_id in hand.body_groups
+    # Only the hand body itself: the moving jaw under it stays its own branch.
+    assert len(set(hand.body_groups.values())) == 2
 
 
 def test_a_held_payload_is_never_a_candidate_for_the_other_hand() -> None:
