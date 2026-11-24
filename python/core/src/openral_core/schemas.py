@@ -10053,7 +10053,10 @@ class DepthOutput(str, Enum):
             ``metres = mean(fx, fy) * raw / canonical_focal_px``, with ``fx``/``fy`` the
             camera focal scaled to the output raster (DA3METRIC, focal 300).
         RELATIVE: Not documented as metric (DA3 main series). Never converted to metres
-            for collision checking; only the SLAM path uses it, with the model's own K.
+            and never fed to the safety kernel's world map (metric mode refuses it). Only
+            the SLAM path uses it, with the model's own K, and publishes it unconverted:
+            nvblox and cuVSLAM read it as approximately metres, so the ``/map`` and the
+            odometry scale carry the model's scale error.
 
     Example:
         >>> DepthOutput.CANONICAL_FOCAL.value

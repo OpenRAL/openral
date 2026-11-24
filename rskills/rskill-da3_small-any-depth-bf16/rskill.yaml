@@ -2,8 +2,10 @@
 #
 # The mono visual-SLAM depth source (DeployRuntime.slam_mono_camera): one RGB frame in,
 # depth plus the model's own pinhole estimate out, fused by cuVSLAM (RGBD odometry) and
-# nvblox (occupancy grid) on a lidar-less robot. Not documented as metric, so the depth
-# provider never feeds it to the world-collision map (output: relative).
+# nvblox (occupancy grid) on a lidar-less robot. Not documented as metric (output:
+# relative): the SLAM path publishes it unconverted as *approximately* metres, so /map and
+# cuVSLAM's scale carry DA3's scale error, and the depth provider never feeds it to the
+# safety kernel's world-collision map.
 
 schema_version: "0.2"
 name: "OpenRAL/rskill-da3_small-any-depth-bf16"
