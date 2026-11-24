@@ -2299,6 +2299,60 @@ def _manifest_to_mjcf_affine(
     return float(lo), float(hi - lo)
 
 
+def with_twin_gripper_curves(robot: RobotDescription, model: object) -> RobotDescription:
+    """``robot`` with each curve-less ``normalised`` twin gripper's MJCF stroke as its curve.
+
+    An MJCF self-collision lowering (``mjcf_lowering.lower_collision_params``) poses a
+    gripper link from the manifest column in the MJCF joint's units, but a
+    ``sim.grippers[]`` entry in ``normalised`` write mode reports a [0, 1] fraction:
+    WidowX's ``left_finger`` slide (0.015-0.037 m) was posed up to 1 m out, a phantom
+    finger the kernel checked and the world map's coverage ball (1.6 m) was sized for.
+    The twin writes ``lo + (hi - lo) · v`` (``_manifest_to_mjcf_affine``, which checks the
+    actuator drives the joint 1:1), so that line is the joint's ``urdf_curve``, the
+    MJCF's value being the one its link moves by; ``with_joint_curves`` then hands it to
+    the kernel and the self-filter. A joint that already declares a curve (the MakerMods
+    Metal's) keeps it.
+
+    Raises:
+        ROSConfigError: A normalised gripper's actuator does not drive its MJCF joint
+            (by ``sim_joint_name``, else name, else the actuator's own) 1:1
+            (``_manifest_to_mjcf_affine``).
+
+    Example:
+        >>> import mujoco
+        >>> from openral_core import RobotDescription
+        >>> from openral_core.assets import resolve_asset
+        >>> d = RobotDescription.from_yaml("robots/widowx/robot.yaml")
+        >>> m = mujoco.MjModel.from_xml_path(str(resolve_asset(d.assets.mjcf, "mjcf")))
+        >>> with_twin_gripper_curves(d, m).joints[-1].urdf_curve
+        ((0.0, 0.015), (1.0, 0.037))
+    """
+    import mujoco
+
+    m: Any = model
+    grippers = {
+        g.joint: g
+        for g in (robot.sim.grippers if robot.sim else [])
+        if g.write_mode == GripperWriteMode.NORMALISED
+    }
+    joints = []
+    for joint in robot.joints:
+        if joint.name not in grippers or joint.urdf_curve is not None:
+            joints.append(joint)
+            continue
+        # The MJCF joint by name, else (ALOHA's `left_gripper`) the one its actuator drives.
+        leader = int(
+            mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint.sim_joint_name or joint.name)
+        )
+        if leader < 0:
+            act = _gripper_actuator(robot, grippers[joint.name])
+            leader = int(m.actuator_trnid[act][0]) if 0 <= act < m.nu else -1
+        a, b = _manifest_to_mjcf_affine(robot, model, joint.name, leader)
+        curve = ((0.0, a), (1.0, a + b))  # validated: a ctrl_range with hi == lo refuses
+        joints.append(type(joint).model_validate({**joint.model_dump(), "urdf_curve": curve}))
+    return robot.model_copy(update={"joints": joints})
+
+
 def _declared_mimic_followers(
     robot: RobotDescription, model: object, followers: Mapping[int, list[tuple[int, float, float]]]
 ) -> set[int]:

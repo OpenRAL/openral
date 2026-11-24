@@ -131,7 +131,10 @@ public:
     // zero, as the kernel holds them, so the model is posed in `base_frame` and every TF
     // lookup starts there. Nothing above the base (a `world`, a fleet map) has to exist in
     // TF: a robot under its own `odom` is filtered the same as a fixed arm. Empty = a
-    // fixed-base arm, posed in the model's root link.
+    // fixed-base arm, posed in `base_frame` too: the collision model's root link carries its
+    // origin in the frame the kernel checks it in (an MJCF root body's in the MJCF world, which
+    // the twin's `base_frame` is), and its NAME (`wx250s/base_link`, `link0`) is often in no
+    // TF tree. Only with no `base_frame` is a fixed arm posed in its root link's name.
     // Read once here, so read-only (as tracked_clear_enabled): a runtime set would report a
     // frame the filter does not use.
     for (const auto d : this->declare_parameter<std::vector<std::int64_t>>(
@@ -151,7 +154,7 @@ public:
     } else {
       model_ok_ = true;
     }
-    if (!base_dofs_.empty()) {
+    if (!base_dofs_.empty() || !base_frame.empty()) {
       root_frame_ = base_frame;
     } else if (!model_.link_names.empty()) {
       root_frame_ = model_.link_names.front();
@@ -908,7 +911,7 @@ private:
   std::vector<double> q_at_;            ///< the last interpolated pose
   std::vector<double> qdot_at_;         ///< and its joint rate
   std::vector<std::size_t> base_dofs_;  ///< planar base dofs, held at zero
-  std::string root_frame_;  ///< the TF frame the posed model's root is: base_frame on a mobile base
+  std::string root_frame_;  ///< the TF frame the model is posed in: base_frame, else its root link
   std::vector<double> q_later_;
 
   double padding_m_{0.02};

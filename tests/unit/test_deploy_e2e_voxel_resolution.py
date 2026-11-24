@@ -404,7 +404,9 @@ def test_a_mobile_manipulator_filter_poses_the_model_in_its_base_frame(
     fixed = launch_module._self_filter_params(
         collision_params_from_description(arm), arm, "/joint_states", 0.02
     )
-    assert "collision_base_dofs" not in fixed and "base_frame" not in fixed
+    # A fixed arm has no base dofs but is posed in its base_frame too (as the kernel checks it).
+    assert "collision_base_dofs" not in fixed
+    assert fixed["base_frame"] == arm.base_frame == "openarm_base"
 
 
 @pytest.mark.parametrize("robot", ["openamrobot_v2", "panda_mobile", "panda_mobile_vslam"])

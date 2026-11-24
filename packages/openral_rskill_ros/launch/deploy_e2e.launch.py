@@ -497,8 +497,8 @@ def _peer_params(peers: list[tuple[str, int, str]]) -> dict[str, object]:
 
     Each peer's collision model, lowered from its own manifest as its kernel's is.
 
-    A fixed arm is posed in its model's root link; a mobile base in its ``base_frame`` with
-    its planar base dofs held at zero, as its own kernel holds them.
+    Each is posed in its manifest ``base_frame``; a mobile base with its planar base dofs held
+    at zero, as its own kernel holds them.
 
     Example:
         >>> p = _peer_params([("b", 34, "robots/openarm/robot.yaml")])
@@ -521,9 +521,6 @@ def _peer_params(peers: list[tuple[str, int, str]]) -> dict[str, object]:
         params = _posed_model_params(
             description, collision, _collision_base_dofs(description, collision)
         )
-        if "base_frame" not in params:  # a fixed arm: posed in its model's root link
-            names = cast("list[str]", params.get("collision_link_names", []))
-            params["base_frame"] = names[0] if names else ""
         # Boxes, not their tight hulls (a box contains its hull); no pairs (a peer has no self).
         skip = ("collision_allowed_pairs", "collision_box_hull", "collision_hull_")
         out.update(
@@ -825,9 +822,15 @@ def _posed_model_params(
     """A robot's collision model as a node that poses it from ``/joint_states`` reads it.
 
     The kernel's ``collision_*`` arrays, the joint names each dof answers to (the manifest
-    name and its ``sim_joint_name``) and, on a mobile base, ``collision_base_dofs`` with the
-    ``base_frame`` the model is posed in. Shared by the robot self-filter (its own robot)
+    name and its ``sim_joint_name``), the ``base_frame`` the model is posed in and, on a
+    mobile base, ``collision_base_dofs``. Shared by the robot self-filter (its own robot)
     and ``peer_voxels`` (each peer, ADR-0137).
+
+    ``base_frame`` is the manifest's, on a fixed arm too: the kernel checks the model in
+    ``base_frame``, and the model's root link carries its origin in it. An MJCF-lowered
+    model names that root after the MJCF body (WidowX ``wx250s/base_link``, Panda
+    ``link0``, SO-100 ``Base``), which no TF tree publishes, so posing in it found no
+    transform and the self-filter dropped every cloud.
 
     Example:
         >>> from openral_core import RobotDescription
@@ -842,9 +845,9 @@ def _posed_model_params(
     }
     params["collision_joint_names"] = [j.name for j in joints]
     params["collision_joint_aliases"] = [j.sim_joint_name or "" for j in joints]
+    params["base_frame"] = getattr(description, "base_frame", "")
     if base_dofs:  # omitted when empty: launch_ros rejects an empty list (see the kernel's)
         params["collision_base_dofs"] = base_dofs
-        params["base_frame"] = getattr(description, "base_frame", "")
     return params
 
 
@@ -871,8 +874,8 @@ def _self_filter_params(
     ``padding_m`` is the rig's ``DeployRuntime.robot_self_filter_padding_m``.
     On a mobile manipulator, ``base_dofs`` (``_collision_base_dofs``, the kernel's, computed
     once by the caller) become ``collision_base_dofs`` and, with the manifest ``base_frame``,
-    make the filter hold the planar base dofs at zero and pose the model in ``base_frame``, so
-    TF needs nothing above the base; omitted on a fixed arm.
+    make the filter hold the planar base dofs at zero, so TF needs nothing above the base;
+    omitted on a fixed arm. Either is posed in the manifest ``base_frame``.
     ``joint_state_period_s`` is ``1 / action_spec.control_freq_hz`` when the manifest
     declares it (the filter interpolates joint states at the cloud stamp and refuses a
     gap of more than two periods), else the node's own default.
@@ -3487,11 +3490,13 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     collision_params: dict[str, object] = collision_params_from_description(
         description, margin_m=margin_m
     )
+    curve_robot = description
     if description.assets.mjcf:
         try:
             import mujoco
             from openral_core.assets import resolve_asset
             from openral_safety.mjcf_lowering import lower_collision_params
+            from openral_safety.urdf_lowering import with_twin_gripper_curves
 
             _mjcf_path = resolve_asset(
                 description.assets.mjcf, "mjcf", manifest_dir=pathlib.Path(robot_yaml).parent
@@ -3524,6 +3529,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     flush=True,
                 )
             elif mjcf_params.get("self_collision_enabled"):
+                # A normalised twin gripper's [0, 1] column in the MJCF joint's units; a
+                # refusal (raised before either is adopted) keeps the manifest model.
+                curve_robot = with_twin_gripper_curves(description, model)
                 collision_params = mjcf_params
             else:
                 print(
@@ -3540,7 +3548,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # Either lowering numbers columns by `description.joints`: re-attach the gripper
     # calibration curves (`JointSpec.urdf_curve`) so an MJCF model poses a curved
     # finger at its URDF value too, as the manifest lowering does (issue #533).
-    collision_params = with_joint_curves(collision_params, description)
+    collision_params = with_joint_curves(collision_params, curve_robot)
     if workcell is not None and workcell.extra_allowed_collision_pairs:
         before = list(cast("list[object]", collision_params.get("collision_allowed_pairs", [])))
         collision_params = merge_extra_allowed_pairs(

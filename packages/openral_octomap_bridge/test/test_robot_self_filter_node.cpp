@@ -307,6 +307,43 @@ TEST_F(SelfFilterNode, RemovesTheRobotAtTheCloudStampAndKeepsTheWorld) {
   EXPECT_FLOAT_EQ(x, 0.5F) << "the filter follows the joint, not a fixed mask";
 }
 
+namespace {
+
+// A fixed arm posed in its manifest `base_frame`, not its root link's name: an MJCF-lowered
+// model names its root after the MJCF body (`wx250s/base_link`), which no TF tree carries,
+// while the kernel checks the model in `base_frame` (the twin's MJCF world).
+class FixedArmBaseFrameNode : public SelfFilterNode {
+protected:
+  std::vector<rclcpp::Parameter> extra_params() const override {
+    return {{"base_frame", "base_link"}};
+  }
+};
+
+}  // namespace
+
+TEST_F(FixedArmBaseFrameNode, AFixedArmIsPosedInBaseFrameNotItsRootLinksName) {
+  // base_link sits 1 m along the camera's x; `root` (identity in TF) stays at the camera.
+  geometry_msgs::msg::TransformStamped tf;
+  tf.header.stamp = peer_->now();
+  tf.header.frame_id = "cam";
+  tf.child_frame_id = "base_link";
+  tf.transform.translation.x = 1.0;
+  tf.transform.rotation.w = 1.0;
+  tf_->sendTransform(tf);
+  spin_for(200ms);
+  const rclcpp::Time now = peer_->now();
+  send_joint_state(0.0, now);
+  spin_for(100ms);
+  // The capsule (x = 0.5 in l1) is at cam x = 1.5 when posed in base_link, 0.5 in `root`.
+  cloud_pub_->publish(make_cloud({{1.5F, 0.0F, 0.0F}, {0.5F, 0.0F, 0.0F}}, now));
+  spin_for(400ms);
+  ASSERT_EQ(received_.load(), 1);
+  ASSERT_EQ(last_.width, 1U);
+  float x = 0.0F;
+  std::memcpy(&x, last_.data.data(), sizeof(float));
+  EXPECT_FLOAT_EQ(x, 0.5F) << "the robot is where base_frame puts it";
+}
+
 TEST_F(SelfFilterNode, GeometryOnlyAttachmentEvidenceKeepsSensorReturns) {
   const std::vector<std::string> evidence_kinds{"grasp_target_region", "vision_segmentation",
                                                 "unknown_evidence", "pinch_fallback"};
