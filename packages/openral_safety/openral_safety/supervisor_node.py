@@ -6,7 +6,7 @@ Owns the chunk-rate safety boundary on the OpenRAL graph:
 * Subscribes ``/openral/candidate_action`` (``openral_msgs/ActionChunk``).
 * Publishes ``/openral/safe_action`` (same type) when envelope checks pass.
 * Publishes ``/openral/estop`` (``std_msgs/Empty``) when they fail.
-* Subscribes ``/openral/estop`` (defense in depth, CLAUDE.md §1.5) — an
+* Subscribes ``/openral/estop`` (defense in depth, CLAUDE.md §1.1) — an
   external estop latches the node so subsequent candidates are dropped
   until reset.
 * Exposes ``/openral/estop_reset`` (``std_srvs/Trigger``) — explicit recovery
@@ -17,8 +17,8 @@ Owns the chunk-rate safety boundary on the OpenRAL graph:
 Topic-shape lock for the safety boundary's first increment: the topic
 contract is real and tested; envelope checks are deliberately minimal so the
 C++ kernel that lands later can replace internals **behind the same topic
-surface**. Per CLAUDE.md §1.5 ("Python proposes, C++ disposes") and §3 Safety
-(safety working-group review), any addition of enforcement beyond this file
+surface**. Per CLAUDE.md §3 Safety ("Python proposes; C++ disposes"; safety
+working-group review), any addition of enforcement beyond this file
 requires safety-WG sign-off.
 
 Day-1 envelope checks (stubbed but real): ``n_dof`` mismatch vs the
