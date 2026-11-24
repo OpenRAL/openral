@@ -27,11 +27,15 @@ import zipfile
 from collections.abc import Callable
 from functools import partial
 from pathlib import Path
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from openral_core.exceptions import ROSConfigError
 
 from openral_hal._pinned_files import sha256_file
+
+if TYPE_CHECKING:
+    import numpy as np
+    from numpy.typing import NDArray
 
 _T = TypeVar("_T")
 
@@ -293,21 +297,162 @@ def _is_front_arm_joint(name: str) -> bool:
     return name.startswith(tuple(p + "joint" for p in _ARMS))
 
 
-def _frozen_urdf_xml(urdf: Path) -> str:
-    """The URDF with every joint but the two front arms' turned ``fixed``, minus COLLADA.
+_COLLADA_NS: str = "{http://www.collada.org/2005/11/COLLADASchema}"
+# Vertex-clustering cell (m) for the converted COLLADA visuals: box2_Link.dae is
+# ~1.3 M vertices of CAD detail (screws, PCB parts) a visual-only twin does not need.
+_OBJ_GRID_M: float = 0.004
+
+
+def _collada_parts(
+    dae: Path,
+) -> tuple[dict[str, tuple[NDArray[np.float64], NDArray[np.int64]]], ET.Element, float]:
+    """Read a COLLADA file's triangle meshes (by ``#id``), its visual scene and its unit.
+
+    ``iterparse`` frees each geometry once read, so the 215 MB ``box2_Link.dae``
+    never sits in memory as a tree.
+
+    Raises:
+        ROSConfigError: The file uses a COLLADA feature outside the handled subset.
+    """
+    import numpy as np  # noqa: PLC0415  # reason: sim-only derive step, lazy like mujoco
+
+    ns = _COLLADA_NS
+    meshes: dict[str, tuple[NDArray[np.float64], NDArray[np.int64]]] = {}
+    scale = 1.0
+    up_axis = "Y_UP"  # the COLLADA default when <up_axis> is absent
+    scene: ET.Element | None = None
+    for _, el in ET.iterparse(dae):
+        if el.tag == f"{ns}unit":
+            scale = float(el.get("meter", "1"))
+        elif el.tag == f"{ns}up_axis":
+            up_axis = str(el.text).strip()
+        elif el.tag == f"{ns}geometry":
+            mesh = el.find(f"{ns}mesh")
+            if mesh is None or any(
+                mesh.find(f"{ns}{kind}") is not None
+                for kind in ("polylist", "polygons", "tristrips", "trifans", "lines")
+            ):
+                raise ROSConfigError(f"{dae.name}: geometry {el.get('id')} is not <triangles>")
+            arrays = {
+                f"#{src.get('id')}": np.fromstring(src.findtext(f"{ns}float_array", ""), sep=" ")
+                for src in mesh.iter(f"{ns}source")
+            }
+            verts = {
+                f"#{v.get('id')}": arrays[str(i.get("source"))]
+                for v in mesh.iter(f"{ns}vertices")
+                for i in v.findall(f"{ns}input")
+                if i.get("semantic") == "POSITION"
+            }
+            pos, faces = None, []
+            for tri in mesh.iter(f"{ns}triangles"):
+                inputs = tri.findall(f"{ns}input")
+                stride = 1 + max(int(i.get("offset", "0")) for i in inputs)
+                vin = next(i for i in inputs if i.get("semantic") == "VERTEX")
+                pos = verts[str(vin.get("source"))].reshape(-1, 3)
+                p = np.fromstring(tri.findtext(f"{ns}p", ""), np.int64, sep=" ")
+                faces.append(p.reshape(-1, stride)[:, int(vin.get("offset", "0"))].reshape(-1, 3))
+            if pos is not None:
+                meshes[f"#{el.get('id')}"] = (pos, np.concatenate(faces))
+            el.clear()
+        elif el.tag == f"{ns}visual_scene":
+            scene = el
+    if up_axis != "Z_UP":
+        raise ROSConfigError(f"{dae.name}: up_axis {up_axis}, only Z_UP is handled")
+    if scene is None:
+        raise ROSConfigError(f"{dae.name}: no <visual_scene>")
+    return meshes, scene, scale
+
+
+def _collada_to_obj(dae: Path, obj: Path) -> None:
+    """Flatten a COLLADA file's triangle meshes, placed by their node matrices, into ``obj``.
+
+    Covers what RoboTwin's aloha-agilex ``.dae`` files use: ``<triangles>`` only,
+    ``<matrix>`` node transforms, ``Z_UP``. Anything else raises rather than
+    yielding a misplaced mesh.
+
+    Raises:
+        ROSConfigError: The file uses a COLLADA feature outside that subset.
+    """
+    import numpy as np  # noqa: PLC0415  # reason: sim-only derive step, lazy like mujoco
+
+    ns = _COLLADA_NS
+    meshes, scene, scale = _collada_parts(dae)
+    out_v: list[NDArray[np.float64]] = []
+    out_f: list[NDArray[np.int64]] = []
+    count = 0
+
+    def walk(node: ET.Element, parent: NDArray[np.float64]) -> None:
+        nonlocal count
+        other = ("translate", "rotate", "scale", "lookat", "skew", "instance_node")
+        if any(node.find(f"{ns}{t}") is not None for t in other) or (
+            len(node.findall(f"{ns}matrix")) > 1
+        ):
+            raise ROSConfigError(f"{dae.name}: node {node.get('id')} is not one <matrix>")
+        text = node.findtext(f"{ns}matrix")
+        world = parent @ np.array(text.split(), float).reshape(4, 4) if text else parent
+        for inst in node.findall(f"{ns}instance_geometry"):
+            pos, faces = meshes[str(inst.get("url"))]
+            out_v.append(pos @ world[:3, :3].T + world[:3, 3])
+            out_f.append(faces + count)
+            count += len(pos)
+        for child in node.findall(f"{ns}node"):
+            walk(child, world)
+
+    for top in scene.findall(f"{ns}node"):
+        walk(top, np.diag([scale, scale, scale, 1.0]))
+    # Vertex clustering: merge vertices within one grid cell, drop collapsed faces.
+    # ponytail: coarse, but these are weld-frozen visual parts; quadric decimation if detail matters
+    cell = np.round(np.concatenate(out_v) / _OBJ_GRID_M).astype(np.int64)
+    cells, remap = np.unique(cell, axis=0, return_inverse=True)
+    tris = remap.reshape(-1)[np.concatenate(out_f)]
+    tris = tris[(tris != np.roll(tris, 1, axis=1)).all(axis=1)]
+    tris = tris[np.unique(np.sort(tris, axis=1), axis=0, return_index=True)[1]]
+    obj.parent.mkdir(parents=True, exist_ok=True)
+    tmp = obj.with_name(f".{obj.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with tmp.open("w", encoding="ascii") as fh:
+            np.savetxt(fh, cells * _OBJ_GRID_M, fmt="v %.6g %.6g %.6g")
+            np.savetxt(fh, tris + 1, fmt="f %d %d %d")
+        os.replace(tmp, obj)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _frozen_urdf_xml(urdf: Path, mesh_dir: Path) -> str:
+    """The URDF with every joint but the two front arms' turned ``fixed``, COLLADA replaced.
 
     The wheels, castors and the two rear (``lr_`` / ``rr_``) arms are welded at
     their zero pose: RoboTwin drives only the front arms, and the manifest's
-    14 joints name only those. MuJoCo cannot load the ``.dae`` visuals, so they
-    are dropped; those links render their STL collision mesh (the same shape),
-    and the visual-only STL frame (``box1_Link``, the camera mast) is kept.
+    14 joints name only those. MuJoCo cannot load ``.dae``: a link that has
+    other geometry (the arm links' collidable STL collision mesh, the same shape)
+    drops its COLLADA visual; a link that has none keeps it, converted to OBJ in
+    ``mesh_dir``. At the pinned revision that is ``box2_Link``, the frame that
+    carries the arms and the camera mast on the cart (without it the arms float,
+    #760), the four ``*_castor_link`` housings and ``camera_link1`` / ``camera_link2``.
     """
     root = ET.parse(urdf).getroot()
     for link in root.findall("link"):
-        for visual in link.findall("visual"):
-            mesh = visual.find("geometry/mesh")
-            if mesh is not None and str(mesh.get("filename")).lower().endswith(".dae"):
+        dae = {
+            visual: mesh
+            for visual in link.findall("visual")
+            if (mesh := visual.find("geometry/mesh")) is not None
+            and str(mesh.get("filename")).lower().endswith(".dae")
+        }
+        keep = len(link.findall("visual")) == len(dae) and not link.findall("collision")
+        for visual, mesh in dae.items():
+            if not keep:
                 link.remove(visual)
+                continue
+            src = urdf.parent / str(mesh.get("filename"))
+            obj = mesh_dir / f"{src.stem}.obj"
+            if not obj.is_file():
+                try:
+                    _collada_to_obj(src, obj)
+                except (KeyError, ValueError, StopIteration, ET.ParseError) as exc:
+                    raise ROSConfigError(
+                        f"Converting {src.name} to OBJ failed: {type(exc).__name__}: {exc}"
+                    ) from exc
+            mesh.set("filename", str(obj))
     for joint in root.findall("joint"):
         name = str(joint.get("name"))
         if joint.get("type") != "fixed" and not _is_front_arm_joint(name):
@@ -315,7 +460,7 @@ def _frozen_urdf_xml(urdf: Path) -> str:
     return ET.tostring(root, encoding="unicode")
 
 
-def _aloha_agilex_mjcf_xml(urdf: Path) -> str:
+def _aloha_agilex_mjcf_xml(urdf: Path, mesh_dir: Path) -> str:
     """Compile the frozen URDF with MuJoCo and add actuators + finger equalities.
 
     Raises:
@@ -330,7 +475,7 @@ def _aloha_agilex_mjcf_xml(urdf: Path) -> str:
             f"({type(exc).__name__}: {exc}); install the sim extras."
         ) from exc
 
-    root = ET.fromstring(_frozen_urdf_xml(urdf))
+    root = ET.fromstring(_frozen_urdf_xml(urdf, mesh_dir))
     ext = ET.SubElement(root, "mujoco")
     # fusestatic=false keeps every URDF link a body (the camera mounts and
     # link names the manifest refers to); the remaining STL visuals are kept.
@@ -440,7 +585,7 @@ def ensure_aloha_agilex_mjcf() -> Path:
         fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(_aloha_agilex_mjcf_xml(urdf))
+                fh.write(_aloha_agilex_mjcf_xml(urdf, path.parent))
             os.replace(tmp, path)
         except BaseException:
             Path(tmp).unlink(missing_ok=True)
