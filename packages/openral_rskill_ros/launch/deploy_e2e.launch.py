@@ -1138,6 +1138,35 @@ def _mjcf_kernel_link_names(
     }
 
 
+def _refuse_tracking_on_a_renamed_kernel(
+    object_tracking: str, kernel_link_name: Mapping[str, str], robot: str
+) -> None:
+    """Refuse the object tracker beside a kernel that names the hand's links differently.
+
+    The tracker publishes grasp declarations and payloads in the manifest's links and their
+    URDF / TF frames. A kernel lowered from the MJCF names (and frames) them after its
+    bodies: a renamed link is refused (``link_not_allowed``), and renaming alone would place
+    each payload in the wrong frame (#754 review).
+
+    Raises:
+        ROSConfigError: tracking is on and ``kernel_link_name`` renames a link.
+
+    Example:
+        >>> _refuse_tracking_on_a_renamed_kernel("tracking", {"base": "base"}, "so101_follower")
+        >>> _refuse_tracking_on_a_renamed_kernel("off", {"hand": "panda_hand"}, "franka_panda")
+    """
+    renamed = sorted(k for k, v in kernel_link_name.items() if k != v)
+    if object_tracking != "off" and renamed:
+        from openral_core.exceptions import ROSConfigError
+
+        raise ROSConfigError(
+            f"object_tracking={object_tracking} needs a kernel model in the manifest's link "
+            f"naming, but {robot!r}'s is lowered from its MJCF, which renames {renamed[:4]}. "
+            "Give the manifest collision_geometry (`openral collision lower`) or run with "
+            "object_tracking off."
+        )
+
+
 def _refuse_twin_only_geometry_on_real(description: RobotDescription, hal_mode: str) -> None:
     """Refuse a real deploy whose kernel collision model was fitted to a sim twin alone.
 
@@ -3882,6 +3911,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         )
     )
     kernel_params = _hand_links_in_kernel_naming(kernel_params, kernel_link_name)
+    _refuse_tracking_on_a_renamed_kernel(object_tracking, kernel_link_name, description.name)
     # Issue #418 K7: in `on`, workspace contact is tolerated only on explained cells; the
     # declared static geometry explains its own cells (the bridge's cells, one centre each).
     explained_requested = (

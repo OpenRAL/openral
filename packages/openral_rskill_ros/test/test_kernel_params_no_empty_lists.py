@@ -138,6 +138,28 @@ def test_a_hal_file_vision_leg_turns_the_attached_check_on(tmp_path: Path) -> No
     assert on["attached_collision_enabled"] is True
 
 
+def test_object_tracking_refuses_an_mjcf_named_kernel() -> None:
+    """The tracker speaks the manifest's links and frames; an MJCF-lowered kernel does not.
+
+    Franka's kernel is lowered from the menagerie MJCF, whose bodies rename the manifest's
+    links, so the tracker's grasp declarations and payloads would be refused or misplaced
+    (#754).
+    """
+    import mujoco
+    from openral_core import RobotDescription
+    from openral_core.assets import resolve_asset
+    from openral_core.exceptions import ROSConfigError
+
+    module = _import_launch_module(_LAUNCH_FILE)
+    desc = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / "franka_panda" / "robot.yaml"))
+    assert desc.assets.mjcf is not None
+    model = mujoco.MjModel.from_xml_path(str(resolve_asset(desc.assets.mjcf, "mjcf")))
+    names = module._mjcf_kernel_link_names(desc, model)
+    with pytest.raises(ROSConfigError, match="object_tracking=tracking needs a kernel"):
+        module._refuse_tracking_on_a_renamed_kernel("tracking", names, desc.name)
+    module._refuse_tracking_on_a_renamed_kernel("off", names, desc.name)
+
+
 def _make_launch_context(robot_yaml: Path) -> object:
     """Return a ``launch.LaunchContext`` populated from the launch itself.
 
