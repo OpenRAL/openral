@@ -70,23 +70,24 @@ class TestRealModeResolution:
         assert "sim_robot_yaml" not in inv.hal_params
         assert "sim_env_yaml" not in inv.hal_params
 
-    @pytest.mark.parametrize("robot_id", ["h1", "h2"])
+    @pytest.mark.parametrize("robot_id", ["h1"])
     def test_sim_only_robot_real_fails_fast(self, robot_id: str) -> None:
-        # H1 / H2 are sim-only (`hal.real: null`); G1 gained its real HAL (below).
+        # H1 is sim-only (`hal.real: null`); G1 and H2 have their real HAL (below).
         with pytest.raises(ROSCapabilityMismatch, match=robot_id):
             _resolve(robot_id, "real")
 
-    def test_g1_real_resolves_to_the_unitree_hg_hal_and_its_bringup(self) -> None:
-        """G1 real mode: manifest-driven HAL node, no sim twin, NVIDIA S0 bringup declared."""
+    @pytest.mark.parametrize("robot_id", ["g1", "h2"])
+    def test_unitree_hg_real_resolves_to_the_hg_hal_and_its_bringup(self, robot_id: str) -> None:
+        """G1 / H2 real mode: manifest-driven HAL node, no sim twin, NVIDIA S0 bringup."""
         from openral_core import RobotDescription
         from openral_hal.resolver import ros_control_hal
 
-        inv = _resolve("g1", "real")
+        inv = _resolve(robot_id, "real")
         assert inv.hal_params["hal_mode"] == "real"
         assert "sim_robot_yaml" not in inv.hal_params
         robot_yaml = inv.hal_params["robot_yaml"]
         assert isinstance(robot_yaml, str)
-        assert robot_yaml.endswith("robots/g1/robot.yaml")
+        assert robot_yaml.endswith(f"robots/{robot_id}/robot.yaml")
         desc = RobotDescription.from_yaml(robot_yaml)
         assert desc.hal.real == "openral_hal.unitree_real:UnitreeHgRealHAL"
         assert desc.hal.real_bringup == "openral_hal_unitree:real_bringup.launch.py"

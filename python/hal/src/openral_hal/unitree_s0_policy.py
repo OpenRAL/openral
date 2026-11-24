@@ -25,6 +25,7 @@ Example:
 
 from __future__ import annotations
 
+import hashlib
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -68,6 +69,10 @@ class S0PolicyMeta(BaseModel):
             ``None`` when the bundle is built locally into ``bundle_dir``.
         bundle_dir: Directory (``~`` expanded) holding a locally built bundle.
         leapp_config: The bundle's LEAPP YAML file name.
+        hf_repo: Hugging Face repo a ``bundle_dir`` bundle is downloaded from, or ``None``.
+        hf_revision: The pinned revision of ``hf_repo``.
+        sha256: ``{file name in bundle_dir: SHA-256}`` — every pinned bundle file, checked
+            each time ``resolve_leapp_config`` resolves the bundle (fail-closed).
         velocity_command_topic: Where the policy reads ``command/body/velocity``.
         velocity_command_type: ROS type of that topic.
         s0_joints: Joints the policy's action commands — never commanded by OpenRAL.
@@ -80,6 +85,9 @@ class S0PolicyMeta(BaseModel):
     data_package: str | None = None
     bundle_dir: str | None = None
     leapp_config: str
+    hf_repo: str | None = None
+    hf_revision: str | None = None
+    sha256: dict[str, str] = {}
     velocity_command_topic: str
     velocity_command_type: str
     s0_joints: list[str]
@@ -180,10 +188,12 @@ def resolve_leapp_config(
     """The LEAPP config the inference controller loads.
 
     ``override`` (a path) wins; else ``share/<data_package>/data/<leapp_config>`` (upstream's
-    rule, needs ``package_share``); else ``<bundle_dir>/<leapp_config>``.
+    rule, needs ``package_share``); else ``<bundle_dir>/<leapp_config>``, whose ``sha256``
+    pins are then verified.
 
     Raises:
-        ROSConfigError: Nothing resolves, the data package is missing, or the file is absent.
+        ROSConfigError: Nothing resolves, the data package is missing, the file is absent,
+            or a ``bundle_dir`` file is missing or fails its SHA-256 pin.
     """
     meta = policy.openral_policy
     if override.strip():
@@ -209,16 +219,42 @@ def resolve_leapp_config(
         raise ROSConfigError(
             f"S0 policy {meta.name!r} declares neither data_package nor bundle_dir."
         )
+    from_bundle_dir = meta.data_package is None and not override.strip()
     if not path.is_file():
         raise ROSConfigError(
-            f"S0 policy LEAPP config {path} does not exist"
-            + (
-                " — build it with `uv run python tools/build_gr00t_wbc_leapp.py`."
-                if meta.bundle_dir is not None and not override.strip()
-                else "."
-            )
+            f"S0 policy LEAPP config {path} does not exist" + _fetch_hint(meta, from_bundle_dir)
         )
+    if from_bundle_dir:
+        _verify_pins(meta, path.parent)
     return path
+
+
+def _fetch_hint(meta: S0PolicyMeta, from_bundle_dir: bool) -> str:
+    """How to produce a missing bundle: the Hub download, else the GR00T builder."""
+    if not from_bundle_dir:
+        return "."
+    if meta.hf_repo is not None:
+        return (
+            f" — download it with `hf download {meta.hf_repo} --revision {meta.hf_revision} "
+            f"--local-dir {meta.bundle_dir}`."
+        )
+    return " — build it with `uv run python tools/build_gr00t_wbc_leapp.py`."
+
+
+def _verify_pins(meta: S0PolicyMeta, bundle: Path) -> None:
+    """Refuse a bundle whose pinned files are missing or differ from their SHA-256."""
+    bad: list[str] = []
+    for name, expected in meta.sha256.items():
+        f = bundle / name
+        if not f.is_file():
+            bad.append(f"{name} missing")
+        elif hashlib.sha256(f.read_bytes()).hexdigest() != expected:
+            bad.append(f"{name} SHA-256 mismatch")
+    if bad:
+        raise ROSConfigError(
+            f"S0 policy {meta.name!r} bundle {bundle} does not match its pins ({'; '.join(bad)})"
+            f"{_fetch_hint(meta, True)}"
+        )
 
 
 def _inference_controller_types(doc: object, node_path: str = "") -> list[object]:

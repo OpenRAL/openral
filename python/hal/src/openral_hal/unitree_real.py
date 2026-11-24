@@ -1,4 +1,4 @@
-"""Real-hardware HAL for the Unitree hg humanoid family (G1 now; H2 shares the stack).
+"""Real-hardware HAL for the Unitree hg humanoid family (G1 and H2).
 
 S0 is NVIDIA's, not OpenRAL's. On real hardware the legs are commanded by a whole-body
 ONNX policy running *inside* ``ros2_control`` (NVIDIA ``isaac_ros_deploy``'s
@@ -19,14 +19,15 @@ C++ graph disposes (CLAUDE.md §3 "Python proposes; C++ disposes"):
         UnitreeHgSystemInterface (CRC, 500 ms state freshness) → unitree_sdk2 → motors
 
 The bringup that starts that graph is ``openral_hal_unitree``'s ``real_bringup.launch.py``
-(``hal.real_bringup`` in ``robots/g1/robot.yaml``).
+(``hal.real_bringup`` in ``robots/g1/robot.yaml`` and ``robots/h2/robot.yaml``).
 
 **Joint ownership comes from the selected S0 policy.** ``s0_policy`` (manifest
-``hal.parameters.defaults.s0_policy``; GR00T Decoupled WBC for the G1) names the policy
-file the launch also configures the C++ graph from (``openral_hal.unitree_s0_policy``).
-The policy owns its ``s0_joints`` (GR00T: 12 legs + all three waist axes; AGILE: 12 legs
-+ waist roll/pitch); this HAL owns the upper-body controller's ``joints`` (GR00T: both
-7-DoF arms; AGILE: + waist yaw). The two must be a disjoint cover of the manifest. A
+``hal.parameters.defaults.s0_policy``; GR00T Decoupled WBC for the G1, WBC-AGILE for the
+H2) names the policy file the launch also configures the C++ graph from
+(``openral_hal.unitree_s0_policy``). The policy owns its ``s0_joints`` (GR00T: 12 legs +
+all three waist axes; AGILE: 12 legs + waist roll/pitch); this HAL owns the upper-body
+controller's ``joints`` (GR00T: both 7-DoF arms; AGILE: + waist yaw, and on the H2 the
+head). The two must be a disjoint cover of the manifest. A
 ``JOINT_POSITION`` action that names, or — as a whole-vector action with no
 ``Action.joint_names`` — implies, any S0 joint is refused with ``ROSCapabilityMismatch``
 before anything is published: on this robot a leg target from Python is a capability the
@@ -68,6 +69,9 @@ Example:
     (14, 15)
     >>> "waist_yaw_joint" in hal.s0_joints()  # GR00T WBC owns the whole waist
     True
+    >>> h2 = UnitreeHgRealHAL(robot_model="h2")  # WBC-AGILE: legs + waist roll/pitch
+    >>> len(h2.upper_body_joints()), len(h2.s0_joints())
+    (17, 14)
 """
 
 from __future__ import annotations
@@ -89,6 +93,7 @@ from openral_core.schemas import Action, ControlMode, RobotDescription
 from openral_hal._base import require_supported_control_mode
 from openral_hal._real_description import make_real_description
 from openral_hal.g1 import G1_DESCRIPTION
+from openral_hal.h2 import H2_DESCRIPTION
 from openral_hal.protocol import EStopRecovery, HALHealthReport
 from openral_hal.ros_control import (
     ControllerKind,
@@ -101,6 +106,7 @@ from openral_hal.unitree_s0_policy import load_s0_policy, s0_policy_path
 
 __all__ = [
     "G1_REAL_DESCRIPTION",
+    "H2_REAL_DESCRIPTION",
     "UnitreeHgRealHAL",
 ]
 
@@ -113,6 +119,8 @@ log = structlog.get_logger(__name__)
 # wrapper, closed core) — the posture robots/g1/robot.yaml already documented for any
 # real G1 path.
 G1_REAL_DESCRIPTION = make_real_description(G1_DESCRIPTION, sdk_kind="closed_with_api")
+#: The same posture for the H2 (robots/h2/robot.yaml mirrors it).
+H2_REAL_DESCRIPTION = make_real_description(H2_DESCRIPTION, sdk_kind="closed_with_api")
 
 # Controller names from packages/openral_hal_unitree/config/<model>/controller_manager.yaml.
 _SAFETY_CONTROLLER = "safety_controller"
@@ -140,12 +148,17 @@ class _UnitreeHgModel:
     default_s0_policy: str
 
 
-#: Models the bringup ships a config/<model>/ for. H2 joins here with its own manifest.
+#: Models the bringup ships a config/<model>/ for.
 _MODELS: dict[str, _UnitreeHgModel] = {
     "g1": _UnitreeHgModel(
         description=G1_REAL_DESCRIPTION,
         # The G1 S0 bake-off winner (robustness); see policies/gr00t_decoupled_wbc.yaml.
         default_s0_policy="gr00t_decoupled_wbc",
+    ),
+    "h2": _UnitreeHgModel(
+        description=H2_REAL_DESCRIPTION,
+        # NVIDIA WBC-AGILE (nvidia/agile_wbc_unitree_h2); see config/h2/policies/.
+        default_s0_policy="agile_velocity",
     ),
 }
 
@@ -155,13 +168,13 @@ class UnitreeHgRealHAL(RosControlHAL):
 
     Args:
         description: Manifest to publish. Defaults to the model's real description
-            (``G1_REAL_DESCRIPTION``); ``build_hal`` passes the loaded
-            ``robots/<id>/robot.yaml``.
-        robot_model: Which hg-family model's defaults apply (``"g1"``).
+            (``G1_REAL_DESCRIPTION`` / ``H2_REAL_DESCRIPTION``); ``build_hal`` passes the
+            loaded ``robots/<id>/robot.yaml``.
+        robot_model: Which hg-family model's defaults apply (``"g1"`` or ``"h2"``).
         s0_policy: Stem of ``config/<robot_model>/policies/<stem>.yaml``; the joint split
             and the velocity-command topic come from it. ``None`` takes the model's
-            default (``gr00t_decoupled_wbc`` for the G1). Must be the policy the bringup
-            launch runs (its ``policy:=``).
+            default (``gr00t_decoupled_wbc`` for the G1, ``agile_velocity`` for the H2).
+            Must be the policy the bringup launch runs (its ``policy:=``).
         upper_body_controller: The ``ForwardJointCommandController`` commanding
             ``upper_body_joints``.
         inference_controller: The S0 policy controller.
@@ -456,7 +469,7 @@ class UnitreeHgRealHAL(RosControlHAL):
                 joint that has never been commanded.
             ROSConfigError: Unsupported control mode, wrong dimensions, a non-planar or
                 non-finite twist.
-            ROSCapabilityMismatch: The action owns an S0 (leg/waist-roll/pitch) joint.
+            ROSCapabilityMismatch: The action owns a joint of the S0 policy (legs, waist).
         """
         self._require_connected("send_action")
         self._validate_action(action)

@@ -288,15 +288,10 @@ _KNOWN_TWIN_ESCAPE_M: dict[str, float] = {
 
 # Twins whose manifest leaves a twin body with geometry uncovered. Strict xfails
 # so covering them flips green (docs/reference/collision-geometry-review.md §12).
-_UNCOVERED_TWIN_BODIES: dict[str, str] = {
-    # Unitree's H2.urdf (unitree_ros @ 41dec58c) has <visual> but no <collision>
-    # on 11 links — hip_pitch, ankle_roll, waist_yaw/roll, wrist_roll/pitch,
-    # head_pitch — so the URDF lowering emits no primitive for them while the
-    # MJCF twin has meshes there (the wrist_roll link carries the forearm). A
-    # NON-CONSERVATIVE gap in the kernel model; needs a lowering from visual
-    # geometry or upstream collision meshes, and safety-WG review (robots/h2).
-    "h2": "11 H2.urdf links ship no <collision> (incl. the forearm wrist_roll_link)",
-}
+# None today: H2's 11 <visual>-only URDF links (the forearm wrist_roll_link among
+# them) are lowered from their visual + twin meshes since the twin's wrist-pitch
+# axis was moved to the URDF's (`_unitree_h2_assets._derive_mjcf`), robots/h2.
+_UNCOVERED_TWIN_BODIES: dict[str, str] = {}
 
 
 @pytest.mark.parametrize(

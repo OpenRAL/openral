@@ -271,7 +271,7 @@ workflow, started automatically once the PR is ready (item 6 below).
 ```
 test-selective.yml (every push):
 select ──┬── core_full     (matrix: 4 file-shards + isolated) ──┐
-         └── core_selected (matrix: 4 target-shards + isolated) ┴── select-and-test
+         └── core_selected (matrix: 6 target-shards + isolated) ┴── select-and-test
                                                                (required check)
 
 heavy-lanes-trigger.yml (workflow_run of the PR workflows + every 10 min):
@@ -298,11 +298,13 @@ composite action.
 2. **Everything downstream is conditional.** `core_full`, `core_selected`, and
    `lane` are skipped entirely when nothing is selected (docs-only diffs, pure
    markdown changes, etc.): no FFmpeg install, no workspace sync, no pytest.
-3. **Both core jobs run as a 4-way matrix** plus one dedicated shard for
+3. **Both core jobs run as a matrix** plus one dedicated shard for
    `isolated_targets`, instead of serially in one job. `core_full` splits the
-   `tests/unit/` files; `core_selected` round-robins the selected targets by
-   sorted position. A shard with nothing to run exits before setup. Unsharded,
-   a wide selection's `tests/` partition took 16.5 min on its own.
+   `tests/unit/` files 4 ways; `core_selected` round-robins the selected
+   targets by sorted position over 6 shards. A shard with nothing to run exits
+   before setup. Unsharded, a wide selection's `tests/` partition took 16.5 min
+   on its own; at 4 shards a wide selection (openral#756) still pushed one
+   shard past the 15-min cap.
 4. **Test-root partitions within each `core_selected` shard run in parallel.**
    The bash loop in "Run selected targets" launches each group as a background
    job (`&`), collects exit codes after all finish, and streams the logs in

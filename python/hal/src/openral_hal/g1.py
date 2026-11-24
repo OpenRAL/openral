@@ -58,7 +58,7 @@ from typing import Literal, Unpack, get_args
 import numpy as np
 import structlog
 from numpy.typing import NDArray
-from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError, ROSSafetyViolation
+from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from openral_core.schemas import (
     Action,
     ActionSpec,
@@ -106,6 +106,7 @@ from openral_hal.mujoco_twin import (
     TwinStepResult,
     _FreeBaseTwin,
     _GlideTwin,
+    _S0PolicyTwin,
 )
 
 log = structlog.get_logger(__name__)
@@ -569,7 +570,7 @@ class _G1WalkTwin(_FreeBaseTwin, _GlideTwin):
         self._controller.reset_state()
 
 
-class _G1Gr00tTwin(_FreeBaseTwin):
+class _G1Gr00tTwin(_S0PolicyTwin):
     """NVIDIA GR00T Decoupled WBC (sim-only S0) on the stock Menagerie MJCF, no pin.
 
     The Balance + Walk ONNX policy owns legs + waist (joints 0-14) at 50 Hz; every
@@ -579,6 +580,9 @@ class _G1Gr00tTwin(_FreeBaseTwin):
     only arm joints. A fall (pelvis < 0.5 m or torso tilt > 45°) cuts every torque and
     raises ``ROSSafetyViolation`` until ``reset_to_pose`` / reconnect.
     """
+
+    s0_name = "gr00t_wbc"
+    fall_pelvis_height_m = _FALL_PELVIS_HEIGHT_M
 
     def __init__(
         self, description: RobotDescription, *, assets: Gr00tWbcAssets, **kwargs: Unpack[TwinKwargs]
@@ -596,8 +600,6 @@ class _G1Gr00tTwin(_FreeBaseTwin):
         self._kd: NDArray[np.float64] = np.concatenate([S0_KD, ARM_KD])
         self._decimation = 1
         self._counter = 0
-        self.fallen = False
-        self._torso_body_id = -1
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -640,9 +642,7 @@ class _G1Gr00tTwin(_FreeBaseTwin):
         self._decimation = decimation
         position_actuators_to_torque_motors(model)
         self._enable_ground_contact()
-        self._torso_body_id = mj.mj_name2id(model, mj.mjtObj.mjOBJ_BODY, "torso_link")
-        if self._torso_body_id < 0:
-            raise ROSConfigError("G1 gr00t_wbc MJCF has no 'torso_link' body for fall detection.")
+        self._bind_torso()
         self._policy = Gr00tWbcController(self._assets)
         self._arm_targets = np.zeros(n - S0_JOINT_COUNT)
         self._reset_state()
@@ -697,17 +697,10 @@ class _G1Gr00tTwin(_FreeBaseTwin):
         self._arm_targets = np.asarray(data.qpos[start : start + n], dtype=np.float64).copy()
         self._s0_command = (0.0, 0.0, 0.0)
 
-    # ── Reads ────────────────────────────────────────────────────────────────
-
-    def read_base_twist(self) -> tuple[float, float, float, float, float, float]:
-        """The held velocity command: arm actions leave it, an idle slice zeroes it."""
-        vx, vy, wz = self._s0_command
-        return (vx, vy, 0.0, 0.0, 0.0, wz)
-
     # ── Commands ─────────────────────────────────────────────────────────────
 
     def step_action_group(self, actions: list[Action]) -> TwinStepResult:
-        """One S1 tick under the S0, then one control period.
+        """One S1 tick under the S0, then one control period (``_S0PolicyTwin``).
 
         Raises:
             ROSSafetyViolation: The fall detector has latched (before or during
@@ -717,9 +710,7 @@ class _G1Gr00tTwin(_FreeBaseTwin):
             ROSConfigError: An unsupported control mode, a malformed twist /
                 joint payload, or a non-finite arm target.
         """
-        self._raise_if_fallen()
         result = super().step_action_group(actions)
-        self._latch_if_fallen()  # the state the last mj_step left, before success
         log.debug(
             "hal.send_action",
             robot=self.description.name,
@@ -727,7 +718,6 @@ class _G1Gr00tTwin(_FreeBaseTwin):
             s0_command=self._s0_command,
             s0_walk_policy=self._policy.used_walk if self._policy is not None else False,
         )
-        self._raise_if_fallen()
         return result
 
     def _compose(
@@ -778,10 +768,6 @@ class _G1Gr00tTwin(_FreeBaseTwin):
         if twist is not None:
             self._s0_command = twist
 
-    def _on_idle(self) -> None:
-        """Idle: zero the velocity command; the Balance policy keeps running."""
-        self._s0_command = (0.0, 0.0, 0.0)
-
     def _per_step(self) -> None:
         """Fall check, 50 Hz policy update and the 29-joint PD torque, before each ``mj_step``.
 
@@ -805,45 +791,6 @@ class _G1Gr00tTwin(_FreeBaseTwin):
 
     # ── Internals ────────────────────────────────────────────────────────────
 
-    def _enable_ground_contact(self) -> None:
-        """Make the twin's ground plane collide (the free base needs a floor to stand on).
-
-        A composed scene that already brings a colliding world plane is used
-        as-is. On the bare Menagerie twin the only plane is the camera rig's
-        visual-only ``camrig_floor``; its collision bits are switched on in the
-        loaded model (the MJCF on disk is unchanged).
-
-        Raises:
-            ROSConfigError: The MJCF has no world plane at all.
-        """
-        import mujoco as mj  # noqa: PLC0415  # reason: optional sim-only dep
-
-        model = self.model
-        assert model is not None
-        planes = [
-            g
-            for g in range(model.ngeom)
-            if model.geom_type[g] == mj.mjtGeom.mjGEOM_PLANE and model.geom_bodyid[g] == 0
-        ]
-        if any(model.geom_contype[g] or model.geom_conaffinity[g] for g in planes):
-            return
-        if not planes:
-            raise ROSConfigError(
-                "G1 gr00t_wbc needs a ground plane: the MJCF has none (the camera rig adds "
-                "one only when the manifest declares a camera)."
-            )
-        for g in planes:
-            model.geom_contype[g] = 1
-            model.geom_conaffinity[g] = 1
-        # The broad phase prunes by the per-body OR of its geoms' bits, compiled
-        # in; without these the world body still reads "never collides".
-        model.body_contype[0] |= 1
-        model.body_conaffinity[0] |= 1
-        log.info(
-            "hal.g1.s0_controller.ground_contact_enabled",
-            geoms=[mj.mj_id2name(model, mj.mjtObj.mjOBJ_GEOM, g) for g in planes],
-        )
-
     def _reset_state(self) -> None:
         assert self._policy is not None
         self._policy.reset()
@@ -851,41 +798,6 @@ class _G1Gr00tTwin(_FreeBaseTwin):
         self._s0_targets = S0_DEFAULT_ANGLES.copy()
         self._counter = 0
         self.fallen = False
-
-    def _torso_tilt_rad(self) -> float:
-        assert self.data is not None
-        r22 = float(self.data.xmat[self._torso_body_id][8])
-        return math.acos(max(-1.0, min(1.0, r22)))
-
-    def _detect_fall(self) -> bool:
-        assert self.data is not None
-        return (
-            float(self.data.qpos[2]) < _FALL_PELVIS_HEIGHT_M
-            or self._torso_tilt_rad() > _FALL_TILT_RAD
-        )
-
-    def _latch_if_fallen(self) -> None:
-        """Latch a fall the current state shows and cut every torque at once."""
-        if self.fallen or not self._detect_fall():
-            return
-        assert self.data is not None
-        self.fallen = True
-        self.data.ctrl[:] = 0.0
-        log.critical(
-            "hal.g1.s0_controller.fall_detected",
-            robot=self.description.name,
-            pelvis_height_m=round(float(self.data.qpos[2]), 3),
-            torso_tilt_deg=round(math.degrees(self._torso_tilt_rad()), 1),
-            action="all joint torques cut; reset_to_pose or reconnect to re-arm",
-        )
-
-    def _raise_if_fallen(self) -> None:
-        if self.fallen:
-            raise ROSSafetyViolation(
-                f"G1 '{self.description.name}' fell under the gr00t_wbc S0 controller "
-                f"(pelvis < {_FALL_PELVIS_HEIGHT_M} m or torso tilt > 45°); joint torques "
-                "are cut. reset_to_pose or reconnect to re-arm."
-            )
 
 
 class G1MujocoHAL(MujocoArmHAL):

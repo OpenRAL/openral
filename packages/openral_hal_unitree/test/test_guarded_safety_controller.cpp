@@ -89,19 +89,48 @@ TEST(RuntimeSetRefusal, RefusesRaisingTheBlendWhileActivating) {
           .has_value());
 }
 
+TEST(PositionLimitsRefusal, NeedsOneFiniteOrderedPairPerJoint) {
+  using openral_hal_unitree::position_limits_refusal;
+  EXPECT_FALSE(position_limits_refusal(2, {-1.0, -0.5}, {1.0, 0.5}).has_value());
+  EXPECT_TRUE(position_limits_refusal(2, {}, {}).has_value());                   // absent
+  EXPECT_TRUE(position_limits_refusal(2, {-1.0}, {1.0, 1.0}).has_value());       // short
+  EXPECT_TRUE(position_limits_refusal(2, {-1.0, 1.0}, {1.0, 1.0}).has_value());  // lower == upper
+  EXPECT_TRUE(position_limits_refusal(2, {-1.0, 2.0}, {1.0, 1.0}).has_value());  // inverted
+  EXPECT_TRUE(position_limits_refusal(2, {-1.0, std::nan("")}, {1.0, 1.0}).has_value());
+  EXPECT_TRUE(
+      position_limits_refusal(2, {-1.0, -std::numeric_limits<double>::infinity()}, {1.0, 1.0})
+          .has_value());
+}
+
+TEST(RuntimeSetRefusal, RefusesTheJointLimits) {
+  EXPECT_TRUE(
+      openral_hal_unitree::runtime_set_refusal(
+          {rclcpp::Parameter("joint_position_limits.upper", std::vector<double>{9.0, 9.0})}, false)
+          .has_value());
+}
+
 class GuardedSafetyControllerTest : public ::testing::Test {
 protected:
   static void SetUpTestSuite() { rclcpp::init(0, nullptr); }
   static void TearDownTestSuite() { rclcpp::shutdown(); }
 
-  CallbackReturn init_and_configure(double max_blend_ratio_speed) {
+  CallbackReturn init_and_configure(double max_blend_ratio_speed,
+                                    std::vector<double> lower = {-1.0, -1.0},
+                                    std::vector<double> upper = {1.0, 1.0}) {
     controller_interface::ControllerInterfaceParams params;
     params.controller_name = "safety_controller";
     params.controller_manager_update_rate = 200;
     params.update_rate = 200;
-    params.node_options.parameter_overrides(
-        {rclcpp::Parameter("joints", kJoints),
-         rclcpp::Parameter("max_blend_ratio_speed", max_blend_ratio_speed)});
+    std::vector<rclcpp::Parameter> overrides = {
+        rclcpp::Parameter("joints", kJoints),
+        rclcpp::Parameter("max_blend_ratio_speed", max_blend_ratio_speed)};
+    if (!lower.empty()) {
+      overrides.emplace_back("joint_position_limits.lower", lower);
+    }
+    if (!upper.empty()) {
+      overrides.emplace_back("joint_position_limits.upper", upper);
+    }
+    params.node_options.parameter_overrides(overrides);
     EXPECT_EQ(controller_.init(params), controller_interface::return_type::OK);
     return controller_.on_configure(rclcpp_lifecycle::State());
   }
@@ -275,6 +304,55 @@ TEST_F(GuardedSafetyControllerTest, OneStaleJointHoldsEveryJoint) {
   controller_.set_position_references(0.5);
   controller_.set_position_reference(0, std::nan(""));
   EXPECT_TRUE(all_near(tick(), 0.2));
+}
+
+// Hazard-log Entry 105, condition C1: every position command is bounded by the joint limits.
+
+TEST_F(GuardedSafetyControllerTest, RefusesToConfigureWithoutJointLimits) {
+  EXPECT_EQ(init_and_configure(1.0, {}, {}), CallbackReturn::ERROR);
+}
+
+TEST_F(GuardedSafetyControllerTest, RefusesToConfigureWithAJointLimitMissing) {
+  EXPECT_EQ(init_and_configure(1.0, {-1.0}, {1.0, 1.0}), CallbackReturn::ERROR);
+}
+
+TEST_F(GuardedSafetyControllerTest, APolicyTargetPastAJointLimitIsCommandedAtTheLimit) {
+  ASSERT_EQ(init_and_configure(1.0, {-1.0, -0.5}, {1.0, 0.5}), CallbackReturn::SUCCESS);
+  assign_interfaces();
+  ASSERT_EQ(controller_.on_activate(rclcpp_lifecycle::State()), CallbackReturn::SUCCESS);
+  ASSERT_TRUE(set("blend_ratio", 1.0));
+  tick(1.0);
+  ASSERT_EQ(SafetyControllerTestAccess::applied_blend_ratio(controller_), 1.0);
+
+  // Inside the limits: untouched.
+  controller_.set_position_references(0.3);
+  EXPECT_TRUE(all_near(tick(), 0.3));
+  // Past them (the AGILE ankle asks ~1.1 rad against 0.611): each joint at its own limit.
+  controller_.set_position_references(2.0);
+  auto out = tick();
+  EXPECT_NEAR(out[0], 1.0, 1e-6);
+  EXPECT_NEAR(out[1], 0.5, 1e-6);
+  controller_.set_position_references(-2.0);
+  out = tick();
+  EXPECT_NEAR(out[0], -1.0, 1e-6);
+  EXPECT_NEAR(out[1], -0.5, 1e-6);
+}
+
+TEST_F(GuardedSafetyControllerTest, TheStaleHoldIsBoundedToo) {
+  // A pose measured past a limit (a joint pushed over its stop) is not held there.
+  ASSERT_EQ(init_and_configure(1.0, {-0.5, -0.5}, {0.5, 0.5}), CallbackReturn::SUCCESS);
+  assign_interfaces();
+  ASSERT_EQ(controller_.on_activate(rclcpp_lifecycle::State()), CallbackReturn::SUCCESS);
+  set_measured(0.8);
+  controller_.set_position_references(std::nan(""));
+  EXPECT_TRUE(all_near(tick(), 0.5));
+}
+
+TEST_F(GuardedSafetyControllerTest, BlendedOutTheActivationPoseIsBoundedToo) {
+  ASSERT_EQ(init_and_configure(1.0, {-0.05, -0.05}, {0.05, 0.05}), CallbackReturn::SUCCESS);
+  assign_interfaces();  // measured 0.1, past the 0.05 limit
+  ASSERT_EQ(controller_.on_activate(rclcpp_lifecycle::State()), CallbackReturn::SUCCESS);
+  EXPECT_TRUE(all_near(tick(), 0.05));
 }
 
 }  // namespace

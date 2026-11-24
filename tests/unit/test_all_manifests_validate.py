@@ -114,6 +114,7 @@ _DEPLOY_STEMS: list[str] = [
     "behavior_r1pro",
     "g1_vln",
     "galaxea_a1_bench",
+    "h2_walk",
     "isaac_arena_droid_banana_in_bowl",
     "isaac_franka_urdf",
     "isaac_leisaac_pick_orange",

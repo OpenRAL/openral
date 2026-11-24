@@ -1,20 +1,23 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The real G1 HAL drives NVIDIA's S0 controller chain — with only the motors left out.
+"""The real G1 / H2 HAL drives NVIDIA's S0 controller chain — with only the motors left out.
 
-Brings up the production `openral_hal_unitree` controller config
-(`config/g1/controller_manager.yaml` + the default `policies/gr00t_decoupled_wbc.yaml`) in a real
+Parametrized over both hg models. Brings up the production `openral_hal_unitree` controller
+config (`config/<model>/controller_manager.yaml` + the manifest's default policy file — G1
+`policies/gr00t_decoupled_wbc.yaml`, H2 `policies/agile_velocity.yaml`) in a real
 `controller_manager`, with NVIDIA's real `SafetyController` (run through OpenRAL's
 `GuardedSafetyController` plugin, as on the robot), `FreezeController` and
 `ForwardJointCommandController` (isaac_ros_deploy) over `mock_components/GenericSystem`
-exporting the G1's 29 joints with the same `position/velocity/effort/kp/kd` command
+exporting the robot's joints (G1 29, H2 31) with the same `position/velocity/effort/kp/kd` command
 interfaces `UnitreeHgSystemInterface` exports — the hardware-boundary double CLAUDE.md
 §1.11 allows. It loads everything inactive and activates the runtime group in one strict
 switch, exactly like `real_bringup.launch.py`, and drives it through the production
 `UnitreeHgRealHAL` + `RosControlTransport`.
 
-One substitution, stated plainly: the S0 policy's LEAPP bundle needs the GR00T weights
-(built per host by `tools/build_gr00t_wbc_leapp.py`) and NVIDIA's Triton runtime, and its
-numerics are covered separately by `tests/unit/test_gr00t_wbc_leapp_bundle.py`, so the
+One substitution, stated plainly: the S0 policy's LEAPP bundle needs its weights (G1 GR00T
+built per host by `tools/build_gr00t_wbc_leapp.py`; H2 AGILE downloaded from the Hub) and
+NVIDIA's Triton runtime, and its numerics are covered separately
+(`tests/unit/test_gr00t_wbc_leapp_bundle.py`, `tests/unit/test_h2_agile_velocity_rollout.py`),
+so the
 controller named `inference_controller` is a real `ForwardJointCommandController` holding
 the S0 joints at their activation pose. Everything the HAL touches — topic, message types, the
 chain through `safety_controller`, the e-stop swap — is the production article.
@@ -61,8 +64,7 @@ from tests.integration._ros2_control_stack import (
 )
 
 _REPO = Path(__file__).resolve().parents[2]
-_G1_YAML = _REPO / "robots" / "g1" / "robot.yaml"
-_CONFIG = _REPO / "packages" / "openral_hal_unitree" / "config" / "g1"
+_MODELS = ("g1", "h2")
 _BUILD_HINT = "build packages/openral_hal_unitree/deps.repos"
 
 
@@ -93,12 +95,26 @@ def _why_not() -> str | None:
 pytestmark = pytest.mark.skipif(_why_not() is not None, reason=str(_why_not()))
 
 
+def _robot_yaml(model: str) -> Path:
+    return _REPO / "robots" / model / "robot.yaml"
+
+
+def _config(model: str) -> Path:
+    return _REPO / "packages" / "openral_hal_unitree" / "config" / model
+
+
+@pytest.fixture(params=_MODELS)
+def robot(request: pytest.FixtureRequest) -> str:
+    """The hg model under test; every graph test runs once per model."""
+    return str(request.param)
+
+
 def _urdf(path: Path, joints: list[str]) -> Path:
     """GenericSystem with the interface set UnitreeHgSystemInterface exports per joint."""
-    links = "".join(f'  <link name="g1_link_{i}"/>\n' for i in range(len(joints) + 1))
+    links = "".join(f'  <link name="hg_link_{i}"/>\n' for i in range(len(joints) + 1))
     joint_xml = "".join(
-        f'  <joint name="{j}" type="revolute"><parent link="g1_link_{i}"/>'
-        f'<child link="g1_link_{i + 1}"/><axis xyz="0 0 1"/>'
+        f'  <joint name="{j}" type="revolute"><parent link="hg_link_{i}"/>'
+        f'<child link="hg_link_{i + 1}"/><axis xyz="0 0 1"/>'
         f'<limit lower="-3.14" upper="3.14" effort="100" velocity="30"/></joint>\n'
         for i, j in enumerate(joints)
     )
@@ -111,17 +127,20 @@ def _urdf(path: Path, joints: list[str]) -> Path:
         for j in joints
     )
     path.write_text(
-        f'<?xml version="1.0"?>\n<robot name="g1">\n{links}{joint_xml}'
-        '  <ros2_control name="UnitreeG1System" type="system">\n'
+        f'<?xml version="1.0"?>\n<robot name="hg">\n{links}{joint_xml}'
+        '  <ros2_control name="UnitreeHgSystem" type="system">\n'
         "    <hardware><plugin>mock_components/GenericSystem</plugin></hardware>\n"
         f"{control}  </ros2_control>\n</robot>\n"
     )
     return path
 
 
-def _overrides(path: Path, s0_joints: list[str]) -> Path:
+def _overrides(path: Path, s0_joints: list[str], model: str) -> Path:
     """The default policy file's controllers, with the ONNX controller stood in (docstring)."""
-    policy = yaml.safe_load((_CONFIG / "policies" / "gr00t_decoupled_wbc.yaml").read_text())
+    from openral_core import RobotDescription
+
+    stem = RobotDescription.from_yaml(str(_robot_yaml(model))).hal.parameters.defaults["s0_policy"]
+    policy = yaml.safe_load((_config(model) / "policies" / f"{stem}.yaml").read_text())
     params: dict[str, Any] = policy["controllers"]
     params["controller_manager"] = {
         "ros__parameters": {
@@ -171,14 +190,14 @@ def _param(node: str, name: str) -> float:
 
 
 @contextlib.contextmanager
-def _wired_hal(name: str) -> Iterator[tuple[Any, Any, Any, Callable[[float], None]]]:
-    """`(hal, transport, node, spin)`: the production G1 HAL on a live `RosControlTransport`."""
+def _wired_hal(name: str, model: str) -> Iterator[tuple[Any, Any, Any, Callable[[float], None]]]:
+    """`(hal, transport, node, spin)`: the production HAL on a live `RosControlTransport`."""
     from openral_core import RobotDescription
     from openral_hal import build_hal
     from openral_hal.ros_control_transport import RosControlTransport
     from openral_hal.unitree_real import UnitreeHgRealHAL
 
-    desc = RobotDescription.from_yaml(str(_G1_YAML))
+    desc = RobotDescription.from_yaml(str(_robot_yaml(model)))
     hal = build_hal(desc, mode="real")
     assert isinstance(hal, UnitreeHgRealHAL)
     with driver_node(name) as (node, spin):
@@ -251,15 +270,17 @@ def _released(states: dict[str, str], chain: list[str]) -> bool:
 
 
 @pytest.fixture
-def s0_graph(tmp_path: Path) -> Iterator[subprocess.Popen[bytes]]:
+def s0_graph(tmp_path: Path, robot: str) -> Iterator[subprocess.Popen[bytes]]:
     """The S0 graph, up and blended in; yields the `ros2_control_node` process group leader."""
     from openral_core import RobotDescription
     from openral_hal.unitree_real import UnitreeHgRealHAL
 
-    desc = RobotDescription.from_yaml(str(_G1_YAML))
+    desc = RobotDescription.from_yaml(str(_robot_yaml(robot)))
     joints = [j.name for j in desc.joints]
-    urdf = _urdf(tmp_path / "g1.urdf", joints)
-    overrides = _overrides(tmp_path / "policy_overrides.yaml", UnitreeHgRealHAL().s0_joints())
+    urdf = _urdf(tmp_path / f"{robot}.urdf", joints)
+    overrides = _overrides(
+        tmp_path / "policy_overrides.yaml", UnitreeHgRealHAL(robot_model=robot).s0_joints(), robot
+    )
     rsp = tmp_path / "rsp.yaml"
     rsp.write_text(
         yaml.safe_dump(
@@ -269,7 +290,7 @@ def s0_graph(tmp_path: Path) -> Iterator[subprocess.Popen[bytes]]:
     import os
 
     env = dict(os.environ)
-    params = [str(_CONFIG / "controller_manager.yaml"), str(overrides)]
+    params = [str(_config(robot) / "controller_manager.yaml"), str(overrides)]
     procs = [
         spawn(
             [
@@ -341,7 +362,7 @@ def s0_graph(tmp_path: Path) -> Iterator[subprocess.Popen[bytes]]:
 
 
 def test_the_hal_drives_the_upper_body_through_the_safety_chain_and_estop_freezes(
-    s0_graph: subprocess.Popen[bytes], tmp_path: Path
+    s0_graph: subprocess.Popen[bytes], tmp_path: Path, robot: str
 ) -> None:
     from openral_core import RobotDescription
     from openral_core.exceptions import ROSCapabilityMismatch, ROSEStopRequested
@@ -350,7 +371,7 @@ def test_the_hal_drives_the_upper_body_through_the_safety_chain_and_estop_freeze
     from openral_hal.ros_control_transport import RosControlTransport
     from openral_hal.unitree_real import UnitreeHgRealHAL
 
-    desc = RobotDescription.from_yaml(str(_G1_YAML))
+    desc = RobotDescription.from_yaml(str(_robot_yaml(robot)))
     hal = build_hal(desc, mode="real")
     assert isinstance(hal, UnitreeHgRealHAL)
     names = [j.name for j in desc.joints]
@@ -436,7 +457,7 @@ def test_the_hal_drives_the_upper_body_through_the_safety_chain_and_estop_freeze
 
 
 def test_estop_configures_an_unconfigured_freeze_controller_before_the_swap(
-    s0_graph: subprocess.Popen[bytes],
+    s0_graph: subprocess.Popen[bytes], robot: str
 ) -> None:
     """#566: the swap is refused whole while `freeze_controller` is unconfigured (STRICT; a
     BEST_EFFORT swap dropped its activation and still deactivated the chain — every joint
@@ -445,7 +466,7 @@ def test_estop_configures_an_unconfigured_freeze_controller_before_the_swap(
 
     cleanup = _run(["ros2", "control", "cleanup_controller", "freeze_controller"])
     assert cleanup.returncode == 0, cleanup.stdout + cleanup.stderr
-    with _wired_hal("unitree_hal_live_566") as (hal, transport, _node, _spin):
+    with _wired_hal("unitree_hal_live_566", robot) as (hal, transport, _node, _spin):
         assert transport.controller_states(timeout_s=5.0).get("freeze_controller") == (
             "unconfigured"
         )
@@ -461,7 +482,7 @@ def test_estop_configures_an_unconfigured_freeze_controller_before_the_swap(
 
 
 def test_estop_never_releases_the_chain_when_freeze_cannot_be_configured(
-    s0_graph: subprocess.Popen[bytes],
+    s0_graph: subprocess.Popen[bytes], robot: str
 ) -> None:
     """Review of #571, finding 1. `FreezeController::on_configure` refuses an empty `joints`
     (isaac_ros_deploy v4.6-0), so the pre-check's configure fails. A BEST_EFFORT swap then
@@ -471,7 +492,7 @@ def test_estop_never_releases_the_chain_when_freeze_cannot_be_configured(
 
     cleanup = _run(["ros2", "control", "cleanup_controller", "freeze_controller"])
     assert cleanup.returncode == 0, cleanup.stdout + cleanup.stderr
-    with _wired_hal("unitree_hal_live_571_f1") as (hal, transport, node, spin):
+    with _wired_hal("unitree_hal_live_571_f1", robot) as (hal, transport, node, spin):
         _set_string_array(node, spin, "/freeze_controller", "joints", [])
         assert transport.controller_states(timeout_s=5.0).get("freeze_controller") == (
             "unconfigured"
@@ -489,7 +510,7 @@ def test_estop_never_releases_the_chain_when_freeze_cannot_be_configured(
 
 
 def test_estop_returns_within_stop_timeout_when_the_manager_stalls(
-    s0_graph: subprocess.Popen[bytes],
+    s0_graph: subprocess.Popen[bytes], robot: str
 ) -> None:
     """Review of #571, finding 2. Never unbounded — every call has a finite timeout — but the
     pre-check, swap and retry each took a full `stop_timeout_s` window, so a stalled manager
@@ -497,7 +518,7 @@ def test_estop_returns_within_stop_timeout_when_the_manager_stalls(
     deadline now bounds the whole sequence. The stall is real: SIGSTOP on the manager."""
     from openral_core.exceptions import ROSEStopRequested
 
-    with _wired_hal("unitree_hal_live_571_f2") as (hal, _transport, node, spin):
+    with _wired_hal("unitree_hal_live_571_f2", robot) as (hal, _transport, node, spin):
         budget = hal._stop_timeout_s  # the bound under test
         hal.connect()
         group = os.getpgid(s0_graph.pid)
@@ -517,7 +538,7 @@ def test_estop_returns_within_stop_timeout_when_the_manager_stalls(
 
 
 def test_a_dead_listing_client_does_not_keep_the_swap_from_the_manager(
-    s0_graph: subprocess.Popen[bytes],
+    s0_graph: subprocess.Popen[bytes], robot: str
 ) -> None:
     """Review of #571, finding 3. The pre-check is advisory; an exception in it escaped
     `_stop_switch` before the swap was sent, so no stop request reached the manager. The
@@ -525,7 +546,7 @@ def test_a_dead_listing_client_does_not_keep_the_swap_from_the_manager(
     own post-swap confirmation fails too, so the report cannot say `stopped`)."""
     from openral_core.exceptions import ROSEStopRequested
 
-    with _wired_hal("unitree_hal_live_571_f3") as (hal, transport, node, spin):
+    with _wired_hal("unitree_hal_live_571_f3", robot) as (hal, transport, node, spin):
         hal.connect()
         transport._helper.destroy_client(transport._list_client)  # the fault under test
         with pytest.raises(ROSEStopRequested, match="NOT acknowledged"):

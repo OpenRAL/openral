@@ -784,6 +784,18 @@ def test_g1_vln_scene_enables_walking_controller() -> None:
     assert invocation.hal_params["walking_enabled"] is True
 
 
+def test_h2_walk_scene_selects_the_agile_s0() -> None:
+    invocation = resolve_launch_invocation(
+        config=_REPO_ROOT / "scenes" / "deploy" / "h2_walk.yaml",
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    assert invocation.robot_id == "h2"
+    assert invocation.hal_params["s0_controller"] == "agile_velocity"
+
+
 def test_hal_robot_yaml_cannot_diverge_from_the_safety_manifest() -> None:
     """`--hal robot_yaml=…` must not drive one robot under another's safety config."""
     with pytest.raises(ROSConfigError, match="safety kernel is configured"):

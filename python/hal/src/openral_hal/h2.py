@@ -7,12 +7,17 @@ Wraps Unitree's official H2 MJCF (``unitreerobotics/unitree_mujoco`` @
 fetched at the pinned commit with per-file SHA-256 by
 ``openral_hal._unitree_h2_assets`` (asset ref ``unitree:h2``).
 
-Like ``G1MujocoHAL`` this is a **digital-twin contract validator**: there is no
-S0 balance controller and no public H2 locomotion checkpoint, so the free joint
-is **pinned upright** every physics step (ADR-0087 kinematic glide). A
-``BODY_TWIST`` action slides the pinned base; ``JOINT_POSITION`` drives the 31
-joints. Balance, walking and real hardware are out of scope (``hal.real`` is
-``null``; the C++ S0 controller and ``unitree_sdk2`` real HAL are future work).
+By default (``s0_controller="none"``) this is a **digital-twin contract
+validator** like ``G1MujocoHAL``: no S0 balance controller, so the free joint is
+**pinned upright** every physics step (ADR-0087 kinematic glide); a ``BODY_TWIST``
+slides the pinned base and ``JOINT_POSITION`` drives the 31 joints.
+``s0_controller="agile_velocity"`` instead runs NVIDIA's WBC-AGILE velocity policy
+(the real H2's own S0 export, ``config/h2/policies/agile_velocity.yaml``) as a
+**sim-only** S0 on the unpinned free base: it balances and walks under gravity,
+``BODY_TWIST`` is its velocity command, and S1 keeps waist yaw, arms and head.
+Real hardware is ``openral_hal.unitree_real.UnitreeHgRealHAL`` (its description
+``H2_REAL_DESCRIPTION`` is this one with ``sdk_kind: closed_with_api``), whose S0
+is the same WBC-AGILE policy in C++.
 
 Joint inventory — 31 actuated joints in **unitree_sdk2 motor-index order**
 (``example/h2/low_level/h2_ankle_swing_example.cpp``, ``H2_NUM_MOTOR = 31``),
@@ -52,13 +57,21 @@ Example:
 from __future__ import annotations
 
 import functools
+import math
+from collections.abc import Callable
+from typing import Any, Literal, Unpack, get_args
 
-from openral_core.exceptions import ROSConfigError
+import numpy as np
+import structlog
+from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from openral_core.schemas import (
+    Action,
+    ActionSpec,
     AssetRefs,
     ControlMode,
     EmbodimentKind,
     HalEntrypoints,
+    HalParameters,
     JointSpec,
     JointType,
     RobotCapabilities,
@@ -67,12 +80,30 @@ from openral_core.schemas import (
     SimDescription,
     UrdfAsset,
 )
+from openral_core.time_base import physics_steps_per_tick
 
 from openral_hal._floating_base import capture_base_pin, write_base_pin
+from openral_hal._h2_agile_velocity import (
+    AGILE_LICENSE_POSTURE,
+    LeappVelocityPolicy,
+    h2_agile_velocity_config,
+)
 from openral_hal._mujoco_arm import MujocoArmHAL, _kinematic_group
-from openral_hal.mujoco_twin import _GlideTwin, _SoftwarePDTwin
+from openral_hal._slot_group import joint_position_command, slot_group_targets
+from openral_hal.mujoco_twin import (
+    MujocoTwinRollout,
+    TwinKwargs,
+    _GlideTwin,
+    _S0PolicyTwin,
+    _SoftwarePDTwin,
+)
 
-__all__ = ["H2_DESCRIPTION", "H2MujocoHAL"]
+log = structlog.get_logger(__name__)
+
+__all__ = ["H2_DESCRIPTION", "H2MujocoHAL", "H2S0Controller"]
+
+#: Sim-only S0 (cerebellum) controller choices for ``H2MujocoHAL``.
+H2S0Controller = Literal["none", "agile_velocity"]
 
 
 # ── Canonical joint order (unitree_sdk2 motor index) ─────────────────────────
@@ -237,8 +268,8 @@ H2_DESCRIPTION = RobotDescription(
         has_force_control=True,
         has_vision=False,
         bimanual=True,
-        # BODY_TWIST rides the ADR-0087 kinematic glide (sim-only); there is no
-        # public H2 walking checkpoint.
+        # BODY_TWIST: the ADR-0087 kinematic glide in sim; on real hardware the S0
+        # AGILE velocity policy's velocity command.
         supported_control_modes=[ControlMode.JOINT_POSITION, ControlMode.BODY_TWIST],
         embodiment_tags=["h2", "unitree_h2", "humanoid", "mobile_base"],
     ),
@@ -252,9 +283,29 @@ H2_DESCRIPTION = RobotDescription(
         deadman_required=True,
         max_base_linear_speed_m_s=0.5,
         max_base_angular_speed_rad_s=0.5,
+        # Provisional real-path values (the G1's; not measured on an H2) — see the manifest.
+        max_ee_accel_m_s2=1.0,
+        contact_force_threshold_n=30.0,
+        self_collision_margin_m=0.0,
+        starting_pose_max_joint_speed_rad_s=0.5,
+        starting_pose_tolerance_rad=0.05,
+        # = unitree_hg_ros2_control's FreshStateTracker kMaximumStateAge (isaac_ros_robots
+        # @ 520aa94f) and H2MujocoHAL's default.
+        joint_state_staleness_limit_s=0.5,
     ),
     sdk_kind="open",
-    hal=HalEntrypoints(sim="openral_hal.h2:H2MujocoHAL", real=None),
+    # Sim: the MuJoCo twin. Real: ``UnitreeHgRealHAL`` over NVIDIA's ros2_control stack;
+    # its ``RobotDescription`` is ``H2_REAL_DESCRIPTION`` (``closed_with_api``), which
+    # ``robots/h2/robot.yaml`` mirrors.
+    hal=HalEntrypoints(
+        sim="openral_hal.h2:H2MujocoHAL",
+        real="openral_hal.unitree_real:UnitreeHgRealHAL",
+        real_bringup="openral_hal_unitree:real_bringup.launch.py",
+        # build_hal drops keys a constructor does not take, so the twin never sees them.
+        parameters=HalParameters(defaults={"robot_model": "h2", "s0_policy": "agile_velocity"}),
+    ),
+    # 50 Hz: the S0 AGILE policy's rate (manifest `action_spec`).
+    action_spec=ActionSpec(control_freq_hz=50.0),
     assets=AssetRefs(urdf=UrdfAsset(ref="unitree:h2"), mjcf="unitree:h2"),
     sim=SimDescription(
         floating_base=True,
@@ -337,22 +388,268 @@ class _H2Twin(_GlideTwin, _SoftwarePDTwin):
         super()._on_load()
         model, data = self.model, self.data
         assert model is not None and data is not None
-        foot_bottoms = [
-            float(data.geom_xpos[g][2]) - float(model.geom_size[g][0])
-            for g in range(model.ngeom)
-            if int(model.geom_type[g]) == int(mj.mjtGeom.mjGEOM_SPHERE)
-            and mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY, model.geom_bodyid[g]) in _FOOT_BODIES
-        ]
-        if not foot_bottoms:
-            raise ROSConfigError(
-                f"H2 MJCF has no foot contact sphere on {sorted(_FOOT_BODIES)}; "
-                "cannot set the standing height."
-            )
         x, y, yaw, z = capture_base_pin(data.qpos)
-        self._base_pin = (x, y, yaw, z - min(foot_bottoms))
+        self._base_pin = (x, y, yaw, z - _lowest_foot_z(model, data))
         write_base_pin(data, self._base_pin)
         data.ctrl[:] = 0.0
         mj.mj_forward(model, data)
+
+
+def _lowest_foot_z(model: Any, data: Any) -> float:  # noqa: ANN401  # reason: mujoco handles
+    """World z of the lowest foot contact-sphere surface (after ``mj_forward``).
+
+    Raises:
+        ROSConfigError: The MJCF has no foot contact sphere.
+    """
+    import mujoco as mj  # noqa: PLC0415  # reason: optional sim-only dep
+
+    foot_bottoms = [
+        float(data.geom_xpos[g][2]) - float(model.geom_size[g][0])
+        for g in range(model.ngeom)
+        if int(model.geom_type[g]) == int(mj.mjtGeom.mjGEOM_SPHERE)
+        and mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY, model.geom_bodyid[g]) in _FOOT_BODIES
+    ]
+    if not foot_bottoms:
+        raise ROSConfigError(
+            f"H2 MJCF has no foot contact sphere on {sorted(_FOOT_BODIES)}; "
+            "cannot set the standing height."
+        )
+    return min(foot_bottoms)
+
+
+# The AGILE fall guard: the export's training terminates below DEFAULT_PELVIS_HEIGHT
+# (0.915 m) - 0.3 (WBC-AGILE h2/velocity_history_env_cfg.py); the twin stands at ~0.93 m.
+_AGILE_FALL_PELVIS_HEIGHT_M = 0.6
+
+
+class _H2AgileTwin(_S0PolicyTwin, _SoftwarePDTwin):
+    """NVIDIA WBC-AGILE velocity policy (sim-only S0) on the free-base H2 twin, no pin.
+
+    The policy owns 14 joints (12 legs + waist roll/pitch) at its 50 Hz: every policy
+    tick replaces their software-PD targets **and** kp/kd with the policy's outputs
+    (targets clamped to the MJCF joint ranges, each clamp counted and its first one
+    per joint logged); the other 17 (waist yaw, arms, head) track S1 joint targets
+    with the gains the policy was trained with. ``BODY_TWIST`` sets the held velocity
+    command (joint actions leave it, an idle slice zeroes it); ``JOINT_POSITION`` must
+    name only non-policy joints. A fall (pelvis < 0.6 m or torso tilt > 45°) cuts every
+    torque and refuses commands until ``reset_to_pose`` / reconnect.
+    """
+
+    s0_name = "agile_velocity"
+    fall_pelvis_height_m = _AGILE_FALL_PELVIS_HEIGHT_M
+    hold_pose_on_load = True
+
+    def __init__(
+        self,
+        description: RobotDescription,
+        *,
+        policy: LeappVelocityPolicy,
+        **kwargs: Unpack[TwinKwargs],
+    ) -> None:
+        """Bind the twin; ``kwargs`` are ``MujocoTwinRollout``'s."""
+        gains = {
+            name: (float(policy.default_kp[name]), float(policy.default_kd[name]))
+            for name in _H2_JOINT_NAMES
+        }
+        super().__init__(description, pd_gains=gains, **kwargs)
+        self._policy = policy
+        self._decimation = 1
+        self._counter = 0
+        #: Policy ticks whose target for a joint was clamped to its MJCF range, by joint.
+        self.clamp_counts: dict[str, int] = {}
+
+    def _on_load(self) -> None:
+        """Stand the twin in the policy's default pose on a colliding floor and bind the policy.
+
+        Raises:
+            ROSConfigError: The policy rate does not divide the physics timestep, a policy
+                joint is missing from the twin, or there is no foot sphere / torso body.
+        """
+        import mujoco as mj  # noqa: PLC0415  # reason: optional sim-only dep
+
+        model, data = self.model, self.data
+        assert model is not None and data is not None
+        timestep = float(model.opt.timestep)
+        decimation, exact_dt = physics_steps_per_tick(self._policy.frequency_hz, timestep)
+        if not math.isclose(exact_dt, timestep, rel_tol=1e-9):
+            raise ROSConfigError(
+                f"H2 agile_velocity runs at {self._policy.frequency_hz:g} Hz; physics "
+                f"timestep {timestep} s does not divide its period."
+            )
+        self._decimation = decimation
+        missing = set(self._policy.obs_joint_names) - set(self.joint_names)
+        if missing:
+            raise ROSConfigError(f"H2 agile_velocity: twin lacks policy joints {sorted(missing)}.")
+        self._enable_ground_contact()
+        self._bind_torso()
+        self._stand_default_pose()
+        super()._on_load()  # _SoftwarePDTwin: index arrays; holds the default pose
+        driven = [self.joint_names[r] for r in self._pd_rows]
+        self._s0_idx = np.array(
+            [driven.index(n) for n in self._policy.action_joint_names], dtype=np.intp
+        )
+        self._obs_qpos = np.array(
+            [self.joint_qpos_addr[n] for n in self._policy.obs_joint_names], dtype=np.intp
+        )
+        self._obs_qvel = np.array(
+            [self.joint_qvel_addr[n] for n in self._policy.obs_joint_names], dtype=np.intp
+        )
+        jids = [
+            mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, n) for n in self._policy.action_joint_names
+        ]
+        self._s0_low = np.asarray(model.jnt_range, dtype=np.float64)[jids, 0]
+        self._s0_high = np.asarray(model.jnt_range, dtype=np.float64)[jids, 1]
+        self._reset_state()
+        log.info(
+            "hal.h2.s0_controller.connected",
+            s0_controller=self.s0_name,
+            control_rate_hz=self._policy.frequency_hz,
+            physics_dt_s=timestep,
+            decimation=decimation,
+            weights_license=AGILE_LICENSE_POSTURE.value,
+        )
+
+    def reset_to_pose(self, pose: list[float]) -> None:
+        """Snap the joints, re-seat the base upright on the floor, re-arm the policy.
+
+        The base keeps its ``x, y, yaw``; the pose's non-policy entries become their PD
+        targets, the policy's own are replaced at its next tick; the policy history, the
+        velocity command and the fall latch clear.
+        """
+        import mujoco as mj  # noqa: PLC0415  # reason: optional sim-only dep
+
+        super().reset_to_pose(pose)
+        model, data = self.model, self.data
+        assert model is not None and data is not None
+        x, y, yaw = self.read_base_pose()
+        write_base_pin(data, (x, y, yaw, float(data.qpos[2])))
+        mj.mj_forward(model, data)
+        data.qpos[2] -= _lowest_foot_z(model, data)
+        mj.mj_forward(model, data)
+        self._reset_state()
+
+    def hold_present_pose(self) -> None:
+        """Hold the present pose (``_SoftwarePDTwin``) and stop the velocity command."""
+        super().hold_present_pose()
+        self._s0_command = (0.0, 0.0, 0.0)
+
+    def _compose(
+        self, actions: list[Action]
+    ) -> tuple[list[float] | None, tuple[float, float, float] | None, Action]:
+        """Split one tick into its ``(vx, vy, wz)`` twist and a full row of PD targets.
+
+        Raises:
+            ROSCapabilityMismatch: A policy joint is commanded, or a joint action is
+                whole-vector.
+            ROSConfigError: An unsupported mode, a malformed payload, a non-finite target.
+        """
+        twist, joint_actions = self._split_twist(actions)
+        for slot in joint_actions:
+            self._validate(slot)
+            if not slot.joint_names:
+                raise ROSCapabilityMismatch(
+                    "H2 agile_velocity: a whole-vector JOINT_POSITION action commands all 31 "
+                    "joints, but legs + waist roll/pitch belong to the S0 policy. Name the "
+                    "joints the action drives with Action.joint_names (ADR-0102)."
+                )
+        targets = slot_group_targets(joint_actions, self.joint_names) if joint_actions else []
+        s0 = set(self._policy.action_joint_names)
+        owned = [
+            self.joint_names[i]
+            for i, v in enumerate(targets)
+            if v is not None and self.joint_names[i] in s0
+        ]
+        if owned:
+            raise ROSCapabilityMismatch(
+                f"H2 agile_velocity: joints {owned} are owned by the S0 policy (legs + waist "
+                "roll/pitch); S1 may command only waist yaw, the arms and the head."
+            )
+        assert self._pd_targets is not None
+        row = np.zeros(len(self.joint_names))
+        row[self._pd_rows] = self._pd_targets
+        for i, value in enumerate(targets):
+            if value is not None:
+                row[i] = value
+        if not np.isfinite(row).all():
+            raise ROSConfigError("H2 agile_velocity: non-finite joint target.")
+        applied = (
+            joint_position_command(row.tolist(), actions[0]) if len(actions) > 1 else actions[0]
+        )
+        return row.tolist(), twist, applied
+
+    def _command(
+        self, targets: list[float] | None, twist: tuple[float, float, float] | None
+    ) -> None:
+        if targets is not None:
+            self._apply_targets(targets)
+        if twist is not None:
+            self._s0_command = twist
+
+    def _per_step(self) -> None:
+        """Fall check, the 50 Hz policy tick (targets + gains), then the software PD.
+
+        After a fall every torque stays at zero and the policy no longer runs.
+        """
+        data = self.data
+        assert data is not None and self._pd_targets is not None
+        self._latch_if_fallen()
+        if self.fallen:
+            data.ctrl[:] = 0.0
+            return
+        if self._counter % self._decimation == 0:
+            self._policy_tick()
+        self._counter += 1
+        super()._per_step()
+
+    def _policy_tick(self) -> None:
+        data = self.data
+        assert data is not None and self._pd_targets is not None
+        w, x, y, z = (float(v) for v in data.qpos[3:7])
+        raw, kp, kd = self._policy.step(
+            ang_vel_b=np.asarray(data.qvel[3:6]),  # free-joint angular velocity: body frame
+            quat_xyzw=np.array([x, y, z, w]),
+            command=self._s0_command,
+            joint_pos=np.asarray(data.qpos[self._obs_qpos]),
+            joint_vel=np.asarray(data.qvel[self._obs_qvel]),
+        )
+        target = np.clip(raw, self._s0_low, self._s0_high)
+        for j in np.flatnonzero(target != raw):
+            name = self._policy.action_joint_names[j]
+            self.clamp_counts[name] = self.clamp_counts.get(name, 0) + 1
+            if self.clamp_counts[name] == 1:
+                log.warning(
+                    "hal.h2.s0_controller.target_clamped",
+                    joint=name,
+                    target_rad=round(float(raw[j]), 4),
+                    limit_rad=round(float(target[j]), 4),
+                    note="policy target past the MJCF joint range; clamped (counted per tick)",
+                )
+        self._pd_targets[self._s0_idx] = target
+        self._pd_kp[self._s0_idx] = kp
+        self._pd_kd[self._s0_idx] = kd
+
+    def _stand_default_pose(self) -> None:
+        """Every joint at the policy's default, base upright with the feet on ``z = 0``."""
+        import mujoco as mj  # noqa: PLC0415  # reason: optional sim-only dep
+
+        model, data = self.model, self.data
+        assert model is not None and data is not None
+        for name in self.joint_names:
+            data.qpos[self.joint_qpos_addr[name]] = float(self._policy.default_joint_pos[name])
+        data.qvel[:] = 0.0
+        x, y, yaw, z = capture_base_pin(data.qpos)
+        write_base_pin(data, (x, y, yaw, z))
+        mj.mj_forward(model, data)
+        data.qpos[2] -= _lowest_foot_z(model, data)
+        data.ctrl[:] = 0.0
+        mj.mj_forward(model, data)
+
+    def _reset_state(self) -> None:
+        self._policy.reset()
+        self._s0_command = (0.0, 0.0, 0.0)
+        self._counter = 0
+        self.fallen = False
+        self.clamp_counts = {}
 
 
 class H2MujocoHAL(MujocoArmHAL):
@@ -360,14 +657,21 @@ class H2MujocoHAL(MujocoArmHAL):
 
     Exposes a 31-D ``JOINT_POSITION`` action in unitree_sdk2 motor order (left
     leg 6 → right leg 6 → waist 3 → left arm 7 → right arm 7 → head 2) and a
-    planar ``BODY_TWIST`` that slides the pinned base (ADR-0087), both driven by
-    ``_H2Twin``.
+    planar ``BODY_TWIST``. ``s0_controller`` picks how the gravity-on twin stays up:
 
-    .. warning::
-
-       No balance: the free joint is pinned upright at the stand height (feet
-       on ``z = 0``) every physics step. This validates the action contract,
-       joint indexing and lifecycle — it is not a humanoid locomotion sim.
+    * ``"none"`` (default) — ``_H2Twin``: the free joint is pinned upright at the
+      stand height (feet on ``z = 0``) every physics step and a ``BODY_TWIST``
+      slides the pin (ADR-0087). No balance: a contract validator.
+    * ``"agile_velocity"`` — ``_H2AgileTwin``: NVIDIA WBC-AGILE (the pinned,
+      SHA-256-checked Hub export; NVIDIA Open Model License weights) owns legs +
+      waist roll/pitch at 50 Hz with **no pin**; its per-joint targets (clamped to
+      the MJCF ranges) and kp/kd drive the software PD of those 14 joints.
+      ``BODY_TWIST`` sets its ``(vx, vy, wz)`` command (zero = stand), named
+      ``JOINT_POSITION`` actions drive waist yaw / arms / head with the policy's
+      training gains, and a command on a policy joint raises
+      ``ROSCapabilityMismatch``. A fall (pelvis < 0.6 m or torso tilt > 45°) cuts
+      every torque and raises ``ROSSafetyViolation`` until ``reset_to_pose`` /
+      reconnect. Simulation only — on hardware the same export runs in C++.
 
     Args:
         mjcf_path: Optional MJCF override; ``None`` resolves ``assets.mjcf``
@@ -376,11 +680,10 @@ class H2MujocoHAL(MujocoArmHAL):
             control period from ``description.control_rate_hz``.
         gravity_enabled: ``False`` zeroes gravity at ``connect()``.
         staleness_limit_s: Maximum age of a cached state.
-        body_twist_dt_s: Seconds one BODY_TWIST action integrates the glide by. The
-            H2 manifest declares no control rate (its rates are unverified), so the
-            twin has no control period to derive it from; the 0.05 s default keeps
-            the glide's commanded speed at a 20 Hz command rate. ``None`` is one
-            physics settle (``MujocoTwinRollout``).
+        body_twist_dt_s: Seconds one BODY_TWIST action integrates the glide by.
+            ``None`` (default) is one control period (``MujocoTwinRollout``): 20 ms at
+            the manifest's 50 Hz.
+        s0_controller: Sim-only S0 controller (see above); needs ``gravity_enabled``.
         description: The loaded ``robots/h2/robot.yaml`` (threaded by
             ``build_hal``); ``None`` uses the in-code ``H2_DESCRIPTION`` mirror.
 
@@ -400,12 +703,42 @@ class H2MujocoHAL(MujocoArmHAL):
         settle_steps: int | None = None,
         gravity_enabled: bool = True,
         staleness_limit_s: float = 0.5,
-        body_twist_dt_s: float | None = 0.05,
+        body_twist_dt_s: float | None = None,
+        s0_controller: H2S0Controller = "none",
         description: RobotDescription | None = None,
     ) -> None:
-        """Initialise the H2 HAL; no MuJoCo state is created until ``connect()``."""
+        """Initialise the H2 HAL; no MuJoCo state is created until ``connect()``.
+
+        Raises:
+            ROSConfigError: A non-positive ``body_twist_dt_s``, an unknown
+                ``s0_controller``, an S0 controller with gravity off, or the AGILE bundle
+                is not downloaded / fails its SHA-256 pins.
+        """
         if body_twist_dt_s is not None and not body_twist_dt_s > 0.0:  # NaN too
             raise ROSConfigError("H2MujocoHAL body_twist_dt_s must be > 0.")
+        if s0_controller not in get_args(H2S0Controller):
+            raise ROSConfigError(
+                f"H2 s0_controller={s0_controller!r} is not one of {get_args(H2S0Controller)}."
+            )
+        if s0_controller != "none" and not gravity_enabled:
+            raise ROSConfigError(
+                f"H2 s0_controller={s0_controller!r} requires gravity_enabled=True."
+            )
+        twin: Callable[..., MujocoTwinRollout]
+        if s0_controller == "agile_velocity":
+            leapp = h2_agile_velocity_config()
+            log.info(
+                "hal.h2.s0_controller",
+                s0_controller=s0_controller,
+                bundle=str(leapp.parent),
+                code_license="apache-2.0",
+                weights_license=AGILE_LICENSE_POSTURE.value,
+                sim_only=True,
+            )
+            twin = functools.partial(_H2AgileTwin, policy=LeappVelocityPolicy(leapp))
+        else:
+            twin = functools.partial(_H2Twin, pd_gains=_h2_pd_gains())
+        self._s0_kind: H2S0Controller = s0_controller
         self._init_from_description(
             description or H2_DESCRIPTION,
             mjcf_path=mjcf_path,
@@ -413,5 +746,20 @@ class H2MujocoHAL(MujocoArmHAL):
             gravity_enabled=gravity_enabled,
             staleness_limit_s=staleness_limit_s,
             body_twist_dt_s=body_twist_dt_s,
-            twin=functools.partial(_H2Twin, pd_gains=_h2_pd_gains()),
+            twin=twin,
         )
+
+    @property
+    def s0_controller(self) -> H2S0Controller:
+        """The sim-only S0 controller this HAL runs (``"none"`` = ADR-0087 glide)."""
+        return self._s0_kind
+
+    @property
+    def s0_fallen(self) -> bool:
+        """``True`` once the AGILE fall detector latched (torques are cut)."""
+        return isinstance(self._twin, _H2AgileTwin) and self._twin.fallen
+
+    @property
+    def s0_clamp_counts(self) -> dict[str, int]:
+        """Policy ticks whose target for each joint was clamped to its MJCF range."""
+        return dict(self._twin.clamp_counts) if isinstance(self._twin, _H2AgileTwin) else {}

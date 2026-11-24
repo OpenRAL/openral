@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""`UnitreeHgRealHAL` — the real G1 HAL proposes; NVIDIA's C++ S0 graph disposes.
+"""`UnitreeHgRealHAL` — the real G1 / H2 HAL proposes; NVIDIA's C++ S0 graph disposes.
 
 Driven through the production HAL code path over `SimTransport` (the typed in-memory
 ros2_control transport + controller table; no mocks, CLAUDE.md §1.11) and built from the
-real `robots/g1/robot.yaml` through `build_hal`, exactly as `deploy run` builds it.
+real `robots/g1/robot.yaml` / `robots/h2/robot.yaml` through `build_hal`, exactly as
+`deploy run` builds it. The model-independent contract is pinned on both robots; the
+G1-only policy variants (GR00T vs AGILE) on the G1.
 
 What is pinned:
 
@@ -45,7 +47,6 @@ from openral_hal.sim_transport import SimTransport
 from openral_hal.unitree_real import UnitreeHgRealHAL
 
 _REPO = Path(__file__).resolve().parents[2]
-_G1_YAML = _REPO / "robots" / "g1" / "robot.yaml"
 _UPPER_TOPIC = "/upper_body_forward_joint_command_controller/joint_commands_trajectory"
 _TWIST_TOPIC = "/inference_controller/cmd_vel"
 _CHAIN = (
@@ -55,18 +56,18 @@ _CHAIN = (
 )
 
 
-def _desc() -> RobotDescription:
-    return RobotDescription.from_yaml(str(_G1_YAML))
+def _desc(model: str = "g1") -> RobotDescription:
+    return RobotDescription.from_yaml(str(_REPO / "robots" / model / "robot.yaml"))
 
 
 @functools.cache
-def _names() -> tuple[str, ...]:
-    return tuple(j.name for j in _desc().joints)
+def _names(model: str = "g1") -> tuple[str, ...]:
+    return tuple(j.name for j in _desc(model).joints)
 
 
-def _wired(**transport_kwargs: Any) -> tuple[UnitreeHgRealHAL, SimTransport]:
+def _wired(model: str = "g1", **transport_kwargs: Any) -> tuple[UnitreeHgRealHAL, SimTransport]:
     """Real-mode HAL from the manifest, wired to a STRICT simulated controller table."""
-    desc = _desc()
+    desc = _desc(model)
     hal = build_hal(desc, mode="real")
     assert isinstance(hal, UnitreeHgRealHAL)
     names = [j.name for j in desc.joints]
@@ -86,8 +87,8 @@ def _wired(**transport_kwargs: Any) -> tuple[UnitreeHgRealHAL, SimTransport]:
     return hal, transport
 
 
-def _row(values: dict[str, float]) -> list[float]:
-    return [values.get(n, 0.0) for n in _names()]
+def _row(values: dict[str, float], model: str = "g1") -> list[float]:
+    return [values.get(n, 0.0) for n in _names(model)]
 
 
 def _joint_action(
@@ -96,11 +97,12 @@ def _joint_action(
     joint_names: Sequence[str] | None,
     tick: int = 0,
     group: int = 1,
+    model: str = "g1",
 ) -> Action:
     return Action(
         control_mode=ControlMode.JOINT_POSITION,
         horizon=1,
-        joint_targets=[_row(values)],
+        joint_targets=[_row(values, model)],
         joint_names=None if joint_names is None else list(joint_names),
         tick_index=tick,
         tick_group_size=group,
@@ -478,3 +480,63 @@ def test_the_production_transports_implement_the_swap_seam() -> None:
 
     assert isinstance(SimTransport(n_joints=1), ControllerSwapSeam)
     assert callable(RosControlTransport.swap_controllers)
+
+
+# ── H2 (31 DoF, WBC-AGILE: legs + waist roll/pitch; OpenRAL: waist yaw, arms, head) ──
+
+
+def test_build_hal_binds_the_h2_manifest_and_splits_the_31_joints() -> None:
+    desc = _desc("h2")
+    hal = build_hal(desc, mode="real")
+    assert isinstance(hal, UnitreeHgRealHAL)
+    assert hal.description is desc
+    assert hal.s0_policy == "agile_velocity"
+    assert hal.health().fields["robot_model"] == "h2"
+    upper, s0 = hal.upper_body_joints(), hal.s0_joints()
+    assert not set(upper) & set(s0)
+    assert set(upper) | set(s0) == set(_names("h2"))
+    assert (len(desc.joints), len(s0), len(upper)) == (31, 14, 17)
+    assert {"waist_yaw_joint", "head_pitch_joint", "head_yaw_joint"} <= set(upper)
+    assert hal.controller_names() == list(_CHAIN)
+    assert list(hal.command_bindings()) == [_UPPER_TOPIC, _TWIST_TOPIC]
+
+
+@pytest.mark.parametrize(
+    "joint", ["left_ankle_roll_joint", "right_hip_pitch_joint", "waist_roll_joint"]
+)
+def test_h2_policy_owned_joints_are_refused_before_the_wire(joint: str) -> None:
+    hal, transport = _wired("h2")
+    with pytest.raises(ROSCapabilityMismatch, match=joint):
+        hal.send_action(_joint_action({joint: 0.1}, joint_names=[joint], model="h2"))
+    with pytest.raises(ROSCapabilityMismatch, match="S0 whole-body"):
+        hal.send_action(_joint_action({}, joint_names=None, model="h2"))
+    assert transport.calls == []
+
+
+def test_h2_a_head_command_carries_every_upper_body_joint_and_reaches_the_head() -> None:
+    """Head motors 29-30 sit after the arms in SDK order; the message is by name."""
+    hal, transport = _wired("h2")
+    head = ["head_pitch_joint", "head_yaw_joint"]
+    hal.send_action(_joint_action({"head_yaw_joint": 0.4}, joint_names=head, model="h2"))
+    (upper_topic, upper), (twist_topic, twist) = transport.calls
+    assert upper_topic == _UPPER_TOPIC and twist_topic == _TWIST_TOPIC
+    assert upper["joint_names"] == hal.upper_body_joints()
+    targets = upper["joint_targets"]
+    assert isinstance(targets, list)
+    by_name = dict(zip(hal.upper_body_joints(), targets[0], strict=True))
+    assert by_name["head_yaw_joint"] == pytest.approx(0.4)
+    assert by_name["waist_yaw_joint"] == 0.0  # held at its measured position
+    assert twist == {"twist": [0.0] * 6}
+    state = hal.read_state()
+    pos = dict(zip(state.name, state.position, strict=True))
+    assert pos["head_yaw_joint"] == pytest.approx(0.4)
+    assert pos["left_ankle_roll_joint"] == 0.0
+
+
+def test_h2_estop_swaps_the_s0_chain_for_freeze_in_one_request() -> None:
+    hal, transport = _wired("h2")
+    with pytest.raises(ROSEStopRequested, match="acknowledged"):
+        hal.estop()
+    assert transport.switch_calls[-1] == ("swap", (*_CHAIN, "freeze_controller"))
+    assert transport.controller_state("freeze_controller") == "active"
+    assert all(transport.controller_state(c) == "inactive" for c in _CHAIN)
