@@ -70,13 +70,10 @@ quiet until deliberately promoted. Every span is still indexed in full for
 | `world.pointcloud` | World state | `runner/world_cloud_bridge.py` | throttled | debug | Pointcloud card |
 | `sim.step` / `eval.step` | Sim | `sim/sim_runner.py` | per step | debug | — |
 | `physics.step` | Sim | `sim/sim_runner.py` | per step | debug | — |
-| `reasoner.skill_failure` | Reasoning | `reasoner_node.py` | per failure | **error** | Event Log, failure counter |
+| `reasoner.skill_failure` | Reasoning | `reasoner_node.py` | per failure, only when no `reasoner.tick` span is recording | **error** | Transient fallback carrying `openral.event.skill_failure`; normally that event rides the active `reasoner.tick` span (see below) |
+| `world_state.object_query` | World state | `world_state_ros/object_tracker_node.py` | per object-query escalation | debug | Parented on the goal's trace |
 
-> **Why the allow-list.** A deny-list missed several 30 Hz spans ticking at
-> the same rate. On one second of a real 30 Hz two-camera deploy, the Event
-> Log took **121 info rows/s**, cycling its 200-slot ring every **1.65 s** —
-> every lifecycle line an operator needed scrolled away before it could be
-> read. Inverted, routine traffic contributes **0** info rows.
+> The allow-list keeps routine 30 Hz spans out of the Event Log's 200-slot ring; only promoted spans show as info rows.
 
 ### `rskill.chunk_inference` attributes
 
@@ -98,26 +95,20 @@ metric label — the `openral.inference.duration` label set is closed to `kind`.
 
 ### The three event rings
 
-Demoting the noisy spans stopped info being *generated*, but the main ring is
-one FIFO shared with the debug stream, so the rows that remained were still
-evicted within seconds. The store therefore keeps two protected lanes beside it,
-and `snapshot()` merges all three deduped:
+The store keeps two protected lanes beside the main FIFO so routine rows cannot
+evict the ones an operator needs; `snapshot()` merges all three, deduplicated.
 
 | ring | size | holds |
 |---|---|---|
 | `_events` | 200 | everything, including debug |
 | `_error_events` | 64 | errors + fatals, plus `skill_failure` even when downgraded to warn |
-| `_headline_events` | 64 | the remaining non-debug rows (`deploy.bringup`, `reasoner.tick`, `world.scene_objects` …) |
+| `_headline_events` | 64 | the remaining non-debug rows (`deploy.bringup`, `reasoner.tick`, `world.scene_objects` ...) |
 
-**The two lanes are separate on purpose.** Mirroring all non-debug traffic
-into a single lane lets routine info evict the safety events the protected
-64 slots exist for: `world.scene_objects` alone ran at ~0.10/s (now
-change-gated to a 60 s keepalive, but the isolation argument still holds),
-enough to fully cycle a shared lane in ~11 minutes of an idle scene — long
-enough to evict a `safety.violation` before it is read. One budget each means
-neither class can starve the other.
+The lanes are separate so that routine info cannot cycle the slots reserved for
+safety events.
 
 ---
+
 
 ## Span events
 
@@ -169,38 +160,14 @@ attributes and are stripped by the store so they cannot fragment a series.
 | `openral.hal.estop.count` | Counter | — | `hal/lifecycle.py::_emit_estop_telemetry` | per e-stop (label `hal.adapter`) |
 | `openral.observability.export_failures` | Counter | — | `_sdk._FailureCountingSpanExporter` | per failed span-export batch (label `signal_kind=trace`) |
 
-> **Latency metrics are emitted by the span helpers, not their callers.**
-> `inference.duration` comes from `inference_span`; the two `hal.*.duration`
-> histograms from `_hal_duration_metric`, both paired with the spans in the
-> shared HAL lifecycle base rather than recorded only inside
-> `openral_runner.InferenceRunnerBase` / `DeployRunner` (which the ROS deploy
-> graph never instantiates) — so the metric now works under both runtimes.
-> `openral.tick.duration` is deliberately left alone: its unit is the library
-> runner's whole tick (sensors + HAL + skill + safety), and no such unit
-> exists on the ROS graph, where those are four separate processes.
->
-> `InferenceRunnerBase` used to also record `inference.duration`, from
-> `result.inference_ms` — but that is `Skill.step` wall-time (the chunk
-> *dispatch* cost, near-zero when a `ChunkedExecutor` replays a cached
-> action), not the inference itself. Same instrument, two meanings, two
-> disjoint label sets (`{rskill.id}` vs `{kind}`), which doubled the eval/sim
-> path's sample count and computed p95 over a mixed population. It was
-> removed; the dispatch cost now lives only on the tick span as
-> `rskill.inference_ms` and in the run summary's avg/p99.
->
-> **A single seam is only safe while every adapter uses it.**
-> `tests/unit/test_every_adapter_is_instrumented.py` is a source-level canary
-> that fails if an adapter defines `step()` without reaching `inference_span`,
-> `run_inference`, or `build_chunk_executor` (whose `ChunkedExecutor` calls
-> `run_inference` for you) — it has already caught sidecar adapters that were
-> reporting latency only through the runner's proxy.
+> **Latency metrics come from the span helpers.** `inference.duration` is
+> recorded by `inference_span` and the two `hal.*.duration` histograms by
+> `_hal_duration_metric`, so both the library runner and the ROS deploy graph
+> report them. `openral.tick.duration` is the library runner's whole tick and
+> has no ROS-graph equivalent. `tests/unit/test_every_adapter_is_instrumented.py`
+> fails if an adapter defines `step()` without reaching `inference_span`,
+> `run_inference` or `build_chunk_executor`.
 
-The system metrics come from a 1 Hz daemon thread
-(`start_system_metrics_collector`) started automatically by
-`configure_observability`; it is a quiet no-op on hosts without `psutil` /
-`pynvml`.
-
----
 
 ## Compliance records
 
@@ -265,160 +232,90 @@ All OpenRAL logging is `structlog`, bridged to OTLP. **Records below
 | `rskill/_diagnostics.py` `phase_timer` | info | start/done + 15 s heartbeat | The model-load progress signal — see below. |
 | `hal/sim_attached.py` `sim.task_success` / `sim.task_success_final` | info | per verdict change / 1 per session | Deploy-sim ground truth — see below. |
 | `hal/sim_attached.py` `sim.placement_grade` / `sim.placement_grade_final` / `sim.placement_grade_unavailable` | info (unavailable: warning when `set_task` raised) | per grade change / 1 per graded goal / 1 per ungraded goal | Deploy-sim placement grade of the dispatched goal — see below. |
-| `hal/sim_attached.py` `sim.time_base` (logger `openral.sim.time_base`) | info | 1 per connect | The deploy-sim time base: `sim_dt_per_tick_s` (sim seconds one `env.step` advances), `control_freq_hz`, `backend`, `robot` — emitted for a backend that declares its tick (the Isaac sidecar, RoboCasa, LIBERO) after `connect` has verified it equals one control period, including the bare MuJoCo twin (`MujocoArmHAL`: `backend=<the HAL class>`, plus `physics_dt_s` / `physics_steps`) once its rollout has derived one control period per action — one line, from the shell, for every sim HAL. A trace replayed later knows which clock its velocities were measured on (issues #355, #358). Companions: `hal.time_base.pinned` / `hal.time_base.unresolved` (warning, logger `openral_hal._mujoco_arm`) mark a twin that is **not** timing-faithful (a pinned `settle_steps`, or a manifest without a rate); `hal.time_base.timestep_shrunk` / `robosuite.time_base.timestep_shrunk` (info) record a physics time step shrunk to divide the period. |
+| `hal/sim_attached.py` `sim.time_base` (logger `openral.sim.time_base`) | info | 1 per connect | Deploy-sim time base: `sim_dt_per_tick_s`, `control_freq_hz`, `backend`, `robot` (the bare MuJoCo twin adds `physics_dt_s` / `physics_steps`), so a replayed trace knows which clock its velocities used. Companions: `hal.time_base.pinned` / `hal.time_base.unresolved` (warning) mark a twin that is not timing-faithful; `hal.time_base.timestep_shrunk` / `robosuite.time_base.timestep_shrunk` (info) record a shrunk physics step. |
 | `hal/sim_attached.py` `hal.send_action.dropped_estop_latched` | warning | 1 per latch episode (`estop` → `reset_estop`) | A sim HAL's estop latch is dropping commands (`backend`, `robot`, `control_mode`, `tick_index` of the first): a latched send is never silent. |
 | `hal/mujoco_twin.py` `hal.renderer_close_failed` | warning | per renderer whose GL teardown raised | The twin's `close` still releases the model; the renderer is dropped, not kept. |
 
 ### The deploy-sim task-success signal
 
 `openral deploy sim` runs its backend continuously, which suppresses the
-simulator's own per-step task evaluation. So that the deploy stack can still state
-whether the scene's task (e.g. "cup placed in the sink") was completed,
-`SimAttachedHAL` polls the backend's own predicate
-(RoboCasa's per-task `env._check_success()`; `openral_sim.rollout.SimRollout`'s
-optional `task_success` extension) once per `env.step` and reports it:
+simulator's per-step task evaluation. `SimAttachedHAL` therefore polls the
+backend's own predicate (RoboCasa's `env._check_success()`, via the optional
+`task_success` extension of `openral_sim.rollout.SimRollout`) once per
+`env.step`. Logger `openral.sim.task_success`; each line is also mirrored to
+stdout as `<event> <json>`, because a launched HAL subprocess exports but never
+prints structlog records.
 
 | Line | Fires | Carries |
 |---|---|---|
 | `sim.task_success` | every change of the verdict, both edges | `success`, `previous`, `first_success`, `scene_id`, `task_id`, `sim_time_ns`, `sim_time_s`, `step` |
-| `sim.task_success_final` | once, at `disconnect` — reached by the lifecycle cleanup/shutdown transition **and** by `HALLifecycleNodeBase.shutdown_hal` on a signal teardown | `success`, `ever_succeeded`, `first_success_sim_time_ns`, `transitions`, `scene_id`, `task_id`, `sim_time_ns`, `steps` |
-| `sim.task_success_probe_failed` | once, if the backend predicate raises | `error`, `error_type` — polling then latches off (no flood, no crash) |
+| `sim.task_success_final` | once, at `disconnect` (lifecycle shutdown or `HALLifecycleNodeBase.shutdown_hal` on signal teardown) | `success`, `ever_succeeded`, `first_success_sim_time_ns`, `transitions`, `scene_id`, `task_id`, `sim_time_ns`, `steps` |
+| `sim.task_success_probe_failed` | once, if the predicate raises | `error`, `error_type`; polling then latches off |
 
-Both edges are logged because RoboCasa success is **not latched**: an object
-can be knocked back out of its receptacle, and a rising-edge-only record would
-claim a success no longer held. A backend with no success predicate emits
-nothing at all — "unknown" is never reported as failure.
-
-An Isaac scene with `placement_success` is also graded per goal (see
-[sim environments](sim-environments.md)): the HAL follows `/openral/reward/active_task`
-and the sidecar grades the dispatched prompt's placements. Same logger, same stdout
-mirror:
+Both edges are logged because RoboCasa success is not latched. A backend with
+no predicate emits nothing: "unknown" is never reported as failure. An Isaac
+scene with `placement_success` is also graded per dispatched goal
+(see [sim environments](sim-environments.md)):
 
 | Line | Fires | Carries |
 |---|---|---|
-| `sim.placement_grade` | every change of the graded prompt's grade (also while the object settles after the goal) | `prompt`, `grade`, `score`, `previous`, `goal_active`, `scene_id`, `task_id`, `sim_time_ns`, `sim_time_s`, `step` |
-| `sim.placement_grade_final` | once per graded goal, at its end (`""` or the next prompt) or at `disconnect` | `prompt`, `grade`, `score`, `best_grade`, `best_score`, `scene_id`, `task_id`, `sim_time_ns`, `steps` |
-| `sim.placement_grade_unavailable` | once per goal whose prompt the scene does not grade (`graded_prompts`), or once at WARNING if the backend's `set_task` raised (`error`, `error_type`; grading then latches off) | `prompt` |
+| `sim.placement_grade` | every change of the graded prompt's grade | `prompt`, `grade`, `score`, `previous`, `goal_active`, `scene_id`, `task_id`, `sim_time_ns`, `sim_time_s`, `step` |
+| `sim.placement_grade_final` | once per graded goal, or at `disconnect` | `prompt`, `grade`, `score`, `best_grade`, `best_score`, `scene_id`, `task_id`, `sim_time_ns`, `steps` |
+| `sim.placement_grade_unavailable` | once per goal the scene does not grade; at WARNING if `set_task` raised | `prompt` |
 
-The grade never ends a deploy episode; it is a report.
-
-The terminal line reaches **both** teardown paths. `rclpy` answers SIGINT by
-shutting the context down and raising out of `spin` without requesting the
-lifecycle `shutdown` transition — the way `openral deploy sim` ends every
-session (`_terminate_launch_group` SIGINTs the launch's process group).
-`HALLifecycleNodeBase.shutdown_hal`, called from the `finally` of both HAL
-`main()` factories, covers that path too; it is idempotent with the
-transition path, so exactly one line is emitted either way. A SIGKILLed
-process still emits nothing — the signal is uncatchable.
-
-The logger name is `openral.sim.task_success`, deliberately dotted under
-`openral.` so it propagates to the stdlib logger the OTel bridge is attached to
-and reaches the dashboard Event Log. Each line is **also** mirrored to stdout as
-`<event> <json>` (matching `sim.estop_ground_truth_snapshot`), because the
-structlog record is exported but never printed in a launched HAL subprocess —
-and a verdict that exists only inside the collector is not recoverable from a
-validation run's artifacts.
-
-Observability only: the verdict reaches the log and nothing else. It never
-feeds termination, reset, reward, or the action path (CLAUDE.md §1.4).
+These verdicts reach the log and nothing else: they never feed termination,
+reset, reward or the action path (CLAUDE.md §1.4). A SIGKILLed process emits no
+final line.
 
 ### The E-stop ground-truth signals
 
-`SimSensorBridge` records every kernel stop, carried payload or not. Three lines,
-all joined by `stop_seq`, all `error`-level, all emitted through the node logger
-(so they land in a launched HAL subprocess's own stdout):
+`SimSensorBridge` records every kernel stop, loaded or not. Three `error`-level
+lines, joined by `stop_seq`:
 
 | Line | Fires | Carries |
 |---|---|---|
-| `sim.estop_ground_truth_snapshot` | every `/openral/estop`, when MuJoCo handles are live — or, on Isaac, when the env serves `contact_ground_truth` | `estop_ground_truth_snapshot(...)` (contacts, `nearest_*_pairs` probes + coverage, joint state, base TF) + `stop_seq` + the 3-deep `candidate_action_chunks` ring + the kernel's `CollisionEvidence` when it landed within 0.5 s. On Isaac: `isaac_estop_ground_truth_record(...)` instead (`backend: "isaacsim"`, PhysX `robot_world_contacts` with `min_separation_m`, `max_penetration_m`, no near-miss probes — see its `contacts_caveat`) |
-| `sim.estop_ground_truth_evidence` | only when the evidence lost the publish race | `stop_seq`, `collision_evidence` — the snapshot is never delayed for it, since sim state must be captured at the stop instant |
-| `sim.estop_initial_configuration` | only when the stop fired **before any action reached the HAL** | `violation: "initial_configuration"`, `stop_seq`, `candidate_chunks_seen`, `sim_time_s`, `nearest_robot_world_pair`, `detail` |
+| `sim.estop_ground_truth_snapshot` | every `/openral/estop` while MuJoCo handles are live (Isaac: when the env serves `contact_ground_truth`) | contacts, `nearest_*_pairs` probes with coverage, joint state, base TF, the 3-deep `candidate_action_chunks` ring and the kernel's `CollisionEvidence` if it arrived within 0.5 s. Isaac instead records PhysX `robot_world_contacts` (`backend: "isaacsim"`, no near-miss probes) |
+| `sim.estop_ground_truth_evidence` | only when the evidence lost the publish race | `stop_seq`, `collision_evidence` |
+| `sim.estop_initial_configuration` | only when the stop fired before any action reached the HAL | `violation: "initial_configuration"`, `stop_seq`, `candidate_chunks_seen`, `sim_time_s`, `nearest_robot_world_pair`, `detail` |
 
-The kernel's own `CollisionEvidence` additionally carries `joint_positions_rad`
-— the configuration forward kinematics was actually run on for the
-reported `horizon_step`, serialized at `max_digits10` so it round-trips exactly.
-For a *predicted* step that configuration exists in no other artifact, so
-without it such a stop can only be adjudicated against the measured joints,
-which is a different pose.
+Each pair in `nearest_*_pairs` carries its own proof: `distance_m`,
+`distance_certified`, `distance_method`, witness points and, for bracketed
+geometry, `distance_bracket_m`; coverage blocks add `certified_pairs`,
+`uncertified_pairs` and `distance_instrument`. A verdict may rest only on a
+certified pair (`tools/validation_matrix.py::probe_is_distance_certified`;
+background in [collision validation evidence](collision-validation-evidence.md)).
+The kernel's `CollisionEvidence` also carries `joint_positions_rad`, the
+configuration forward kinematics ran on for the reported `horizon_step`.
 
-Each pair inside `nearest_*_pairs` carries its own **proof**, not just a number:
-`distance_m`, `distance_certified`, `distance_method`, `witness_a_xyz` /
-`witness_b_xyz`, and `distance_bracket_m` when the geometry is bracketed rather
-than exact. Each coverage block adds `certified_pairs`, `uncertified_pairs` and
-`distance_instrument`. This is because `mujoco.mj_geomDistance` — which every
-probe before 2026-08-25 used — returns confidently wrong values for RoboCasa
-fixture geoms against `panda_mobile` collision meshes in two silent modes, and
-a reader must be able to tell a defensible distance from an undefendable one
-without re-running the round. A verdict may rest only on a certified pair
-(`tools/validation_matrix.py::probe_is_distance_certified`); see
-[the 2026-08-25 correction](collision-validation-evidence.md#2026-08-25-the-ruler-was-wrong-and-here-is-what-it-moves).
-
-The third line exists because the first one, read alone, is indistinguishable
-from an ordinary mid-task stop. `SimAttachedHAL.last_action_ns` is `0` until the
-first `send_action` — the single choke point every real action passes, stamped
-*before* any early return — so `last_action_ns == 0` at a stop means the
-configuration the kernel refused is the one the **scene reset produced**. The
-robot is not doing something unsafe; it was *spawned* somewhere unsafe, and no
-policy, chunk, or margin change can clear it: the remedy is a scene-config one
-(a different seed, or pinned `backend_options.layout_ids` / `style_ids`).
-
-`candidate_chunks_seen` is reported but deliberately does **not** gate the
-classification: a chunk the kernel *rejected* never reached `send_action`, so
-that stop is still at the initial configuration.
-
-Diagnostics only (CLAUDE.md §1.4). The stop itself is correct and is neither
-suppressed, delayed, nor altered — an initial pose that interpenetrates the
-scene is exactly what the kernel exists to refuse. All the line does is name it.
+The third line separates "spawned somewhere unsafe" from an ordinary mid-task
+stop: `SimAttachedHAL.last_action_ns` is `0` until the first `send_action`. The
+remedy is a scene-config one (another seed, or pinned `layout_ids` /
+`style_ids`). These lines are diagnostics only (CLAUDE.md §1.4); the stop is
+never suppressed, delayed or altered.
 
 ### Graded velocity scaling
 
-Off by default (`collision_scale_proximity_m: 0.0`). When armed, an **accepted**
-chunk near an obstacle is republished with its rate columns scaled, and that is
-disclosed three ways:
+Off by default (`collision_scale_proximity_m: 0.0`). When armed, an accepted
+chunk near an obstacle is republished with its rate columns scaled:
 
 | Signal | Where | Carries |
 |---|---|---|
-| `safety.velocity_scale` | `safety.check` span attribute | the scale in `(0, 1]` applied to this chunk |
+| `safety.velocity_scale` | `safety.check` span attribute | scale in `(0, 1]` applied to this chunk |
 | `safety.scale_slack_m` | `safety.check` span attribute | clearance above the gate margin that produced it |
-| `safety.collision_scaled` | kernel log, **transition-gated** | scale, slack, band, control mode, `rskill_id` — emitted when the scale moves by ≥ 0.1 or the band is cleared, not per chunk (the accept path runs at 30–200 Hz) |
-| `scaled` | `/diagnostics` key-value, 1 Hz | count of chunks republished slower. A subset of `passed`, never of `dropped` — a scaled chunk *was* accepted and executed. |
-
-The `/diagnostics` counter is the continuous signal; the log line is the
-transition. Reading only the log undercounts, by design.
+| `safety.collision_scaled` | kernel log, transition-gated | scale, slack, band, control mode, `rskill_id`; emitted when the scale moves by >= 0.1 or the band clears |
+| `scaled` | `/diagnostics` key-value, 1 Hz | count of chunks republished slower (a subset of `passed`) |
 
 ### The RoboCasa scene composition
 
-`robocasa_scene_composition` — `structlog`, `info`, once per `reset`, emitted by
-`openral_sim.backends.robocasa._RoboCasaSim`.
+`robocasa_scene_composition` (structlog, info, once per `reset`, from
+`openral_sim.backends.robocasa._RoboCasaSim`) carries `scene_id`,
+`effective_layout_id` / `effective_style_id` (what RoboCasa actually composed;
+style is `"custom"` for a style dict) and `pinned_layout_id` /
+`pinned_style_id` (what the scene YAML pinned, or `null`). RoboCasa redraws
+layout and style from its RNG on every reset, so the seed alone does not name
+the kitchen. When the YAML pinned exactly one layout or style and the effective
+one differs, the sim raises `ROSConfigError` instead of logging.
 
-| Field | Meaning |
-|---|---|
-| `scene_id` | the scene that was built, e.g. `robocasa/PickPlaceFridgeShelfToDrawer` |
-| `effective_layout_id` | the kitchen floor plan RoboCasa **actually** composed, 1..60 |
-| `effective_style_id` | the style it actually composed, 1..60, or `"custom"` for a style dict |
-| `pinned_layout_id` / `pinned_style_id` | what the scene YAML pinned, or `null` when it left the pool open |
-
-RoboCasa redraws `(layout_id, style_id)` from `env.rng` inside
-`Kitchen._load_model` on **every** reset, so the composition is a property of
-the episode, not of the built env — which is why the line is emitted at reset
-rather than at scene-factory time.
-
-It exists because the seed alone does not identify the kitchen. Layout, style,
-fixtures, `rack_index`, door-open amounts and the robot spawn deviation are all
-drawn from one shared `env.rng`, so any upstream change to the draw order
-reshuffles the scene at the same seed. Without this line a round's artifacts
-never state which of the 60 kitchens ran, and two rounds are not comparable
-even when both say `seed: 1`.
-
-When the YAML pinned exactly one layout or style, a mismatch between pinned and
-effective is a `ROSConfigError`, not a log line. The pin can be silently
-overridden two ways upstream — the task's `EXCLUDE_LAYOUTS` / `EXCLUDE_STYLES`
-filters the pinned id out of the pool, or a replayed `_ep_meta` carries its own
-`layout_id` / `style_id` and wins outright — and both would otherwise run a
-different kitchen than the scene file describes while every artifact still shows
-the declared one.
-
----
 
 ## Load-phase instrumentation
 
@@ -475,35 +372,12 @@ updated.
 | `openral.event.chunk_prefetch_hit` / `_miss` | Action-chunk prefetch runs but never reports its hit rate, so "is the prefetch helping?" cannot be answered from a trace. |
 | `openral.event.episode_closed` | Intended to let a Jaeger query pivot from a skill execution to the produced dataset row; `RolloutRecorder` closes episodes without it, so that pivot does not work. |
 
-**Removed: `openral.safety.clamps` / `safety.clamped`.** The attribute was
-always `False` — no code path ever set it `True`. That is not an oversight:
-the *envelope* layer is deny-by-default, and `compute_intersection` "rejects
-(never clamps)" any envelope field that would loosen the robot ceiling. The
-counter measured an operation the system never performs, at a constant cost
-on every `safety.check` span at 30 Hz. (HAL adapters *do* saturate commands
-into an actuator's physical range — the Franka gripper maps `[0, 1]` onto its
-travel — but that is device range-mapping, not a safety correction.)
+**Removed: `safety.clamps` / `safety.clamped`.** No code path ever set it; the
+envelope layer rejects, never clamps. Distance-graded velocity scaling (see
+[Graded velocity scaling](#graded-velocity-scaling)) is the one mechanism that
+modifies a commanded value, and it reports through `safety.velocity_scale` and
+`safety.scale_slack_m` instead.
 
-**With graded velocity scaling, the blanket claim "OpenRAL never clamps" is
-no longer true**, and the replacement is deliberately a different signal
-rather than a revival of this one. Distance-graded velocity scaling *does*
-modify a commanded value: an accepted chunk near an obstacle is republished
-with its rate columns multiplied by a scale in `(0, 1]`, reported by
-`safety.velocity_scale` / `safety.scale_slack_m` (see
-[Graded velocity scaling](#graded-velocity-scaling)), which carry *how
-much* and *why* — `safety.clamped` carried only a boolean. The envelope layer
-still never clamps; a second, separately-named mechanism now sits beside it.
-
-**The e-stop latch self-clears.** `topics.safety.estopped` clears only on a
-clean pass from a real kernel (`safety.severity == "ok"`; the C++ kernel
-sends `info` on a pass, `warn` while latched, `violation` on a drop) — proof
-the kernel itself is not latched (it returns early with `estop_latched` while
-`fault_latch_` is set). The null client is excluded: it emits `info`
-unconditionally without checking anything, so treating that as evidence of a
-clear would let a no-op client unlatch the UI. Dashboard-side only — no
-safety code changed.
-
----
 
 ## Configuration
 
@@ -516,6 +390,7 @@ safety code changed.
 | `OPENRAL_OTEL_METRIC_INTERVAL_MS` | 5000 | Metric export interval |
 | `OPENRAL_OTEL_SPAN_SCHEDULE_DELAY_MS` | 30 | `BatchSpanProcessor` flush — ~1.3× the thumbnail rate so the dashboard does not alias |
 | `OPENRAL_ROS2_TRACING` | off | LTTng tracepoints |
+| `OPENRAL_ROS2_TRACING_FALLBACK_DIR` | unset | Fallback trace directory for the LTTng session (`tracing_lttng.py`) |
 | `OPENRAL_JAEGER_UI_URL` | unset | Enables the trace deep-link in the dashboard header |
 | `OPENRAL_DASHBOARD_WRITE_CONTROLS` | off (linked robot: from the account at the next deploy start, on unless turned off; an OFF on either side wins) | `1` offers and runs the installed rSkills as dashboard actions (`skill:<id>`) |
 | `OPENRAL_DASHBOARD_REMOTE_CONTROL` | off (linked robot: from the account at the next deploy or dashboard start, on unless turned off; an OFF on either side wins) | `1` lets signed-in operators reset, prompt and run skills over the robot's tunnel (E-STOP always may) |
@@ -528,6 +403,13 @@ safety code changed.
 | `OPENRAL_COMPLIANCE_DIR` | `~/.local/state/openral/compliance` on `deploy run`; unset (off) for sim | The on-robot compliance log |
 | `OPENRAL_CLOCK_SOURCE` | `monotonic_unsynced` | Compliance records' `clock_source` (`ptp` / `ntp` / `monotonic_unsynced`) |
 | `OPENRAL_TELEMETRY_IMAGE_CONSENT` | off | `1` lets camera thumbnails go to a public OTLP endpoint |
+| `OPENRAL_TELEMETRY_TEXT_CONSENT` | off | `1` lets the reasoner tick's free-text `reasoner.rationale` go to a public OTLP endpoint |
+| `OPENRAL_ACTOR_KEY` | unset | Deployer-held HMAC key for operator identity in `intervention` records; see [compliance log](compliance-log.md) |
+| `OPENRAL_DASHBOARD_LAN_INGEST` | off | `1` lets other LAN hosts export OTLP to the dashboard (otherwise loopback only) |
+| `OPENRAL_DASHBOARD_REMOTE_PORT` | 4319 | Port of the remote (tunnel) listener |
+| `OPENRAL_DASHBOARD_SKILL_ACCEPT_TIMEOUT_S` | 12 | Seconds the dashboard waits for a skill goal to be accepted |
+| `OPENRAL_DASHBOARD_FLIP_180` | off | Rotates the dashboard's display copy of camera frames 180 degrees |
+| `OPENRAL_STT_MODEL` / `_DEVICE` / `_COMPUTE` | `base.en` / `cpu` / `int8` | Dashboard voice-prompt speech-to-text; see the [observability README](https://github.com/OpenRAL/openral/blob/master/python/observability/README.md) |
 
 Sampling note: the 0.1 hardware ratio applies to the **CLI process only**. HAL
 and other nodes call `configure_observability()` without a ratio, so their spans

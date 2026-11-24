@@ -12,7 +12,7 @@ this package is the Python seam around it.
   `/openral/safe_action`, fires `/openral/estop` on stub envelope
   violation (n_dof + per-joint position), and serves
   `/openral/estop_reset` with a cooldown. Subscribes to
-  `/openral/estop` itself (defense in depth, CLAUDE.md §1.5).
+  `/openral/estop` itself (defense in depth; safety-first, CLAUDE.md §1.1).
 * **`SafetySupervisorNode`** — back-compat alias for
   `SafetyPassthroughNode`.
 * **`envelope_loader`** (`openral_safety/envelope_loader.py`) — pure
@@ -43,8 +43,7 @@ this package is the Python seam around it.
   model, loudly) when a body carries several joints (a planar base) or an MJCF
   joint named like a manifest joint (its `sim_joint_name`, else its `name`) lands
   on another column
-  (`deploy_e2e.launch.py::_mjcf_dof_mismatches`; refused today: OpenAMRobot 2.0,
-  Unitree H2).
+  (`deploy_e2e.launch.py::_mjcf_dof_mismatches`).
 * **`dynamics_lowering`** (`openral_safety/dynamics_lowering.py`) — offline
   MJCF → `RobotDescription.force_observer` lowering for the kernel's
   external-torque observer (issue #373): inertials re-expressed in the
@@ -52,6 +51,15 @@ this package is the Python seam around it.
   pose is its MJCF body's; joint terms from `armature` / `damping` /
   `frictionloss`. Run through `tools/lower_force_observer.py`
   ([`external-torque-observer.md`](../../docs/reference/external-torque-observer.md)).
+* **`static_geometry`** (`openral_safety/static_geometry.py`) — samples a
+  cell's declared `StaticGeometry` (walls, shelf frame, table, tote shell) into
+  base-frame surface points the octomap bridge marks occupied, so a fixture the
+  camera has not seen still exists for the kernel. It only ever adds occupancy.
+* **`tight_geometry`** (`openral_safety/tight_geometry.py`) — derives a box's
+  `tight_geometry` (26-DOP + exact convex hull) from the geometry it bounds.
+  Containment is by construction (`mesh ⊆ hull ⊆ DOP ⊆ box`), so the kernel's
+  broad phase never moves. Used by `urdf_lowering` and
+  `tools/generate_tight_geometry.py`.
 * **`cumotion_config`** (`openral_safety/cumotion_config.py`) — renders a
   cuRobo/cuMotion `robot_cfg` from the **manifest's** geometry. Its
   plan-time model deliberately **over**-covers the kernel's: a planner
@@ -61,6 +69,24 @@ this package is the Python seam around it.
   copying the kernel's: a pair the kernel separates at hull fidelity can
   be genuinely always-colliding for spheres, and
   `panda_link5`↔`panda_link7` is exactly that.
+
+## One kernel per robot, and the exemption seam
+
+Each robot has its own kernel instance. With `peer_voxel_enabled` (set by the
+deploy launch when the scene lists other robots; ADR-0137) a kernel also reads
+the other robots of its workcell from `/openral/peer_voxels` and stops a move
+into one of them, with no exemption. It needs the world grid (same lattice cap
+and frame).
+
+The open kernel is refusal-only. Relaxing a contact verdict is possible only
+through the exemption-provider seam
+(`cpp/openral_safety_kernel/include/openral_safety_kernel/exemption_provider.hpp`,
+ADR-0121): a pluginlib plugin named by the `exemption_provider` parameter that
+may only relax a verdict the kernel is about to reach, on links in the
+manifest's `exemption_provider_links` mask, in sim only, and fails closed (no
+provider, a failed load or an API-version mismatch leaves the kernel exactly as
+with none). The only providers in this repository are test doubles; the real ones are
+OpenRAL Pro.
 
 ## The collision tree must be connected
 
@@ -97,7 +123,7 @@ MJCF can describe the same machine with different intermediate frames (`g1`'s
 above it), so checking against the wrong one measures a convention, not a
 defect.
 
-Per CLAUDE.md §3 (Safety) / §1.1, any PR that **extends** enforcement here
+Per CLAUDE.md §3 (Safety) and §1.1, any PR that **extends** enforcement here
 requires:
 
 1. Explicit reviewer assignment to the safety working group.
@@ -122,6 +148,7 @@ package is the **chunk-rate topic boundary** the `rskill_runner_node` and
 | pub | `/openral/safe_action` | `openral_msgs/ActionChunk` | RELIABLE · VOLATILE · KL=1 |
 | pub | `/openral/estop` | `std_msgs/Empty` | RELIABLE · VOLATILE · KL=10 |
 | pub | `/openral/safety_status` | `openral_msgs/SafetyStatus` | RELIABLE · **TRANSIENT_LOCAL** · KL=1 |
+| pub | `/openral/failure/safety` | `openral_msgs/FailureTrigger` (C++ kernel; feeds the `FailureTrigger` bus) | RELIABLE · VOLATILE · KL=50 |
 | pub | `/diagnostics` | `diagnostic_msgs/DiagnosticArray` (1 Hz) | RELIABLE · VOLATILE · KL=10 |
 | srv | `/openral/estop_reset` | `std_srvs/Trigger` | — |
 
@@ -137,7 +164,7 @@ identical contract, so either can replace the other behind the same topic
 surface. Observability only: no enforcement path changed.
 
 `/openral/estop` is subscribed by **both** the HAL and the
-skill_runner (defense in depth, CLAUDE.md §1.5).
+skill_runner (defense in depth, CLAUDE.md §1.1).
 
 ## Day-1 envelope checks (stub, but real)
 
@@ -184,7 +211,7 @@ five transition callbacks; the heartbeat is wired via
 
 ## Why a Python pass-through *and* a C++ kernel
 
-CLAUDE.md operating principles forbid (§1.1, §1.5):
+CLAUDE.md operating principles forbid (§1.1 safety-first, §1.5 the hot path is C++):
 
 * Catching `ROSSafetyViolation` and continuing.
 * Hidden retries or fallbacks.
@@ -197,15 +224,13 @@ in production.
 
 ## Related
 
-* The ROS 2 reasoner + supervisor graph spec §F5 / §5 — normative spec.
 * `cpp/openral_safety_kernel/` — the real-time C++ enforcer.
 * `packages/openral_safety_watchdog/` — deadman + hardware-estop
-  watchdog nodes (reasoner + supervisor graph spec §5 bullets 3 & 4).
-* `packages/openral_human_estop/` — human estop forwarder
-  (reasoner + supervisor graph spec §5 bullet 2).
+  watchdog nodes.
+* `packages/openral_human_estop/` — human estop forwarder.
 * `python/runner/src/openral_runner/safety.py` — in-process
   `SafetyClient` Protocol + `NullSafetyClient` (the in-process seam
   the runner calls every tick). Independent of the topic boundary
   surfaced here.
-* CLAUDE.md §1.5, §3, §5 (`ROSSafetyViolation` /
+* CLAUDE.md §1.1, §3, §5 (`ROSSafetyViolation` /
   `ROSEStopRequested`).

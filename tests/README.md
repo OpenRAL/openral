@@ -50,7 +50,7 @@ so a file there never needs its own `pytestmark` to be selected by `-m sim`.
 Optional dependencies are gated with `pytest.importorskip(...)` or `skipif`,
 never faked. In a heavy lane a skip must match a declared capability gap
 (`[capability_gaps]` in `tools/test_selection.toml`) or the lane fails; see
-[Lane policy](../docs/contributing/selective-testing.md#lane-policy--what-a-skip-is-allowed-to-mean).
+[Lane policy](../docs/contributing/selective-testing.md#lane-policy-what-a-skip-is-allowed-to-mean).
 
 ### Top-level fixtures
 
@@ -78,7 +78,7 @@ never faked. In a heavy lane a skip must match a declared capability gap
 ### `tests/hil/`
 
 No self-hosted runner is registered, so every HIL gate runs by hand on the cell
-([Lab HIL runners](../docs/contributing/development.md#lab-hil-runners-self-hosted-lab-robot)).
+([Lab HIL runners](../docs/contributing/ci.md#lab-hil-runners-none-registered)).
 
 | File | Hardware |
 | --- | --- |

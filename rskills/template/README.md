@@ -12,20 +12,18 @@ language:
 > **OpenRAL rSkill** — one-sentence summary of what this skill does, on
 > which embodiment, trained on which dataset. Replace this blockquote
 > before publishing; `tools/rskill_publisher.py` refuses to upload a
-> README that still contains `TEMPLATE_ID` or `TODO:` placeholders.
+> README that still contains `TEMPLATE_ID`, `TEMPLATE_ORG`, `TODO:`,
+> `<TODO>`, `FIXME` or `<fill-in>` placeholders.
 
 This package wraps `hf://<upstream-owner>/<upstream-repo>` with a
 `rskill.yaml` manifest that adds capability checking, license
 surfacing, latency budgets, and local registry integration. It does
 **not** copy model weights.
 
-> **Scaffold note.** This file was produced by `openral rskill new
-> TEMPLATE_ID` from `rskills/template/README.md`. Every `<TODO>` /
-> `TEMPLATE_ID` / `TEMPLATE_ORG` marker below is a placeholder the
-> documentation validator
-> (`openral_cli._rskill_doc_validator.validate_rskill_docs`) treats as
-> a publish-blocking error — read each section, fill it in, and delete
-> this note when you are done.
+> **Scaffold note.** `openral rskill new TEMPLATE_ID` produced this file from
+> `rskills/template/README.md`. Fill in every section and delete this note; the
+> documentation validator (`openral_cli._rskill_doc_validator.validate_rskill_docs`)
+> treats each leftover placeholder as a publish-blocking error.
 
 ## Preview
 
@@ -139,7 +137,7 @@ sensor or scene camera names; values are the checkpoint's view names.
 
 | Field | Value |
 | --- | --- |
-| `name` | `TEMPLATE_ORG/rskill-TEMPLATE_ID` |
+| `name` | `TEMPLATE_ORG/rskill-TEMPLATE_ID` (rename to the canonical `<owner>/rskill-<model>-<robot>-<task>-<quant>` form; `rskill_publisher.py --fix-name` suggests it) |
 | `version` | `0.1.0` |
 | `license` | <!-- TODO --> |
 | `role` | `s1` |

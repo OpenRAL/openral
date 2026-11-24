@@ -1,5 +1,9 @@
 # Object instances before contact — grasp regions without a hovering policy
 
+!!! note "Superseded design"
+    Replaced by the object tracker and the declarations-only `tracking` mode; see [decisions](../decisions.md). Kept as a record; it is not maintained against master.
+
+
 Status: **design + prototype (default off), pending Safety-WG review**, 2026-10-05. Issue #349.
 Developed on `feat/object-primitives-349`; landed on `master` with #289. The prototype is §4:
 `openral_core.object_primitives` (moved from `openral_hal._object_primitives`, #418) +

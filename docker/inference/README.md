@@ -1,277 +1,177 @@
 # Inference deploy image
 
-OpenRAL ships **one** open deploy image, and it is **GStreamer-free**. The
-"Single-Dockerfile consolidation + CUDA-13 alignment" decision replaced PR #93's
-four-Dockerfile matrix (`Dockerfile.x86`, `Dockerfile.x86-ros`,
-`Dockerfile.x86-deepstream`, `Dockerfile.l4t`) with one. The proprietary media
-stack (**GStreamer + the NVMM zero-copy fast path + DeepStream + TensorRT**) is
-an OpenRAL Pro plugin (details below).
+OpenRAL ships **one** open deploy image, built from `Dockerfile.x86`. It is
+**GStreamer-free**: CUDA 13, ROS 2 Jazzy, cameras through the open
+`opencv_thread` backend, inference through pytorch / onnxruntime. The
+proprietary media stack (GStreamer, the NVMM zero-copy path, DeepStream,
+TensorRT) is an OpenRAL Pro plugin that layers on top of this image.
 
-| Image | Built by | Pushed to GHCR? | License | When to use |
+| Image | Built by | Pushed to GHCR | License | Use it for |
 |---|---|---|---|---|
-| `openral:x86` | `just docker-build-x86` | ✅ On merge to `master` (`docker-build.yml`) | Apache-2.0 + NVIDIA CUDA runtime EULA | The default open deploy target. x86 with NVIDIA dGPU, host driver ≥ 580. CUDA 13, ROS 2 Jazzy. **No GStreamer / PyGObject / DeepStream / NVMM / TensorRT.** Cameras run through the open `opencv_thread` backend (cv2.VideoCapture over V4L2/USB); the object detector + Robometer reward monitor run as plain ROS-topic consumers; inference is pytorch / onnxruntime. |
-| `openral:x86-deepstream-latest` | openral-pro's `Dockerfile.pro` | ❌ **No** | Apache-2.0 **+ NVIDIA DeepStream EULA** | OpenRAL Pro only. `FROM`s `openral:x86` and installs the whole media stack: GStreamer + `nvvideoconvert`, NVMM caps on x86, `nvinfer`, `nvstreammux`, the TensorRT engine runtime. Local / private-registry only — see `openral-pro` for the build flow and the EULA breakdown. |
+| `openral:x86` | `just docker-build-x86` | Yes, on merge to `master` (`docker-build.yml`) | Apache-2.0 + NVIDIA CUDA runtime EULA | The default open deploy target: x86 with an NVIDIA dGPU, host driver 580.65 or newer. |
+| `openral:l4t` | `just docker-build-l4t` | No | Same | Jetson (aarch64). The same Dockerfile under an aarch64 tag; the CUDA base is multi-arch. Verified on a Jetson Thor. |
+| `openral:x86-deepstream-latest` | openral-pro's `Dockerfile.pro` | No | Apache-2.0 + NVIDIA DeepStream EULA | OpenRAL Pro only. `FROM`s `openral:x86` and adds the media stack. Local or private registry. |
 
-Scenes that target `openral:x86` must bind their cameras with
-`backend: opencv_thread` (not `gstreamer`) — see
-[`scenes/deploy/so101_bench.yaml`](../../scenes/deploy/so101_bench.yaml) for the
-reference SO-101 workcell. The L4T / Tegra / Jetson Orin variant and the no-ROS
-variant from PR #93 are deliberately out of scope here. See
-[`docs/decisions.md`](../../docs/decisions.md) for the trade-off rationale.
+Scenes that target the open image must bind cameras with `backend: opencv_thread`
+(not `gstreamer`); see
+[`scenes/deploy/so101_bench.yaml`](../../scenes/deploy/so101_bench.yaml).
+
+## Quick start
+
+```bash
+just docker-build-x86                       # build openral:x86 (or pull it from GHCR)
+docker run --rm --gpus all openral:x86 doctor
+docker run --rm --gpus all \
+    -v ~/.cache/huggingface:/opt/openral/hf-cache \
+    openral:x86 deploy run --config scenes/deploy/so101_bench.yaml
+```
+
+The image's `ENTRYPOINT` is the bare `openral` CLI, so the arguments after the
+image name are `openral` subcommands (`doctor`, `detect`, `deploy run --config ...`).
+The default `CMD` is `deploy run --help`. A compose file is also provided:
+`docker compose -f docker/inference/docker-compose.yaml up inference-x86`.
+
+**Mount the Hugging Face cache.** The image sets `HF_HOME=/opt/openral/hf-cache`
+but naming the path does not persist it. Without the `-v` mount, every `--rm` run
+re-downloads the rSkill's weights, and the cost hides inside `from_pretrained`.
 
 ## Host driver requirements
 
-The base is `nvidia/cuda:13.0.0-runtime-ubuntu24.04`; CUDA 13 needs **host
-NVIDIA driver ≥ 580.65**. On older drivers `openral deploy run` still comes up
-(OpenCV camera capture and the ROS graph are CPU-side), but
-`torch.cuda.is_available()` returns `False` and every CUDA-touching op falls
-back to (or fails on) CPU.
+The runtime base is `nvidia/cuda:13.0.0-runtime-ubuntu24.04` (the builder uses
+the `-cudnn-runtime` variant). CUDA 13 needs **host NVIDIA driver 580.65 or newer**.
 
 | Host driver | What works | What fails |
 |---|---|---|
-| **≥ 580.65** | Everything: torch CUDA, onnxruntime CUDA EP, GPU-resident VLA + reward + detector models | — |
-| **570 – 579** (e.g. 575.57 — CUDA 12.9-class) | The ROS graph, OpenCV camera capture, CPU inference. `openral deploy run` comes up. | `torch.cuda.is_available()` returns `False`; GPU-resident models (VLA / Robometer / omdet) OOM or refuse at the VRAM preflight |
-| **< 570** | nothing: the base image's CUDA 13 stack stops loading entirely | everything |
+| **580.65 or newer** | Everything: torch CUDA, onnxruntime CUDA EP, GPU-resident VLA, reward and detector models | nothing |
+| **570 to 579** | The ROS graph, OpenCV capture, CPU inference; `deploy run` comes up | `torch.cuda.is_available()` is `False`; GPU-resident models run out of memory or refuse at the VRAM preflight |
+| **below 570** | nothing: the CUDA 13 stack stops loading | everything |
 
 `openral doctor` reports the driver version, so the mismatch shows up front.
 
 ## What's in the image
 
-- **Base**: `nvidia/cuda:13.0.0-runtime-ubuntu24.04` (Ubuntu 24.04 noble, Py 3.12).
-- **NO GStreamer / PyGObject / cairo.** Cameras use the `opencv_thread`
-  `SensorReader` (cv2.VideoCapture). `import gi` is absent by design. `libgl1` +
-  `libglib2.0-0` are installed only so `import cv2` can dlopen `libGL`/`libgthread`
-  in a headless container (plain graphics/threading libs, not gstreamer).
-- **ROS 2 Jazzy** (`ros-jazzy-ros-base`, `ros-jazzy-sensor-msgs`,
-  `ros-jazzy-rclpy`, `ros-jazzy-rmw-cyclonedds-cpp`) in both build and runtime
-  stages, plus moveit / nav2 / slam-toolbox / octomap for the wrapped-ROS
-  rSkills and lidar/mobile robots. The cyclonedds rmw is preferred over Fast DDS
-  because Fast DDS' SHM transport interacts badly with pydantic v2's Rust core.
-- **uv-managed workspace venv** at `/workspace/.venv` with the OpenRAL Python
-  packages plus:
-  - the `sim` group — the lerobot / transformers / accelerate
-    stack the VLA policy adapters AND the in-process Robometer reward monitor
-    import at load time (needed on real hardware too);
-  - the `omdet` group — the open-vocabulary object detector (omdet-turbo,
-    transformers-based) the `ros_image_detector_node` runs;
-  - `opencv-python` + `onnxruntime`, installed explicitly post-sync (opencv is a
-    per-member extra not pulled by `uv sync --all-packages`; onnxruntime lives
-    only in the `dev` group and backs the detector's CPU-ONNX / RT-DETR tier and
-    `runtime: onnx` rSkills);
-  - `feetech-servo-sdk` + `deepdiff` — the SO-100 / SO-101 real servo bus,
-    pulled automatically via openral-hal's `lerobot[feetech]` base dependency.
+- **Base:** Ubuntu 24.04 (noble), Python 3.12.
+- **No GStreamer / PyGObject / cairo.** `import gi` is absent by design. `libgl1`
+  and `libglib2.0-0` are installed only so `import cv2` loads in a headless
+  container.
+- **ROS 2 Jazzy** (`ros-base`, `sensor-msgs`, `rclpy`, `rmw-cyclonedds-cpp`) in
+  both stages, plus moveit, nav2, slam-toolbox and octomap for the wrapped-ROS
+  rSkills and mobile robots.
+- **A uv-managed venv** at `/workspace/.venv` with the OpenRAL Python packages and
+  these dependency groups:
+    - `sim`: the lerobot / transformers / accelerate stack the VLA adapters and
+      the in-process Robometer reward monitor import (needed on real hardware too);
+    - `omdet`: the open-vocabulary detector (omdet-turbo) the
+      `ros_image_detector_node` runs;
+    - `lingbot`: the LingBot protocol dependencies (msgpack, websocket);
+    - `opencv-python` and `onnxruntime`, installed after the sync (they back the
+      detector's CPU-ONNX tier and `runtime: onnx` rSkills);
+    - `feetech-servo-sdk` and `deepdiff` for the SO-100 / SO-101 servo bus, pulled
+      in by `openral-hal`'s `lerobot[feetech]`.
 
-  `uv sync` runs **without** the `gstreamer`/PyGObject extra and without the
-  `tensorrt` group (an OpenRAL Pro plugin, layered on by `Dockerfile.pro`).
-- **colcon `install/` overlay** at `/workspace/install/` (baked by the builder
-  stage), mirroring `just ros2-build`:
-  - `openral_msgs` — the action + message IDL the graph consumes
-  - `opentelemetry_cpp_vendor` — builds opentelemetry-cpp from source; the safety
-    kernel links against it
-  - `openral_safety_kernel` — C++ deny-by-default safety process (binary at
-    `/workspace/install/lib/openral_safety_kernel/safety_kernel_node`)
-  - `openral_hal_node` — the one manifest-driven HAL lifecycle node (every robot);
-    `openral_hal_openarm` — the OpenArm real-hardware bringup launch
-  - `openral_world_state` — 30 Hz world-state snapshot node
-  - `openral_reasoner_ros` — LLM tool dispatch
-  - `openral_prompt_router` — prompt fan-in
-  - `openral_safety`, `openral_safety_watchdog` — safety envelope + deadman watchdog
-  - `openral_human_estop` — human e-stop forwarder
-  - `openral_compliance` — compliance recorder (failure bus + safety stops → OTLP log records)
-  - `openral_foxglove_bringup` — read-only allowlists imported by the rskill launch
-  - `openral_rskill_ros` — the `ExecuteRskill` action server
-  - `openral_octomap_bridge` — octree → world-voxels bridge
-  - `openral_perception_ros` — the **gstreamer-free** ROS-Image object detector +
-    reward-monitor nodes (both subscribe to `/openral/cameras/<name>/image`)
-
-  The non-ROS trees the launch resolves from its `_REPO_ROOT`
-  (`/workspace/install`) — `tools/`, `rskills/`, `scenes/`, `.venv` — are COPY'd
-  to `/workspace` and symlinked under `install/`, so
-  `deploy run --config scenes/deploy/<workcell>.yaml` needs no host bind-mount.
-  `git` is installed in the runtime stage for the Robometer sidecar's first-use
-  venv provisioning. `Python3_EXECUTABLE=/workspace/.venv/bin/python` is baked
-  into every ament-python package so the lifecycle nodes resolve `structlog`,
-  `openral_*`, and the OTel SDK through the venv.
-- **`/entrypoint.sh`** probes `/opt/ros/*/setup.bash` AND
-  `/workspace/install/setup.bash`, sources both, and exec's the user command.
-- ENV: `ROS_DISTRO=jazzy`, `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`,
-  `PATH=/workspace/.venv/bin:$PATH`, `PYTHONUNBUFFERED=1`. **No `ROS_DOMAIN_ID`**:
-  `deploy run` confines a real robot's graph to the host on a per-robot domain
-  and refuses a networked scope without `OPENRAL_ALLOW_NETWORK_ROS=1` and SROS2
-  ([ROS graph confinement](../../docs/reference/ros-graph-security.md)).
-  Pass `-e ROS_DOMAIN_ID=N` only to pin a domain; never run a real robot on 0.
-- `ENTRYPOINT` is the bare `openral` CLI (`docker run openral:x86 doctor`,
-  `… detect`, `… deploy run --config …`); the default `CMD` is `deploy run --help`.
-
-## The GStreamer / DeepStream / TensorRT stack moved to OpenRAL Pro
-
-GStreamer's NVMM zero-copy fast path, DeepStream and TensorRT are the
-proprietary, EULA-restricted media/inference stack. A 2026-05-12 decision
-(refined 2026-05-14) rejected bundling DeepStream into the default image; a
-2026-07-08 decision moved the whole opt-in variant into the private `openral-pro`
-repo, whose `docker/Dockerfile.pro` `FROM`s the gstreamer-free `openral:x86` and
-installs GStreamer + `nvvideoconvert` / NVMM caps / `nvinfer` / the
-TensorRT-accelerated SmolVLA/ACT engines itself. The image built here never
-bundles any of it and stays pure Apache-2.0 + NVIDIA CUDA runtime EULA.
-
-The GStreamer `SensorReader` and perception-tee Python code
-(`python/runner/src/openral_runner/backends/gstreamer/`) still ships in this repo
-as the opt-in `gstreamer` extra (PyGObject). It is import-safe without `gi` (the
-`gi`/`Gst` imports are lazy) and is what OpenRAL Pro builds on; it is just not
-installed in this image.
-
-## Build-time and runtime caches
-
-Two settings in `Dockerfile.x86` exist only to keep cold starts sane, and both
-are easy to drop in a refactor:
-
-- **`ENV UV_COMPILE_BYTECODE=1`** — uv skips `.pyc` generation by default, so
-  without it the *first* import of the torch/lerobot/transformers tree inside a
-  fresh container byte-compiles the whole thing at runtime. Measured live on an
-  SO-101 deploy: the lazy SmolVLA import inside `runtime_node` crawled for 15+
-  minutes, GIL-starved to ~12% of a core by the two 30 fps camera threads
-  sharing its process. Compiling at build time costs a few minutes once.
-- **`ENV HF_HOME=/opt/openral/hf-cache`** — pins the Hugging Face cache to a
-  stable, mountable path instead of `$HOME/.cache/huggingface` in the
-  container's writable layer. **Naming it does not persist it.** Mount it:
-
-  ```bash
-  docker run --rm --gpus all \
-      -v ~/.cache/huggingface:/opt/openral/hf-cache \
-      openral:x86 deploy run --config scenes/deploy/so101_bench.yaml
-  ```
-
-  Without the mount every `--rm` run re-downloads the rSkill's weights
-  (SmolVLA ~1.4 GB, Robometer-4B ~3.5 GB), and the cost is invisible in a `phase_timer` breakdown because it lands
-  inside `from_pretrained`.
-
-The `ros-jazzy-*` apt packages are not version-pinned, so two builds of one
-commit can resolve different ROS releases. Each build records what it got:
-`/opt/openral/ros-jazzy-versions.txt` (the runtime stage, what the image runs)
-and `/opt/openral/ros-jazzy-versions.builder.txt` (what the colcon overlay was
-compiled against). Diff them between two images when a ROS-level regression
-appears without a code change (issue #381):
-
-```bash
-docker run --rm --entrypoint cat openral:x86 /opt/openral/ros-jazzy-versions.txt
-```
+  The sync runs without the `gstreamer` extra and without the `tensorrt` group
+  (OpenRAL Pro).
+- **A colcon `install/` overlay** at `/workspace/install/`, mirroring `just ros2-build`:
+  `openral_msgs`, `opentelemetry_cpp_vendor`, the C++ `openral_safety_kernel`,
+  `openral_hal_node` and `openral_hal_openarm`, `openral_world_state`,
+  `openral_reasoner_ros`, `openral_prompt_router`, `openral_safety` and
+  `openral_safety_watchdog`, `openral_human_estop`, `openral_compliance`,
+  `openral_foxglove_bringup`, `openral_rskill_ros`, `openral_octomap_bridge`, and
+  `openral_perception_ros` (the GStreamer-free detector and reward-monitor nodes).
+  `tools/`, `rskills/`, `scenes/` and `.venv` are copied to `/workspace` and
+  symlinked under `install/`, so `deploy run --config scenes/deploy/<workcell>.yaml`
+  needs no host bind-mount. `git` is in the runtime stage for the Robometer
+  sidecar's first-use venv.
+- **`/entrypoint.sh`** sources `/opt/ros/*/setup.bash` and
+  `/workspace/install/setup.bash`, then execs the command.
+- **Environment:** `ROS_DISTRO=jazzy`, `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`,
+  `PATH=/workspace/.venv/bin:$PATH`, `PYTHONUNBUFFERED=1`, `HF_HOME=/opt/openral/hf-cache`.
+  There is **no `ROS_DOMAIN_ID`**: `deploy run` confines a real robot's graph to
+  the host on a per-robot domain and refuses a networked scope without
+  `OPENRAL_ALLOW_NETWORK_ROS=1` and SROS2
+  ([ROS graph security](../../docs/reference/ros-graph-security.md)). Pass
+  `-e ROS_DOMAIN_ID=N` only to pin a domain, and never run a real robot on 0.
+  `UV_COMPILE_BYTECODE=1` is set at build time so the first import of the
+  torch / lerobot tree does not byte-compile at runtime.
 
 ## Driving the container's ROS graph from the host
 
-The image sets `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`. A host shell with
-`RMW_IMPLEMENTATION` unset gets Fast-DDS on Jazzy, so host-side `ros2` tooling
-**cannot see the container's nodes even with `--network host`**: an
-`ros2 action send_goal` hangs until its timeout against a running action
-server. Either dispatch from inside the container:
+The image uses `rmw_cyclonedds_cpp`. A host shell with `RMW_IMPLEMENTATION` unset
+gets Fast DDS on Jazzy, so host-side `ros2` tools cannot see the container's nodes
+even with `--network host`, and `ros2 action send_goal` hangs. Either run the
+command inside the container:
 
 ```bash
-docker exec <name> bash -lc 'source /workspace/install/setup.bash && ros2 action send_goal …'
+docker exec <name> bash -lc 'source /workspace/install/setup.bash && ros2 action send_goal ...'
 ```
 
-or match the middleware on the host:
+or match the middleware on the host: `export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`.
 
-```bash
-export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-```
+The `ros-jazzy-*` apt packages are not version-pinned. Each build records what it
+resolved in `/opt/openral/ros-jazzy-versions.txt` (runtime) and
+`/opt/openral/ros-jazzy-versions.builder.txt` (what colcon compiled against); diff
+them between two images when a ROS-level regression appears without a code change.
 
-## CI
+## OpenRAL Pro variant
 
-`.github/workflows/docker-build.yml` builds this image **on merge to `master`
+GStreamer's NVMM fast path, DeepStream and TensorRT are EULA-restricted and live
+in the private `openral-pro` repo, whose `docker/Dockerfile.pro` layers them on
+`openral:x86` (and `Dockerfile.l4t-pro` on `openral:l4t`). The image built here
+never bundles them. The GStreamer `SensorReader` code
+(`python/runner/src/openral_runner/backends/gstreamer/`) still ships in this repo
+as the opt-in `gstreamer` extra; it is import-safe without `gi` and is not
+installed in this image.
+
+## For maintainers: CI and build caching
+
+`.github/workflows/docker-build.yml` builds `openral:x86` **on merge to `master`
 only**, and only when its inputs change (`docker/inference/**` except this README,
-`.dockerignore`, `pyproject.toml`, `uv.lock`, `python/**`, `packages/**`, `cpp/**`,
-the live-ROS tests it hosts, or the workflow itself).
-It builds, runs the smoke tests (asserts `gi` absent, cv2 / feetech /
-onnxruntime / omdet present, `deploy run --dry-run` resolves) plus the live-ROS
-suite, then pushes `openral:x86` to GHCR. The image is ~25 GB, so the workflow
-frees runner disk before building.
+`.dockerignore`, `pyproject.toml`, `uv.lock`, `python/**`, `packages/**`,
+`cpp/**`, the live-ROS tests it hosts, or the workflow itself). It runs the smoke
+tests, then the live-ROS suite, then pushes to GHCR. It does not run on pull
+requests; if your PR touches the image, dispatch it against your branch with
+`gh workflow run docker-build.yml --ref <branch>` (a dispatch run builds and tests
+the same way but never pushes).
 
-It does **not** run on pull requests (a full build is ~15-20 min of runner time,
-and it used to re-run on every push to a branch). If your PR touches the image or
-the live-ROS tests, dispatch it against your branch
-(`gh workflow run docker-build.yml --ref <branch>`): a dispatch run builds and
-tests the same way but never pushes the image.
+The smoke tests are also Justfile recipes, so you can run them locally:
 
-### Build caching
+| Recipe | Checks |
+|---|---|
+| `just docker-smoke-x86-deploy` | `gi` is absent; cv2, feetech, onnxruntime, omdet and the LingBot protocol dependencies import; `deploy run --config so101_bench.yaml --dry-run` resolves |
+| `just docker-smoke-x86-reasoner` | a live prompt-router and reasoner round-trip (no LLM key needed) |
+| `just docker-smoke-x86-safety-kernel` | the safety kernel binary is present and `openral_msgs` imports |
 
-The image is large and its code is baked in, not mounted, so a naive rebuild is
-~30 minutes. Three mechanisms keep an incremental build far below that; keep
-them in mind when changing the Dockerfile's layer order, as they are easy to
-defeat by accident.
+The image is large and its code is baked in, not mounted, so layer order matters.
+Three mechanisms keep incremental builds fast; they are easy to defeat by
+accident:
 
-1. **Containerd image store, `docker` buildx driver.** The build writes straight
-   into the store dockerd reads from. Under the older `docker-container` driver,
-   `--load` had to serialize the image's 7.9 GB of compressed layers to a tarball and replay it
-   into the daemon — 45% of total build time, paid on every run no matter how
-   good the cache was. The workflow asserts the snapshotter is active and fails
-   the job if it is not.
-
-2. **Registry-backed layer cache on GHCR.** `master` pushes write
-   `$IMAGE:buildcache` (`mode=max`, so the builder stage's layers are cached
-   too, not just the final stage); every run reads it.
-
-3. **Layer ordering that isolates the two expensive steps.** Two rules:
-   - **The dependency sync must not depend on Python source.** A `manifests`
-     stage prunes `python/` to the workspace members' `pyproject.toml` files, and
-     `uv sync --no-install-workspace` installs the 215-package third-party
-     closure against *that*. The real `python/` is copied afterwards and a second
-     sync adds the 14 local packages in ~2s. Copying `python/` before the sync
-     (the obvious-looking arrangement) makes every one-line source edit
-     re-download ~4.4 GiB of wheels. The BuildKit cache mount on
-     `/root/.cache/uv` does **not** help: the registry cache exporter does not
-     export cache mounts, so on a fresh runner it is always cold.
-   - **`opentelemetry_cpp_vendor` gets its own layer.** It builds
-     opentelemetry-cpp from source and serially gates `openral_safety_kernel`,
-     together ~210s of the colcon step. It is copied and built before
-     `packages/` lands so that a `packages/` or `python/` diff cannot invalidate
-     it.
+1. **Containerd image store with the `docker` buildx driver.** The build writes
+   straight into the store dockerd reads from. The older `docker-container`
+   driver had to serialize every layer to a tarball and replay it on `--load`.
+   The workflow asserts the snapshotter is active and fails otherwise.
+2. **Registry-backed layer cache on GHCR.** Pushes to `master` write
+   `$IMAGE:buildcache` (`mode=max`, so the builder stage is cached too); every
+   run reads it.
+3. **Layer ordering that isolates the expensive steps.**
+    - The dependency sync must not depend on Python source. A `manifests` stage
+      prunes `python/` to the workspace members' `pyproject.toml` files, and
+      `uv sync --no-install-workspace` installs the third-party closure against
+      that. The real `python/` is copied afterwards for a second, fast sync.
+      Copying `python/` first makes every one-line edit re-download the wheels.
+      A BuildKit cache mount on `/root/.cache/uv` does not help, because the
+      registry cache exporter does not export cache mounts.
+    - `opentelemetry_cpp_vendor` gets its own layer. It builds opentelemetry-cpp
+      from source and gates `openral_safety_kernel`, so it is built before
+      `packages/` is copied and a `packages/` or `python/` diff cannot
+      invalidate it.
 
 To validate a change to the build driver or image store before it reaches
-`master`, run the workflow via **workflow_dispatch**: dispatch runs exercise the
-registry cache *export* path against a scratch `:buildcache-dispatch` ref that
-`master` never reads.
+`master`, run the workflow via `workflow_dispatch`: it exercises the cache export
+against a scratch `:buildcache-dispatch` ref that `master` never reads.
 
-### Do not move the buildcache to another repository
-
-`$IMAGE:buildcache` deliberately lives in **the same GHCR repository as the
-image** (`ghcr.io/openral/openral`). Splitting it out to something like
-`ghcr.io/openral/openral-cache:buildcache` looks tidier and would silently cost
-several minutes per `master` build.
-
-GHCR deduplicates blobs per repository. Because `--cache-to
-type=registry,mode=max` writes every layer into `ghcr.io/openral/openral`, by
-the time `Tag + push to GHCR` runs, all of the image's layers are already there.
-Measured on master run 31253732623, the push is **16 × `Layer already exists`
-and 1 × `Pushed`** (the single new blob is the attestation manifest, which the
-cache export does not carry), so the whole step takes **3.3s**. Before the cache
-and the image shared a repository's dedup domain, that same step took **6m27s**.
-
-Two consequences:
-
-- **The upload cost did not vanish, it moved.** The master cache export is
-  ~426s, against the ~387s the push used to cost. The publish path is roughly a
-  wash on its own; the win comes from the tarball round-trip disappearing
-  (build + push together: 1705s → 1353s). Do not read the 3.3s push as free.
-- **A separate cache repo breaks the dedup**, and the push reverts to uploading
-  the full image. Nothing fails and no test catches it; the publish step just
-  quietly gets minutes slower.
-
-### Where the remaining time goes
-
-After the above, neither a warm nor a cold build is dominated by compiling
-anything. Measured:
-
-| | Warm build (264s, measured when PRs still built the image) | Cold master build (1350s) |
-|---|---|---|
-| Actual compilation | ~0s (30/30 steps `CACHED`) | 322s (uv sync 113s, vendor 104s, 15 pkgs 105s) |
-| Export / unpack / cache export | ~250s unpacking + 138s blob pull | 810s (60%) |
-
-So the lever for further speedup is **image size**, or decoupling the smoke
-checks from a full local image materialization, not more caching or colcon. A 25.2 GB image is materialized in full to run three short
-`docker run` checks.
-
-## Image sizes
-
-| Image | Size |
-|---|---|
-| `openral:x86` (gstreamer-free) | 25.2 GB |
-| `openral:x86-deepstream-latest` (built by openral-pro) | larger (adds the media stack) |
+**Keep the buildcache in the same GHCR repository as the image**
+(`ghcr.io/openral/openral`). GHCR deduplicates blobs per repository: because
+`--cache-to type=registry,mode=max` already writes every layer there, the final
+push mostly reports `Layer already exists`. A separate cache repository breaks
+the dedup, the push reverts to uploading the full image, and nothing fails or
+warns; the publish step just gets minutes slower.

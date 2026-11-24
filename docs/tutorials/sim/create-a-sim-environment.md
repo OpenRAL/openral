@@ -1,537 +1,179 @@
 # Create a sim environment
 
-> **New here?** This authoring guide assumes you have run a rollout. If not,
-> start with [Your first sim rollout](first-rollout.md) (a real policy, one
-> command, CPU-only host).
+**Goal:** write a `SimScene` YAML for `openral sim run`, and, when no registered scene fits, add a robot manifest, a scene backend or a policy adapter.
 
-A **`SimScene` YAML** is the on-disk `(robot × scene × task)` tuple that
-`openral sim run` consumes together with an rSkill (`--rskill rskills/<id>`),
-to test a VLA / rSkill in simulation without hardware. Adapters see the
-composed runtime **`SimEnvironment`** (`SimScene` + `RSkillManifest`); the YAML
-never carries a `vla:` block.
-
-`SimScene` is the middle tier of the three-tier scene hierarchy:
+A `SimScene` YAML is the `(robot × scene × task)` tuple. `openral sim run` pairs it with an rSkill (`--rskill`) to test a policy in simulation without hardware. The YAML never carries a `vla:` block; the policy always comes from the CLI.
 
 ```
 DeployScene  ⊆  SimScene  ⊆  BenchmarkScene
-  (deploy run)    (sim run)    (benchmark scene / benchmark run)
+ deploy sim      sim run      benchmark scene / benchmark run
 ```
 
-Adding `metadata: {paper, honest_scope}` + non-`None` `seed` and `n_episodes`
-to a `SimScene` YAML makes it a **`BenchmarkScene`** (`openral benchmark
-scene`); dropping the `task:` block makes it a **`DeployScene`** (`openral
-deploy sim`). Per-tier loaders refuse wrong-tier YAMLs at parse time.
+Add `metadata: {paper, honest_scope}` plus non-`None` `seed` and `n_episodes` and it is a `BenchmarkScene`. Drop the `task:` block and it is a `DeployScene`. Each loader refuses a wrong-tier YAML and names the right command.
 
-Sections, in increasing depth:
+## Prerequisites
 
-1. The `openral sim run` flag surface and what is registry-resolved (i.e. **not**
-   hardcoded).
-2. Authoring a `SimScene` YAML for an **existing** robot, scene, task,
-   and pairing it with an rSkill.
-3. Bringing a **new** robot manifest (`robots/<id>/robot.yaml`) into sim.
-4. Deciding when the registered scene catalogue is not enough.
-5. Writing a **new scene adapter** (a new task suite or simulator wrapper)
-   in Python, for cases that need custom robot, task, or physics behavior.
-6. Writing a **new policy adapter** (a new VLA backend) and matching it to an
-   rSkill.
-7. Driving a custom MuJoCo kitchen through the **RoboCasa** backend.
-8. Driving the **GR-1 humanoid** tabletop tasks (the RoboCasa GR1 fork).
-
-The companion cookbook is [`scenes/README.md`](https://github.com/OpenRAL/openral/blob/master/scenes/README.md).
+- You have run [your first sim rollout](first-rollout.md).
+- `just sync --group sim`, plus the group your backend needs ([Sim backend installs](../../reference/sim-backend-installs.md)).
+- Paste-able halves: `uv run openral sim list` (scene configs) and `uv run openral rskill list` (rSkills). Neither prints the `SCENES` / `POLICIES` / `ROBOTS` registries; import them from Python to inspect those.
 
 ---
 
-## 1. What `openral sim run` accepts
+## 1. Author a SimScene YAML
 
-`openral sim run` is defined in
-[`python/sim/src/openral_sim/cli.py`](https://github.com/OpenRAL/openral/blob/master/python/sim/src/openral_sim/cli.py).
-Every axis (robot, scene, task, VLA, physics backend, device) is resolved at
-runtime through one of three registries, with no hardcoded IDs:
-
-| Registry | Defined in | Populated by |
-|---|---|---|
-| `SCENES` | `python/sim/src/openral_sim/registry.py` | `@SCENES.register("<id>")` decorators in `backends/*.py` |
-| `POLICIES` | same | `@POLICIES.register("<id>")` decorators in `policies/*.py` |
-| `ROBOTS` | same | Auto-discovered from `robots/<id>/robot.yaml` at import time |
-
-Two subcommands print the paste-able halves of an invocation without touching
-OTel, the GPU, or the runtime path:
-
-```bash
-openral sim list        # every scenes/**/*.yaml — paste into --config
-openral rskill list     # in-tree + installed rSkills — paste into --rskill
-```
-
-`openral sim list` is a filesystem walk over `scenes/`. It lists **config
-paths**, not registry ids; no command prints the `SCENES` / `POLICIES` /
-`ROBOTS` tables. To inspect them, import the registry from Python (see §3).
-
-### Flags (`openral sim run`)
-
-```
---config PATH                Path to a SimScene YAML (REQUIRED; strict —
-                             DeployScene / BenchmarkScene YAMLs are rejected
-                             with a redirect message pointing at
-                             `openral deploy sim` / `openral benchmark scene`).
---rskill <weights_uri>       rSkill reference: rskills/<id>, bare name,
-                             or HF repo id  (REQUIRED).
---robot ID                   robot_id for the scene. Required on free-axis
-                             scenes unless the YAML sets robot_id:; on scenes
-                             that fix a robot it must be one the scene allows;
-                             contradicting the YAML's robot_id: is an error.
---task  ID                   Override task.id (e.g. libero_spatial/3).
---instruction TEXT           Override the natural-language task instruction.
-                             Wins over a scene's per-episode language (a
-                             RoboCasa sampled-object string) — see §7.
---max-steps  N               Override task.max_steps.
---n-episodes N               Override SimScene.n_episodes.
---seed       N               Override the global seed.
---device     {cpu, cuda:0, mps, auto}
-                             Torch device for the policy.
---save-dir   DIR             Where to write the JSON summary.
---save-video PATH            Write a per-episode MP4 (also enables frame capture).
---video-style {debug,world}  debug (default) = two-band montage; world = clean
-                             single-view world render named
-                             <scene>_<rskill>_<success|fail>.mp4 + videos.json
-                             (for website hero clips; overlays drawn by the page).
---video-size INT             Long edge (px) for --video-style world (default 1024);
-                             frames keep their native aspect.
---video-square               Center-crop world clips to a square (website canvas).
---video-grid                 With --video-style world: also tile every episode
-                             into <scene>_<rskill>_grid.mp4.
-                             World clips and grid tiles carry a live outcome
-                             border: grey while running, then the scene's
-                             placement grade (green / yellow / orange), red on a fail.
---n-action-steps N           Override the chunk-replay cadence. Precedence:
-                             spec_extra > manifest > checkpoint chunk_size.
---dataset-out DIR            Write a LeRobotDataset v3.0 as the run proceeds.
-                             Every episode (success or failure) becomes rows;
-                             meta/info.json carries the success rate. The path
-                             MUST NOT pre-exist — lerobot v3 refuses to write
-                             into a populated root. See §6.
---dataset-repo-id ID         Repo id stamped into the produced dataset's
-                             meta/info.json (default openral/dataset-<robot_id>).
-                             Not pushed — `openral dataset push` owns publishing.
---dataset-license SPDX       License for the produced dataset (default CC-BY-4.0).
---dashboard                  Boot `openral dashboard` as a child process, point
-                             OTel at it, and shut it down on exit.
---dashboard-port N           Port for that spawned dashboard (default 4318).
---dry-run                    Resolve the config + rSkill, run the embodiment /
-                             sensor compatibility gate, print the planned run,
-                             and exit — no sim built, no weights fetched.
-                             Non-zero exit if the pairing is incompatible.
---view / --no-view           Passive mujoco.viewer window. Tri-state: unset =
-                             on when a display exists and the scene is
-                             MuJoCo-backed, else auto-off with a WARNING;
-                             --view requires a window (errors loud if
-                             unsupported); --no-view forces offscreen.
-                             Incompatible with MUJOCO_GL=egl.
---verbose / -v               Verbose logging.
-```
-
-### Canonical invocation
-
-```bash
-openral sim run --config scenes/sim/libero_spatial.yaml \
-            --rskill rskills/smolvla-libero
-```
-
-Both `--config` and `--rskill` are **required**: the runtime `SimEnvironment`
-is always composed from a `SimScene` (the YAML) and an `RSkillManifest` (the
-rSkill). There is no bare-CLI path; the scene + task go in the YAML.
-
-### Per-axis overrides on top of `--config`
-
-`--robot` (free-axis scenes only), `--task`, `--instruction`, `--max-steps`,
-`--n-episodes`, `--n-action-steps`, `--seed`, `--device`, `--save-dir` and
-`--save-video` **overlay** the loaded config (`_load_or_build_env` in
-[`cli.py`](https://github.com/OpenRAL/openral/blob/master/python/sim/src/openral_sim/cli.py)),
-so one YAML can drive a whole task suite:
-
-```bash
-# Same VLA + scene; iterate through tasks.
-for i in 0 1 2 3; do
-    openral sim run --config scenes/sim/libero_spatial.yaml --rskill smolvla-libero --task "libero_spatial/$i"
-done
-```
-
-To swap an axis that *is* baked in, copy the YAML and edit it.
-
-### Startup performance (`activate()` parallelisation)
-
-`SimRunner.activate()` builds the env (MuJoCo XML compile / dataset
-prefetch) and the policy (PaliGemma / NF4 quantization on π0.5, weights
-load on SmolVLA) **concurrently** on a 2-worker `ThreadPoolExecutor`.
-Both factories only read the immutable `SimEnvironment` and share no mutable
-state, so `activate` takes `max(env_ms, policy_ms)` instead of their sum, which
-matters on LIBERO / RoboCasa / GR1-tabletop where each side is 30–150 s. Each
-run logs a `sim_init_parallel` record with `env_ms`, `policy_ms`, `total_ms`,
-and `saved_ms`.
-
-To force the legacy sequential path (e.g. when interleaved logs obscure
-profiling), set `OPENRAL_SIM_SEQUENTIAL_INIT=1`:
-
-```bash
-OPENRAL_SIM_SEQUENTIAL_INIT=1 openral sim run --config scenes/sim/libero_spatial.yaml --rskill pi05-libero-int8
-```
-
----
-
-## 2. Author a SimScene YAML
-
-The on-disk shape is a [`SimScene`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py)
-(`python/core/src/openral_core/schemas.py`, search for `class SimScene`). At
-runtime the CLI composes it with the rSkill manifest into a
-[`SimEnvironment`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py)
-(search for `class SimEnvironment`) that adapter factories consume. A YAML with
-a `vla:` block raises `ROSConfigError`: policy *always* travels on the CLI.
-
-Start from an existing config, e.g.
-[`scenes/sim/libero_spatial.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/libero_spatial.yaml):
+Start from a shipped file, such as [`scenes/sim/libero_spatial.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/libero_spatial.yaml):
 
 ```yaml
-# SimScene = scene + task. Policy is supplied at the CLI via
-#   --rskill rskills/<id>
-
-# robot_id: required on free-axis scenes (or pass --robot). LIBERO/MetaWorld/
-# RoboCasa fix the robot in the registry; a robot_id there must name an allowed
-# robot, anything else is a ROSConfigError.
-# robot_id: franka_panda
-
 scene:
   id: libero_spatial              # key into SCENES
-  backend: mujoco                 # PhysicsBackend enum
+  backend: mujoco                 # PhysicsBackend; defaults to mujoco
   observation_height: 256
   observation_width: 256
-  cameras: ["top", "wrist"]        # optional; SceneSpec.cameras defaults to []
 
 task:
-  id: libero_spatial/0            # adapter splits on "/" to resolve
-  scene_id: libero_spatial        # MUST equal scene.id (validated post-init)
-  instruction: ""                 # LIBERO overrides from suite metadata
+  id: libero_spatial/0            # the adapter splits on "/" to resolve the task
+  scene_id: libero_spatial        # must equal scene.id
+  instruction: ""                 # LIBERO takes it from the suite metadata
   max_steps: 100
-  success_key: is_success         # which info[] key marks success
-
-seed: 42                          # optional on SimScene; defaults to 0
-n_episodes: 1                     # optional on SimScene; defaults to 1
-record_video: false               # optional; defaults to false
+  success_key: is_success         # the info[] key that marks success
 ```
 
-To make it **paper-comparable**, add a `metadata: BenchmarkMetadata` block, set
-`seed` and `n_episodes` to canonical values, and move the file to
-`scenes/benchmark/`. The benchmark-tier sibling,
-[`scenes/benchmark/libero_spatial.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/libero_spatial.yaml),
-adds:
+| Block | Schema | Rules |
+| --- | --- | --- |
+| `scene` | `SceneSpec` | `id` required |
+| `task` | `TaskSpec` | `id` and `scene_id` required; `scene_id` must equal `scene.id` |
+| `robot_id` | key into `ROBOTS` | Required on free-axis scenes unless you pass `--robot`. On a scene that fixes its robot (LIBERO, MetaWorld, RoboCasa) it is optional and must name an allowed robot. |
+| `seed`, `n_episodes`, `record_video`, `save_dir` | optional | Defaults: `0`, `1`, `false` |
 
-```yaml
-robot_id: franka_panda            # suites need a non-None robot_id
-seed: 42                          # required (no default)
-n_episodes: 50                    # required (no default; OpenVLA protocol)
-metadata:
-  paper: "https://arxiv.org/abs/2306.03310"
-  honest_scope: "..."             # honest scope statement; required
-```
+`scene.backend_options` is an opaque dict. Each backend validates it with its own `options_model`, so a misspelled key fails at load with a `ROSConfigError` naming the scene id and the field.
 
-The per-tier loader (`load_scene_strict`) rejects wrong-tier YAMLs: a
-`BenchmarkScene` YAML passed to `openral sim run` gets a redirect to
-`openral benchmark scene`, and vice versa.
-
-### The required blocks
-
-| Block | Schema | Required keys |
-|---|---|---|
-| `scene` | [`SceneSpec`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py) (search for `class SceneSpec`) | `id`; `backend` defaults to `mujoco` |
-| `task` | [`TaskSpec`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py) (search for `class TaskSpec`) | `id`, `scene_id` (must equal `scene.id`) |
-| `robot_id` | string, key into `ROBOTS` | On **free-axis** scenes, bakes the robot into the YAML instead of passing `--robot`. On `fixed_robot` scenes (LIBERO/MetaWorld/RoboCasa) optional, and must name a robot the scene allows. |
-
-The policy comes from `--rskill rskills/<id>`, which resolves to an
-`RSkillManifest` (search `schemas.py` for `class RSkillManifest`) composed onto
-`SimEnvironment.vla` by `_load_or_build_env` in
-[`cli.py`](https://github.com/OpenRAL/openral/blob/master/python/sim/src/openral_sim/cli.py).
-The registries reject unknown ids with a list of valid ones. Run it:
+Run it:
 
 ```bash
-openral sim run --config my_config.yaml --rskill rskills/<your_skill>
+uv run openral sim run --config my_config.yaml --rskill rskills/smolvla-libero
 ```
 
-### Isaac Sim scenes: static vs movable objects
+It prints one summary line per episode and exits `0` regardless of success. Flags: `uv run openral sim run --help`. The ones you need most are `--task`, `--instruction`, `--max-steps`, `--n-episodes`, `--seed`, `--device`, `--robot` (free-axis scenes only), `--save-dir`, `--save-video`, `--view` and `--dry-run`. A suite file works too: `--config benchmarks/libero_10.yaml --task libero_10/3` (see [Run a benchmark](../benchmark/run-a-benchmark.md)).
 
-An Isaac Sim scene (`backend: isaacsim`) separates what can move from what can't. Movable
-objects carry an enabled, non-kinematic USD rigid body; everything else is static. In the
-YAML:
+To make the YAML paper-comparable, add `robot_id`, `seed`, `n_episodes` and `metadata: {paper, honest_scope}` and move it to `scenes/benchmark/`.
 
-```yaml
-scene:
-  backend: isaacsim
-  assets_uri: "path/to/environment.usd"  # static fixtures: no rigid body (or kinematic)
-  backend_options:
-    objects:
-      - name: cube                       # spawned, graspable
-        usd: "path/to/cube.usda"
-        dynamic: true                    # required on every entry
-        xyz: [0.4, 0.0, 0.8]
-      - name: marker                     # spawned, fixed prop
-        usd: "path/to/marker.usda"
-        dynamic: false
-        xyz: [0.5, 0.1, 0.75]
-    stage_objects:                       # rigid bodies already inside the environment USD
-      - {name: plate, prim: Plate/Plate}
-```
-
-`dynamic` has no default: leaving it out fails at load. See
-[Static vs movable](https://github.com/OpenRAL/openral/blob/master/scenes/README.md) in
-`scenes/README.md` for the full rule and how to author fixtures in an environment USD.
-
-Under `openral deploy sim`, the robot console's 3D view draws the static part as its
-**Sim scene** layer, translucent, in the odometry frame. Give a movable object inside the
-environment USD a rigid body and list it in `stage_objects`: that also keeps it out of the
-layer, which would otherwise draw it where it started. Scenes built on NVIDIA's Isaac assets
-(`isaac:` paths) show the layer greyed out, since those assets may not be converted.
-
-![The Sim scene layer: the AMR shelf aisle's racks drawn translucent around the robot, with the lidar map and depth clouds on top](images/sim-scene-layer.webp)
-
-It prints a per-episode summary line and exits `0`. The same pattern drives
-`openral benchmark run`. `openral deploy run`, the hardware sibling, consumes a
-`DeployScene` workcell YAML and lets the reasoner select the policy at runtime.
+Isaac Sim scenes also take objects, stage objects and camera mounts. Those fields are in [Sim environments: Isaac Sim scenes](../../reference/sim-environments.md#isaac-sim-scenes).
 
 ---
 
-## 3. Add a new robot manifest
+## 2. Add a robot manifest
 
-Robots are auto-registered from `robots/<id>/robot.yaml` at import time, with
-no Python edit, for `openral sim run` **and** `openral deploy sim|run`.
-The discovery loop lives at
-[`python/sim/src/openral_sim/policies/robots.py`](https://github.com/OpenRAL/openral/blob/master/python/sim/src/openral_sim/policies/robots.py)
-(`_discover_robot_ids` → `resolve_robot_manifest` → `_make_factory`); `deploy`
-resolves the manifest through the same `resolve_robot_manifest`.
-The search path is, in order:
-
-1. `$OPENRAL_ROBOTS_DIR/<id>/robot.yaml` (if the env var is set)
-2. `<repo_root>/robots/<id>/robot.yaml`
-
-Use [`robots/so100_follower/robot.yaml`](https://github.com/OpenRAL/openral/blob/master/robots/so100_follower/robot.yaml)
-as a small (6-DoF + gripper) template; use
-[`robots/franka_panda/robot.yaml`](https://github.com/OpenRAL/openral/blob/master/robots/franka_panda/robot.yaml)
-for a 7-DoF arm. The required top-level blocks are:
-
-| Block | Purpose |
-|---|---|
-| `name`, `embodiment_kind`, `base_frame` | Identity + URDF root frame |
-| `joints[]` | Per-joint: name, type, parent/child links, axis, limits, actuator |
-| `end_effectors[]` | Gripper(s) / hand(s); kind, DoF, force/payload limits; `command_convention` (+ `command_range` for radians / metres) — the gripper value this end effector's HAL consumes, which the safety kernel bounds and skills must match |
-| `sensors[]` | Cameras / IMUs / etc.; each maps to a `vla_feature_key` |
-| `capabilities` | Control modes, embodiment tags, lift / dexterity flags |
-| `safety` | Workspace box, speed/force/torque limits, deadman flag |
-| `observation_spec`, `action_spec` | State / action shapes and representations |
-| `assets` (optional) | URDF / MJCF / SRDF reference block — see below |
-| `sim` (optional) | MuJoCo joint↔qpos wiring consumed by `MujocoArmHAL.from_description` — see below |
-
-### The `assets:` block
-
-The robot's URDF / MJCF / SRDF are named once, in the top-level `assets:`
-block. Every ref uses the `openral_core.assets.resolve_asset` grammar:
-
-```yaml
-assets:
-  # The MJCF that MujocoArmHAL loads. One of:
-  #   rd:<module>          — robot_descriptions package (downloads on first use)
-  #   gym_aloha:<scene>    — gym-aloha package asset
-  #   openarm:bimanual     — Enactic OpenArm v2 (fetched on first use)
-  #   unitree:h2           — Unitree H2 official MJCF/URDF (pinned, SHA-256 verified)
-  #   makermods:metal      — MakerMods Metal arm (or makermods:metal_station);
-  #                          derived from a pinned upstream clone on first use
-  #   file:<relpath>       — repo/manifest-relative explicit override
-  mjcf: "rd:ur5e_mj_description"
-  # Optional URDF (robot_state_publisher / collision lowering):
-  # urdf:
-  #   ref: "file:ur5e.urdf"          # or rd:<module> / ros2://robot_description
-  #   root_frame: "base_link"         # robot_state_publisher root-frame wiring
-  #   base_to_root_xyz_rpy: [0, 0, 0, 0, 0, 0]
-  # Optional SRDF (seeds allowed_collision_pairs):
-  # srdf: "file:ur5e.srdf"
-```
-
-### The `sim:` block
-
-A robot that drives a MuJoCo digital twin through the shared `MujocoArmHAL`
-base declares a `sim:` block alongside `assets.mjcf`. No per-robot Python file
-is required: pass the loaded manifest into `MujocoArmHAL.from_description(desc)`.
-
-```yaml
-sim:
-  # The MJCF itself is named by `assets.mjcf` (above); this block carries
-  # only the joint↔qpos/qvel/actuator plumbing.
-
-  # Floating-base humanoids (G1, H1): qpos offset 7, qvel offset 6 are
-  # derived automatically.  Single-arm robots can omit.
-  floating_base: false
-
-  # Explicit joint→qpos / →actuator overrides — only needed when the
-  # MJCF declares joints in an order other than ``description.joints`` or
-  # leaves passive follower qpos slots in between (OpenArm).
-  # joint_qpos_addr:
-  #   joint_a: 0
-  #   joint_b: 1
-  # actuator_index:
-  #   joint_a: 0
-
-  grippers:                                    # zero, one, or two entries
-    - joint: "panda_gripper"                   # name from joints[]
-      ctrl_range: [0.0, 255.0]
-      qpos_addrs: [7, 8]                       # finger qpos indices
-      qpos_scale: 0.08                         # 2 * 0.04 m max extent
-      read_mode: "sum_over_scale"              # | "affine_low_high" | "passthrough"
-      write_mode: "normalised"                 # | "passthrough"
-      # actuator_index: 7                      # override; defaults to actuator_index map
-      # mirror_actuator_index: 15              # Aloha: writes -ctrl to the negative finger
-
-  # Connect-time hooks:
-  # keyframe_index: 0          # mj_resetDataKeyframe(model, data, idx) — Aloha
-  # seed_ctrl_from_qpos: true  # ctrl = qpos on connect — OpenArm v2
-```
-
-**Single source of truth.** When you add a `<ROBOT>_DESCRIPTION` Python
-constant (e.g. `UR5e_DESCRIPTION` in `openral_hal/ur.py`), mirror the
-`sim` block via `sim=SimDescription(...)` so the manifest-vs-YAML drift
-guard (`tests/unit/test_robot_manifests_match_hal_constants.py`, plus
-`tests/sim/test_data_driven_mujoco_hal.py::test_python_description_matches_yaml`)
-stays green.
-
-**Worked examples in tree** (use as templates):
-
-| Robot | Pattern |
-|---|---|
-| `so100_follower` | single-arm + revolute Jaw (`read_mode: affine_low_high`) |
-| `franka_panda` | single-arm + parallel gripper (`read_mode: sum_over_scale`) |
-| `ur5e`, `ur10e`, `rizon4` | single-arm, no gripper, no overrides |
-| `g1`, `h1` | floating-base humanoid (`floating_base: true`) |
-| `aloha_bimanual` | bimanual + two normalized `[0, 1]` grippers (`NORMALISED` write / `AFFINE_LOW_HIGH` read over the finger range) with `mirror_actuator_index` + `keyframe_index: 0` |
-| `openarm` | bimanual + two passthrough grippers + explicit `joint_qpos_addr` skipping passive follower fingers + `seed_ctrl_from_qpos: true` |
-
-### Drop a new robot in
+Robots register from `robots/<id>/robot.yaml` at import time, with no Python edit, for `sim run` and `deploy sim|run`. The search path is `$OPENRAL_ROBOTS_DIR/<id>/robot.yaml`, then `<repo>/robots/<id>/robot.yaml`. Templates: [`so100_follower`](https://github.com/OpenRAL/openral/blob/master/robots/so100_follower/robot.yaml) (6 DoF + gripper) and [`franka_panda`](https://github.com/OpenRAL/openral/blob/master/robots/franka_panda/robot.yaml) (7 DoF).
 
 ```bash
 mkdir -p robots/my_arm
-$EDITOR robots/my_arm/robot.yaml        # copy & adapt so100_follower/robot.yaml
-$EDITOR robots/my_arm/README.md         # pair the manifest with adapter notes
+$EDITOR robots/my_arm/robot.yaml       # copy and adapt so100_follower
 ```
 
-The manifest is the runtime source of truth for the HAL too: leave
-`hal.sim: null` and `build_hal` derives `MujocoArmHAL.from_description` from
-your `sim:` block (every `sensors:` / `collision_geometry:` edit reaches the
-running twin). Name a class in `hal.sim` only when the robot needs real
-behaviour beyond the data (a walking controller, a torque hook); that class
-must accept `description=` so it binds the loaded manifest. `hal.real` names
-the real-hardware HAL, and its constructor kwargs come from
-`hal.parameters.defaults` (overridable per workcell by a DeployScene `hal:`
-block or `--hal key=value`, all forwarded to the constructor). A vendor
-ros2_control bringup is declared as `hal.real_bringup: "<pkg>:<file>.launch.py"`; an
-in-tree one must call `openral_core.ros_graph_scope.require_host_confined_real_bringup`
-before composing any node, so a hand run cannot join the LAN graph
-([ros-graph-security](../../reference/ros-graph-security.md)).
+Required: `name`, `embodiment_kind`, `joints`, `capabilities`, `safety`. Optional blocks you will usually want:
 
-`openral deploy sim --config <scene.yaml>` / `deploy run --robot my_arm` then
-work with no Python registry entry and no ROS package: the one generic,
-manifest-driven `openral_hal_node` hosts the HAL for every robot, under the ROS
-node name `openral_hal_my_arm` (a node name, not a package). The scene decides
-whether `deploy sim` builds a bare MuJoCo twin or scene-attaches: a DeployScene with its own `composition:`, or whose `scene.id` is
-not a registered `openral_sim` scene, gets a bare twin; otherwise the HAL
-attaches to the scene's `SimRollout`.
+| Block | Purpose |
+| --- | --- |
+| `base_frame` | URDF root frame (default `base_link`) |
+| `end_effectors[]` | Grippers and hands, with `command_convention` (and `command_range` for radians or metres). The safety kernel bounds gripper values by it and skills must match it. |
+| `sensors[]` | Cameras, IMUs; each maps to a `vla_feature_key` |
+| `observation_spec`, `action_spec` | State and action shapes; `action_spec.control_freq_hz` sets the control rate |
+| `assets` | URDF, MJCF, SRDF references |
+| `sim` | MuJoCo joint-to-qpos wiring for `MujocoArmHAL.from_description` |
+| `hal` | Names the sim and real HAL classes (see below) |
 
-### Verify it registered
+### `assets:`
 
-`openral sim list` lists scene configs, not robots. Load it from Python:
+References use the `resolve_asset` grammar:
+
+| Prefix | Meaning |
+| --- | --- |
+| `rd:<module>` | `robot_descriptions` package, fetched on first use |
+| `gym_aloha:<scene>`, `openarm:<variant>`, `unitree:<model>`, `makermods:<variant>`, `galaxea:<model>`, `robotwin:<model>`, `robosuite:<robot>`, `behavior:<model>` | Pinned upstream assets, fetched or derived on first use |
+| `file:<relpath>` | Manifest-relative file |
+| `ros2://robot_description` | The live ROS parameter (URDF only) |
+
+```yaml
+assets:
+  mjcf: "rd:ur5e_mj_description"
+  # urdf: {ref: "file:ur5e.urdf", root_frame: "base_link"}
+  # srdf: "file:ur5e.srdf"        # seeds allowed_collision_pairs
+```
+
+### `sim:`
+
+```yaml
+sim:
+  floating_base: false           # humanoids: qpos offset 7, qvel offset 6 are derived
+  # joint_qpos_addr: {joint_a: 0, joint_b: 1}   # only when the MJCF order differs
+  # actuator_index: {joint_a: 0}
+  # joint_qvel_addr, settle_steps_default       # see SimDescription
+  grippers:                      # zero, one or two entries
+    - joint: "panda_gripper"
+      ctrl_range: [0.0, 255.0]
+      qpos_addrs: [7, 8]
+      qpos_scale: 0.08
+      read_mode: "sum_over_scale"   # | affine_low_high | passthrough
+      write_mode: "normalised"      # | passthrough
+  # keyframe_index: 0              # mj_resetDataKeyframe on connect (ALOHA)
+  # seed_ctrl_from_qpos: true      # ctrl = qpos on connect (OpenArm)
+```
+
+In-tree examples: `so100_follower` (revolute jaw), `franka_panda` (parallel gripper), `ur5e` / `ur10e` / `rizon4` (no gripper), `g1` / `h1` (floating base), `aloha_bimanual` (two normalised grippers), `openarm` (passthrough grippers, explicit `joint_qpos_addr`).
+
+If the robot also has a Python `<ROBOT>_DESCRIPTION` constant, mirror the `sim` block there. `tests/unit/test_robot_manifests_match_hal_constants.py` and `test_python_description_matches_yaml` fail when the two drift.
+
+### `hal:`
+
+Leave `hal.sim: null` and `build_hal` builds `MujocoArmHAL.from_description` from your `sim:` block. Name a class in `hal.sim` only when the robot needs behaviour beyond data (a walking controller, a torque hook); it must accept `description=`. `hal.real` names the real-hardware HAL; its constructor kwargs come from `hal.parameters.defaults`. A vendor ros2_control bringup goes in `hal.real_bringup: "<pkg>:<file>.launch.py"` and must call `openral_core.ros_graph_scope.require_host_confined_real_bringup` ([ROS graph security](../../reference/ros-graph-security.md)).
+
+`openral deploy sim --config <scene>` then works with no ROS package: one manifest-driven `openral_hal_node` hosts every robot.
+
+Verify it registered:
 
 ```python
 from openral_sim import ROBOTS
-robot = ROBOTS.get("my_arm")()         # invokes the cached factory
-print(robot.name, len(robot.joints))
+print(ROBOTS.get("my_arm")().name)
 ```
 
 ### Before this robot touches real hardware
 
-Sim runs fine on hand-authored geometry and a nominal camera mount; a real
-deploy does not. The safety kernel's collision checks depend on two fits that
-nothing in `deploy sim` forces:
+Sim runs on hand-authored geometry; a real deploy does not. Two fits are not forced by `deploy sim`:
 
-- **Self-collision geometry** — `openral collision lower --robot
-  robots/my_arm/robot.yaml --write` fits the manifest's collision capsules to
-  the actual MJCF/URDF meshes. An unfitted template capsule can miss its own
-  mesh by centimeters, silently making the kernel's self- and world-collision
-  checks non-conservative.
-- **Depth-camera extrinsic** — if `my_arm` carries a robot-mounted depth
-  camera (`parent_frame` set on a depth/point-cloud `SensorSpec`), calibrate
-  its mount yourself (a hand-eye calibration against a printed board is the
-  usual way; OpenRAL does not measure it) and declare it as
-  `static_transform_xyz_rpy` in `robots/my_arm/units/<unit>.yaml` (see
-  [`docs/tutorials/deploy/openarm-real-world-voxel-check.md`](../deploy/openarm-real-world-voxel-check.md),
-  step 2, for the frames and the accuracy the world-voxel check needs).
-  `deploy run` refuses a real world-voxel launch on the manifest's nominal
-  mount. An uncalibrated extrinsic misplaces world-voxel obstacles relative to
-  the robot, causing phantom stops and missed real ones.
+- **Self-collision geometry.** `uv run openral collision lower --robot robots/my_arm/robot.yaml --write` fits the collision capsules to the real meshes. An unfitted template capsule can miss its mesh by centimetres and make the kernel's collision checks non-conservative.
+- **Depth-camera extrinsic.** For a robot-mounted depth camera, calibrate the mount yourself (a hand-eye calibration) and declare it as `static_transform_xyz_rpy` in `robots/my_arm/units/<unit>.yaml`. `deploy run` refuses a real world-voxel launch on the nominal mount. See [the world-voxel check tutorial](../deploy/openarm-real-world-voxel-check.md), step 2.
 
-`openral detect` prints both reminders when it writes a manifest with an
-MJCF/URDF (and, for the second, a robot-mounted depth camera).
-
-### Match the manifest to a sim scene
-
-Every scene adapter expects a specific embodiment. LIBERO assumes a 7-DoF arm
-with a parallel gripper; MetaWorld assumes the Sawyer. A new robot also needs
-either (a) a scene adapter that can drive it, or (b) the `mock` scene, which
-accepts any action dimensionality (see §5).
+`uv run openral detect` prints both reminders when it writes a manifest.
 
 ---
 
-## 4. When the existing scene adapters are **not** enough
+## 3. Write a scene backend
 
-Write a Python adapter (§5) when the registered scene catalogue cannot express
-your task, e.g.:
-
-- You want a completely different arena (no LIBERO floor / table).
-- You want a different robot than a benchmark suite hard-wires.
-- You want objects or fixtures the existing suite adapter cannot spawn.
-- You want physics independent of robosuite (e.g. a mock scene or a
-  non-MuJoCo backend).
-
----
-
-## 5. Write a custom scene adapter
-
-A scene adapter is a function decorated with `@SCENES.register("<id>")` that
-returns an object satisfying the
-[`SimRollout`](https://github.com/OpenRAL/openral/blob/master/python/sim/src/openral_sim/rollout.py)
-Protocol:
+Write one when the catalogue cannot express your task: a different arena, objects the existing adapters cannot spawn, or a non-robosuite physics engine. A backend is a function decorated with `@SCENES.register("<id>")` that returns a [`SimRollout`](https://github.com/OpenRAL/openral/blob/master/python/sim/src/openral_sim/rollout.py):
 
 ```python
 class SimRollout(Protocol):
     scene: SceneSpec
-    task:  TaskSpec
+    task: TaskSpec
     def reset(self, seed: int | None = ...) -> Observation: ...
     def step(self, action: NDArray[np.float32]) -> StepResult: ...
     def render(self) -> NDArray[np.uint8] | None: ...
     def close(self) -> None: ...
 ```
 
-`Observation` is a free-form dict; adapters SHOULD include `"images"`
-(dict of HWC uint8 RGB frames), `"state"` (1-D float32), and `"task"`
-(natural-language instruction). `StepResult` is a 5-tuple-shaped dataclass
-(`observation`, `reward`, `terminated`, `truncated`, `info`); the runner
-reads success from `info[task.success_key]`.
+`Observation` is a dict. Include `"images"` (HWC uint8 frames by camera name), `"state"` (1-D float32) and `"task"` (the instruction). `StepResult` carries `observation`, `reward`, `terminated`, `truncated` and `info`; the runner reads success from `info[task.success_key]`.
 
-The smallest reference adapter, with no physics and no external dependencies,
-is [`python/sim/src/openral_sim/policies/mock.py`](https://github.com/OpenRAL/openral/blob/master/python/sim/src/openral_sim/policies/mock.py).
-The realistic one is `backends/libero.py` (wraps the LIBERO gymnasium env).
+The smallest reference is the `mock` scene in [`policies/mock.py`](https://github.com/OpenRAL/openral/blob/master/python/sim/src/openral_sim/policies/mock.py) (no physics; accepts any action size). A realistic one is `backends/libero.py`; the arena-composing one is `backends/so101_box/`.
 
 ### Skeleton
 
-Place new adapters under `python/sim/src/openral_sim/{policies,backends}/` and
-add the module to that package's `__init__.py` import list, which triggers the
-`@register` side-effect:
+Create `python/sim/src/openral_sim/backends/my_scene.py`:
 
 ```python
-# python/sim/src/openral_sim/{policies,backends}/my_scene.py
 from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 from numpy.typing import NDArray
@@ -540,11 +182,22 @@ from pydantic import BaseModel, ConfigDict
 from openral_sim.registry import SCENES
 from openral_sim.rollout import Observation, StepResult
 
+if TYPE_CHECKING:
+    from openral_core import SceneSpec, SimEnvironment, TaskSpec
+
+
+class MySceneOptions(BaseModel):
+    """What ``scene.backend_options`` may carry for this backend."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    table_height: float = 0.75
+
 
 @dataclass
 class _MyScene:
-    scene: "SceneSpec"
-    task:  "TaskSpec"
+    scene: SceneSpec
+    task: TaskSpec
     _step: int = 0
 
     def reset(self, seed: int | None = None) -> Observation:
@@ -553,7 +206,7 @@ class _MyScene:
 
     def step(self, action: NDArray[np.float32]) -> StepResult:
         self._step += 1
-        done = self._step >= self.task.max_steps
+        done = self._step >= (self.task.max_steps or 1)  # max_steps may be None
         return StepResult(
             observation=self._observe(),
             reward=0.0,
@@ -564,8 +217,7 @@ class _MyScene:
 
     def render(self) -> NDArray[np.uint8] | None:
         return np.zeros(
-            (self.scene.observation_height, self.scene.observation_width, 3),
-            dtype=np.uint8,
+            (self.scene.observation_height, self.scene.observation_width, 3), dtype=np.uint8
         )
 
     def close(self) -> None:
@@ -574,109 +226,42 @@ class _MyScene:
     def _observe(self) -> Observation:
         return {
             "images": {"camera1": self.render()},
-            "state":  np.zeros(8, dtype=np.float32),
-            "task":   self.task.instruction,
+            "state": np.zeros(8, dtype=np.float32),
+            "task": self.task.instruction,
         }
 
 
-class MySceneOptions(BaseModel):
-    """What `scene.backend_options` may carry for this backend."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    table_height: float = 0.75
-
-
 @SCENES.register("my_scene", options_model=MySceneOptions)
-def _build(env_cfg: "SimEnvironment") -> _MyScene:
+def _build(env_cfg: SimEnvironment) -> _MyScene:
     return _MyScene(scene=env_cfg.scene, task=env_cfg.task)
 ```
 
-**Declare the gripper encoding your environment consumes.** A gripper value
-reaches the environment unconverted, so pass `gripper_convention=` to
-`@SCENES.register` (e.g. `"normalized_close_symmetric"` for a robosuite env,
-where -1 opens and +1 closes). It replaces the robot end effectors' own encoding
-in this scene: the safety kernel bounds gripper chunks by its range, and
-`openral sim run` / the deploy runner refuse a skill that emits another one.
-
-**Declare your options model at registration.** `SceneSpec.backend_options`
-is an opaque dict in `openral_core`; the backend owns its schema. Pass
-`options_model=` to `@SCENES.register` (add `from pydantic import BaseModel,
-ConfigDict` to the skeleton's imports) and `SCENES.validate_options(scene_id,
-raw)` runs it wherever a scene is loaded (`make_env`, `openral sim run`,
-`openral benchmark scene`, `openral deploy validate`,
-`tools/audit_sim_configs.py`, and the `scenes/` load test), so a misspelled
-key fails at load with a typed `ROSConfigError` naming the scene id and the
-field, not deep inside env construction. Inside the factory, read the
-validated instance back with the same call. Ids under a registered prefix
-inherit its model (`robocasa/<Task>` uses `robocasa`'s).
-
-Then add a one-line import in
-`python/sim/src/openral_sim/{policies,backends}/__init__.py` so `@register`
-fires:
-
-```python
-from . import my_scene  # noqa: F401  # reason: register-by-import
-```
-
-Confirm it registered:
+Then add the module name to the import tuple in `_register_backends()` in `python/sim/src/openral_sim/backends/__init__.py`. That import runs the `@register` decorator. Confirm:
 
 ```python
 from openral_sim import SCENES
 print("my_scene" in SCENES.names())
 ```
 
-### Optional: `mujoco_handles` for `openral sim run --view`
+### Registration options
 
-If your adapter wraps a MuJoCo model and exposes
-`mujoco_handles(self) -> tuple[mujoco.MjModel, mujoco.MjData] | None`,
-`--view` opens a passive viewer. The method is deliberately **not** part of the
-`SimRollout` Protocol (the runner uses `getattr(env, "mujoco_handles", None)`),
-so non-MuJoCo adapters need not stub it.
+| Argument | Effect |
+| --- | --- |
+| `options_model=` | Validates `scene.backend_options` at every load site (`make_env`, `sim run`, `benchmark scene`, `deploy validate`). Ids under a registered prefix inherit it (`robocasa/<Task>` uses `robocasa`'s). Read the validated instance back with `SCENES.validate_options`. |
+| `fixed_robot=` | One robot id or a set. A `--robot` or `robot_id:` outside it raises `ROSConfigError`; omitting it takes the scene's default. Absent means free-axis. |
+| `gripper_convention=` | The gripper encoding your environment consumes, for example `"normalized_close_symmetric"` for a robosuite env. It replaces the robot's own encoding in this scene; the safety kernel bounds gripper chunks by it and the runner refuses a skill that emits another. |
+| `sequential_init=True` | Builds the env and the policy one after the other. Set it only if the env thread races the policy thread; see [Sim backend installs](../../reference/sim-backend-installs.md#parallel-versus-sequential-startup). |
+| `provision=` | A hook `deploy sim` runs before `ros2 launch`, so a slow install does not land inside the HAL's 300 s configure deadline. Make it idempotent. |
 
-### Worked example — `so101_box` (custom arena + custom objects + non-Panda robot)
+### Optional: `mujoco_handles` for `--view`
 
-[`python/sim/src/openral_sim/backends/so101_box/`](https://github.com/OpenRAL/openral/blob/master/python/sim/src/openral_sim/backends/so101_box/)
-is the reference for "custom arena + custom robot + custom task". It registers
-`so101_box` (fixed_robot=`so101_follower`): an SO-101 in a configurable
-box arena with an OAK-D Pro RGB-D overhead camera, a wrist camera
-parented to the gripper, a slotted target block + cylindrical tube as
-the task, and a geometric tube-insertion success check.
-
-Two design points to copy:
-
-* **Every scene parameter is YAML; no geometry is hard-coded.** One typed
-  `BoxSceneOptions` Pydantic model carries every dimension, pose and threshold.
-  It is the backend's registered `options_model`, so `SCENES.validate_options`
-  validates the YAML's `scene.backend_options` (unknown keys and wrong shapes
-  fail loudly, naming the field). The next "SO-101 in a similar arena" scene is
-  a pure YAML edit. See
-  [`scenes/sim/so101_tube_insertion.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/so101_tube_insertion.yaml)
-  for the full surface.
-* **The MJCF is composed by reading the upstream robot MJCF, then
-  rewriting + appending.** `compose_so101_box_mjcf` reads
-  `robot_descriptions:so_arm101_mj_description` (the SO-101 MJCF
-  shipped with `TheRobotStudio/SO-ARM100`), re-anchors its
-  `<body name="base">` to the configured world pose via a regex
-  rewrite, splices a `<camera>` into the gripper body, and appends
-  the arena + objects + overhead camera to the worldbody just before
-  `</worldbody>`. The result is written next to the upstream MJCF so
-  `meshdir="assets"` resolves at compile time without copying any
-  STLs. Same pattern as `openarm_robosuite`.
-
-For RGB + depth from one camera, `so101_box` uses two `mujoco.Renderer`
-instances on the same model, one with `enable_depth_rendering()`, both updating
-against the same camera by name. Depth is in metres (no normalisation), the
-units the real OAK-D Pro driver emits.
+If your adapter wraps a MuJoCo model, add `mujoco_handles(self) -> tuple[MjModel, MjData] | None` and `--view` opens a passive viewer. It is not part of the `SimRollout` protocol (the runner uses `getattr`), so other adapters skip it.
 
 ---
 
-## 6. Write a custom policy adapter
+## 4. Write a policy adapter
 
-A policy adapter is a function decorated with `@POLICIES.register("<id>")`
-that returns an object satisfying the
-[`PolicyAdapter`](https://github.com/OpenRAL/openral/blob/master/python/sim/src/openral_sim/policy.py)
-Protocol:
+A policy adapter is a function decorated with `@POLICIES.register("<id>")` that returns a [`PolicyAdapter`](https://github.com/OpenRAL/openral/blob/master/python/sim/src/openral_sim/policy.py):
 
 ```python
 class PolicyAdapter(Protocol):
@@ -687,318 +272,69 @@ class PolicyAdapter(Protocol):
     def close(self) -> None: ...
 ```
 
-The simplest reference is `_ZeroPolicy` / `_RandomPolicy` in
-[`policies/mock.py`](https://github.com/OpenRAL/openral/blob/master/python/sim/src/openral_sim/policies/mock.py)
-(no weights, CPU-only, end-to-end test on any machine). The realistic
-reference is `policies/smolvla.py` (loads a `SmolVLAPolicy`, normalises the
-observation dict, caches action chunks).
-
-### Skeleton
+`step` returns one flat per-step action; chunk caching belongs in the adapter. References: `_ZeroPolicy` in `policies/mock.py` (no weights) and `policies/smolvla.py` (a real checkpoint). Skeleton:
 
 ```python
-# python/sim/src/openral_sim/{policies,backends}/my_policy.py
-from __future__ import annotations
-from dataclasses import dataclass
-
-import numpy as np
-from numpy.typing import NDArray
-
-from openral_sim.registry import POLICIES
-from openral_sim.rollout import Observation
-
-
 @dataclass
 class _MyPolicy:
-    spec: "VLASpec"
+    spec: VLASpec
     device: str
     action_dim: int = 7
 
-    def reset(self) -> None:
-        # load weights / reset action queue / re-seed RNG here
-        return None
+    def reset(self) -> None: ...                    # load weights, clear the action queue
 
     def step(self, observation: Observation, instruction: str) -> NDArray[np.float32]:
-        # adapter is responsible for mapping observation → its input format
-        del observation, instruction
         return np.zeros(self.action_dim, dtype=np.float32)
 
-    def close(self) -> None:
-        return None
+    def close(self) -> None: ...
 
 
 @POLICIES.register("my_policy")
-def _build(env_cfg: "SimEnvironment") -> _MyPolicy:
+def _build(env_cfg: SimEnvironment) -> _MyPolicy:
     return _MyPolicy(spec=env_cfg.vla, device=env_cfg.vla.device)
 ```
 
-Wire it in via the same `policies/__init__.py` import pattern as §5.
+Add the module to the import tuple in `_register_policies()` in `policies/__init__.py`. A policy package outside the repo can register through the `openral.policies` entry-point group instead.
 
-### Pair it with an rSkill manifest
+### Pair it with an rSkill
 
-The runner enforces that `vla.weights_uri` is a valid skill reference and that
-the rSkill manifest's `embodiment_tags` overlap the robot's
-(`openral_sim.sim_runner._check_rskill_compatibility`). For real weights, create
-`rskills/<my-skill>/rskill.yaml` declaring the target embodiment(s) and
-reference it as `rskills/<my-skill>`. Layout: `rskills/README.md`; templates:
-existing manifests such as `rskills/smolvla-libero/`.
+The adapter id is the manifest's `model_family`. Create `rskills/<my-skill>/rskill.yaml` declaring its `embodiment_tags`. The runner refuses a pairing whose tags do not overlap the robot's capabilities (`_check_rskill_compatibility`). Layout: [`rskills/README.md`](https://github.com/OpenRAL/openral/blob/master/rskills/README.md); a template: `rskills/smolvla-libero/`.
 
-To write a LeRobotDataset v3 via the bridge (`openral sim run --dataset-out`),
-declare BOTH `state_contract` AND `action_contract` on the manifest:
+To write a LeRobotDataset v3 with `--dataset-out`, the manifest needs both contracts. The bridge reads them, not the robot manifest, because one robot can host checkpoints with different I/O sizes:
 
 ```yaml
-# Per-checkpoint proprioception layout — bridge's observation.state shape.
-state_contract:
-  dim: 8        # e.g. 7 joint + 1 gripper for Franka+LIBERO
-# Per-checkpoint action vector — bridge's action shape.
-action_contract:
-  dim: 7        # e.g. 7-D delta-EEF for pi05/smolvla/xvla/act on LIBERO
+state_contract: {dim: 8}     # observation.state size
+action_contract: {dim: 7}    # action size
 ```
 
-The bridge reads these contracts, not the robot manifest, because one robot can
-host checkpoints with different I/O dims (Franka emits 7-D delta-EEF on LIBERO, 12-D for
-RoboCasa, 8-D joint+gripper on real hardware). The scene's
-`observation_height/width` flows through as the bridge's per-camera
-shape.
+The `--dataset-out` path must not exist yet; lerobot v3 refuses a populated root.
 
-### Optional: `last_input_frame` for video capture
+A visuomotor adapter may also implement `last_input_frame() -> NDArray[np.uint8] | None`; with `--save-video` the runner stitches the frame the policy saw into the debug video.
 
-Visuomotor adapters MAY also implement
-`last_input_frame(self) -> NDArray[np.uint8] | None`. When present and
-`record_video` is `True`, the runner stitches the frame the VLA actually saw
-into the debug MP4. Scripted / mock policies should omit it.
-
-### End-to-end smoketest
-
-Compose your new scene and policy with an existing robot:
+### Smoke test
 
 ```bash
-openral sim run \
-    --config  scenes/<your-config>.yaml \
-    --rskill  rskills/<my-skill> \
-    --n-episodes 1 \
-    --max-steps  10
+uv run openral sim run --config scenes/<your-config>.yaml \
+  --rskill rskills/<my-skill> --n-episodes 1 --max-steps 10
 ```
-
-The runner refuses a manifest whose `embodiment_tags` do not overlap the
-resolved robot's, so this fails loud on a mismatch.
 
 ---
 
-## 7. A custom MuJoCo environment via RoboCasa
+## Troubleshooting
 
-The **RoboCasa** backend runs kitchen scenarios with custom robots, tasks, and
-rSkills on real MuJoCo physics.
+| Symptom | Fix |
+| --- | --- |
+| `ROSConfigError` about `scene_id` | `task.scene_id` must equal `scene.id` |
+| `ROSConfigError` about a `vla:` block | Delete it; pass `--rskill` |
+| Wrong-tier redirect message | Use the command it names (`deploy sim`, `benchmark scene`) |
+| `--robot` rejected | The scene fixes its robot; the error lists the allowed ones |
+| Bad `backend_options` key | The error names the scene id and the field; check the backend's options model |
+| `TypeError` comparing `max_steps` | `TaskSpec.max_steps` can be `None`; guard it as in the skeleton |
+| `ROSCapabilityMismatch` | The rSkill's `embodiment_tags` or sensors do not match the robot |
 
-### One-time setup (auto-installed on first use)
+## Next
 
-`openral_sim._deps.ensure_backend_deps` handles the install chain. The
-**first** `openral sim run` against a `robocasa/<task>` scene id runs it
-automatically. With `OPENRAL_AUTO_INSTALL_DEPS=0` it instead shows a Rich
-banner listing every subprocess step and the license posture, then a
-`typer.confirm()` prompt:
-
-```bash
-openral sim run --config scenes/sim/robocasa_pnp.yaml \
-            --rskill rskills/rldx1-ft-rc365-nf4 \
-            --max-steps 200
-```
-
-Banner steps (kitchen variant):
-
-1. `uv sync --all-packages --group robocasa --inexact` (`--inexact` keeps packages other groups installed)
-2. `mkdir -p ~/.cache/openral/repos`
-3. `git clone https://github.com/ARISE-Initiative/robosuite.git ~/.cache/openral/repos/robosuite` (idempotent, master branch — kitchen needs the master tip, not the 1.5.2 PyPI wheel. Master adds `make mink optional` so `mink` stays in `extras_require`; without that, `mink==0.0.5`'s `numpy<2` pin would wedge the workspace. The lockfile-honest `[tool.uv.sources] robosuite = { git = "…", rev = "…" }` entry in `pyproject.toml` pins the exact commit `_robocasa_kitchen_plan` reinstalls editable here.)
-4. patch the clone: `touch robosuite/examples/__init__.py`, `touch robosuite/examples/third_party_controller/__init__.py`, `touch robosuite/macros_private.py` (upstream `find_packages()` drops the `examples/` directory + the macros nag is silenced by an empty `macros_private.py`)
-5. `uv pip install --force-reinstall --no-deps -e ~/.cache/openral/repos/robosuite`
-6. `uv pip install --no-deps "robosuite-models @ git+..."`
-7. `uv pip install h5py>=3.16 lxml>=5 llvmlite numba qpsolvers pyopengl-accelerate`
-8. `uv pip install --no-deps "mink==0.0.5"` (newer mink relocated `mink.tasks.exceptions.TargetNotSet` away from where robosuite's `mink_controller.py` imports it; `--no-deps` avoids the numpy<2 downgrade)
-9. `uv pip install --no-deps "robocasa @ git+..."`
-
-The install takes ~30 s on fibre.
-
-Next, the same command fetches the ~11 GB CC-BY-4.0 kitchen asset bundle into
-`~/.cache/openral/robocasa/` behind a second Rich license banner (gated by
-`typer.confirm()`; `OPENRAL_ALLOW_ROBOCASA_ASSETS=1` or an explicit
-`OPENRAL_AUTO_INSTALL_DEPS=1` skips it). The fetch script also needs the
-mujoco-version spoof, which the asset helper does in a subprocess `-c` wrapper.
-
-The auto-installer also works around upstream bugs: `robocasa/__init__.py`'s hardcoded
-`mujoco==3.3.1` / `numpy==2.2.5` / `robosuite>=1.5.2` assertions (upstream
-kitchen 1.0.1) — or `mujoco==3.2.6` / `numpy in {1.23.x, 1.26.4}` /
-`robosuite in {1.5.0, 1.5.1}` (robocasa-gr1-tabletop-tasks 0.2.0 fork) — are
-bypassed at adapter import-time via `_spoof_robocasa_version_pins`;
-the controller config's missing-actuator entries are stripped before they
-reach robosuite. See "Known constraints" below.
-
-### Running with a RoboCasa-365 checkpoint
-
-`rskills/rldx1-ft-rc365-nf4` wraps the verified RoboCasa-365 PandaMobile
-rSkill. It runs through the same three-camera, 16-D state, 12-D action
-contract as the RoboCasa scene.
-
-```bash
-OPENRAL_ALLOW_ROBOCASA_ASSETS=1 \
-  uv run openral sim run --config scenes/sim/robocasa_pnp.yaml \
-                    --rskill rskills/rldx1-ft-rc365-nf4 \
-                    --view --max-steps 200
-```
-
-What that config wires:
-
-- `scene.id: robocasa/PickPlaceCounterToCabinet` -- one of the curated
-  atomic tasks under the `robocasa` family, registered with
-  `fixed_robot={"panda_mobile", "panda_mobile_vslam"}`. The YAML sets no
-  `robot_id`, so it resolves to `panda_mobile` (`robots/panda_mobile/robot.yaml`,
-  a Franka Panda on a 3-DoF holonomic base); an accidental
-  `--robot franka_panda` fails fast with `ROSConfigError`.
-- `scene.backend_options.mode: prebuilt` -- validated through
-  `openral_sim.backends.robocasa.RoboCasaBackendOptions`, the RoboCasa
-  backend's registered `options_model` (prebuilt-vs-procedural XOR).
-- `--rskill rskills/rldx1-ft-rc365-nf4` -- the verified RoboCasa-365
-  manifest that declares the embodiment tags / sensor requirements the
-  runner validates.
-
-### Authoring a procedural kitchen
-
-Set `scene.id` to the bare `robocasa` (no slash) plus a procedural
-`backend_options` block. There is no `--scene` flag; the scene travels in the
-YAML, like every axis except the rSkill:
-
-```yaml
-scene:
-  id: robocasa
-  backend: mujoco
-  backend_options:
-    mode: procedural
-    kitchen_style: 3      # 0..9, one of robocasa's 10 aesthetic packs
-    layout_id: 7          # 0..9, one of robocasa's 10 floor plans
-    fixtures: ["sink", "stovetop", "microwave"]
-    spawn_objects: ["coffee_cup", "apple"]
-    task_verb: pnp        # pnp | open | close | press | navigate
-    robots: ["PandaMobile"]
-    controller: BASIC
-    horizon: 500
-```
-
-`task_verb` resolves to the matching atomic env (e.g. `pnp` →
-`PickPlaceCounterToCabinet`); the remaining keys are validated by
-`RoboCasaBackendOptions`'s `model_validator` to enforce the
-prebuilt-vs-procedural XOR.
-
-"Procedural" is the *kitchen* axis, not the robot axis: the bare `robocasa`
-scene shares the prebuilt `robocasa/<Task>` ids' fixed robot set
-(`panda_mobile` / `panda_mobile_vslam`), so any other `--robot` is rejected
-here (§2). What varies
-is the style / layout / fixture / object draw.
-
-### Known constraints
-
-- **mujoco / numpy / robosuite assertion.** Both robocasa variants
-  hard-assert exact micro versions of mujoco, numpy, and robosuite at
-  import time, although newer versions work. The RoboCasa adapter (`openral_sim/backends/robocasa.py:
-  _spoof_robocasa_version_pins`) monkey-patches the `__version__`
-  strings *only* across the robocasa import block and restores them
-  immediately after, leaving the rest of the workspace unaffected.
-- **`examples/` / `macros_private.py` patches.** The auto-installer
-  clones robosuite + the robocasa fork to
-  `~/.cache/openral/repos/`, drops the missing `__init__.py` files
-  under `robosuite/examples/`, and writes empty `macros_private.py`
-  stubs into both packages. Without these patches every run emits a
-  `Could not load the mink-based whole-body IK` WARN (robosuite's own
-  `__init__.py:37` import) + 3 `No private macro file found` lines
-  per package. See the `_robocasa_*_plan` install steps in
-  `openral_sim/_deps.py` for the full list.
-- **No LIBERO in the same venv.** The `[tool.uv].conflicts` block makes
-  `uv sync` refuse the mix; for both backends, use two clones (or two venvs
-  against the same clone).
-- **One informational print remains.**
-  `robocasa.__init__` does `try: import mimicgen` + `print()`
-  unconditionally; installing mimicgen IS a real fix but mimicgen's
-  own `__init__` imports robosuite paths the current master has
-  renamed and prints 2 new warning lines, so the net noise is worse
-  with mimicgen than without, so the one print stays.
-
----
-
-## 8. NVIDIA GR-1 tabletop tasks (RoboCasa GR1 fork)
-
-The [RoboCasa GR1 Tabletop Tasks](https://github.com/robocasa/robocasa-gr1-tabletop-tasks)
-fork (a soft fork of robocasa that NVIDIA shipped alongside the
-**GR00T N1** open foundation model
-([arXiv:2503.14734](https://arxiv.org/abs/2503.14734))) adds 24 PnP
-tabletop tasks on the Fourier GR-1 humanoid (the
-`GR1ArmsAndWaistFourierHands` composition: 7-DoF right arm + 7-DoF
-left arm + 3-DoF waist + two 6-DoF Fourier dex hands, leg and head
-actuation disabled).
-
-The sim layer exposes them as `robocasa/gr1/<TaskName>` scene ids pinned to the
-`gr1` robot manifest (`robots/gr1/robot.yaml`).
-
-The kitchen and GR1 fork **share the Python package name** `robocasa`, so a
-host installs one or the other; the auto-installer picks the variant matching
-the requested scene id. The adapter registers both task families regardless;
-the unavailable one fails at `robosuite.make()` with a clean "unknown env_name"
-rather than at import time.
-
-### One-shot run
-
-The in-tree RLDX-1-FT-GR1 nf4 rSkill via the auto-managed sidecar:
-
-```bash
-OPENRAL_AUTO_INSTALL_DEPS=1 \
-OPENRAL_ALLOW_ROBOCASA_ASSETS=1 \
-OPENRAL_ALLOW_NONCOMMERCIAL=1 \
-  openral sim run --config scenes/sim/robocasa_gr1_pnp_cup_to_drawer.yaml \
-              --rskill rskills/rldx1-ft-gr1-nf4 --max-steps 30
-```
-
-This drives a real `robosuite.make(env_name="PnPCupToDrawerClose",
-robots=["GR1ArmsAndWaistFourierHands"])` rollout on the local GPU.
-
-On the first run, the `robocasa_gr1` deps plan clones robosuite + the GR1
-fork to `~/.cache/openral/repos/` and installs both editable with the
-`examples/__init__.py` + `macros_private.py` patches dropped in (automatic;
-`OPENRAL_AUTO_INSTALL_DEPS=0` shows the banner and asks first). Without
-`OPENRAL_ALLOW_ROBOCASA_ASSETS=1`, the `RoboCasa GR1 tabletop assets` license
-banner then asks before the ~750 MB download to the cloned fork's
-`robocasa/models/assets/`.
-
-### Sweeping to the other 23 tasks
-
-Swap `scene.id` + `scene.backend_options.prebuilt_task` + `task.scene_id`
-in `scenes/sim/robocasa_gr1_pnp_cup_to_drawer.yaml` to any of the 24
-tabletop env class names (see `_GR1_TABLETOP_TASKS` in
-`openral_sim/backends/robocasa.py`):
-
-- `PnPCupToDrawerClose` / `PnPPotatoToMicrowaveClose` /
-  `PnPMilkToMicrowaveClose` / `PnPBottleToCabinetClose` /
-  `PnPWineToCabinetClose` / `PnPCanToDrawerClose` — the 6 canonical
-  PnP atomic tasks.
-- 18 `Posttrain*` variants (Cuttingboard → Basket / Cardboardbox /
-  Pan / Pot / Tieredbasket / Plate / etc.) — the post-training task
-  set from the GR00T-N1 paper.
-
-### Benchmark protocol
-
-`benchmarks/gr1_tabletop.yaml` mirrors the paper's eval protocol
-(scaled to 10 episodes for a ~30 min single-GPU run; raise
-`n_episodes` to 50 for the paper reproduction):
-
-```bash
-openral benchmark run --suite gr1_tabletop --rskill rskills/<gr1-skill>
-```
-
-The auto-install prompts fire from the benchmark runner too: `openral
-benchmark run` and `openral sim run` share the scene factory.
-
----
-
-## Where to go next
-
-- Paste-able scene configs: `openral sim list`. Paste-able rSkills:
-  `openral rskill list`.
-- The cookbook of existing configs and a per-backend ID table:
-  [`scenes/README.md`](https://github.com/OpenRAL/openral/blob/master/scenes/README.md).
-- The public-symbol inventory for the sim layer:
-  [`docs/METHODS.md`](../../METHODS.md), section **Eval (sim)**.
+- [Sim environments reference](../../reference/sim-environments.md): every shipped scene and the tier rules.
+- [Sim backend installs](../../reference/sim-backend-installs.md): RoboCasa, GR1 and Isaac provisioning.
+- [Run a benchmark](../benchmark/run-a-benchmark.md): turn a scene into a published number.
+- [`scenes/README.md`](https://github.com/OpenRAL/openral/blob/master/scenes/README.md): the directory layout.

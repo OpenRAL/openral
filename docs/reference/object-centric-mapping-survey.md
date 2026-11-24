@@ -1,5 +1,9 @@
 # Object-centric geometry and pose: integration survey
 
+!!! note "Dated survey"
+    Design research that fed the tracking plan; not an implemented integration. Kept as a record; it is not maintained against master.
+
+
 Research date: **2026-10-19**. Inspected checkout: `feat/418-object-tracking`,
 `85a8c8128`. This is a design recommendation, not an implemented integration or a
 performance result. No dependencies were installed and no simulations or tests were run.

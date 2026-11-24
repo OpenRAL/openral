@@ -1,11 +1,8 @@
 # Releasing
 
-OpenRAL ships **one lockstep SemVer version** across the whole workspace: the
-root `pyproject.toml` and all 13 `python/*` packages carry the same number, and
-every `openral-*` dependency pins it exactly. A release is a single `v*.*.*`
-tag that publishes all 13 `python/*` distributions to PyPI together. Nobody picks the
-number by hand: it is derived from the Conventional Commits merged since the
-last tag.
+OpenRAL ships one lockstep SemVer version: the root `pyproject.toml` and all 13 `python/*` packages carry the same number, and every `openral-*` dependency pins it exactly. One `v*.*.*` tag publishes all 13 distributions to PyPI. Nobody picks the number: [release-please](https://github.com/googleapis/release-please) derives it from the Conventional Commits merged since the last tag.
+
+Do not hand-edit a `version =` field or an `openral-*==` pin; release-please rewrites them through the `x-release-please-*` annotations in each `pyproject.toml`. Nothing under `src/` carries a version either: each package's `__version__` reads `importlib.metadata`, and `tests/unit/test_lockstep_versions.py` rejects a literal.
 
 ## The loop
 
@@ -17,235 +14,68 @@ merge PRs to master  →  release-please computes the bump  →  release PR
                              └→ 13 packages on PyPI (Trusted Publishing, OIDC)
 ```
 
-1. **Every push to `master`** re-runs [`release-please.yml`](https://github.com/OpenRAL/openral/blob/master/.github/workflows/release-please.yml).
-   It reads the commits since the tag recorded in `.release-please-manifest.json`
-   and picks the segment:
+1. **Every push to `master`** runs [`release-please.yml`](https://github.com/OpenRAL/openral/blob/master/.github/workflows/release-please.yml), which reads the commits since the tag in `.release-please-manifest.json`. The highest-ranking commit wins; a range with only hidden types opens no release PR.
 
-   | Commit                              | Bump while `< 1.0`          | Bump at `>= 1.0` |
-   | ----------------------------------- | --------------------------- | ---------------- |
-   | `fix: …`                            | patch (`0.2.0` → `0.2.1`)   | patch            |
-   | `feat: …`                           | minor (`0.2.0` → `0.3.0`)   | minor            |
-   | `feat!: …` / `BREAKING CHANGE:`     | minor (`bump-minor-pre-major`) | major         |
-   | `docs/test/style/ci/build/chore`    | none                        | none             |
+   | Commit | Bump while `< 1.0` | Bump at `>= 1.0` |
+   | --- | --- | --- |
+   | `fix: ...` | patch | patch |
+   | `feat: ...` | minor | minor |
+   | `feat!: ...` / `BREAKING CHANGE:` | minor (`bump-minor-pre-major`) | major |
+   | `docs` / `test` / `style` / `ci` / `build` / `chore` | none | none |
 
-   The highest-ranking commit in the range wins. A range containing only hidden
-   types produces no release PR at all.
+2. **The release PR** (`chore(release): vX.Y.Z`) is the human gate. It rewrites every version and `openral-*==` pin and regenerates `CHANGELOG.md`; the changelog body is editable, so curate it there. A second commit, `chore(release): refresh uv.lock for the version bump`, runs `uv lock` (no `--upgrade`) so the lock's workspace versions match. The workflow pins uv to the version that wrote master's lock, because a newer uv re-locks in its own format and `tools/check_release_diff.py` refuses that as more than version churn.
 
-2. **The release PR** (`chore(release): vX.Y.Z`) is the human gate. It rewrites
-   every version and every `openral-*==` pin, and regenerates `CHANGELOG.md`.
-   Review the number and the notes there; the changelog body is editable, so
-   curate it in the PR if a release deserves a narrative.
+3. **Merging it** tags `vX.Y.Z` and publishes the GitHub release. The tag triggers [`release-pypi.yml`](https://github.com/OpenRAL/openral/blob/master/.github/workflows/release-pypi.yml): the same quality gate as PR CI, then one Trusted Publishing upload per package.
 
-   It also carries a second commit, `chore(release): refresh uv.lock for the
-   version bump`, pushed by the same workflow. release-please only substitutes
-   text in the files `extra-files` names, but the generated `uv.lock` records
-   every workspace member's version; a bump that stops at the pyprojects leaves
-   the lock a release behind and `uv sync --frozen` installs stale metadata.
+## CI on the release PR
 
-   The step runs `uv lock` on the release branch; without `--upgrade` it
-   rewrites only the 14 workspace version lines and leaves third-party pins alone. The
-   workflow pins uv to the version that wrote master's lock; a newer uv re-locks
-   in its own format (lock `revision`, markers), which `check_release_diff.py`
-   refuses as more than version churn.
-   `test_lockstep_versions.py` fails if the lock and the tree ever disagree
-   again.
-
-   Its CI is deliberately thin. `test-selective` short-circuits on the
-   `release-please--*` branch and selects nothing: rewriting all 14 pyprojects
-   matches the `pyproject.toml` full-run glob *and* marks every package changed,
-   so the selector would otherwise run the entire suite plus every opt-in
-   dependency lane (including `isaacsim` / `robotwin` / `gr00t`, whose sidecars a
-   hosted runner cannot provision) for a diff that cannot change behaviour.
-   Every commit the release covers already passed on its own PR. The branch
-   name alone does not earn the skip: the branch must live in this repo, and
-   [`tools/check_release_diff.py`](https://github.com/OpenRAL/openral/blob/master/tools/check_release_diff.py) must find
-   that the release files differ only in OpenRAL's own versions and
-   `openral-*==` pins moved in lockstep with them (a dependency edit in a
-   `pyproject.toml` or `uv.lock`, or a pin off the release version, selects
-   tests normally; so does a pull request whose head repository is a fork or
-   was deleted). The job still
-   *runs* and reports green, because it is a required check and a skipped
-   required check is never reported. `quality` and `DCO` are
-   unaffected, and `release-pypi.yml` re-runs the full `precheck` gate against
-   the tag before anything reaches an index.
-
-3. **Merging it** tags `vX.Y.Z` and publishes the GitHub release. The tag push
-   triggers [`release-pypi.yml`](https://github.com/OpenRAL/openral/blob/master/.github/workflows/release-pypi.yml),
-   which runs the same fast quality gate as PR CI and then publishes each
-   package via PyPI Trusted Publishing.
-
-## Check the release PR against `git log`
-
-release-please expands a squash-merge body: GitHub composes it from every
-sub-commit, and each `* type(scope): subject` line is parsed as its own
-entry. When the body fails the conventional-commits grammar (one prose line
-containing source syntax is enough), the expansion is **dropped silently**. The
-commit's own subject still lands, so the failure looks like a normal one-line
-entry. A large squash can lose dozens of sub-commits this way. One body failed
-to parse on a line like:
-
-```
-isinstance(x, (int, float)) admits bool
-```
-
-The changelog then showed only the squash commit's own subject, and the dropped
-sub-commits' `BREAKING CHANGE:` footer went with them: a release can end up with
-no "⚠ BREAKING CHANGES" section even though it removes a public contract, and
-nothing warns you.
-
-So before merging a release PR, diff its changelog against the range it
-covers:
-
-```sh
-git log --no-merges --format='%s' v<last>..origin/master
-```
-
-Anything in that list with a user-facing type (`feat`, `fix`, `refactor`,
-`perf`) that is absent from the PR's changelog was dropped; add it by hand.
-Check large squashes line by line, and check for a missing "⚠ BREAKING
-CHANGES" section against `git log --grep='BREAKING CHANGE'`. The changelog
-body is editable, and editing it is the intended fix; the merged commit
-message cannot be corrected without rewriting `master`.
-
-release-please also stops reading history after `commit-search-depth` commits
-(`release-please-config.json`; its default is 500). It counts every commit in
-the range, merged-branch commits included, not just first-parent ones. Older
-commits drop out of the notes with no warning: `v0.4.0` covered 1017 commits
-and lost 316 entries at a depth of 500 and 23 at 1000.
-`tests/unit/test_lockstep_versions.py` fails when the commits since the last
-tag reach the depth; count them with `git rev-list --count v<last>..origin/master`.
-
-A merge commit needs the same care in the other direction: keep its message
-free of any `type(scope): subject` line, or release-please parses the merge
-*and* the branch commit and the entry appears twice.
-
-Two habits keep this rare: prefer several focused PRs over one very large
-squash, and keep code snippets out of commit bodies (describe the fix in
-prose, or fence the snippet in a PR comment instead).
-
-## When release-please hits a GitHub 5xx
-
-Each run pages every commit since the last tag through GitHub's GraphQL API —
-dozens of requests once a few hundred commits are unreleased — and a single
-5xx (an HTML "Unicorn!" page in the log, after `release-please failed:`) fails
-the run. The workflow retries the action once after 60 s, with a `::warning::`
-saying so; a second failure fails the job. If it still fails, re-run it from
-the Actions tab, or push anything to master. Cutting a release shortens the
-walk, which makes this rarer.
-
-## When a release stalls between merge and tag
-
-release-please can find a merged release PR it cannot build a release from and
-then decline to open a new one, logging `There are untagged, merged release
-PRs outstanding - aborting`. It emits no outputs in that state, byte-for-byte
-what "nothing releasable merged" looks like: no tag, nothing publishes, no
-warning.
-
-The `summarise` step in [`release-please.yml`](https://github.com/OpenRAL/openral/blob/master/.github/workflows/release-please.yml)
-tells them apart by asking the repository rather than the action: a **merged**
-PR still labelled `autorelease: pending` is a release that stopped between
-merging and tagging, and the job fails loudly.
-
-The reason is in the same job's log above the abort, on a line naming what could
-not be built. The one that bit us was:
-
-```
-⚠ PR component: undefined does not match configured component: openral
-```
-
-`getBranchComponent()` derives a component from `package-name` and, unlike
-`getComponent()`, ignores `include-component-in-tag`; the release branch has no
-component segment, so the two could never match. Removing `package-name` fixed
-it. Once the config is right, a re-run tags the already-merged PR; it does not
-need to be reopened or remade.
+`test-selective` selects nothing on a `release-please--*` branch, because rewriting 14 pyprojects would otherwise run the full suite and every dependency lane for a diff that cannot change behaviour. The job still runs and reports green (a skipped required check is never reported). The skip applies only when the branch lives in this repo and [`tools/check_release_diff.py`](https://github.com/OpenRAL/openral/blob/master/tools/check_release_diff.py) finds the diff is only OpenRAL's own versions and pins moved in lockstep; any dependency edit, off-version pin or fork head selects tests normally. `quality` and `DCO` run as usual, and `release-pypi.yml` re-runs its `precheck` against the tag.
 
 ## What you have to do
 
-Write Conventional Commits (already required, [CLAUDE.md](https://github.com/OpenRAL/openral/blob/master/CLAUDE.md) §4.2).
-That is the whole contract. Two escape hatches exist for the rare case where
-the computed number is wrong:
+Write Conventional Commits (already required, [CLAUDE.md](https://github.com/OpenRAL/openral/blob/master/CLAUDE.md) §4.2). For the rare wrong number:
 
-- **Force a specific version** — put `Release-As: 0.4.0` in a commit footer.
-- **Force a bump from an otherwise-silent change** — use `feat:` deliberately,
-  or add a `BREAKING CHANGE:` footer describing the incompatibility.
+- **Force a version:** put `Release-As: 0.4.0` in a commit footer.
+- **Force a bump from a silent change:** use `feat:`, or add a `BREAKING CHANGE:` footer describing the incompatibility.
 
-Do **not** hand-edit a `version =` field to cut a release. Versions and pins
-are rewritten by release-please via the `x-release-please-version` /
-`x-release-please-start-version` annotations in each `pyproject.toml`; editing
-around them puts the manifest and the tree out of sync.
+`schema_version` on on-disk Pydantic schemas is separate; it follows [CLAUDE.md](https://github.com/OpenRAL/openral/blob/master/CLAUDE.md) §1.6, not the package version.
 
-Nothing under `src/` carries a version either: every package's `__version__`
-reads `importlib.metadata` for its own distribution. (Hardcoded literals in
-eleven `__init__.py` files once let a wheel announce a stale version.)
-`test_lockstep_versions.py` rejects a reintroduced literal.
+## Before merging a release PR
 
-## Adding a package
+release-please parses each `* type(scope): subject` line of a squash body as its own entry, and silently drops the whole expansion when a body line breaks the grammar (a prose line containing code such as `isinstance(x, (int, float))` is enough). The changelog then shows only the squash subject, and a dropped `BREAKING CHANGE:` footer can leave out the breaking-changes section.
 
-A new `python/<name>` package needs three edits, all enforced by
-`tests/unit/test_lockstep_versions.py`:
+- **If the changelog looks short:** compare it with `git log --no-merges --format='%s' v<last>..origin/master`. Add any missing `feat`, `fix`, `refactor` or `perf` entry by hand, and check `git log --grep='BREAKING CHANGE'` against the breaking-changes section. Edit the PR body; the merged commit cannot be fixed without rewriting `master`.
+- **If you write a merge commit message:** keep any `type(scope): subject` line out of it, or the entry appears twice.
+- **To avoid it:** prefer several focused PRs to one huge squash, and describe code in prose rather than pasting snippets into commit bodies.
 
-1. Its `pyproject.toml` starts at the current lockstep version, with
-   `# x-release-please-version` on the `version =` line and its `openral-*`
-   deps grouped in an `x-release-please-start-version` / `x-release-please-end`
-   block, pinned `==<current version>`.
-2. Add `python/<name>/pyproject.toml` to `extra-files` in
-   [`release-please-config.json`](https://github.com/OpenRAL/openral/blob/master/release-please-config.json).
+`release-please-config.json` sets `commit-search-depth` to 2000 (the release-please default is 500). It counts every commit in the range, merged-branch commits included, and older commits drop out of the notes with no warning. `test_lockstep_versions.py` fails when the commits since the last tag reach the depth.
+
+- **If that test fails:** cut a release (or raise the depth). Count with `git rev-list --count v<last>..origin/master`.
+
+## When a release run fails
+
+- **If the log shows `release-please failed:` with an HTML "Unicorn!" page (GitHub 5xx):** the workflow already retried once after 60 s. Re-run the job from the Actions tab or push anything to `master`.
+- **If the `summarise` step fails loudly:** a merged PR still labelled `autorelease: pending` means a release stopped between merge and tag, and release-please aborts with `There are untagged, merged release PRs outstanding`. The cause is on a log line above the abort, such as `PR component: undefined does not match configured component`. Fix the config (do not set `package-name`; it breaks the component match) and re-run; the already-merged PR is tagged without being reopened.
+- **If the tag landed but `release-pypi.yml` never fired:** the `RELEASE_PLEASE_TOKEN` secret is missing (events made with the default `GITHUB_TOKEN` trigger no workflows). Dispatch `release-pypi.yml` by hand with `target=pypi`, `confirm=YES`.
+- **If PyPI says `invalid-publisher: valid token, but no corresponding publisher`:** the OIDC claims match no trusted publisher. Register one per project with `owner: OpenRAL`, `repo: openral`, `workflow: release-pypi.yml` and no environment name. Publishers match on the ref too: a tag push presents `refs/tags/vX.Y.Z`, a dispatch off `master` presents `refs/heads/master`, so a green tag release does not imply a green dispatch.
+
+## Setup
+
+**`RELEASE_PLEASE_TOKEN`** (repository secret, one time): a GitHub App installation token (preferred) or a fine-grained PAT with `contents:write` and `pull-requests:write`. It also makes the release PR run `quality` and `DCO`, so it merges without an admin bypass. Without it the job runs and warns.
+
+**Adding a package.** A new `python/<name>` needs three edits, enforced by `test_lockstep_versions.py`:
+
+1. Its `pyproject.toml` starts at the current version with `# x-release-please-version` on the `version =` line, and its `openral-*` deps sit in an `x-release-please-start-version` / `x-release-please-end` block pinned `==<current version>`.
+2. Add `python/<name>/pyproject.toml` to `extra-files` in [`release-please-config.json`](https://github.com/OpenRAL/openral/blob/master/release-please-config.json).
 3. Add `python/<name>` to the publish matrix in `release-pypi.yml`.
-
-## Token setup (one time)
-
-GitHub does not trigger workflows from events created with the default
-`GITHUB_TOKEN`. Without a dedicated token, release-please's tag lands but
-`release-pypi.yml` never fires.
-
-Set the `RELEASE_PLEASE_TOKEN` repository secret to a **GitHub App
-installation token** (preferred) or a fine-grained PAT with `contents:write`
-and `pull-requests:write`. This also makes the release PR run the required
-`quality` and `DCO` checks normally, so it merges without an admin bypass.
-
-Without the secret the job still runs and says so with a `::warning::`. Recover
-a stranded tag by dispatching `release-pypi.yml` manually with `target=pypi`,
-`confirm=YES`.
 
 ## Trial runs
 
-`release-pypi.yml` accepts a `workflow_dispatch` with `target=testpypi` (the
-default), which publishes to TestPyPI without confirmation. It validates
-packaging without burning a version number (`skip-existing` makes a re-run
-against an already-published version a no-op).
-
-Do this before any release that changes packaging metadata; it is the only way
-to see what installers will read. Then check the published requirements, not
-the source:
+A `workflow_dispatch` of `release-pypi.yml` with `target=testpypi` (the default) publishes to TestPyPI without confirmation; `skip-existing` makes a re-run a no-op. Do this before any release that changes packaging metadata, then check the published requirements rather than the source (`[tool.uv.sources]` is stripped at build time, so lock checks and unit tests cannot see it):
 
 ```sh
 curl -s https://test.pypi.org/pypi/openral-cli/<version>/json \
   | python3 -c "import sys,json;[print(r) for r in json.load(sys.stdin)['info']['requires_dist']]"
 ```
 
-A trial run should confirm every `openral-*` sibling carries its `==` pin,
-with extras and markers intact (e.g. `openral-observability[dashboard]==0.2.0`,
-`pygobject>=3.42; extra == "gstreamer"`). Neither `uv lock --check` nor the
-unit tests can show that: they read source, and `[tool.uv.sources]` is stripped
-at build time.
-
-### When the token exchange fails
-
-A `invalid-publisher: valid token, but no corresponding publisher` error means
-the OIDC claims match no registered trusted publisher; nothing is uploaded. Register one per project with `owner: OpenRAL`, `repo: openral`,
-`workflow: release-pypi.yml`, and **no** environment name (the workflow
-declares none, so the claim is `environment: MISSING` and a publisher that
-expects one will never match).
-
-Trusted publishing also matches on the ref, so claims are not portable between
-triggers: a tag push presents `refs/tags/vX.Y.Z`, a dispatch off master
-presents `refs/heads/master`. A publisher with no ref restriction accepts
-both; one restricted to tags rejects the dispatch. A green tag release
-therefore does not imply a green dispatch, and vice versa.
-
-## What is *not* versioned by this
-
-`schema_version` on the on-disk Pydantic schemas is a **separate** field with
-its own rules ([CLAUDE.md](https://github.com/OpenRAL/openral/blob/master/CLAUDE.md) §1.6): a backward-incompatible
-schema change bumps it and ships a migrator, independent of the package
-version.
+Every `openral-*` sibling should carry its `==` pin, with extras and markers intact.

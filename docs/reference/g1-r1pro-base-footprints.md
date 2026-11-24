@@ -1,5 +1,9 @@
 # Base footprints for the Unitree G1 and the Galaxea R1 Pro
 
+!!! note "Source study"
+    Its outlines now ship as `footprint_radius` / `footprint_polygon` in `robots/g1/robot.yaml` and `robots/r1pro/robot.yaml`; the manifests are authoritative, and "neither manifest declares" below is no longer true. Kept as a record; it is not maintained against master.
+
+
 *Researched 2026-10-15.* Planar outlines, in metres, in each manifest's
 `base_frame` (x forward, y left), for the Nav2 fields `footprint_polygon` and
 `footprint_radius` on [`robots/g1/robot.yaml`](https://github.com/OpenRAL/openral/blob/master/robots/g1/robot.yaml) and

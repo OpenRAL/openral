@@ -1,5 +1,9 @@
 # Collision-safety alternatives survey — is the hand-rolled kernel the right shape?
 
+!!! note "Historical survey"
+    Nothing landed as written; see §6 of the [validation ledger](collision-validation-evidence.md) for what measurement overturned. Kept as a record; it is not maintained against master.
+
+
 > **Status: research survey, analysis only (2026-08-30).** Nothing here landed as written.
 > **Read with the correction:** all three candidate paths shipped within a week and measurement
 > overturned four of this page's claims — `collision-validation-evidence.md` §6, *The survey,

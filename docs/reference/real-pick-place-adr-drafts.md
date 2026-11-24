@@ -1,5 +1,9 @@
 # Drafts for the Safety-WG: real pick-and-place on the OpenArm cell
 
+!!! note "Historical drafts"
+    Drafts for the private decision log; nothing here is in force. Kept as a record; it is not maintained against master.
+
+
 Companion to [`real-pick-place-design.md`](real-pick-place-design.md) §4. These are drafts for the
 private `OpenRAL/management` decision log and hazard log; numbers in brackets are placeholders the
 WG sets. Nothing here is in force.

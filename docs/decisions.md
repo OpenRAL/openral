@@ -1,116 +1,26 @@
 # Design decisions
 
-OpenRAL records architecture and design decisions as Architecture Decision
-Records (ADRs). The ADR log lives in the private
-[`OpenRAL/management`](https://github.com/OpenRAL/management) repo, under
-`adr/`, not in this public repo.
+OpenRAL records architecture and design decisions as Architecture Decision Records (ADRs). The log lives in the private [`OpenRAL/management`](https://github.com/OpenRAL/management) repo, under `adr/`, not in this repo.
 
-Code comments, docstrings, tests, and docs here cite decisions by bare
-`ADR-NNNN` identifiers. They are deliberately **not links**: the record is
-private, and a dead link is worse than a bare id. Prose around a citation
-stands on its own, so a reader without access can follow *what* the behavior
-is even without *why it was chosen*.
+Code, docstrings, tests and docs here cite decisions by bare `ADR-NNNN` ids. They are deliberately not links: the record is private, and a dead link is worse than a bare id. The surrounding prose stands on its own, so a reader without access can follow what the behavior is.
 
-- **The number is a handle, not a coordinate.** The ADR log is append-only
-  but not gap-free, and cross-references inside it use filenames rather
-  than integers. Do not infer an ordering, a date, or a dependency from a
-  number's neighbours.
-- **Some cited numbers are not on the private repo's `main` either.**
-  `ADR-0092`, `ADR-0094` and `ADR-0095` live on an unmerged draft branch
-  (`safety/xr1-deploy-sim`) of `OpenRAL/management`, and `ADR-0093` on
-  `adr/0093-quantization-dtype-fp8`. Their implementations are merged here
-  on `master`; the records are not yet merged there. To resolve one of
-  those four numbers, check that branch, not just `main`.
+- The number is a handle, not a coordinate. The log is append-only but not gap-free; do not infer order, date or dependency from neighbouring numbers.
+- Without access, ask for the rationale behind a decision by opening an issue here that quotes the id.
+- Moving a responsibility between the seven architecture layers needs a decision in the private log before the code ([CLAUDE.md](https://github.com/OpenRAL/openral/blob/master/CLAUDE.md) section 3).
 
-Without access to `OpenRAL/management`, ask for the rationale, alternatives,
-or history behind a decision by opening an issue here that quotes the
-identifier.
+## Licensing and commercial boundary
 
-Adding, removing, renaming, or moving a responsibility between the seven
-architecture layers (§3 of
-[CLAUDE.md](https://github.com/OpenRAL/openral/blob/master/CLAUDE.md))
-requires a decision in the private log, written before the code that
-implements it.
+These decisions define the public/private boundary. They are summarized here so the posture stays visible.
 
-## Licensing & commercial boundary
+| Decision | What it means |
+|---|---|
+| **Public repo is uniformly Apache-2.0** | Every package ships under one license: no source-available tier, no per-package drift. Copy-left dependencies are rejected without TSC review. |
+| **Commercial capabilities live in `OpenRAL/openral-pro`** (private) | TensorRT/NVMM zero-copy runtime, WAM implementations, fleet/cloud dispatch, premium rSkills. This repo keeps the protocols and entry-point seams, not the implementations. |
+| **Safety kernel stays open; refusal-only checks stay open** (ADR-0121) | A rule that relaxes a verdict (lets a hand touch a cell, ends a payload binding) may move to Pro, only behind the kernel's open, fail-closed, sim-only exemption provider (`cpp/openral_safety_kernel/include/openral_safety_kernel/exemption_provider.hpp`). The kernel enforces the provider's bounds itself. |
+| **Open tracking mode uses declarations only** (ADR-0122) | The open tracker (`object_tracking: tracking`) only adds checked geometry, such as a carried payload. Every contact allowance there comes from a scene declaration (`search_box`, a place zone, `workspace_box`). Adaptive, perception-driven allowances are `object_tracking: on`, which requires an exemption provider (Pro). A release is the kernel's in every mode. |
+| **Weights of 8 bits or fewer need Pro** (ADR-0123) | Open runs fp32, fp16, bf16. int8, fp8, int4/NF4 and nvfp4 need Pro, whether quantized at load time, pre-quantized or quantized upstream. Quantized rSkills stay in the catalog and refuse to load without Pro, with an error naming it. The gate is `python/rskill/src/openral_rskill/quantization_gate.py` (`openral.pro_modules: quantization`). A 4-bit reasoner LLM served by an operator-run server such as Ollama stays open. |
+| **Dashboard sign-in check is open** (ADR-0129) | Token validation, roles, the remote listener and the action audit live in `openral-observability`. Every Pro limit (robot and teammate counts, fleet mode, compliance history) is enforced by openral.com when it issues tunnels and tokens, not on the robot. |
+| **Robot console ships as a prebuilt bundle** (ADR-0131) | The bundle is Apache-2.0; its source is private. The dashboard downloads the build pinned by sha256 (`ui_assets.ROBOT_UI`). The server, robot API, manifest schema (`openral_core.robot_ui`) and fallback page with its E-STOP button stay here; `OPENRAL_DASHBOARD_UI_DIR` serves any other UI. See the [dashboard guide](quickstart/dashboard.md#the-page). |
+| **Model weights keep their upstream license** | E.g. NVIDIA GR00T checkpoints. This is compliance for models OpenRAL does not own, not a statement about OpenRAL's code. |
 
-Two decisions define OpenRAL's public/private boundary. They are stated here
-in full so the posture stays visible although the records are private:
-
-- **The public `OpenRAL/openral` repo is uniformly Apache-2.0.** Every
-  package ships under that one license: no source-available tier, no BSL,
-  no per-package license drift. Copy-left dependencies are rejected without
-  TSC review.
-- **Commercial capabilities live in a separate, private monorepo**
-  (`OpenRAL/openral-pro`), not in this repo. That includes the TensorRT/NVMM
-  zero-copy runtime fast path, WAM (World Action Model) implementations,
-  fleet/cloud dispatch, and future premium rSkills. This repo keeps the
-  protocols and extension seams they plug into, not the implementations.
-- **The safety kernel stays open, and every check that can only refuse
-  motion stays open with it.** A kernel rule that *relaxes* a verdict
-  (lets a hand touch a cell, ends a payload binding) may move to OpenRAL Pro.
-  It can only do so behind the kernel's open, fail-closed, sim-only
-  exemption-provider interface
-  (`cpp/openral_safety_kernel/include/openral_safety_kernel/exemption_provider.hpp`).
-  The kernel enforces the provider's bounds itself (ADR-0121). The box-based rules
-  a scene declares stay open (the ADR-0115 `search_box` grasp allowance, #349
-  `workspace_box` contact); the tracker-based rules (#418 K2, K5, K7,
-  payload-own cells) are the ones that move (ADR-0121 amendment, 2026-10-25),
-  and step 3 has removed them from the open kernel: `object_tracking: on`
-  requires an exemption provider. Open's tracker mode is `tracking`: the
-  open tracker tracks objects and may only *add* checked geometry (a carried
-  payload; it never grows it); every contact allowance there comes from a scene
-  declaration — the grasp region is the target's box only while it lies wholly
-  inside the declared `search_box`, the place region only a declared place zone,
-  the workspace only the declared `workspace_box`. The one track-driven
-  exception is the carried object's own map cells: the bridge and self-filter
-  clear them by identity (a unique tracker binding: the live cells, the carry
-  sweep, the vacated pick box and the released box's window) in `tracking` too
-  (2026-11-02, Safety-WG review owed), otherwise the arm stops on the object in
-  its own hand. A release is the kernel's in every mode: a producer that lets a
-  payload go (the HAL's release window, the tracker's jaw-open rule) re-attaches
-  it to the robot's root and names the releasing link (`released_by_link`), and
-  the kernel gives it its K5 treatment — frozen, never world-checked, the hand
-  and touch links exempt until measured clear or the release timeout (2026-11-02,
-  Spark `v_off_dr`: read as a carried payload, the frozen banana latched a world
-  stop on the bowl). The trigger is robot state (the gripper opening), not a
-  track; the provider's own earlier release stays `on`'s. Every other allowance a
-  *track* shapes (destination-track place regions, payload re-arming of the
-  attach residue) is `on`'s (ADR-0122; 2026-11-01 amendment owed: off / tracking
-  = declarations, on = the adaptive, perception-driven behaviour).
-- **Open runs weights in fp32, fp16 and bf16; every format of 8 bits or
-  fewer needs OpenRAL Pro** (`ADR-0123`): int8, fp8, int4/NF4 and nvfp4,
-  whether quantized at load time, loaded from a pre-quantized pack, or
-  quantized upstream. The quantized rSkills stay in the open catalogue and
-  refuse to load without Pro, with a typed error naming it. Pro plugs in as
-  `openral.pro_modules: quantization`
-  (`python/rskill/src/openral_rskill/quantization_gate.py`). Exception
-  (2026-11-12 amendment): a 4-bit (NF4 / GGUF Q4_K_M) reasoner LLM served by an
-  operator-run model server such as Ollama stays open; OpenRAL ships no
-  quantization code for it.
-- **The robot dashboard's sign-in check is open** (`ADR-0129`): the robot-side
-  token validation, roles, the remote (tunnel) listener and the action audit live
-  in `openral-observability`, because free users get one remote robot. Every Pro
-  limit — how many robots, teammates and roles, fleet mode, the compliance
-  history — is enforced by openral.com when it issues tunnels and tokens, not by
-  code on the robot.
-- **The robot console ships as a prebuilt bundle; its source is not in this
-  repository** (`ADR-0131`). The bundle stays Apache-2.0; only its source is
-  kept private. The dashboard downloads the build pinned by sha256
-  (`ui_assets.ROBOT_UI`) and logs which UI it serves. The dashboard server,
-  the robot API, the manifest schema (`openral_core.robot_ui`) and the
-  fallback page with its E-STOP button stay in this repository, and
-  `OPENRAL_DASHBOARD_UI_DIR` serves any other UI instead. See the
-  [dashboard guide](quickstart/dashboard.md#the-page).
-- Third-party model **weights** (e.g. NVIDIA GR00T checkpoints) keep their
-  own upstream license, independent of OpenRAL's code license. This is
-  compliance for models OpenRAL doesn't own, not a statement about
-  OpenRAL's code.
-
-The first two points come from separate records: the original
-uniform-Apache-2.0 posture, and a later decision establishing the OpenRAL
-Pro commercial tier. The later one superseded the original's "no commercial
-tier, ever" commitment and kept the public repo Apache-2.0. The safety-kernel
-point is `ADR-0121`. It narrows that later record's "the safety kernel stays
-open" line to the refuses/relaxes rule above. Context, alternatives, and
-consequences are in the private decision log.
+Context, alternatives and consequences are in the private decision log.

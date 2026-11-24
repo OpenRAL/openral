@@ -1,139 +1,118 @@
 # Run a deployment on a robot and open the dashboard
 
+**Goal:** write a `DeployScene`, dry-run it against a digital twin, run it on
+real hardware, give the robot a task and watch it in the dashboard.
+
 `openral deploy run` is the real-hardware sibling of `openral sim run`. It boots
-the full production ROS graph (HAL lifecycle node, C++ safety kernel, reasoner,
-world state, plus SLAM/Nav2 when the robot declares a lidar) and ticks an rSkill
-against your **real** robot, driven by a `DeployScene` YAML. This tutorial
-writes a deploy scene, dry-runs it against a digital twin, then runs it on
-hardware with the live dashboard.
+the production ROS graph (HAL lifecycle node, C++ safety kernel, reasoner, world
+state, plus SLAM/Nav2 when the robot declares a lidar) and ticks an rSkill
+against your robot, driven by a `DeployScene` YAML.
 
 ## Prerequisites
 
 ```bash
-just bootstrap && just sync   # always `just sync`, never bare `uv sync` —
-                              # see docs/contributing/toolchain.md
-openral install ros           # the ROS 2 graph deploy run launches
+just bootstrap && just sync   # always `just sync`; see docs/contributing/toolchain.md
+uv run openral install ros    # the ROS 2 graph deploy run launches
 uv run openral doctor         # confirm ROS 2, GPU, USB and the reasoner
 ```
 
-You need a `RobotDescription` under
-[`robots/<robot_id>/robot.yaml`](https://github.com/OpenRAL/openral/blob/master/robots/)
-and an installed rSkill ([Write an rSkill](../rskill/write-and-publish-an-rskill.md)).
-In-tree manifests:
+**A robot manifest.** Each robot has a `RobotDescription` at
+[`robots/<robot_id>/robot.yaml`](https://github.com/OpenRAL/openral/blob/master/robots/).
+In-tree manifests, by `embodiment_kind`:
 
 | Class | `robot_id` |
 | --- | --- |
-| Single arm | `so100_follower`, `so101_follower`, `franka_panda`, `ur5e`, `ur10e`, `rizon4`, `sawyer`, `widowx`, `galaxea_a1`, `makermods_metal` |
+| Single arm | `so100_follower`, `so101_follower`, `franka_panda`, `droid_franka_robotiq`, `ur5e`, `ur10e`, `rizon4`, `rizon_dual`, `sawyer`, `widowx`, `galaxea_a1`, `makermods_metal` |
 | Bimanual | `aloha_bimanual`, `aloha_agilex`, `openarm`, `anvil_openarm_v2`, `makermods_metal_station` |
-| Mobile manipulator | `panda_mobile`, `panda_mobile_vslam`, `google_robot`, `r1pro` |
-| Humanoid | `g1`, `h1`, `gr1` |
+| Mobile manipulator | `panda_mobile`, `panda_mobile_vslam`, `google_robot`, `r1pro`, `openamrobot_v2` |
+| Humanoid | `g1`, `h1`, `h2`, `gr1` |
 
-Class is each manifest's `embodiment_kind`. `pusht_2d` is omitted: it is a
-sim-only scene-pseudo-robot with no hardware path.
+`pusht_2d` is omitted: it is a sim-only scene pseudo-robot.
 
-Being in that table is not a hardware path. `deploy run` resolves `hal.real`
-from the manifest, and only nine declare one: `so100_follower`,
-`so101_follower`, `franka_panda`, `ur5e`, `ur10e`, `sawyer`, `galaxea_a1`,
-`aloha_bimanual` and `openarm`. The rest carry `hal.real: null` (or no `hal:`
-block at all) and `build_hal` raises `ROSCapabilityMismatch` under
-`hal_mode:=real`. Note the two OpenArms: `openarm` (Enactic) has
-`OpenArmRealHAL`; `anvil_openarm_v2` (Anvil) is sim-only. Both MakerMods Metal manifests are sim-only too: the arm has no
-brakes, so a real HAL waits on a safety-WG-reviewed stop behaviour.
+**Real hardware is a subset.** `deploy run` resolves `hal.real` from the
+manifest, and 13 robots declare one: `so100_follower`, `so101_follower`,
+`franka_panda`, `ur5e`, `ur10e`, `sawyer`, `galaxea_a1`, `aloha_bimanual`,
+`openarm`, `g1`, `h2`, `openamrobot_v2` and `rizon_dual`. For the rest,
+`build_hal` raises `ROSCapabilityMismatch` under `hal_mode:=real`; use
+`deploy sim`. `openarm` (Enactic) has a real HAL; `anvil_openarm_v2` (Anvil) is
+sim-only. Both MakerMods Metal manifests are sim-only because the arm has no
+brakes and a real HAL waits on a reviewed stop behaviour.
 
-### The graph stays on this host
-
-`deploy run` confines the robot's ROS graph to the deploy host
-(`ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`) on a per-robot `ROS_DOMAIN_ID`, and
-prints the result as `ros scope:`. A graph that must reach another computer
-(a remote driver, `rviz2` on a laptop) needs `OPENRAL_ALLOW_NETWORK_ROS=1`,
-SROS2 in Enforce mode (`openral security init <robot_id>`) and the same exported
-domain on every host; otherwise the deploy refuses. The
-Foxglove bridge and the dashboard are unaffected. Why, and the opt-in recipe:
-[ROS graph security](../../reference/ros-graph-security.md).
-
-### Set a reasoner model — the graph will not plan without one
-
-The S2 reasoner has **no hidden default model** by design. Set a curated one:
+**A reasoner model.** The S2 reasoner has no hidden default; the graph does not
+plan without one:
 
 ```bash
-export OPENRAL_REASONER_MODEL=claude-opus-4-8   # or claude-opus-5-5 / claude-sonnet-5-5 / claude-haiku-5-5 / gpt-5.5 / gpt-5.6 / cosmos3-edge
-export OPENRAL_REASONER_API_KEY=sk-ant-...      # only where the endpoint needs it
+export OPENRAL_REASONER_MODEL=<model-id>        # a curated id; see the reasoner reference
+export OPENRAL_REASONER_API_KEY=<key>           # only where the endpoint needs one
 ```
 
-Full model/endpoint matrix, the uncurated escape hatch, and what `openral
-doctor`'s `Reasoner LLM` row checks: [reasoner
-reference](../../reference/reasoner.md#reasoner-model-selection).
+The model list, endpoints and what `doctor`'s `Reasoner LLM` row checks are in
+the [reasoner reference](../../reference/reasoner.md#reasoner-model-selection).
+For an on-device model with no key, see the
+[Cosmos 3 Edge reasoner](../../reference/cosmos3-edge-reasoner.md); it needs the
+whole GPU, and `doctor` cannot tell whether the sidecar fits.
 
-`cosmos3-edge` is the on-device option: no key, no cloud. Budget the whole GPU
-for it. The checkpoint is 8.6 GB on disk (a 6.3 GB reasoner tower plus a 934 MB
-vision encoder; the VAE is not served) and loads at 4.66 GiB, so an 8 GB card
-must be its own: a co-resident job holding even 2 GB makes the boot fail. The
-sidecar's defaults are also too small for a real palette: the reasoner's prompt
-measures 10K tokens for a 4-skill embodiment and 20K for a 14-skill one, against
-a `--max-model-len` default of 8192. Verified end to end on 8 GB:
+**An installed rSkill** ([Write an rSkill](../rskill/write-and-publish-an-rskill.md)).
+By default `deploy run` also installs the rSkills on this robot's openral.com
+list that are missing (permissive licences only). Opt out with
+`--no-rskill-install` or `OPENRAL_RSKILL_AUTO_INSTALL=0`.
 
-```bash
-python tools/cosmos3_reasoner_sidecar.py --port 8901 \
-  --kv-cache-dtype fp8 --gpu-memory-utilization 0.97 --max-model-len 12288
-```
+**The graph stays on this host.** `deploy run` confines the ROS graph to the
+deploy host (`ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`) on a per-robot
+`ROS_DOMAIN_ID` and prints the result as `ros scope:`. A graph that must reach
+another computer needs `OPENRAL_ALLOW_NETWORK_ROS=1`, SROS2 in Enforce mode
+(`uv run openral security init <robot_id>`) and the same domain on every host;
+otherwise the deploy refuses. The Foxglove bridge and dashboard are unaffected.
+See [ROS graph security](../../reference/ros-graph-security.md).
 
-That serves the small palette with room for the reply, not the large one.
-`openral doctor` cannot see any of this: the `Reasoner LLM` row reports `ok`
-because the *model resolves*; only a live tick exercises the sidecar. Sizing,
-platform status and the live-validation record:
-[`docs/reference/cosmos3-edge-reasoner.md`](../../reference/cosmos3-edge-reasoner.md).
-
-## 1. Write a `DeployScene` config
+## 1. Write a `DeployScene`
 
 Deploy configs live in
 [`scenes/deploy/`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/).
 A `DeployScene` pins the workcell: scene id, `robot_id`, optional sim
-composition, safety tightening, and additive allowed collision pairs. Robot
-facts such as serial ports, IPs, sensors, poses, rates, and limits live in
-`robots/<robot_id>/robot.yaml`.
+composition, safety tightening and extra allowed collision pairs. Robot facts
+(serial ports, IPs, sensors, poses, rates, limits) live in the robot manifest.
+The rSkill is not set in the scene; the reasoner selects it at runtime from the
+installed registry.
 
-### Option A — create/update the robot manifest with `openral detect`
+### Option A: detect the robot
 
-If the robot is plugged in, let detection write or refresh the robot manifest:
+With the robot plugged in, `detect` writes or refreshes its manifest:
 
 ```bash
-# A bare detect resolves a plugged-in Feetech arm to so101_follower by default.
-openral detect \
+uv run openral detect \
     --output robots/so101_follower/robot.yaml \
     --deployment scenes/deploy/so101_bench.yaml
 ```
 
-Detection records robot-owned facts in `robot.yaml`; it creates a deploy scene
-only with `--deployment`. The wizard always runs (there is no `--interactive`
-flag), including the camera binding wizard: a robot camera's binding lands in
-`robot.yaml`, a workcell camera (its own name) in that deploy scene. A deploy
-scene never touches a robot camera. A robot type with more than
-one unit or host keeps each host's camera bindings (and per-unit calibration) in
-`robots/<id>/units/<unit>.yaml` instead; the scene's `robot_unit` or
-`OPENRAL_ROBOT_UNIT` selects it, and a real deploy of such a robot refuses until
-one is selected (SO-101 bench: `units/bench_laptop.yaml`).
-A real deploy also needs the unit's **serial number** so its telemetry and compliance
-records name the machine they came from: set `OPENRAL_UNIT_SERIAL` (or `serial:` in the
-unit file), and optionally `OPENRAL_ORG_ID` / `OPENRAL_SITE_ID`. `openral deploy run`
-refuses to start without one; `deploy sim` does not need it. Every record the deploy
-emits is also kept in the [on-robot compliance log](../../reference/compliance-log.md)
-(`~/.local/state/openral/compliance` unless `OPENRAL_COMPLIANCE_DIR` says otherwise); check it
-with `openral compliance verify`. Set `OPENRAL_ACTOR_KEY` (a secret the deployer keeps) and
-reset with `openral estop reset --operator <name>` so each reset records who did it,
-pseudonymously; the robot stops if the log can no longer be written.
-Use `--include usb,gpu,cameras_v4l2,cameras_realsense` to limit probes, and
-`--report detect.json --no-write` for the raw detection report only. The rSkill
-is **not** set in deploy config; the reasoner selects it at runtime from the
-installed `rskills/` registry.
+Detection records robot facts in `robot.yaml` and creates a deploy scene only
+with `--deployment`. The wizard always runs (there is no `--interactive` flag),
+including camera binding: a robot camera's binding lands in `robot.yaml`, a
+workcell camera in the scene. Use `--include usb,gpu,cameras_v4l2,cameras_realsense`
+to limit probes, and `--report detect.json --no-write` for the raw report only.
 
-> The SO-101 is electrically identical to the SO-100 over USB (same Feetech
-> controller), so the bus can't tell them apart and SO-101 is the default. For
-> the older SO-100, add `--robot so100` (a short slug like `so100` or a manifest
-> directory name like `so100_follower`).
+The SO-101 and SO-100 are the same over USB, so a bare detect picks SO-101. For
+an SO-100 add `--robot so100` (a slug, or a manifest directory name such as
+`so100_follower`).
 
-### Option B — write the workcell by hand
+A robot type with several units or hosts keeps each host's camera bindings and
+calibration in `robots/<id>/units/<unit>.yaml`; the scene's `robot_unit` or
+`OPENRAL_ROBOT_UNIT` selects it, and a real deploy refuses until one is selected.
 
-Create `scenes/deploy/so100_pick_cube.yaml`:
+A real deploy also needs the unit's serial number so its telemetry and
+compliance records name the machine: set `OPENRAL_UNIT_SERIAL` (or `serial:` in
+the unit file), and optionally `OPENRAL_ORG_ID` / `OPENRAL_SITE_ID`. `deploy run`
+refuses to start without one; `deploy sim` does not need it. Every record is also
+kept in the [on-robot compliance log](../../reference/compliance-log.md)
+(`~/.local/state/openral/compliance`, or `OPENRAL_COMPLIANCE_DIR`); check it with
+`uv run openral compliance verify`. Set `OPENRAL_ACTOR_KEY` (a secret you keep)
+and reset e-stops with `openral estop reset --operator <name>` so each reset
+records who did it, pseudonymously. The robot stops if the log can no longer be
+written.
+
+### Option B: write it by hand
+
+Create `scenes/deploy/so100_pick_cube.yaml` (the file the later commands use):
 
 ```yaml
 scene:
@@ -145,628 +124,224 @@ safety:
   workspace_box_max_xyz: [0.3, 0.3, 0.5]
 ```
 
-The full schema is `openral_core.schemas.DeployScene`. `safety` is optional and
-must tighten the robot manifest's `SafetyEnvelope`.
+The schema is `openral_core.schemas.DeployScene`. `safety` is optional and must
+tighten the robot manifest's `SafetyEnvelope`. List the available scenes with
+`uv run openral deploy list`.
 
-List what's available:
+Cameras that exist only as ROS topics (a ZED), world-map settings and the
+Foxglove collision view are in
+[Cameras, world map and the collision view](deploy-perception-and-world-map.md).
 
-```bash
-openral deploy list      # walks scenes/deploy/*.yaml
-```
+## 2. Dry-run against a digital twin
 
-### Cameras whose stream only exists as a ROS topic (`ros2_image`)
-
-`opencv_thread` opens a `/dev/video*` node, which covers most USB cameras. It
-cannot reach a stream a **vendor SDK computes** rather than the device emitting
-it, most importantly **depth from a passive stereo camera**.
-
-A StereoLabs ZED is the clear case. Over USB it presents *one* UVC node carrying
-both eyes side by side (`1344×376` on a ZED Mini at WVGA) and no depth. The ZED
-SDK rectifies and stereo-matches on the **host GPU**, and `zed_wrapper`
-publishes the result. A host without the SDK sees one wide RGB camera, which is
-what `openral detect` reports.
-
-Bind those streams with the `ros2_image` backend, and let the scene start the
-driver so there is no second terminal to forget. This recipe is verified on the
-OpenArm bench (`scenes/deploy/openarm_bench.yaml`, ZED-M, SDK 5.4.1) and is not
-OpenArm-specific: any cell with a ZED-M bolted to the robot, launched under the
-wrapper's default `zed` camera name and `zed_node` node name, uses it as is.
-Another ZED model changes `camera_model` and needs its own override file (the
-ZED-M one pins settings for its USB hub and IMU); a different camera or node
-name changes the `/zed/zed_node/...` topic root on every binding below.
-
-```yaml
-# The scene launches zed_wrapper itself (real path only; `deploy sim` renders).
-drivers:
-  - package: zed_wrapper
-    launch_file: zed_camera.launch.py
-    args:
-      camera_model: zedm            # zed / zedm / zed2 / zed2i / zedx …
-      # The camera is bolted to the robot, so its pose belongs to the robot's
-      # TF tree (the manifest's mount), not to the wrapper's visual odometry.
-      # With these on, zed_camera_link gets a SECOND parent, tf2 lookups go
-      # order-dependent and octomap silently drops every cloud.
-      publish_tf: "false"
-      publish_map_tf: "false"
-      # With IPC on (the wrapper's default) the camera's own frames go on /tf as
-      # DYNAMIC transforms, and octomap_server stalls for seconds waiting on them
-      # (docs/tutorials/deploy/openarm-real-world-voxel-check.md, step 1).
-      enable_ipc: "false"
-      # Scene-relative. Pins VGA (the ZED-M shares a USB hub with other
-      # cameras and reboots in a loop at HD1080; VGA raw is also what the
-      # pick-and-place policy was trained on), advertises the raw image topics,
-      # turns positional tracking
-      # off and depth stabilization to 0 (the SDK force-enables tracking
-      # otherwise, defeating the setting above).
-      ros_params_override_path: drivers/zedm_openarm_override.yaml
-
-runtime:
-  # A depth SensorSpec with intrinsics auto-enables the octomap leg, but the
-  # cloud topic keeps a sim-only launch default unless the scene pins it —
-  # leaving the octree empty behind a healthy-looking graph.
-  enable_octomap: true
-  octomap_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
-```
-
-A driver launched from the scene's `drivers:` block inherits the deploy's Fast DDS
-large-data profile (`FASTRTPS_DEFAULT_PROFILES_FILE`, named on the
-`dds_transport_ready:` line). One you start yourself in another shell does not, and
-its best-effort samples above ~512 KB (clouds, depth and colour frames) are then
-mostly lost before any consumer sees them; export the same variable there
-([DDS transport for large messages](../../reference/dds-large-messages.md)).
-
-The scene has **no `sensors:` block**. The ZED is bolted to the robot, so both of
-its streams are robot cameras, and a deploy scene never touches a camera the
-robot manifest defines (`check_scene_sensor_overrides` refuses a scene entry
-that reuses a manifest sensor's name). The manifest owns each camera's identity and frames
-(`robots/<robot>/robot.yaml`), and with them its real-hardware `deploy_binding` and
-calibrated mount. (A robot model that runs on several cells with different mounts can put
-those per cell in a unit overlay, `robots/<robot>/units/<unit>.yaml`, selected by the
-scene's `robot_unit`.) This is what `robots/openarm/robot.yaml` declares for the ZED,
-abridged:
-
-```yaml
-sensors:
-  # Depth: SDK-computed, so it exists only as a topic. `32FC1` metres on the
-  # wire (or `16UC1` millimetres with `openni_depth_mode: true`) — either way
-  # it reaches the world state as DEPTH16, uint16 millimetres.
-  - name: head_zed
-    static_transform_xyz_rpy: [0.06597, -0.004548, 0.094539, -0.055916, 1.145014, -0.036625]
-    static_transform_calibrated: true  # measured, so a real world-voxel deploy accepts it
-    deploy_binding:
-      backend: ros2_image
-      backend_params:
-        # The zed_wrapper topic root is /<camera_name>/<node_name>/, so the
-        # node name is part of the path.
-        topic: /zed/zed_node/depth/depth_registered
-        # best_effort (the default) also matches a RELIABLE publisher; a
-        # `reliable` subscriber gets NOTHING from a best-effort one.
-        reliability: best_effort
-        qos_depth: 5
-      max_age_ms: 500
-
-  # RGB: the wrapper's UNRECTIFIED left image, the policy's `top` view — the
-  # pick-and-place policy was trained on raw VGA frames, so the override grabs VGA
-  # and sets `video.publish_raw: true`. Use `rgb/color/rect/image` (with its
-  # zero-distortion CameraInfo) for consumers that assume a pinhole camera.
-  # It is published as `bgra8`; the reader drops the constant alpha plane and
-  # delivers `bgr8`.
-  - name: top
-    deploy_binding:
-      backend: ros2_image
-      backend_params:
-        topic: /zed/zed_node/rgb/color/raw/image
-        reliability: best_effort
-        qos_depth: 5
-      max_age_ms: 200
-```
-
-A scene's `sensors:` block is only for a camera that is part of the *cell*, not
-the robot (an overhead or front camera on a stand). It takes a name the
-manifest does not use and carries its own geometry and binding:
-
-```yaml
-sensors:
-  - name: overhead               # not a manifest sensor name
-    modality: rgb
-    frame_id: overhead_optical_frame
-    parent_frame: world
-    static_transform_xyz_rpy: [0.4, 0.0, 1.2, 3.1416, 0.0, 0.0]
-    rate_hz: 30.0
-    encoding: rgb8
-    deploy_binding:
-      backend: opencv_thread
-      backend_params: {device: /dev/v4l/by-id/<your-camera>-video-index0, fps: 30}
-```
-
-Every frame in the world state, RGB and depth alike, is decoded by its
-encoding (`decode_inline_frame`): the depth frame rides along in the policy's
-observation as a `uint16` `(H, W, 1)` array under its own sensor name; an
-RGB-only policy never reads it. Until 2026-09-22 the runner read every
-frame as `uint8`, and a ZED depth frame next to the RGB slots aborted the first
-real OpenArm dispatch with `cannot reshape array of size 1843200`. A camera
-that delivers JPEG or PNG (an MJPEG USB camera) is decoded to RGB the same way.
-
-The bus is not the policy's path. Cameras without a GStreamer tee reach
-`/openral/cameras/<name>/image` through a Python republisher capped at 3 Hz and
-320x240 (the full-resolution rclpy copy holds the GIL; the policy reads the
-native frame in-process from the aggregator). Per camera, `backend_params`
-takes `topic_rate_hz: <hz>` to lift the rate and `topic_native: true` to
-publish at capture size: opt-ins for a bus reader that needs exact pixels,
-such as a calibration pass. To record the frames the policy actually saw, pass
-`--dataset-out <file.mcap>`: the recorder snapshots the aggregator at every
-tick (native frames + state + action) and never reads the bus.
-A frame the decoder cannot handle is logged as `runner.frame_skipped` with the
-sensor and encoding; if that sensor feeds one of the policy's required camera
-slots, the goal fails with `ROSPerceptionStale` rather than running the policy
-without that view.
-
-Prerequisites on the host: the **ZED SDK** installed, and `zed_wrapper` running
-and publishing. Without them the reader opens fine and then every `read_latest`
-raises `ROSPerceptionStale` naming the topic. A driver that isn't running and a
-QoS mismatch look identical to the subscriber, so the message names both.
-
-The reader converts `32FC1` metre depth into OpenRAL's `DEPTH16` layout (uint16
-millimetres). Samples that are non-finite (`NaN` is a stereo matcher's "no
-match") or outside `[0, 65.535] m` become `0`, the ROS "no reading" value,
-never a wrapped `uint16`, which would read as a confident *near* distance for
-something far away.
-
-The same backend covers RealSense aligned depth, Orbbec, GMSL/Isaac drivers, or
-any rectified stream published by a calibration node.
-
-> **Calibrate before you project.** A VLA conditions on pixels, so uncalibrated
-> `fx/fy/cx/cy` are inert for it. They stop being inert the moment depth is
-> projected into a point cloud for octomap / nvblox / collision. Run
-> `openral calibrate camera` first.
-
-### Building a world map from a real depth camera (`octomap_cloud_topic`)
-
-Turning `enable_octomap: true` on is not enough on real hardware. `octomap_server`
-subscribes to whatever `octomap_cloud_topic` names. Under `deploy sim`, left unset,
-it is `/openral/cameras/<name>/points` of the manifest's one depth sensor with
-intrinsics (e.g. `head_zed` on `openarm`, `front_depth` on `panda_mobile`), a
-topic published by the **sim** sensor bridge, which back-projects the digital
-twin's depth raster; a manifest with several depth sensors must pin the one to map.
-Nothing in-tree publishes a cloud under `hal_mode:=real` (the sensor leg publishes a
-bound depth sensor's *image* on `/openral/cameras/<name>/depth/image`).
-
-So `deploy run` refuses with `ROSConfigError` before launch when octomap is on and
-nothing is pinned. That includes the auto-enable: any depth or point-cloud
-(3D lidar) sensor in the manifest or the scene turns octomap on. Without the check
-the failure is silent: every node comes up healthy, the octree,
-`/openral/world_voxels` and the dashboard's POINTCLOUD card stay empty, and the
-kernel drops every chunk as `DROP_VOXEL_UNAVAILABLE`. Pin the driver's topic, or
-set `enable_octomap: false` to run without the world map.
-
-Point it at the cloud your depth driver already publishes:
-
-```yaml
-runtime:
-  enable_octomap: true
-  # zed_wrapper's own registered cloud. RealSense: /camera/depth/color/points.
-  octomap_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
-  # Optional, per rig: how long the kernel trusts the last voxel grid (default 1.0 s)
-  # and how long the octomap bridge republishes the last octree (default = the
-  # deadline, never above it). Raise both for a source slower than ~1 Hz, up to the
-  # schema's hard cap of 2.0 s on the deadline (above it the scene is refused).
-  # world_voxel_deadline_s: 2.0
-  # max_octree_age_s: 2.0
-  # Optional, per rig: how old the camera data behind a voxel grid may be when the
-  # kernel checks a chunk, from capture (default 1.5 s, measured on the Thor ZED-M:
-  # p99 ~1.0 s; hard cap 3.0 s). Measure yours; below the rig's latency tail the robot stops.
-  # world_voxel_data_age_budget_s: 1.5
-  # Optional, per rig (real camera only): how far past the robot's collision model a
-  # depth return is removed as the robot before octomap. 0.02 m is measured at rest on
-  # the OpenArm cells; derive it from depth noise, extrinsic error, capture-to-joint-state motion and half a voxel.
-  # It is also a blind shell around the arm, so do not raise it without that derivation
-  # (hard cap 0.10 m).
-  # robot_self_filter_padding_m: 0.02
-```
-
-On a `deploy sim` twin, a pinned topic outside `/openral/cameras/` is a real
-driver stamping on wall-clock, so the graph runs on host wall time without a
-`clock_origin` pin (pinning `simulation` with it is refused: octomap would drop
-every cloud as from the future).
-
-Two worked examples:
-[`scenes/deploy/openarm_zed_octomap.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/openarm_zed_octomap.yaml)
-sets `enable_octomap` and `octomap_cloud_topic` together, and
-[`scenes/deploy/openarm_tabletop.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/openarm_tabletop.yaml)
-pins `enable_octomap: false` to override the auto-enable that the manifest's
-`head_zed` depth `SensorSpec` would otherwise trigger (`deploy run` resolves
-that auto-enable through the same code path as `deploy sim`). Both are
-`deploy sim` scenes, but the same fields apply unchanged under
-`hal_mode:=real`. Copy one of them; never leave it half-set.
-
-To let that map **stop** a real arm, not just draw it, see
-[`scenes/deploy/openarm_real_world_voxels.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/openarm_real_world_voxels.yaml)
-and its [attended runbook](openarm-real-world-voxel-check.md): it adds
-`enable_octomap_kernel_check: true` and a guarded launcher that refuses until the camera
-pose is declared as measured in `robots/openarm/robot.yaml`. OpenRAL
-does not calibrate that pose: the runbook's step 2 states the frames and the accuracy
-the check needs, and the operator measures it (typically a hand-eye calibration). The
-gate is robot-agnostic: any robot with a cloud source, not just OpenArm.
-Its autonomous sibling,
-[`scenes/deploy/openarm_real_autonomous.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/openarm_real_autonomous.yaml),
-adds the reasoner, the open-vocabulary detector and spatial-memory ingest so a goal is
-language (`openral prompt "pick up the boxes"`), behind the same launcher's `--autonomous`.
-
-Reusing the driver's cloud is deliberate: `zed_wrapper` (and the RealSense and
-Orbbec drivers) already stereo-match and project on the GPU, so a depth-to-cloud
-converter node would redo that work.
-
-Enabling this leg also attaches the `WorldCloudBridge`, which feeds the
-dashboard's `world.pointcloud` span; the card is gated on
-`enable_octomap or slam_mono_camera` and stays dark until one is on.
-
-Before flipping it on a robot that moves:
-
-- `octomap_server` needs the cloud's `frame_id` resolvable against `odom` through
-  TF. A driver publishing in its own optical frame needs that frame connected to
-  the robot's tree, which the sensor's `frame_id` / `parent_frame` in the deploy
-  scene does.
-- With `enable_octomap_kernel_check` left at its default, these voxels become a
-  **safety input**: the C++ kernel rasterises the arm's capsules against them and
-  E-stops on overlap, so a noisy or mis-framed cloud surfaces as an E-stop, not a
-  bad picture. Bring the leg up with the arm unpowered and check the card first.
-
-## 2. Dry-run against a digital twin first
-
-`openral deploy sim` boots the **same** graph (dashboard + safety kernel +
-reasoner + prompt router + runtime + HAL) against a digital-twin HAL driven by
-the same `DeployScene` YAML, no robot required. It is the safe place to shake
-out manifest, sensor, and rSkill-compatibility errors:
+`openral deploy sim` boots the same graph (dashboard, safety kernel, reasoner,
+prompt router, runtime, HAL) against a digital-twin HAL driven by the same
+scene, with no robot. Use it to shake out manifest, sensor and rSkill errors:
 
 ```bash
-openral deploy sim \
-  --config scenes/deploy/so100_pick_cube.yaml
+uv run openral deploy sim --config scenes/deploy/so100_pick_cube.yaml
 ```
 
-`deploy sim` takes no `--rskill`: the reasoner picks the active rSkill from the
-in-tree `rskills/` palette at `on_configure`, embodiment-filtered.
+`deploy sim` takes no `--rskill`; the reasoner picks from the in-tree `rskills/`
+palette, filtered by embodiment. To change a scene's runtime field without
+editing it, pass `--runtime key=value` (repeatable), for example
+`--runtime grounding_wait_s=8`.
 
-### Two cheaper checks before that
-
-`deploy sim --dry-run` resolves the scene, the HAL params and the launch argv
-and prints them without shelling out to `ros2 launch`:
+Two cheaper checks first:
 
 ```bash
-openral deploy sim --config scenes/deploy/so100_pick_cube.yaml --dry-run
+uv run openral deploy sim --config scenes/deploy/so100_pick_cube.yaml --dry-run
+uv run openral deploy validate --config scenes/deploy/so100_pick_cube.yaml
 ```
 
-`openral deploy validate` is the readiness check for **real** hardware, with no
-ROS launch and no robot required. It catches the gaps that otherwise fail late,
-at HAL configure or on the first sensor read:
+`--dry-run` resolves the scene, HAL params and launch argv and prints them
+without starting `ros2 launch`. `deploy validate` is the readiness check for
+**real** hardware, with no launch and no robot. It resolves HAL params with the
+same precedence as `deploy run` (`--hal` > scene `hal` > `robot.yaml`) and
+separates **ERROR** (committed data is missing; exits non-zero) from **WARN**
+(the device is not plugged in right now):
+
+- **HAL transport**: a serial `port` is declared and the device exists now.
+- **Calibration**: a serial HAL with `calibrate_on_connect: false` has an `id`
+  and `calibration_dir`, and `<calibration_dir>/<id>.json` exists. Otherwise
+  every `send_action` fails with "has no calibration registered".
+- **Camera bindings**: each deploy sensor has a `deploy_binding` (without one it
+  is never published and a camera VLA silently gets an empty observation), and
+  any `/dev/*` path exists.
+
+### RoboCasa scenes
+
+RoboCasa kitchen scenes (for example `scenes/deploy/robocasa_navigate.yaml`) need
+the RoboCasa fork, which `just sync --group robocasa` does not install (that
+group supplies only robosuite and supporting deps). The deploy-sim HAL clones and
+installs it editable at runtime through
+`openral_sim._deps.ensure_backend_deps('robocasa_kitchen')`:
 
 ```bash
-openral deploy validate --config scenes/deploy/so100_pick_cube.yaml
+just sync --group robocasa    # swaps out the libero/sim group
+OPENRAL_AUTO_INSTALL_DEPS=1 uv run openral deploy sim --config scenes/deploy/robocasa_navigate.yaml
 ```
 
-It checks:
-
-- **HAL transport** — a serial `port` is declared, and that device exists now.
-- **Calibration** — a serial HAL with `calibrate_on_connect: false` has an `id`
-  and `calibration_dir`, and `<calibration_dir>/<id>.json` is actually there.
-  Missing, and every `send_action` fails with "has no calibration registered".
-- **Camera bindings** — each deploy sensor (the robot manifest's cameras, bound
-  in the host's unit overlay or `robot.yaml`, plus the scene's workcell cameras) has a `deploy_binding`
-  (without one it is never published, and a camera VLA silently gets an empty
-  observation), and any `/dev/*` path exists now.
-
-It separates **ERROR** (committed data is missing; exits non-zero) from
-**WARN** (the device just is not plugged in right now), and resolves HAL
-params with the same precedence `deploy run` uses: `--hal` > scene `hal` >
-`robot.yaml`.
-
-### RoboCasa scenes — let the HAL provision the backend
-
-RoboCasa kitchen scenes (e.g. `scenes/deploy/robocasa_navigate.yaml`) need the
-RoboCasa fork, which `just sync --group robocasa` does **not** install (that
-group only supplies robosuite + supporting deps). The deploy-sim HAL's
-`on_configure` git-clones and installs it editable **at runtime** via
-`openral_sim._deps.ensure_backend_deps('robocasa_kitchen')`. Auto-install is on
-by default:
-
-```bash
-just sync --group robocasa    # robosuite + deps (swaps out the libero/sim group)
-OPENRAL_AUTO_INSTALL_DEPS=1 openral deploy sim \
-  --config scenes/deploy/robocasa_navigate.yaml
-```
-
-Do **not** hand-install `robocasa` / `robosuite`: that pulls the wrong
-robosuite and wrecks the managed env. So the first-run build does not stall the
-lifecycle transition, pre-build the clone once:
-
-```bash
-OPENRAL_AUTO_INSTALL_DEPS=1 python -c \
-  "from openral_sim._deps import ensure_backend_deps; ensure_backend_deps('robocasa_kitchen')"
-```
-
-LIBERO and RoboCasa pin conflicting robosuite versions and cannot coexist, so
-swap groups per task: `just sync --group robocasa` for kitchens, `just sync
---group sim` (or `--group libero`) to go back. See [Managing the Python environment & dependency
-groups](../../contributing/toolchain.md#managing-the-python-environment-dependency-groups).
-
-### Reading the collision view in Foxglove
-
-`openral deploy sim` starts a read-only Foxglove bridge next to the graph (with the dashboard, or `--foxglove`). Its 3D
-panel shows the same world the safety kernel checks: the voxel map, the declared fixtures and
-the boxes the grasp leg measures. The frames below come from a bimanual OpenArm pick-and-place
-run in Isaac Sim with the [manipulation-workspace contact](../../reference/manipulation-workspace-contact.md)
-rule on. The camera tiles along the top, the sim-time header and the event text were added by
-the recording tool. In a live session the event text appears as kernel log lines in the deploy log
-instead (see the carry phase below).
-
-Each element is tagged with where it comes from. **Detected** means the graph measures it live,
-as it would on a real robot. **From simulator** means the sim supplied it: on a real cell the
-same input has to come from the cell's own scene graph, CAD or a survey.
-
-**Grasp phase.** The robot reaches into the tote. The grasp leg has already measured the target
-carton from head depth, before any finger touches it.
-
-![Foxglove collision view during the grasp phase: camera tiles, height-coloured voxels, colour
-depth points, black-outlined static geometry and the green grasp region, each numbered and
-tagged detected or from simulator](images/collision-view-grasp.webp)
-
-1. **Camera tiles** (from simulator): left wrist, head ZED and right wrist, rendered by Isaac
-   Sim. These are the frames the policy acts on.
-2. **Voxels, coloured by height** (detected): the kernel's occupancy map, built from head depth
-   by octomap at 15 mm. Collision checks run against this map. Cells inside a declared box
-   fixture are occupied in the kernel but left out of the drawing (`hide_static_voxels`), so
-   the fixture is drawn once, by its marker.
-3. **Colour points** (detected): the raw head-camera depth cloud in RGB, with the robot
-   filtered out. It shows what the camera sees; the kernel does not check it directly.
-4. **Black-outlined boxes** (from simulator): the declared static geometry
-   (`runtime.static_geometry_file`): tote walls, rim and floor, rack, decks, staging board and
-   shelf stock. `tools/derive_scene_inputs.py` exports them from the stage's static colliders.
-   They are always occupied, whether the camera has seen them or not.
-5. **Green box, grasp region** (detected): the target carton, measured from head-depth points
-   inside the grasp declaration's `search_box`. The fingers may touch it. The `search_box`
-   itself is a scene input (derived from the sim's object poses) and is drawn too faint to see
-   here.
-
-**Carry phase.** The carton is attached to the left hand and rides with it.
-
-![Foxglove collision view during the carry phase: the orange payload box on the left hand, a
-tolerated-contact line, a brake line with its creep fraction, and the static geometry over the
-shelf](images/collision-view-carry.webp)
-
-1. **Orange box, payload** (detected): the held carton's collision box, taken from the measured
-   grasp region (`evidence_kind: grasp_target_region`). From now on the kernel checks it
-   against the world and the robot as part of the hand. Its cells are **not** removed from
-   the voxel map: the octomap bridge clears a held payload only for a `tracked_object`
-   attachment from the #418 object tracker (`runtime.object_tracking: tracking` or `on`, sim-only), so with
-   tracking `off` the carton stays a mapped obstacle and the kernel may stop the
-   arm on what it holds. That is the decided fail-closed posture
-   ([octomap bridge README](https://github.com/OpenRAL/openral/blob/master/packages/openral_octomap_bridge/README.md#attached-objects-and-world-occupancy)).
-2. **Contact tolerated** (kernel log line `safety.workspace_contact`): a hand link or its
-   payload touches an occupied cell inside the declared `workspace_box`, slower than
-   `workspace_contact_max_speed_mps` and within `workspace_contact_max_lead_m`, so the kernel
-   lets it through. The line reports the link, the depth into the cell and the hand speed. Arm
-   links never get this tolerance.
-3. **BRAKE … creep** (kernel log line `safety.workspace_brake`): the chunk failed **only**
-   because the hand was too fast or led its measured pose by too much. Instead of stopping, the
-   kernel scales the chunk toward the measured pose; `creep=0.099` means about 10 % of the
-   commanded step. Any other reason to refuse still stops the robot.
-4. **Black-outlined boxes** (from simulator): the same declared static geometry, here the shelf
-   stock above the target deck.
-
-**A payload from wrist segmentation.** In another run, the right hand holds a carton whose box
-was measured by wrist-camera segmentation instead.
-
-![Foxglove collision view with a cyan payload box measured by wrist-camera segmentation, two
-tolerated-contact lines and the height-coloured voxels](images/collision-view-segmentation.webp)
-
-1. **Cyan box, payload** (detected): a payload measured by wrist-camera segmentation
-   (`evidence_kind: vision_segmentation`).
-2. **Contact tolerated**: two hand links (`link7` and the follower finger) in tolerated contact
-   at the same time.
-3. **Voxels** (detected), as in the grasp phase.
-
-Colours not shown above: blue for an active place region, amber for the map-confirmed workspace
-box, yellow for the jaw-span fallback payload and a red sphere where a kernel stop happened. All
-of them are defined in
-[`bucket2_markers.py`](https://github.com/OpenRAL/openral/blob/master/packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py);
-the topics are listed in the
-[Foxglove bringup README](https://github.com/OpenRAL/openral/blob/master/packages/openral_foxglove_bringup/README.md).
-Workspace contact is default off (`runtime.workspace_contact_enabled`) and sim-only until
-Safety-WG review: `openral deploy run` on a real HAL refuses it.
+Do not hand-install `robocasa` or `robosuite`; that pulls the wrong robosuite.
+LIBERO and RoboCasa pin conflicting robosuite versions, so swap groups per task
+(`just sync --group sim` or `--group libero` to go back). See
+[Managing the Python environment](../../contributing/toolchain.md#managing-the-python-environment-dependency-groups).
 
 ## 3. Run on hardware
 
-With the robot powered, connected, and within a clear workspace:
+With the robot powered, connected and the workspace clear, keep your E-stop
+within reach. The C++ safety kernel sits between the policy and the motors
+(Python proposes, C++ disposes), and `ROSSafetyViolation` is never silently
+caught.
 
 ```bash
-openral deploy run --config scenes/deploy/so100_pick_cube.yaml
+uv run openral deploy run --config scenes/deploy/so100_pick_cube.yaml
 ```
 
-- The robot is resolved from `--config`; `build_hal(mode="real")` constructs
-  the real HAL. If no hardware is attached, `connect()` **fails loudly**; a
-  simulation-only robot raises `ROSCapabilityMismatch` (use `deploy sim`).
-- Robot HAL defaults (`port` / `robot_ip` / `fci_ip` / adapter params) come from
-  `robots/<robot_id>/robot.yaml`. Override at the CLI with repeatable `--hal key=value`:
+You should see the `ros scope:` line, then the graph coming up and the dashboard
+URL. If no hardware is attached, `connect()` fails loudly.
 
-  ```bash
-  openral deploy run --config scenes/deploy/so100_pick_cube.yaml --hal port=/dev/ttyUSB1
-  ```
+- HAL defaults (`port`, `robot_ip`, `fci_ip`, adapter params) come from
+  `robots/<robot_id>/robot.yaml`. Override with repeatable `--hal key=value`, for
+  example `--hal port=/dev/ttyUSB1`.
+- `--rskill-install/--no-rskill-install` controls the auto-install described in
+  the prerequisites.
+- `--dry-run` prints the resolved launch argv without starting the graph.
+- `--dataset-out <file.mcap>` records what the policy saw at each tick.
 
-- `runtime.object_tracking` (issue #418): `off` (the schema default) | `tracking` | `on`.
-  `deploy run` allows only `off`; `tracking` and `on` are sim-only until Safety-WG review
-  and are refused on a real HAL. The former `shadow` and `bind` load as deprecated aliases
-  of `tracking` (a `FutureWarning`), so a real scene still naming `shadow` is now refused:
-  set it `off`. In `deploy sim` a scene's runtime field can be overridden without editing
-  it, e.g.
-  `openral deploy sim --config <scene> --runtime object_tracking=tracking --runtime grounding_wait_s=8`.
-  In `tracking` the object tracker grounds the goal queries (`grounding_required` refuses
-  a goal it cannot ground), owns `/openral/attachment_state` (the held payload is the
-  tracker's box, cleared from the voxel map by tracked identity) and measures the boxes
-  the open kernel's box rules take: the grasp declaration's region (the one target track's
-  box, `TrackerSession.grasp_region`, until the hand holds it: the attachment snapshot
-  carries none, so the kernel never latches a box riding the hand), the place region
-  (`TrackerSession.place_region`, the destination track's containing box; the runner arms
-  its goal-scope place declaration) and the workspace region. The kernel applies the
-  ADR-0115 grasp allowance, the ADR-0097/0098 place allowance (a non-monotone, sim-only
-  relaxation pending Safety-WG review and a hazard-log row; Spark A/B R388 vs R389: only
-  with it does the DROID banana reach the bowl) and the #349 `workspace_box` contact rule
-  over them. The HAL's vision attachment bridge runs only its grasp trigger
-  (`/openral/grasp_events`, what the tracker binds from): no segmentation and no grasp- or
-  place-target leg. An ATTACH still holds the action ack until the tracker's next
-  `/openral/attachment_state` revision, at most the leg's `deadline_s`. The two Isaac
-  deploy scenes (`scenes/deploy/isaac_leisaac_pick_orange.yaml`,
-  `scenes/deploy/isaac_arena_droid_banana_in_bowl.yaml`) commit `tracking` with
-  `grounding_required: true` and `grounding_wait_s` 8 s / 15 s, the values of their
-  successful Spark runs (which ran `on`). That wait is for TARGET queries; a CONTEXT query
-  (a neighbour the hand may brush) holds the goal at most the runner's
-  `grounding_context_wait_s` (2 s graph time) and is searched for the rest of the goal;
-  `--runtime object_tracking=off` runs them without
-  the tracker. `on` publishes no grasp region and requires `runtime.exemption_provider`
-  (ADR-0121): it hands the exemption provider the tracked-object rules (issue #418 K2, the
-  K5 release decision, K7 explained cells, payload-own cells) as `contact_exemptions.*`
-  parameters; the open kernel no longer implements them (ADR-0121 step 3) and the schema
-  and the launch refuse `on` without a provider. `on` still needs
-  `runtime.grasp_allowance_enabled: true`.
-
-- The C++ safety kernel sits between the policy and the motors: Python
-  proposes, C++ disposes, and `ROSSafetyViolation` is never silently caught.
-  Keep your E-stop within reach.
-
-### SO-101 SmolVLA TensorRT fast path (OpenRAL Pro)
-
-For the public SO-101 SmolVLA skill, the real deploy scene and rSkill are:
+**Object tracking is sim-only.** `runtime.object_tracking` is `off` (default),
+`tracking` or `on`. Any value other than `off` is refused on a real HAL, so a real
+deploy runs it `off`; the former `shadow` and `bind` now load as `tracking` and
+are refused too. `tracking` makes the object tracker ground the goal's queries
+and own the held payload's `attachment_state`; `on` also needs a Pro safety
+exemption provider. The tracker needs `grounding_wait_s > 0`. Try it on
+`deploy sim`:
 
 ```bash
-openral rskill install OpenRAL/rskill-smolvla-so101-eraser_place-bf16
-openral deploy run \
-  --config scenes/deploy/so101_bench.yaml
+uv run openral deploy sim --config <scene> \
+  --runtime object_tracking=tracking --runtime grounding_wait_s=8
 ```
 
-The `OPENRAL_SMOLVLA_TRT=1` split ONNX/TensorRT fast path (and the GStreamer
-NVMM zero-copy camera leg it pairs with) is an **OpenRAL Pro plugin** in the
-private `openral-pro-trt` package, not this repo. With it installed, set
-`OPENRAL_SMOLVLA_TRT=1` before `openral deploy run` (the env var is read by the
-pro-side hook, looked up by name via
-`openral_rskill.backend_registry.maybe_attach_pro_hooks`); `openral-pro`'s own
-docs have the engine pre-build recipe.
+An external USD [object catalog](../../reference/usd-object-catalog.md) needs the
+tracker too, so it is sim-only for the same reason.
 
-Without `openral-pro-trt`, the policy runs in eager PyTorch (logged, not a
-silent skip). For the SO-101 NVMM camera path, either install
-the OpenRAL Pro plugin or disable NVMM for the relevant cameras in the
-deploy scene.
+### SO-101 SmolVLA fast path (OpenRAL Pro)
 
-### Give the robot a task
-
-The reasoner selects *which* rSkill to run, but without a goal it idles. Three
-ways to give it one:
-
-**At launch**, with `--initial-task`:
+For the public SO-101 SmolVLA skill:
 
 ```bash
-openral deploy run --config scenes/deploy/so101_bench.yaml \
+uv run openral rskill install OpenRAL/rskill-smolvla-so101-eraser_place-bf16
+uv run openral deploy run --config scenes/deploy/so101_bench.yaml
+```
+
+The `OPENRAL_SMOLVLA_TRT=1` TensorRT path and its NVMM zero-copy camera leg are
+OpenRAL Pro. Without Pro the policy runs in eager PyTorch (logged, not a silent
+skip); for the NVMM camera path, install Pro or disable NVMM for those cameras in
+the scene.
+
+## 4. Give the robot a task
+
+The reasoner picks which rSkill to run, but idles without a goal. Three ways to
+give it one.
+
+**At launch:**
+
+```bash
+uv run openral deploy run --config scenes/deploy/so101_bench.yaml \
   --initial-task "pick the bowl and place it on the plate, then push the mug back"
 ```
 
-A multi-step goal is decomposed into an ordered `MissionState` queue via the
-reasoner's `decompose_mission` tool, and the queue only advances when the
-active task passes the reward gate.
+A multi-step goal is decomposed into an ordered mission queue by the reasoner's
+`decompose_mission` tool; the queue advances only when the active task passes the
+reward gate.
 
-**While it runs**, from another terminal:
+**While it runs**, from another terminal (needs a sourced ROS 2 install):
 
 ```bash
-openral prompt --robot so101_follower "put the pen back in the cup"
+uv run openral prompt --robot so101_follower "put the pen back in the cup"
 ```
 
-This publishes one `PromptStamped` on `/openral/prompt_in/cli`; the
-prompt-router fans it out to `/openral/prompt` for the reasoner. It needs a
-sourced ROS 2 install. `--robot` is the deploy's robot id: a real deploy runs
-on a per-robot `ROS_DOMAIN_ID` with LOCALHOST discovery, and `--robot` derives
-the same scope with the deploy's own function, so nothing has to be exported.
-The command prints the domain it used first (`ros scope: ROS_DOMAIN_ID=39
-(robot 'so101_follower') …`). Without `--robot` it runs on the shell's own scope,
-which reaches a real deploy only if the deploy's `export` line was copied. An
-exported `ROS_DOMAIN_ID` still wins over `--robot`, as it does for the deploy;
-when it differs from the robot's domain the line says so. With `--robot` the
-command acts only if that robot's HAL node (`openral_hal_so101_follower`) is on
-the graph it joined, and exits 3 otherwise: robot ids share the derived domains,
-so a typo or a stale export could otherwise reach another robot.
+This publishes one `PromptStamped` on `/openral/prompt_in/cli`; the prompt router
+fans it out to `/openral/prompt`. `--robot` is the deploy's robot id: it derives
+the same per-robot `ROS_DOMAIN_ID` as the deploy (printed first as `ros scope:`),
+so nothing needs exporting. It acts only if that robot's HAL node is on the graph
+it joined, and exits 3 otherwise, so a typo cannot reach another robot. An
+exported `ROS_DOMAIN_ID` still wins over `--robot`.
 
-A prompt arriving mid-mission is **conversational context** by default (an
-answer to a reasoner question, or a hint) and does *not* rebuild the task
-queue. To replace the current mission:
+A prompt arriving mid-mission is conversational context (an answer or a hint) and
+does not rebuild the queue. To replace the mission, add `--new-goal`:
 
 ```bash
-openral prompt --robot so101_follower --new-goal "stop that, clear the table instead"
+uv run openral prompt --robot so101_follower --new-goal "stop that, clear the table instead"
 ```
 
 On a cold-booted graph the router may not have discovered the publisher yet;
-`--discovery-wait-s 15` covers the stale-shared-memory case the 5 s default
-does not.
+`--discovery-wait-s 15` covers that (default 5 s).
 
-**From the dashboard**, with its `prompt` action, which posts to the same path
-as the CLI.
+**From the dashboard**, with its `prompt` action, which posts to the same path.
 
-**After an e-stop**, clear it from the CLI with:
+**After an e-stop**, clear it from the CLI:
 
 ```bash
-openral estop reset --robot so101_follower
+uv run openral estop reset --robot so101_follower
 ```
 
-Like the dashboard's reset button, it calls the safety kernel's
-`/openral/estop_reset` first, then broadcasts `/openral/estop_cleared` only if the kernel
-accepted, which un-latches the HAL and the rSkill runner. A bare
-`ros2 service call /openral/estop_reset ...` clears the kernel alone, and the runner keeps
-rejecting goals. Exit code 1 means the kernel refused the reset (often its cooldown), and
-nothing was broadcast.
+Like the dashboard's reset button, it calls the kernel's `/openral/estop_reset`
+first and broadcasts `/openral/estop_cleared` only if the kernel accepted, which
+un-latches the HAL and the rSkill runner. A bare `ros2 service call
+/openral/estop_reset ...` clears the kernel alone and the runner keeps rejecting
+goals. Exit code 1 means the kernel refused the reset (often its cooldown).
 
-### Optional reward monitor
+**Optional reward monitor.** `--enable-reward-monitor` brings up the same
+progress monitor as `deploy sim`. It is advisory: it serves
+`/openral/perception/query_task_progress` for the reasoner and never gates motors.
 
-`deploy run` can bring up the same reward/progress monitor as `deploy sim`:
+## 5. Open the dashboard
 
-```bash
-openral deploy run \
-  --config scenes/deploy/so101_bench.yaml \
-  --enable-reward-monitor
-```
+`deploy run` starts the robot dashboard by default (`--dashboard/--no-dashboard`,
+`--dashboard-port`, default **4318**) with a read-only Foxglove bridge behind its
+3D view (`--no-foxglove` to skip). It serves the panels and actions this robot's
+manifest declares: cameras, joints, safety state, metrics, events, E-STOP,
+reset, prompt, and the installed rSkills.
 
-The monitor is advisory only; it serves `/openral/perception/query_task_progress`
-for the reasoner and never gates motors.
-
-## 4. Open the dashboard
-
-`deploy run` spawns the robot dashboard by default (`--dashboard/--no-dashboard`,
-port `--dashboard-port`, default **4318**), with the read-only Foxglove bridge behind
-its 3D view (`--no-foxglove` to skip it). It serves the robot UI: the panels and actions
-this robot declares in its manifest — cameras, joints, safety state, metrics, events,
-E-STOP, reset, prompt, and the installed rSkills when
-`OPENRAL_DASHBOARD_WRITE_CONTROLS=1`.
-
-```
+```text
 http://localhost:4318
 ```
 
-On this machine you have full control; other hosts on the LAN (with `--host`) see it
-read-only plus E-STOP. To reach the robot from openral.com from anywhere, add it there
-(**Dashboard → Robots → Add robot**) and run the one command it shows,
-`openral robot link <code>`: no install, no root, and its tunnel survives reboots (see the
-[dashboard quickstart](../../quickstart/dashboard.md)).
-Headless (e.g. CI): `--no-dashboard`; another port: `--dashboard-port 4400`.
+On the deploy host you have full control; other LAN hosts (with `--host`) get a
+read-only view plus E-STOP. The rSkill controls appear when
+`OPENRAL_DASHBOARD_WRITE_CONTROLS=1`, or when the robot is linked to openral.com
+(the account grants them).
 
-Or launch it standalone and point other workloads at it:
+To reach the robot from openral.com, add it under **Dashboard → Robots → Add
+robot** and run the command it shows, `uv run openral robot link <code>`: no
+install, no root, and the tunnel survives reboots. See the
+[dashboard quickstart](../../quickstart/dashboard.md). `OPENRAL_DASHBOARD_UI_DIR`
+points the dashboard at a local build of the robot UI instead of the released one.
 
-```bash
-openral dashboard            # binds 127.0.0.1:4318
-```
+For headless runs use `--no-dashboard`. To run the dashboard on its own, start
+`uv run openral dashboard` (binds `127.0.0.1:4318`), then export
+`OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` and
+`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` for the workload.
 
-then export `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` and
-`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` for the workload (see the
-[dashboard quickstart](../../quickstart/dashboard.md) for the in-process demo
-mode).
+## Troubleshooting
 
-## See also
+| Symptom | Fix |
+| --- | --- |
+| `ROSCapabilityMismatch` from `build_hal` | The robot has no `hal.real`; use `deploy sim`, or pick one of the 13 real robots. |
+| `deploy run` refuses to start | A real deploy needs the unit serial (`OPENRAL_UNIT_SERIAL`) and, for multi-unit robots, a selected unit (`OPENRAL_ROBOT_UNIT`). Run `deploy validate` first. |
+| Refused with a ROS scope message | The graph must stay on this host; see "The graph stays on this host". |
+| `runtime.object_tracking` ... sim-only | Set it to `off` for `deploy run`. |
+| Robot idles after launch | No goal yet; pass `--initial-task` or use `openral prompt`. |
+| `openral prompt` exits 3 | That robot's HAL node is not on the graph the command joined; check `--robot` and the `ros scope:` line. |
+| Goals rejected after an e-stop | Clear with `openral estop reset --robot <id>`, not a bare service call. |
+| Reasoner does not plan | `OPENRAL_REASONER_MODEL` is unset; see the reasoner reference. |
 
-- [`scenes/README.md`](https://github.com/OpenRAL/openral/blob/master/scenes/README.md) — DeployScene / SimScene / BenchmarkScene tiers.
-- [`openral dashboard` quickstart](../../quickstart/dashboard.md).
-- [Reasoner (S2) reference](../../reference/reasoner.md) — tool palette, bounded
-  replanning, missions and memory.
-- [Your first sim rollout](../sim/first-rollout.md) — the no-hardware path.
-- `openral detect` — auto-generate `robot.yaml` by probing USB devices and sensors.
+## Next
+
+- [Cameras, world map and the collision view](deploy-perception-and-world-map.md)
+- [Attended real-world voxel check (OpenArm)](openarm-real-world-voxel-check.md)
+- [Dashboard quickstart](../../quickstart/dashboard.md)
+- [Reasoner (S2) reference](../../reference/reasoner.md)
+- [Your first sim rollout](../sim/first-rollout.md), the no-hardware path
+- [`scenes/README.md`](https://github.com/OpenRAL/openral/blob/master/scenes/README.md): DeployScene / SimScene / BenchmarkScene tiers

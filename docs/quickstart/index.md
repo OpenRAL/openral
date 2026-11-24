@@ -1,161 +1,81 @@
 # Quickstart
 
-From zero to a working `openral doctor` check in under five minutes.
+Goal: install OpenRAL from a clone and confirm the host with `openral doctor`.
 
----
+## Prerequisites
+
+- Linux (Ubuntu 24.04 recommended) with `sudo`; [`just`](https://github.com/casey/just) installed. macOS works for development only.
+- An NVIDIA GPU is optional. The first sim rollout runs on CPU.
 
 ## 1. Install
 
 ```bash
 git clone https://github.com/OpenRAL/openral && cd openral
-just bootstrap          # installs uv, ROS 2, system deps
-just sync               # install Python workspace (wraps uv sync + repair)
+just bootstrap          # uv, ROS 2 Jazzy, system deps (the slow step)
+just sync               # Python workspace; always `just sync`, never bare `uv sync`
 ```
 
----
+Simulators are opt-in: `just sync --group sim` (or `--group libero`, `--group robocasa`, `--group metaworld`, `--group maniskill3`). LIBERO and RoboCasa groups exclude each other. Rules: [toolchain](../contributing/toolchain.md#managing-the-python-environment-dependency-groups).
+
+You should see: `just sync` ends without errors and `.venv/` exists.
 
 ## 2. Run `openral doctor`
-
-`openral doctor` reports the status of every host dependency OpenRAL needs.
 
 ```bash
 uv run openral doctor
 ```
 
-The CLI lives in the workspace venv at `.venv/bin/openral`: call it with
-`uv run openral …`, or `source .venv/bin/activate` and drop the prefix. Global
-install: `uv tool install --editable python/cli`.
+The CLI lives in `.venv/bin/openral`. Call it with `uv run openral ...`, or `source .venv/bin/activate` and drop the prefix. Global install: `uv tool install --editable python/cli`.
 
-Example output on a well-configured Ubuntu 24.04 machine with an NVIDIA GPU —
-**abridged**: a real run also prints the derived `ComputeSpec (local) / …` rows
-and the `Reasoner LLM` row (see below).
+You should see a table like this (excerpt; a real run adds `ComputeSpec` rows and a `Reasoner LLM` row, and every value is that machine's):
 
 ```
-           openral doctor
-┏━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ check              ┃ status  ┃ details                        ┃
-┡━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ Python             │ ok      │ 3.12.3                         │
-│ Platform           │ info    │ Linux 6.8.0-47-generic         │
-│ openral-core       │ ok      │ 0.3.1                          │
-│ ROS 2 binary       │ ok      │ /opt/ros/jazzy/bin/ros2        │
-│ ROS 2 distro       │ ok      │ jazzy                          │
-│ RMW                │ info    │ rmw_fastrtps_cpp (default)     │
-│ colcon             │ ok      │ /usr/bin/colcon                │
-│ GPU 0              │ ok      │ NVIDIA RTX 4090 (24576 MiB)    │
-│ USB devices        │ info    │ none found                     │
-│ just               │ ok      │ /usr/local/bin/just            │
-└────────────────────┴─────────┴────────────────────────────────┘
+┃ check              ┃ status  ┃ details                              ┃
+│ Python             │ ok      │ 3.12.3                               │
+│ openral-core       │ ok      │ 0.4.0                                │
+│ ROS 2 distro       │ ok      │ jazzy                                │
+│ RMW                │ info    │ rmw_fastrtps_cpp (default)           │
+│ GPU 0              │ ok      │ NVIDIA RTX 4090 (24576 MiB, sm_89)   │
 ```
 
-**Status colours:**
+The `RMW` row shows the ROS default when `RMW_IMPLEMENTATION` is unset; the dev and inference images set Cyclone DDS. On Jetson or Apple Silicon, `doctor` prints `Jetson` or `GPU info` rows instead of an NVIDIA GPU row.
 
-| Status | Colour | Meaning |
-|--------|--------|---------|
-| `ok` | green | Fully present and working |
-| `info` | yellow | Informational — not a problem |
-| `absent` | yellow | Optional tool not installed |
-| `warn` | yellow | Present but something unexpected |
-| `missing` | red | Required tool not found |
-| `fail` | red | Found but broken |
+| Status | Meaning |
+|---|---|
+| `ok` | present and working |
+| `info` | informational, not a problem |
+| `absent` | optional tool not installed |
+| `warn` | present but unexpected |
+| `missing` | required tool not found (fatal) |
+| `fail` | found but broken (fatal) |
 
-`openral doctor` exits **0** when no check is `fail` or `missing`; exits **1** otherwise.
+`doctor` exits 0 unless a check is `fail` or `missing`. `uv run openral doctor --json` prints every row as a JSON array (`check`, `status`, `details`) for scripts and CI.
 
----
+## Other install paths
 
-## 3. Machine-readable output
+| You want | Do this |
+|---|---|
+| The CLI only, no clone, no sudo (CPU torch, ~1.6 GB) | `curl -fsSL https://raw.githubusercontent.com/OpenRAL/openral/master/scripts/install.sh \| bash`, then `openral doctor`. Opt-in extras: `openral install sim`, `openral install ros` (needs sudo), `openral install list`. On an NVIDIA host prefix the install line with `OPENRAL_TORCH_BACKEND=auto`. |
+| A real-hardware deploy image (x86_64, NVIDIA driver >= 580.65) | `just docker-build-x86`, then `docker run --rm --gpus all openral:x86 doctor`. Mount your Hugging Face cache (`-v ~/.cache/huggingface:/opt/openral/hf-cache`) or every `--rm` run re-downloads the rSkill weights. The image holds the deploy graph, not the sim suites. |
 
-`--json` prints every table row as a JSON array, for scripting or CI assertions
-(sample abridged as above):
+## Troubleshooting
 
-```bash
-uv run openral doctor --json
-```
+| Symptom | Fix |
+|---|---|
+| `ROS 2 binary` is `absent` | ROS is opt-in with the one-liner install. Run `openral install ros` (sudo + apt, Linux only). |
+| `ROS 2 distro` is `info` | ROS is installed but not sourced. `source /opt/ros/jazzy/setup.bash` (24.04) or `/opt/ros/humble/setup.bash` (22.04), and add it to `~/.bashrc`. |
+| `ROS 2 distro` is `missing` | No `/opt/ros/*` exists. Run `openral install ros`. |
+| `openral-core` is `fail` | Run `just sync` from the repo root. |
+| `USB devices` is `none found` with a robot attached | Add yourself to `dialout`: `sudo usermod -aG dialout $USER`, log out and in; then `ls /dev/ttyUSB* /dev/ttyACM*`. |
+| `GPU 0` is `absent` on NVIDIA hardware | Install the NVIDIA driver and check `nvidia-smi`. |
+| `Reasoner LLM` is `absent` | Expected until you pick a planner; the reasoner has no hidden default. It matters only for `openral deploy`. The row is informational. |
 
-```json
-[
-  {"check": "Python",           "status": "ok",   "details": "3.12.3"},
-  {"check": "Platform",         "status": "info", "details": "Linux 6.8.0"},
-  {"check": "openral-core",     "status": "ok",   "details": "0.3.1"},
-  {"check": "ROS 2 binary",     "status": "ok",   "details": "/opt/ros/jazzy/bin/ros2"},
-  {"check": "ROS 2 distro",     "status": "ok",   "details": "jazzy"},
-  {"check": "RMW",              "status": "info", "details": "rmw_fastrtps_cpp (default)"},
-  {"check": "colcon",           "status": "ok",   "details": "/usr/bin/colcon"},
-  {"check": "GPU 0",            "status": "ok",   "details": "NVIDIA RTX 4090 (24576 MiB)"},
-  {"check": "USB devices",      "status": "info", "details": "none found"},
-  {"check": "just",             "status": "ok",   "details": "/usr/local/bin/just"}
-]
-```
+To pick a planner, set `OPENRAL_REASONER_MODEL` (for example `claude-opus-4-8`, `gpt-5.5` or `cosmos3-edge`) and, where the endpoint needs one, `OPENRAL_REASONER_API_KEY`. The model and endpoint matrix is in the [reasoner reference](../reference/reasoner.md).
 
----
+## Next
 
-## 4. Common issues and fixes
-
-### ROS 2 binary shows `absent`
-
-ROS 2 is opt-in: the one-liner install ships without it, so `absent` is not a
-failure and does not change the exit code. To install it:
-
-```bash
-openral install ros          # needs sudo + apt; Linux only
-```
-
-### ROS 2 distro shows `info`
-
-ROS 2 is installed but not sourced; the row names the distros it found. Fix:
-
-```bash
-source /opt/ros/jazzy/setup.bash    # Ubuntu 24.04
-# or
-source /opt/ros/humble/setup.bash   # Ubuntu 22.04
-```
-
-Add to `~/.bashrc` for permanent effect. Then re-run `openral doctor`.
-
-`missing` means no `/opt/ros/*` exists at all: run `openral install ros`
-instead of sourcing. It is fatal, so `doctor` exits 1.
-
-### `openral-core` shows `fail`
-
-Run `just sync` from the repo root (`just sync` wraps `uv sync --all-packages` and runs the hf-libero repair script).
-
-### USB devices shows `none found` with a robot connected
-
-Check that your user is in the `dialout` group:
-
-```bash
-sudo usermod -aG dialout $USER   # then log out and back in
-ls /dev/ttyUSB* /dev/ttyACM*     # should list your device
-```
-
-### GPU shows `absent` but you have NVIDIA hardware
-
-Install the NVIDIA drivers and CUDA toolkit. Verify with:
-
-```bash
-nvidia-smi
-```
-
-### `Reasoner LLM` shows `absent`
-
-Expected until you pick a planner model: the reasoner (S2) has no hidden
-default, by design. It matters only for the deploy graph (`openral deploy sim`
-/ `openral deploy run`); the row is informational, so `doctor` still exits 0:
-
-```bash
-export OPENRAL_REASONER_MODEL=claude-opus-4-8   # or claude-opus-5-5 / claude-sonnet-5-5 / claude-haiku-5-5 / gpt-5.5 / gpt-5.6 / cosmos3-edge
-export OPENRAL_REASONER_API_KEY=sk-ant-...      # only where the endpoint needs it
-```
-
-Full model / endpoint matrix: [reasoner reference](../reference/reasoner.md#reasoner-model-selection).
-
----
-
-## 5. Next steps
-
-- [Run your first sim rollout](../tutorials/sim/first-rollout.md) — a real policy driving a simulated robot in one command, no GPU needed.
-- [OpenRAL dashboard](dashboard.md) — live debugging UI over the OTel stream.
-- [Write & publish an rSkill](../tutorials/rskill/write-and-publish-an-rskill.md) — package a policy as an installable skill.
-- [Deploy on a robot](../tutorials/deploy/deploy-run-and-dashboard.md) — the real-hardware graph.
-- [Architecture overview](../architecture/overview.md) — the seven layers.
-- [Development setup](../contributing/development.md) — a full dev environment.
+- [Your first sim rollout](../tutorials/sim/first-rollout.md): a real policy driving a simulated robot, no GPU.
+- [Dashboard](dashboard.md): the robot's live page.
+- [Deploy on a robot](../tutorials/deploy/deploy-run-and-dashboard.md): the real-hardware graph.
+- [Write & publish an rSkill](../tutorials/rskill/write-and-publish-an-rskill.md).
+- [Architecture overview](../architecture/overview.md) and [development setup](../contributing/development.md).

@@ -1,339 +1,128 @@
 # Reasoner Design & Decisions
 
-Why the reasoner (S2) works the way it does, organized by the logic problem it
-has to solve: the problem, the solution, and why. Mechanism detail (contract,
-cadence, env vars) lives in [`reasoner.md`](reasoner.md) and the
-[`openral_reasoner_ros` README](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md);
-each decision is recorded in isolation in the private management decision log.
+Why the reasoner (S2) works the way it does, one section per logic problem: the problem, the solution, the reason. The mechanism (cadence, tool contract, palette, model selection) is in [`reasoner.md`](reasoner.md) and the [`openral_reasoner_ros` README](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md). The decision log is private (`OpenRAL/management`).
 
-The reasoner is an event-driven LLM supervisor that closes
-`context → LLM → one typed tool call` at ~0.2 Hz. It decides what to do next and
-never drives motors: it proposes, the C++ safety kernel disposes. The through-line
-is to wrap an unreliable LLM in deterministic, bounded scaffolding (see
-[Design through-lines](#design-through-lines)).
+The reasoner is an event-driven LLM supervisor: `context → LLM → one typed tool call`. It decides what to do next and never drives motors. It proposes; the C++ safety kernel disposes. The common idea is to wrap an unreliable LLM in deterministic, bounded scaffolding (see [Design through-lines](#design-through-lines)).
 
 ---
 
-## 1. The core loop — one typed tool call per slow tick
+## 1. The core loop: one typed tool call per slow tick
 
-**Problem.** A robot supervisor that calls an LLM on a fixed fast timer burns
-tokens doing nothing, and a free-form LLM that emits prose or multiple
-simultaneous actions can't be safely dispatched or replayed.
+**Problem.** An LLM on a fast timer burns tokens doing nothing. A free-form LLM that emits prose or several actions at once cannot be dispatched or replayed safely.
 
-**Solution.** An event-driven loop: events (safety, execution, critic,
-operator, skill results, tool results, verdicts) force a tick; a cheap timer
-beat (`tick_hz = 0.2`) only runs gates and reaches the LLM when the context
-moved with nothing in flight, when a running skill's backstop
-(`clamp(max_execution_s / 4, 15 s, 30 s)`) is due, when the model's own
-`wait(until=…, timeout_s=…)` lapses, or to retry a failed LLM call (issue #620).
-Exactly one Pydantic-validated `ReasonerToolCall` per tick. The tier table and tool palette are
-in [`reasoner.md`](reasoner.md#cadence-event-model).
+**Solution.** Events force a tick; a slow timer beat only runs gates (full trigger table in [`reasoner.md`](reasoner.md#cadence-event-model)). Each tick yields exactly one Pydantic-validated `ReasonerToolCall`. Only `rskill_runner_node` publishes `ActionChunk`, and every action passes the C++ safety kernel.
 
-**Execution model.** The blocking LLM round-trip (`select_tool`, and the VLM
-gate's `describe_image` — each on its own dedicated worker, so a safety tick
-never queues behind an adjudication call) runs off the rclpy executor. A tick
-is phased: `ReasonerCore.prepare_tick` (gates + context render, executor
-thread) → `run_prepared_llm` (worker) → `finish_tick` (bookkeeping + dispatch,
-marshaled back via a guard condition). One worker = one outstanding LLM call;
-ticks requested mid-flight coalesce and replay (the single-flight trampoline).
-This is what makes "event-driven preemption" real: while the LLM thinks for
-10–60 s, goal results, patience timers, and Tier-A preemptions still run on
-time. Events that arrive mid-flight were not in the model's context, so
-`finish_tick` marks seen/drains only the prepare-time snapshot — a mid-flight
-operator prompt survives for the next tick.
+**Execution model.** The blocking LLM call (`select_tool`, and the VLM gate's `describe_image`) runs on its own worker, off the rclpy executor. A tick has three phases: `ReasonerCore.prepare_tick` (gates and context render) → `run_prepared_llm` (worker) → `finish_tick` (bookkeeping and dispatch, marshalled back through a guard condition). One worker means one outstanding call; ticks requested mid-flight coalesce into one replay. While the LLM thinks for 10-60 s, goal results and Tier-A preemptions still run on time. `finish_tick` drains only the prepare-time snapshot, so an operator prompt that arrives mid-flight survives for the next tick.
 
-**Authority boundary.** Only `rskill_runner_node` publishes `ActionChunk`, and
-every action passes the C++ safety kernel before it reaches a motor.
-
-**Why.** Event-driven cuts idle LLM calls ~85% vs a fast timer. Polling a
-running skill every beat still made most calls answer `wait` (2026-11 AMR
-restock runs), so the beat became a backstop; it remains the deadlock insurance
-("task not progressing"). One typed call per tick is what
-makes a run dispatchable, traceable, and replayable from the trace alone.
+**Why.** Polling a running skill every beat made most calls answer `wait`, so the beat is now a backstop and deadlock insurance. One typed call per tick makes a run dispatchable, traceable and replayable from the trace alone.
 
 ---
 
-## 2. Knowing what's in front of it — perception without 3D
+## 2. Knowing what is in front of it: perception without 3D
 
-**Problem.** To act on "the cup" the reasoner must know a cup is visible and be
-able to refer to it across ticks. The 3D scene graph (`scene_objects`) needs
-depth to lift object poses — but many deploy cameras are **RGB-only** (LIBERO),
-so `scene_objects` comes up empty and the reasoner has nothing to ground against.
-This is exactly what made a real run loop forever on a collective goal.
+**Problem.** To act on "the cup" the reasoner must know a cup is visible and refer to it across ticks. The 3D scene graph needs depth, but many deploy cameras are RGB-only (LIBERO), so `scene_objects` comes up empty and the reasoner has nothing to ground against.
 
-**Solution.** Two complementary perception surfaces, both **read-only**, neither
-requiring depth:
+**Solution.** Two read-only perception surfaces, neither needing depth:
 
-- **Camera-space `in_view` enumeration**.
-  The continuous detector stamps a stable per-object `det_id` (via a 2D-IoU
-  `DetectionTracker2D`) and the context renders a line the LLM can refer to:
-  `in_view[top]: #0 milk @px(412,233), #1 ketchup @px(388,251), …`. Pixel
-  centers, not 3D poses — kept in a separate line from `scene_objects[map]:
-  …@(x,y,z)` so coordinate spaces never blur. Identity exists with or without
-  depth. `scene_objects` lists every lifted instance (never deduped by label),
-  and the spatial-memory `memory_objects[map]: box id=obj_box_1@(…), box
-  id=obj_box_2@(…)` line gives each instance the id `grasp_target.object_id`
-  takes — "pick up the boxes" decomposes to one subtask per id, since grounding
-  refuses a bare label that matches several detections.
-- **A sticky `located` line**.
-  The continuous detector's fixed ~266-class vocab *mislabels* the goal objects
-  (a basket read as "box", ketchup as "bottle"). So every successful open-vocab
-  `locate_in_view` hit is folded by `ContextRenderer.note_located()` into a
-  persistent `located[<cam>]` line (latest-wins, `_LOCATED_CAP=12`). The prompt
-  tells the LLM `located` is authoritative over the noisy `in_view`.
+- **Camera-space `in_view` enumeration.** The continuous detector stamps a stable per-object `det_id` (2D-IoU `DetectionTracker2D`), rendered as `in_view[top]: #0 milk @px(412,233), ...`. Pixel centres stay on a separate line from `scene_objects[map]: ...@(x,y,z)` so coordinate spaces never blur. `scene_objects` lists every instance, and the spatial-memory `memory_objects[map]` line gives each instance the id `grasp_target.object_id` takes, so "pick up the boxes" decomposes to one subtask per id.
+- **A sticky `located` line.** The continuous detector's fixed vocabulary mislabels goal objects (a basket read as "box"). Every successful open-vocab `locate_in_view` hit is folded by `ContextRenderer.note_located()` into a persistent `located[<cam>]` line (latest wins, capped at 12). The prompt tells the LLM `located` outranks the noisy `in_view`.
 
-**On-demand localization.** The `locate_in_view` tool asks a live detector "is X in camera Y right now?" via the
-`/openral/perception/<detector>/locate_in_view` service. Detectors run
-**node-per-detector** so a continuous detector and one or more on-demand locators
-coexist, and `LocateInViewTool` gets a `detector` selector (fast
-`omdet-turbo-locator` for simple "find X", `locateanything-3b` for referring
-expressions). A `recall_object` miss auto-escalates to a live `locate_in_view`
-before handoff — policy in the node, not dependent on the LLM picking the tool.
+**On-demand localisation.** `locate_in_view` asks a live detector "is X in camera Y right now?" Detectors run node-per-detector, so a continuous detector and on-demand locators coexist; `LocateInViewTool` has a `detector` selector (`omdet-turbo-locator` for simple "find X", `locateanything-3b` for referring expressions). A `recall_object` miss escalates to a live `locate_in_view` before human handoff; the node does this, not the LLM.
 
-> **Two hard-won usability fixes** (as of the 2026-06-29 amendment):
-> (1) `omdet-turbo-locator` is a multi-label detector — query it with concrete
-> object **nouns** / a comma-list (`"cup, bowl, basket"`), never a collective
-> phrase (`"the objects on the table"`), which it matches as one nonexistent
-> class. (2) The launch sets `primary_camera=det_camera` so frames cache under
-> the real camera name (`"top"`); otherwise every `locate_in_view(camera="top")`
-> missed against a frame stored under `"default"`. Both surfaced as the same
-> `found=False` loop.
+Two usage rules follow from the detector design. Query `omdet-turbo-locator` with concrete nouns or a comma list (`"cup, bowl, basket"`), never a collective phrase, which it matches as one nonexistent class. And the launch sets `primary_camera=det_camera` so frames cache under the real camera name.
 
-**Active search.** When an object isn't in memory, the `recall_object` /
-`resolve_place` / `locate_in_view` miss loop is bounded by the node's
-`SearchProgress(SearchBudget())` (`max_candidates` / `max_attempts`, both 5) and
-terminates in human-handoff. `plan_active_search` (a ranked frontier, occluding
-containers first) ships in `openral_reasoner.active_search` but the node does
-not call it yet.
+**Active search.** The `recall_object` / `resolve_place` / `locate_in_view` miss loop is bounded by `SearchProgress(SearchBudget())` (5 candidates, 5 attempts) and ends in human handoff. `plan_active_search` (ranked frontier, occluding containers first) ships in `openral_reasoner.active_search` but the node does not call it yet.
 
-**Why.** The reasoner doesn't need 3D poses to *decide* — it needs labels + a
-stable id to refer. Camera-space enumeration is cheap (it already subscribes to
-the detector) and depth-free. The sticky `located` line closes the real gap where
-the cheap continuous detector mislabels but the open-vocab locator confirms.
+**Why.** Deciding needs labels and a stable id, not 3D poses. Camera-space enumeration is cheap and depth-free; the `located` line closes the gap where the cheap detector mislabels and the open-vocab locator confirms.
 
 ---
 
-## 3. Turning a goal into actionable subtasks — grounded decomposition
+## 3. Turning a goal into subtasks: grounded decomposition
 
-**Problem.** A collective operator goal ("put **all** the objects on the table
-into the basket") has to become an ordered list of single-object subtasks. Live
-testing showed that *prose* asking the LLM for "one specific object per subtask"
-isn't enough — weak models emit vague "batch" subtasks even with the grounded
-object list in context.
+**Problem.** "Put all the objects on the table into the basket" must become single-object subtasks. Asking for that in prose is not enough: weak models emit vague batch subtasks.
 
 **Solution.**
 
-- **A structural contract, not a prompt**.
-  `DecomposeMissionTool.subtasks` is `list[GroundedSubtask]`, where
-  `GroundedSubtask(object_ref, text)` carries a Pydantic `@model_validator` that
-  **rejects** a collective `object_ref`/`text` (shared `is_collective_target`
-  predicate) and requires `text` to name `object_ref`. The type makes a vague
-  subtask un-representable on the wire.
-- **A sequential task queue**.
-  `MissionState(tasks, current)` holds `TaskState`s with a strict lifecycle
-  `pending → active → verifying → {done|abandoned}` (at most one active). The
-  operator goal seeds a single task (`MissionState.from_prompt`); the LLM
-  decomposes via `DecomposeMissionTool`, which populates the *same* queue. A
-  blocked task can be subdivided in place (`subdivide_active`), bounded by
-  `DEFAULT_MAX_SUBDIVIDE_DEPTH = 2`.
+- **A structural contract.** `DecomposeMissionTool.subtasks` is `list[GroundedSubtask]`. Its validator rejects a collective `object_ref` or `text` (`is_collective_target`) and requires `text` to name `object_ref`, so a vague subtask cannot be represented on the wire.
+- **A sequential task queue.** `MissionState(tasks, current)` holds `TaskState`s with the lifecycle `pending → active → verifying → {done|abandoned}`, at most one active. The operator goal seeds one task; `decompose_mission` fills the same queue. A blocked task subdivides in place (`subdivide_active`), bounded by `DEFAULT_MAX_SUBDIVIDE_DEPTH = 2`.
 
-**Why.** "Types are the contract" (CLAUDE.md §1.3) — a structural invariant the
-model can't violate beats prose it can ignore. The queue gives the reasoner a
-*deterministic* record of where it is, so progress doesn't depend on the LLM
-re-deriving the plan every tick. The decomposition itself still needs a capable
-model — see **§8 (Choosing the brain)** below.
+**Why.** A structural invariant the model cannot violate beats prose it can ignore. The queue is a deterministic record of progress, so the LLM does not re-derive the plan every tick. Decomposition still needs a capable model (§8).
 
 ---
 
-## 4. Knowing when a subtask is actually done — reward-gated, VLM-adjudicated completion
+## 4. Knowing when a subtask is done: reward-gated, VLM-adjudicated completion
 
-**Problem.** A VLA emits action chunks but **no notion of success**. The skill
-runner's `result.success` only means "the policy ran to its deadline without
-crashing," not "the task was accomplished." Gating completion on a clock, or on a
-single hardcoded `0.8` threshold, can't tell *getting closer* from *stuck* and
-misclassifies a physically-successful result scored 0.78.
+**Problem.** A VLA emits chunks but no notion of success. The runner's `result.success` only means the policy ran to its deadline. A clock or one fixed threshold cannot tell "getting closer" from "stuck".
 
-**Solution** — a layered signal stack:
+**Solution.** A layered signal stack:
 
-1. **A reward model running parallel to the VLA**.
-   `kind: reward` rSkills (default Robometer-4B, NF4, ~3.6 GB) score the shared
-   camera stream every ~1–2 s and expose `progress_now` / `success_now` /
-   trends through the read-only `query_task_progress` tool. Its `RewardContract`
-   manifest block declares the calibration (`success_threshold`,
-   `frame_window_s`, …). Advisory only.
-2. **A stall watchdog that fires a stream, not a poll**.
-   Every reward model publishes self-describing `CriticScore` on
-   `/openral/critic/score`; a `critic_id`-keyed `CriticWatchdogGroup` watches for
-   a stall and publishes a Tier-C `FailureTrigger` on `/openral/failure/critic`
-   — so a plateau *preempts a tick* instead of silently running to timeout.
-3. **A reward-watcher wake**.
-   The instant the reward signal hits **success**, **plateau**, or the
-   **patience ceiling**, the in-flight VLA is cancelled and a normal reasoner
-   tick wakes with the reward trajectory injected. `patience_s` (an
-   `ExecuteRskillTool` field, default from the contract) replaces the
-   LLM-guessed `deadline_s` as the execution backstop.
-4. **A three-tier verdict**.
-   `evaluate_task_verdict` replaces the hardcoded threshold:
-   - **auto-pass** (`score ≥ success_threshold`) → `complete_active`, no VLM call;
-   - **vlm_check** (`check_floor ≤ score < success_threshold`) → adjudicate the
-     current frame with `describe_image` ("is `<task>` complete? yes/no");
-   - **ladder** (`score < check_floor`) → no VLM, straight to replanning.
+1. **A reward model beside the VLA.** `kind: reward` rSkills (default Robometer-4B, NF4) score the shared camera stream and expose `progress_now` / `success_now` / trends through `query_task_progress`. The `RewardContract` manifest block declares the calibration (`success_threshold`, `frame_window_s`, ...). Advisory only.
+2. **A stall watchdog on a stream.** Reward models publish `CriticScore` on `/openral/critic/score`; a `critic_id`-keyed `CriticWatchdogGroup` turns a plateau into a Tier-C `FailureTrigger`, so a stall preempts a tick instead of running to timeout.
+3. **A reward-watcher wake.** When the signal hits success, plateau or the patience ceiling, the in-flight VLA is cancelled and a tick wakes with the reward trajectory in context. `patience_s` on `ExecuteRskillTool` replaces the LLM-guessed `deadline_s` as the backstop.
+4. **A three-tier verdict** (`evaluate_task_verdict`): `score >= success_threshold` auto-passes (`complete_active`, no VLM call); `check_floor <= score < success_threshold` asks the VLM to adjudicate the current frame; below `check_floor` goes straight to the replanning ladder.
 
-> **Amendment 2026-06-29** — gate on the **progress head**, not success: progress
-> separates genuine success (0.80–0.86) from failure (~0.74), while the success
-> head is compressed/noisy (0.56–0.79). Both heads are rendered to the LLM in a
-> `## REWARD` context block (`set_reward_state`). The reward also scores the
-> **whole attempt** (start→now), not an 8 s trailing window (`frame_window_s`
-> raised `8.0 → 40.0`). A per-task `TaskLocateBudget` abandons after
-> `DEFAULT_MAX_TASK_LOCATE_ATTEMPTS = 3` locate cycles that never dispatch a VLA.
+The gate uses the progress head, not the success head: progress separates genuine success from failure, while the success head is compressed and noisy. Both heads are rendered in the `## REWARD` context block. The reward scores the whole attempt, not a short trailing window. A per-task `TaskLocateBudget` abandons after `DEFAULT_MAX_TASK_LOCATE_ATTEMPTS = 3` locate cycles that never dispatch a VLA.
 
-**Why.** The reward signal is *already calibrated and continuous* — a clock and a
-single threshold throw that away. The authority stack (system fallback < reward
-contract default < LLM per-task override) scales to future per-task SARMs with no
-re-architecting. Degradation is honest: with no reward oracle and no VLM, the
-ambiguous middle is never claimed as success — it runs to the patience ceiling
-and hands off.
+**Why.** The reward signal is already calibrated and continuous; a clock throws that away. Degradation is honest: with no reward oracle and no VLM, the ambiguous middle is never claimed as success. It runs to the patience ceiling and hands off.
 
 ---
 
-## 5. Always running a VLA with its reward model — pairing + VRAM fit
+## 5. Always running a VLA with its reward model: pairing and VRAM fit
 
-**Problem.** §4 only works if the reward model is actually co-resident with the
-VLA. Pairing used to be an implicit deploy flag decoupled from which VLA the
-reasoner picks at runtime, and nothing guaranteed both fit on the GPU before
-loading — you'd discover the mismatch as a mid-run CUDA OOM.
+**Problem.** §4 only works if the reward model is co-resident with the VLA. Nothing guaranteed both fit on the GPU before loading, so a mismatch showed up as a mid-run CUDA OOM.
 
-**Solution.** A VLA manifest **names its reward model** (`reward_rskill_name`,
-`kind == "vla"` only; `None` = deployment default) and declares per-dtype VRAM
-(`min_vram_gb`). A pure helper `assert_vla_reward_fits(vla, reward,
-gpu_total_gb, margin_gb=0.5)` raises `ROSConfigError` (undeclared) or
-`ROSGPUMemoryError` (won't fit), checked twice: the reasoner's
-`_refuse_unfittable_vla` drops a non-fitting VLA from the palette, and the
-runner re-checks before `from_pretrained` as defense-in-depth. The deploy CLI
-adds a **pre-launch** preflight (`_preflight_reward_vram_fit`, torch-free
-`nvidia-smi` probe) that hard-exits only when *no* capability-matched policy
-(VLA or WAM) fits **and** no runnable wrapped-ROS skill remains. A
-`ros_action`/`ros_service` skill (Nav2, MoveIt, …) needs no VRAM and no reward
-model, so one that passes the reasoner's palette checks keeps the launch open; the
-reasoner still drops it at `on_configure` if its server is not on the ROS graph, and
-the preflight names each wrapper's interface. The policies the preflight refuses
-reach the reasoner as `vram_refused_rskill_ids` and are refused at dispatch: the free
-VRAM it measured predates every OpenRAL model, so evicting lifecycle peers cannot make
-room, while the reasoner's own free-VRAM probe is skipped under peers and its pair
-check budgets against the card's total. The gate runs in **`deploy sim` / `deploy run` only**, not in
-`benchmark` / `sim run`.
+**Solution.** A VLA manifest names its reward model (`reward_rskill_name`, `kind == "vla"` only) and declares per-dtype VRAM (`min_vram_gb`). `assert_vla_reward_fits(vla, reward, gpu_total_gb, margin_gb=0.5)` raises `ROSConfigError` (undeclared) or `ROSGPUMemoryError` (too big). It runs three times: a pre-launch preflight in the deploy CLI (`_preflight_reward_vram_fit`, hard exit only when no capability-matched policy and no runnable wrapped-ROS skill fits), the reasoner's `_refuse_unfittable_vla` palette filter, and the runner's re-check before `from_pretrained`. Wrapped-ROS skills (Nav2, MoveIt) need no VRAM and no reward model. The gate runs in `deploy sim` / `deploy run` only, not in `benchmark` or `sim run`.
 
-**Why.** A VLA without a reward model is blind to its own success, so it should
-never run alone. Sizes are knowable from the manifests; an oversized pair should
-fail before launch with an actionable message, not as an opaque OOM mid-grasp.
+**Why.** A VLA without a reward model is blind to its own success. Sizes are knowable from manifests, so an oversized pair should fail before launch with an actionable message.
 
 ---
 
-## 6. When things go wrong — the bounded replanning ladder
+## 6. When things go wrong: the bounded replanning ladder
 
-**Problem.** A failed or stalled step must escalate through *progressively more
-disruptive* recovery, and must be guaranteed to terminate (no infinite retry
-storm).
+**Problem.** A failed or stalled step must escalate through progressively more disruptive recovery, and must terminate.
 
-**Solution.** A fixed ladder:
-**retry → param-tweak → substitute-skill → goal-replan → human-handoff**. The
-shipped gate is `ReasonerCore`'s per-kind retry cap
-([`reasoner.md` §Bounded replanning](reasoner.md#bounded-replanning)). At the mission layer, `TaskState.failures` caps a task's failed tries
-(`DEFAULT_MAX_ATTEMPTS`: failed dispatches, and successes the reward gate scores not
-done) and `TaskState.attempts` its dispatches of any outcome
-(`DEFAULT_MAX_TASK_DISPATCHES`), so successes that never finish the task are bounded
-without spending its tries; exhaustion calls `abandon_active`, emits an honest *"could not complete task K"*
-with the `MissionState` snapshot, and advances. The terminal rung is always
-human-handoff.
+**Solution.** The ladder is retry → param-tweak → substitute-skill → goal-replan → human-handoff. Shipped today: the per-kind retry cap in `ReasonerCore` ([`reasoner.md`](reasoner.md#bounded-replanning)), `TaskState.failures` capped by `DEFAULT_MAX_ATTEMPTS` (3), and `TaskState.attempts` capped by `DEFAULT_MAX_TASK_DISPATCHES` (10), so successes that never finish a task are bounded without spending its tries. Exhaustion calls `abandon_active`, emits an honest "could not complete task K" with the `MissionState` snapshot, and advances. The terminal rung is always human handoff. The substitute and goal-replan rungs are only partly built.
 
-**Why.** Bounded everything (CLAUDE.md §1.4) — every recovery path has an explicit
-cap and no hidden default, so a wrong reward reading or a stuck skill costs a
-finite number of tries, then surfaces honestly. The substitute-skill and
-goal-replan rungs are partially realized; the retry cap + attempts cap + handoff
-ship today.
+**Why.** Every recovery path has an explicit cap and no hidden default, so a wrong reward reading or a stuck skill costs a finite number of tries and then surfaces.
 
 ---
 
-## 7. Learning and reusing knowledge — playbooks + self-maintained memory
+## 7. Reusing knowledge: playbooks and self-maintained memory
 
-**Problem.** The reasoner has strong *mechanism* but thin *content*: decision
-procedures lived as bespoke Python, it didn't learn across episodes, and it never
-saw its own body or its execution outcomes.
+**Problem.** Decision procedures lived as bespoke Python, the reasoner did not learn across episodes, and it never saw its own body or execution outcomes.
 
-**Solution:**
+**Solution.**
 
-- **Playbooks** (`kind: "playbook"`, `role: "s2"`) — Markdown SOPs the LLM
-  reads and interprets, never executes. Their `PlaybookContract` (`trigger`,
-  `body_uri`, `composes_tools`, `done_predicate`, `max_steps`) is selection
-  metadata; the `PLAYBOOK.md` body goes into the `## PLAYBOOKS` prompt block.
-  The six launch playbooks are listed in [`rskills.md`](rskills.md#playbook-rskills-kind-playbook).
-- **Self-maintained `MEMORY.md`** — *semantic/narrative* memory (preferences,
-  corrections, lessons, durable home facts), complementary to the *geometric*
-  scene graph:
-  the scene graph answers "where is the mug?", `MEMORY.md` answers "how does this
-  household like things done?". The LLM edits it only through typed
-  `MemoryWriteTool` / `MemorySearchTool` ops (add/update/supersede/delete) — a
-  traced event, never a free-form rewrite — and a periodic consolidation pass
-  keeps it bounded.
-- **Context grounding** — a `## ROBOT` self-model block (reach hull, FOV,
-  gripper, control modes, derived from `RobotCapabilities` at configure), a
-  `## EXECUTION` block (one NL line per skill outcome, success *and* failure),
-  and the `## REWARD` block from §4. These close the loop so the next tick
-  reasons on reality.
+- **Playbooks** (`kind: playbook`, `role: s2`) are Markdown SOPs the LLM reads, never executes. The `PlaybookContract` (`trigger`, `body_uri`, `composes_tools`, `done_predicate`, `max_steps`) is selection metadata; the body goes into the `## PLAYBOOKS` prompt block. The six in-tree playbooks are listed in [`rskills.md`](rskills.md#playbook-rskills-kind-playbook).
+- **`MEMORY.md`** is semantic memory (preferences, corrections, durable home facts), complementary to the geometric scene graph. The LLM edits it only through typed `MemoryWriteTool` / `MemorySearchTool` ops, each a traced event, and a periodic consolidation pass keeps it bounded.
+- **Context grounding.** A `## ROBOT` self-model (reach hull, FOV, gripper, control modes), a `## EXECUTION` block (one line per skill outcome, success and failure) and the `## REWARD` block close the loop so the next tick reasons on reality.
 
-**Why.** Playbooks make decision procedures *authored content* (versioned,
-shipped, discoverable) instead of code. Memory is split by *kind* (geometric vs
-semantic) so each lands in its correct consumer. Every write is a discrete traced
-call — the planner can't silently corrupt the file, and a run stays replayable
-from the trace + the `MEMORY.md` snapshot. None of this adds actuation authority.
+**Why.** Playbooks make procedures versioned, shipped content instead of code. Memory is split by kind so each lands in the right consumer. Every write is a discrete traced call, so a run stays replayable from the trace and the `MEMORY.md` snapshot. None of this adds actuation authority.
 
 ---
 
-## 8. Choosing the brain — LLM selection & the deploy default
+## 8. Choosing the brain: LLM selection and the deploy default
 
-**Problem.** The reasoner's hardest job (grounded decomposition of a collective
-goal, §3) is genuinely reasoning-heavy. Weak/cheap models follow the one-tool-
-per-tick contract fine but **over-locate and never call `decompose_mission`**;
-the library must stay provider-agnostic (no cloud lock-in).
+**Problem.** Grounded decomposition (§3) is reasoning-heavy. Weak models follow the one-tool-per-tick contract but over-locate and skip `decompose_mission`. The library must also stay provider-agnostic.
 
-**Solution.** Selection is model-first (ADR-0088) — see [`reasoner.md`
-§Reasoner model selection](reasoner.md#reasoner-model-selection) for the env
-vars and the registry. The *library* factory has **no default** and refuses to
-guess. The *deploy-sim launch* defaults to the curated `gpt-5.5` entry, with
-`OPENRAL_REASONER_MAX_TOKENS=16384` so a reasoning model does not reserve its
-full window and get 402'd on a metered key; the default needs an API key and
-fails loudly without it.
+**Solution.** Selection is model-first (ADR-0088); see [`reasoner.md`](reasoner.md#reasoner-model-selection). The library factory has no default and refuses to guess. The deploy launch defaults to `gpt-5.5` with `OPENRAL_REASONER_MAX_TOKENS=16384`, so a reasoning model does not reserve its full window and get rejected on a metered key. The default needs an API key and fails loudly without one.
 
-**Why.** In live deploy testing GPT-5.5 was the only model that *reliably*
-decomposed the collective goal (glm-5.2 over-located and never decomposed; Opus
-4.8 worked but needed nudges; the OpenRouter `:free` tier emitted the placeholder
-skill id). Simpler single-object goals run fine on the cheaper baselines — see
-the [README](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md#curated-reasoner-models).
+**Why.** Collective goals decompose reliably only on capable models; single-object goals run on cheaper ones (see the [curated models](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md#curated-reasoner-models)).
 
 ---
 
 ## Design through-lines
 
-1. **Deterministic scaffolding around an unreliable LLM.** Typed `MissionState`,
-   `GroundedSubtask`, calibrated reward gates, and hard caps do the bookkeeping
-   the model can't be trusted to. The LLM decides *what is true* and *what to
-   try*; the scaffolding decides *what is recorded* and *when to stop*.
-2. **Everything bounded, no hidden defaults** (CLAUDE.md §1.4). Heartbeat,
-   min-interval, retry cap, attempts cap, subdivide depth, search budget,
-   patience ceiling, locate budget — all explicit.
-3. **Perception is advisory; the kernel disposes** (CLAUDE.md §3, Safety). Detectors,
-   reward models, critics, scene graph, and memory are all read-only inputs to a
-   *decision*; none commands a motor. The C++ safety kernel is the only authority.
-4. **Honest degradation.** Missing a reward oracle or a VLM never produces a
-   claimed-uncertain success — the attempt runs to the bound and hands off.
-5. **Types are the contract** (CLAUDE.md §1.3). A vague subtask or an unpaired
-   reward model is made *un-representable on the wire*, not merely discouraged.
+1. **Deterministic scaffolding around an unreliable LLM.** Typed `MissionState`, `GroundedSubtask`, calibrated reward gates and hard caps do the bookkeeping. The LLM decides what is true and what to try; the scaffolding decides what is recorded and when to stop.
+2. **Everything bounded, no hidden defaults.** Beat, min interval, retry cap, attempts cap, subdivide depth, search budget, patience ceiling and locate budget are all explicit.
+3. **Perception is advisory; the kernel disposes.** Detectors, reward models, critics, scene graph and memory are read-only inputs to a decision. The C++ safety kernel is the only authority over motors.
+4. **Honest degradation.** A missing reward oracle or VLM never produces a claimed success.
+5. **Types are the contract.** A vague subtask or an unpaired reward model is made unrepresentable, not just discouraged.
 
 ---
 
 ## See also
 
-- [`reasoner.md`](reasoner.md) — the reasoner reference (cadence, tool
-  contract, palette gating, provider table, observability, how to run it).
-- [`openral_reasoner_ros` README](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md) — ROS wrapper contract, provider presets, baseline LLM configs.
+- [`reasoner.md`](reasoner.md): cadence, tool contract, palette gating, model selection, how to run it.
+- [`openral_reasoner_ros` README](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md): ROS wrapper contract and provider presets.
 - [Architecture overview](../architecture/overview.md) · [repo state map](../architecture/repo-state-map.html).

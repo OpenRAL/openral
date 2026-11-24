@@ -1,5 +1,9 @@
 # Manipulation-workspace contact — completing contact-rich tasks without giving up collision safety
 
+!!! note "Historical design note"
+    Phase-1 design for contact-rich manipulation; current allowance rules are in [decisions](../decisions.md). Kept as a record; it is not maintained against master.
+
+
 Status: **phase 1 (the grasp phase / source tote) implemented, default off, sim-only, pending
 Safety-WG review**, 2026-10-11. Issue #349, PR #370. Builds on the grasp-target exemption
 (ADR-0115), the place allowance (ADR-0097) and the measured-region rule

@@ -1,289 +1,71 @@
 # `openral_reasoner_ros`
 
-ROS 2 lifecycle wrapper for the OpenRAL S2 reasoner.
+ROS 2 lifecycle wrapper for the OpenRAL S2 reasoner. The cadence, tool contract, palette, mission handling and grounding rules are in [`docs/reference/reasoner.md`](../../docs/reference/reasoner.md); this page is the node's ROS surface, its LLM configuration contract and its observability.
 
 ## What it does
 
-A thin rclpy lifecycle node around
-[`openral_reasoner.ReasonerCore`](../../python/reasoner/src/openral_reasoner/core.py).
-Subscribes to:
+A thin rclpy lifecycle node around [`openral_reasoner.ReasonerCore`](../../python/reasoner/src/openral_reasoner/core.py). Prompt and failure subscriptions stay live while the node is configured but inactive; their payloads wait in the context renderer, but no tick runs and nothing is dispatched until `on_activate`.
 
-- `/openral/world_state_slow` (`openral_msgs/WorldStateStamped`, 5 Hz)
-- `/openral/failure/{hal,sensor,rskill,safety,wam,critic,world_state}` (`openral_msgs/FailureTrigger`)
-- `/openral/perception/{motion,objects,ocr,scene_change}` (`openral_msgs/PromptStamped`)
-- `/openral/prompt` (`openral_msgs/PromptStamped`)
-- `/openral/safety_status` (`openral_msgs/SafetyStatus`, latched) — read-only; rendered
-  as `## SAFETY`, a new latch forces a Tier-A tick
+**Subscriptions**
 
-The reasoner calls the LLM when something happens (issue #620; full trigger table
-in [`docs/reference/reasoner.md`](../../docs/reference/reasoner.md#cadence-event-model)).
-The timer beat (`tick_hz` ROS parameter, default 0.2 Hz) only runs gates. Event
-preemption is the primary trigger:
-
-- `/openral/failure/safety` (Tier A) preempts on `severity ≥ SEVERITY_WARN`.
-- `/openral/failure/{hal,sensor,rskill,wam,critic}` (Tier B/C) preempts
-  on `severity ≥ SEVERITY_FAIL`.
-- `/openral/failure/world_state` (issue #418 Addendum G): a matching
-  `KIND_OBJECT_QUERY` (`ObjectQueryEvidence`, typed `ROSObjectNotInMemory`) records
-  the action goal UUID, refusal reason, optional workspace, and bounded observation history. The
-  reasoner cancels the matching manipulation before recovery, re-observes and
-  revalidates within the persisted per-task dispatch budget, then leaves the task
-  blocked until a new operator goal when the cap is spent. These failures do not
-  produce a human handoff or alter e-stop behavior. When camera pose, robot mask or
-  usable observation is unavailable, the recovery message says visibility is unknown
-  and absence is unverified; a completed empty locate remains `object_not_found`.
-- `/openral/prompt` (Tier D) always preempts.
-
-A HAL grasp miss (`KIND_GRASP_OUTCOME`, issue #353) rides this ladder like any other
-`hal` event: the bridge publishes it at `SEVERITY_FAIL` when a grasp declaration named
-the hand (preempts) and `SEVERITY_WARN` for an undeclared close (buffered). The
-`ContextRenderer` turns each miss into a per-hand `[grasp_miss]` line in `## EXECUTION`
-with a `reflect_on_grasp_miss` hint (re-ground the target, try the other hand, or a
-different skill), dropped by an `attach` for that hand (`SEVERITY_INFO`: its own ATTACH,
-or another hand attaching the same target), an e-stop clear or a task change. It is a reflection only — no new rung: the node decides
-nothing on it beyond the usual preemption.
-
-An `execute_rskill` result forces its own tick (`skill_result`) unless its handling
-already forced one or started a reward verify. An `execute_rskill` or `decompose_mission`
-planned for a mission task that ended while its LLM call was in flight is not sent; a
-`not sent` line in `## EXECUTION` says so. The FailureTriggers the node publishes
-itself on `/openral/failure/rskill` are dropped on the way back in.
-
-Forced ticks skip the 100 ms min-interval (it only spaces timer beats).
-Timer beats that see no new event since the last successful tick
-are short-circuited inside `ReasonerCore` with
-`suppressed_reason="heartbeat_idle"`. **While an `execute_rskill` goal is in
-flight** the beat is a backstop: at most one LLM call per
-`clamp(max_execution_s / 4, 15 s, 30 s)` (`backstop_not_due` in between), so the
-reasoner can still poll `query_task_progress` mid-execution. A *result-only*
-skill (a wrapped ROS action with no `result_trajectory_field`, e.g. Nav2
-`NavigateToPose`) has no progress to poll, so an unchanged context keeps it quiet
-unless a reward monitor (`query_task_progress`) is wired; its terminal result, prompts
-and safety events still wake the next tick. The model's own
-`wait(until=…, timeout_s=…)` holds the beat until that event or the timeout
-(`wait_hold`). With no mission, no prompt and nothing in flight the beat never calls
-the LLM (`no_goal`); nor while `/openral/safety_status` is latched and nothing new arrived
-(`safety_latched`). A latch forces its own Tier-A tick, unless a safety FailureTrigger already
-forced one in the last 2 s (the same kernel stop).
-A transport failure of the LLM call is retried after 5, 10 and 20 s
-(`llm_error_backoff` / `llm_error_retry`); after the last the reasoner tells the
-operator on `/openral/prompt` and stops retrying until the next event.
-The retry
-cap is keyed on the **identical tool call** (same tool + same
-arguments): a healthy navigate → pick → place sequence never trips it,
-a verbatim repeat does, and after a capped streak further
-unchanged-context ticks are held *before* the LLM call
-(`suppressed_reason="retry_cap_hold"`) until new context arrives.
-
-Each tick the LLM picks one typed tool call
-([`openral_core.ReasonerToolCall`](../../python/core/src/openral_core/schemas.py)).
-The effect/actuation variants:
-
-| Tool | Dispatch target | What's wired today |
+| Topic | Type | Use |
 |---|---|---|
-| `ExecuteRskillTool` | action goal on `/openral/execute_rskill` (F1) | ✅ `rclpy.action.ActionClient` — sends a goal with `deadline_s`, streams feedback to the warning log, emits a `FailureTrigger` on `/openral/failure/rskill` with `KIND_CONTROLLER` (rejection / abort / server-unavailable) or `KIND_TIMEOUT` (deadline_s expired). One goal at a time: while a goal is in flight a second dispatch is refused with feedback and the context carries an `in_flight:` line |
-| `LifecycleTransitionTool` | service call on `<node>/change_state` | ✅ generic `lifecycle_msgs/srv/ChangeState` client — `configure` / `activate` / `deactivate` / `cleanup` only (`shutdown` reserved for the safety supervisor, CLAUDE.md §3); `node` must be one of the palette's `node_ids` (the deployment's lifecycle peers) — the decoder rejects any other as `ROSReasonerInvalidPlan` and the dispatcher re-checks it, so the deadman or kernel can never be targeted |
-| `EmitPromptTool` | publish on `target_topic` | ✅ publishes on the call's `target_topic`, which must be one of `EMIT_PROMPT_TOPICS` (`/openral/prompt`, `/openral/prompt_in/auto`) — validated in the schema and re-checked at dispatch, so the LLM can never open a publisher on another topic or speak as a human-priority router source (per-topic publisher cache; `/openral/prompt` reuses the cascade publisher); stamps the active OTel `traceparent` into `metadata_json` |
-| `WaitTool` | none (deliberate no-op) | ✅ the forced tool choice needs an explicit "observe and wait" option — logged with its rationale, no ROS traffic |
-| `ReloadGstPipelineTool` | service call on `/openral/sensors/<id>/reload_pipeline` | ⚠️ log-and-acknowledge stub — F6 sensor-package service IDL is not yet on disk (tracked in [GH-126](https://github.com/OpenRAL/openral/issues/126)) |
+| `/openral/world_state_slow` | `openral_msgs/WorldStateStamped` (5 Hz) | world state in the tick context |
+| `/openral/failure/{hal,sensor,rskill,safety,wam,critic,world_state}` | `openral_msgs/FailureTrigger` | tiered preemption (below) |
+| `/openral/perception/{motion,objects,ocr,scene_change}` | `openral_msgs/PromptStamped` | informational context |
+| `/openral/prompt` | `openral_msgs/PromptStamped` | operator goals (Tier D, always preempts) |
+| `/openral/safety_status` | `openral_msgs/SafetyStatus` (latched) | rendered as `## SAFETY`; a new latch forces a Tier-A tick |
 
-**Inactive reasoner:** prompt and failure subscriptions stay live while the node is
-configured but not active; their payloads are kept in the context renderer for the
-next activation, but no tick runs and nothing is dispatched until `on_activate`.
+Tier A (`/openral/failure/safety`) preempts at `severity >= SEVERITY_WARN`; tiers B and C (`hal`, `sensor`, `rskill`, `wam`, `critic`) at `SEVERITY_FAIL`. A matching `KIND_OBJECT_QUERY` on `/openral/failure/world_state` cancels the active manipulation and re-grounds within the per-task dispatch cap; it never produces a human handoff or changes e-stop behaviour. The node drops the FailureTriggers it publishes itself on `/openral/failure/rskill`. A HAL grasp miss (`KIND_GRASP_OUTCOME`) rides the same ladder and renders as a `[grasp_miss]` line in `## EXECUTION`.
 
-**Mission handling on `/openral/prompt`:** an operator prompt (re)builds the
-mission queue only when no mission is in progress. Mid-flight, a prompt is
-*guidance* (reaches the LLM via PROMPTS context) unless `metadata_json`
-carries `{"new_goal": true}` (`openral prompt --new-goal "..."` stamps it).
-The reasoner's own cascade re-prompts (`spatial_memory` / `detector` /
-`scene_vlm` / `reward_monitor` / `memory` / `mission` frame_ids) never rebuild
-the mission and never reset the search budgets or retry-cap streak.
-One more case rebuilds mid-flight: the active task's last dispatch *succeeded*
-and no reward monitor can verify it (`mission: task … succeeded with no
-verifier` in the log) and no task is queued after it — the operator's next
-prompt is then a new goal, not an aside after which the finished task resumes.
-Queued tasks are never dropped this way, and once the reasoner prompts the
-operator (`emit_prompt`, e.g. a clarification question) the next operator prompt
-is a reply again.
+**Tool dispatch.** Each tick the LLM picks one [`ReasonerToolCall`](../../python/core/src/openral_core/schemas.py) variant. Effect tools:
 
-**Task completion without a verifier.** A task normally completes only on a
-reward / VLM verdict. A wrapped ROS action rSkill whose manifest sets
-`ros_integration.completes_task_on_success: true` (the in-tree Nav2
-`navigate_to_pose` skill; the setting is read when the goal is dispatched)
-completes the active task when its goal succeeds —
-Nav2 SUCCEEDED means "within the goal tolerance", so the reasoner must not
-re-drive a 0.2 m residual. A goal the LLM sends with `final_step: false`
-(the drive is one step of "drive to the kitchen and pick up the cup")
-completes only its step: the task stays active for the rest. With no reward
-monitor, the per-task attempt cap (`DEFAULT_MAX_ATTEMPTS`, 3) counts *failed*
-dispatches (aborted, or cancelled on patience): a success nobody can judge is
-not a failure, so a multi-skill task whose steps all work is not abandoned
-after three of them. A task whose results no reward gate judges (no reward
-monitor, or `final_step: false` steps) is also bounded by
-`DEFAULT_MAX_TASK_DISPATCHES` (10) dispatches of any outcome, so one that
-keeps succeeding without ever completing still ends. Without a reward monitor
-or completion check a VLA run ends on its budget, which the runner reports as
-a failure (`FAILURE_DEADLINE_MISSED`), so VLA runs still count toward the
-failure cap; the successes the change stops counting are wrapped actions
-(Nav2, MoveIt goals, look-at). Either bound abandons
-through the usual abandon path (one subdivision offer, then hand-off). The
-decisions log `mission: <complete|step|abandon> task <id> after '<rskill_id>' …`.
-
-The other per-task ladders count the same failures (`TaskState.failures`), never
-every dispatch. With a reward monitor, the gate's three tries are spent by failed
-dispatches and by successes it scores not done; a `final_step: false` approach
-drive it never judges, or a success it could not score (`ok=false`: stale frames,
-no task, a backend error), spends none, so "drive to the kitchen and pick up the
-cup" still gets three picks. A task whose dispatches keep succeeding while the gate
-keeps scoring them not done still ends at the cap; unscored successes end at
-`DEFAULT_MAX_TASK_DISPATCHES`, which the node checks before sending each goal, so
-no task sends more than 10 goals whatever its results said (a reward query that
-raises or never answers included). Object-query recovery (the tracker cannot resolve the
-goal's object) recovers while the task's failed dispatches, the failing goal
-included, stay below the cap, so an earlier drive or look-at does not block it; an
-earlier success whose reward verdict is still pending counts as a possible failure
-until the verdict lands, and a goal that finished before the cancel landed is a
-success. The
-mission summary the dashboard reads (`reasoner.mission_json`) carries `failures`
-next to `attempts`, plus `max_dispatches`.
-
-**What the task outcome says.** When the runner's `ExecuteRskill.Result.task_outcome_json` names a source, the `## EXECUTION` line of that skill carries it, on `[ok]`, `[failed]` and `[stopped]` (a reward or patience cancel) lines alike: `task_outcome=<succeeded|failed|unknown> (<success_condition|skill|checker>): <reason>` (`openral_reasoner.context.task_outcome_text`). A run that missed its deadline with the object placed and one that never grasped it are then different lines, and `unknown` is spelled out, never shown as a success. A run nothing judged adds no phrase.
-
-**What a success says.** The `## EXECUTION` line for a successful goal carries
-the runner's `ExecuteRskill.Result.outcome_summary` before the trace id. For a
-result-only wrapped action that is the terminal status, the result's scalar
-fields and the goal that was sent, bounded to 400 characters:
-
-```
-[ok] skill=OpenRAL/rskill-nav2-mobile_base-navigate_to_pose: wrapped result-only action completed: status=STATUS_SUCCEEDED result{error_code=0} goal{pose.header.frame_id=map pose.pose.position.x=4 pose.pose.position.y=0 pose.pose.position.z=0 pose.pose.orientation.x=0 pose.pose.orientation.y=0 pose.pose.orientation.z=0 pose.pose.orientation.w=1} trace=1a2b3c4d
-```
-
-A failure carries the same `status=… result{…} goal{…}` line in its
-`failure_reason`; the result's `error*` fields come first and its `header.*`
-fields are dropped, so a MoveIt abort's error code survives the bound.
-
-For direct `locate_in_view` tool calls, a missing service, failed request, or nonempty
-`LocateInView.failure_reason` produces a bounded detector failure prompt that says
-visibility is unknown and preserves the cause. Only a completed response with
-`found=false` and an empty reason is rendered as “not visible.” These failures consume
-the existing bounded locate-search budget; see the [`LocateInView` wire contract](../msgs/README.md#services--srv).
-
-**Grasp / place targets — the reasoner names, perception grounds, the producer
-measures** (real pick-and-place design §2.2-2.3). `ExecuteRskillTool` carries two
-optional fields:
-
-| Field | Type | Grounded at dispatch into |
+| Tool | Dispatch | Notes |
 |---|---|---|
-| `grasp_target` | `GraspTargetRef{label, object_id?, contact_links=[]}` | a `GraspDeclaration` on the goal: `target_id="obj:<label or node_id>"`, `contact_links` (all `role: gripper` `child_link`s of ONE hand — a hand is the gripper joints hanging off one arm, so R1 Pro's two finger links are one hand; empty = the hand of a single-hand robot; with several hands an empty list is refused and the LLM must name the hand — defaulting would exempt both — and links of two hands, a non-gripper link, or only part of a hand's links — that would exempt one finger and the kernel would stop the grasp — are refused), `timeout_s` = patience + 10 s (capped), `search_box` = the 3D box of the recalled memory node (`object_id`) or of the ONE live lifted detection on `/openral/world_state_slow` carrying the label, padded by `grasp_target_voxel_m` (the deploy's octree cell, passed by `deploy_e2e`; no default — unset on a manifest with a gripper fails `on_configure` with `ROSConfigError`, never a per-call refusal the LLM would replan on) + `grasp_target_extrinsic_error_m` on every side (downward too, so the support layer the producer measures is inside it — a search hint with no support semantics) and gravity-aligned in the base frame. **Never a `region`.** |
-| `place_target` | `PlaceTargetRef{label, object_id? \| place_node_id?}` — **optional hint, normally unset** | where to set the payload down is the policy's job, and the real place producer measures the surface directly under the carried payload without being told. When set, a region-less `PlaceDeclaration(target_id="surface:<label or node_id>")` whose `search_box` is the padded, gravity-aligned box of the memory node or the ONE live lifted detection carrying the label (same padding as a grasp target); the producer refuses a patch measured outside it. A hint that does not ground (unknown or ambiguous label, unknown memory node, no detector or memory) refuses the goal — no goal is sent, never a fall-back to "place anywhere"; the refusal tells the LLM to omit `place_target`. Nothing about the cell is surveyed or listed in the prompt. |
+| `ExecuteRskillTool` | `rclpy.action.ActionClient` goal on `/openral/execute_rskill` | Streams feedback; emits a `FailureTrigger` with `KIND_CONTROLLER` (rejection, abort, server unavailable) or `KIND_TIMEOUT`. One goal at a time: a second dispatch is refused and the context carries an `in_flight:` line |
+| `LifecycleTransitionTool` | `lifecycle_msgs/srv/ChangeState` on `<node>/change_state` | `configure` / `activate` / `deactivate` / `cleanup` only; `node` must be one of the palette's `node_ids`, checked by the decoder and again at dispatch, so the deadman and the kernel can never be targeted |
+| `EmitPromptTool` | publish on `target_topic` | Only `EMIT_PROMPT_TOPICS` (`/openral/prompt`, `/openral/prompt_in/auto`), checked in the schema and at dispatch; stamps the OTel `traceparent` into `metadata_json` |
+| `WaitTool` | none | Logged with its rationale; no ROS traffic |
+| `ReloadGstPipelineTool` | `/openral/sensors/<id>/reload_pipeline` | Log-and-acknowledge stub: the sensor-service IDL is not on disk yet |
 
-A target that grounds to nothing, to more than one instance with no
-`object_id`, or to a box outside the robot base frame refuses the dispatch: no
-goal is sent, the refusal is logged and recorded as a `failed` execution
-telling the LLM to disambiguate (recall the object and pass its `node_id`, or
-look for it). Naming a target arms
-nothing: the runner strips any region, the HAL producers measure, and the
-kernel trusts only the measured region — its trust boundary is unchanged.
+The reasoner never publishes `openral_msgs/ActionChunk`; actuation lives behind the action server and the safety kernel.
 
-With object tracking on (param `object_tracking`, the deploy's
-`DeployRuntime.object_tracking`, issue #418) the declarations also carry the
-named classes as `ObjectQuery`s for the Layer-2 object tracker
-(`GraspDeclaration.target_queries`, `PlaceDeclaration.destination_query`),
-beside the unchanged search box. A label several live detections carry is then
-not refused: it grounds as one `count="all"` query with no search box, and the
-tracker grounds every instance (the policy's choice is resolved at binding).
-Limits: the label path reads the continuous lift (`locate_in_view`'s one-shot
-2D answer is not lifted), and the lift must run in the robot base frame
-(`object_lift_map_frame`) for the seed to be usable. A box in another frame (the
-lift's `map` on a mobile base) is not transformed (the reasoner has no tf2): with object
-tracking on it is dropped (`reasoner.grounding_seed_dropped`) and the declaration grounds
-as a query only, the tracker grounds the object in its own grid and the runner merges the
-scene's base-frame boxes; with tracking off it is refused, as the seed feeds the HAL's
-grasp-target leg. A named memory node (`object_id`) is not lost there: its padded box, in
-the node's own frame, rides the TARGET query's `seed`, and the tracker re-expresses it in its
-grid through tf2 and matches only a track centred in it, so a same-label neighbour never
-binds in its place (no tf2 yet: none does; a later missed lookup keeps the last resolved
-box; issue #631). That padding (`grasp_target_voxel_m` + `grasp_target_extrinsic_error_m`) is
-the scope's whole tolerance (base motion under the tracker's 2 cm station threshold comes
-out of it), by decision (issue #650): a memory node carries no pose
-covariance, and its age gives no metres without a drift model, so the box is not widened for
-a stale or drifted node. A node recalled further off than the padding stays unmatched (fail
-closed) and the query escalates, so the reasoner looks again; it never reaches a same-label
-neighbour. There is no separate knob: `grasp_target_extrinsic_error_m` pads every grounded
-box, not only this scope.
+**ROS parameters**
 
-Under object tracking `grasp_target` is required for a skill that actuates an arm, gripper or
-hand: the runner refuses such a goal with no target query (`ROSReasonerInvalidPlan`,
-`FAILURE_PLANNING_ERROR`, replanned on, the skill stays in the palette). So the palette is
-built with `object_tracking` (`build_tool_palette(object_tracking=...)`), and each skill tool's
-description says it: a manipulation skill's that `grasp_target` is REQUIRED, labelled with the
-visible object class the policy grasps as a detector names it (e.g. `box`), with its
-`contact_links` left unset: the deployment supplies the grasping hand; a base-only
-skill's (Nav2) that neither target applies. The hand: `deploy_e2e` passes the deploy scene's
-grasp declaration `contact_links` as `grasp_contact_links` (checked at `on_configure` to be
-one whole hand of the robot, else `ROSConfigError`), and a `grasp_target` naming no
-`contact_links` grounds to that hand, so the LLM never guesses which hand a learned policy
-grasps with. With no scene hand on a multi-hand robot an unnamed hand is refused as before,
-and the tool text then asks for the hand (`build_tool_palette(grasp_hand_required=True)`). The decision is the manifest's
-(`RSkillManifest.actuates_manipulator`), never a skill name. A label no live detection carries
-yet still grounds (`count="one"`, no search box): the tracker searches for it once the runner
-switches the station perception on, so a new station needs no detection first.
+| Parameter | Default | Meaning |
+|---|---|---|
+| `tick_hz` | 0.2 | timer beat; it only runs gates |
+| `ladder_state_path` | empty (off) | JSON path; the mission ledger and every replanning bound are snapshotted after each mutation and restored at `on_configure` |
+| `dispatch_watchdog_s` | 30 (`<= 0` off) | bounds the dispatch phase; on expiry the node releases the busy latch, reactivates evicted peers and emits `KIND_CONTROLLER` (`state="dispatch_timeout"`) |
+| `execute_server_wait_s` | 30 (`0` fails on first miss) | how long a dispatch re-probes (every 0.25 s) for `/openral/execute_rskill` before emitting `KIND_CONTROLLER` (`state="unavailable"`) |
+| `object_tracking` | `off` | tracking mode (the deploy's `DeployRuntime.object_tracking`); when on, grasp / place declarations also carry `ObjectQuery`s |
+| `grasp_target_voxel_m` | 0.0 (unset) | search-box padding; must be set on a manifest with a gripper, else `on_configure` raises `ROSConfigError` |
+| `grasp_target_extrinsic_error_m` | `MAX_PLANAR_ERR_M` | extra padding on every side of a grounded box |
 
-**Crash-safe ladder resume:** set the `ladder_state_path` ROS parameter to a
-writable JSON path and the mission ledger + every replanning-ladder bound
-(attempts, subdivision offers, decompose nudges, per-task locate budget) is
-snapshotted after each mutation and restored at `on_configure`. Empty
-(default) disables persistence.
+**Mission handling.** An operator prompt rebuilds the mission queue only when none is in progress; mid-flight it is guidance unless `metadata_json` carries `{"new_goal": true}` (`openral prompt --new-goal "..."`). The reasoner's own cascade re-prompts never rebuild the mission or reset the search and retry budgets. A wrapped ROS rSkill whose manifest sets `ros_integration.completes_task_on_success: true` (the in-tree Nav2 skill) completes the active task when its goal succeeds, unless the LLM sent `final_step: false`. The full ladder, attempt caps and grounding rules are in [`reasoner.md`](../../docs/reference/reasoner.md#node-behaviour).
 
-**Dispatch-phase watchdog:** `_rskill_inflight` (the one-goal-at-a-time busy
-latch) is bounded by `dispatch_watchdog_s` (default 30 s; `<= 0` disables): if
-neither the VRAM-peer eviction nor the goal response resolves within the
-ceiling (a runner/peer died after the readiness probe; rclpy futures never
-time out on their own), the watchdog releases the latch, reactivates the
-peers, and emits a `KIND_CONTROLLER` FailureTrigger
-(`state="dispatch_timeout"`). The expired dispatch generation invalidates its
-remaining callbacks; a late accepted goal is canceled and cannot overwrite a
-newer dispatch.
+**Execution lines.** A successful goal's `## EXECUTION` line carries the runner's `outcome_summary`; a result-only wrapped action reports its terminal status, scalar result fields and sent goal, bounded to 400 characters. When `ExecuteRskill.Result.task_outcome_json` names a source, the line also carries `task_outcome=<succeeded|failed|unknown> (<source>): <reason>`; `unknown` is never shown as success.
 
-**Waiting for the runner:** the runner creates `/openral/execute_rskill` in its
-own `on_configure`, which can finish after the first prompt arrives. A dispatch
-that finds the server missing holds the busy latch (in-flight state
-`dispatching`) and re-probes every 0.25 s for up to `execute_server_wait_s`
-(default 30 s; `0` fails on the first miss), then sends the goal. Past that
-bound it releases the latch and emits a `KIND_CONTROLLER` FailureTrigger
-(`state="unavailable"`). This covers every prompt source — the deploy's
-startup prompt, an operator prompt, a dispatch after the runner restarts — not
-only the first.
-
-The reasoner **never** publishes `openral_msgs/ActionChunk` — actuation
-authority lives behind the F1 action server + the F5 safety boundary
-("Holds no authority over actuation").
+For a direct `locate_in_view` call, a missing service, failed request or non-empty `LocateInView.failure_reason` produces a detector failure prompt that says visibility is unknown. Only a completed response with `found=false` and an empty reason reads "not visible" (see the [`LocateInView` wire contract](../msgs/README.md#services--srv)).
 
 ## Completion check (`completion_check_node`)
 
-A VLA emits no success signal, and Robometer's success head is no completion signal on its
-own: on Spark it peaked mid-carry as often as at the placement (R221-R223, 2026-10-22). With
-`runtime.enable_completion_check` (plus the reward monitor, the critic leg and the scene VLM)
-the head is a cheap trigger and a VLM the judge. On a success score of 0.6 or more, a
-`DETACH` grasp event or a newly released track (one check per 10 s), the node:
+A VLA emits no success signal, and Robometer's success head alone is not a completion signal (it can peak mid-carry as often as at placement). With `runtime.enable_completion_check` (plus the reward monitor, the critic leg and the scene VLM) the head is a cheap trigger and a VLM the judge. On a success score of 0.6 or more, a `DETACH` grasp event or a newly released track (one check per 10 s), the node:
 
-1. holds the runner's commands (`/openral/rskill/hold`: the policy keeps stepping, nothing
-   is sent, the robot keeps its last command);
-2. asks `/openral/perception/query_scene` the reasoner's `COMPLETION_QUESTION` once per
-   RGB camera;
-3. ends the goal as a success (`/openral/rskill/complete`) when every camera answers yes,
-   and otherwise releases the hold.
+1. holds the runner's commands (`/openral/rskill/hold`: the policy keeps stepping, nothing is sent);
+2. asks `/openral/perception/query_scene` the reasoner's `COMPLETION_QUESTION` once per RGB camera;
+3. ends the goal as a success (`/openral/rskill/complete`) when every camera answers yes, and otherwise releases the hold.
 
-It only withholds or ends motion; every command still crosses the safety kernel. Each check
-logs `completion_check <reason>: done=<bool>` with each camera's answer.
+It only withholds or ends motion; every command still crosses the safety kernel. Each check logs `completion_check <reason>: done=<bool>`.
 
 ## Reasoner model registry
 
 Reasoner selection is **model-first** (ADR-0088). The primary knob is
 `OPENRAL_REASONER_MODEL`, a key in the curated
 [`openral_core.REASONER_MODELS`](../../python/core/src/openral_core/schemas.py)
-registry. Registry membership means the model has cleared OpenRAL's robotics
-tool-calling contract; there is no separate compatibility flag.
+registry. Registry membership means the model cleared OpenRAL's robotics
+tool-calling contract, except the 30 `*-openrouter` and `*-cloud` entries, which are
+`measured=False` (see below).
 The registry resolves the wire dialect, served model id, default endpoint,
 auth requirement, hosting mode, and local-compute floor.
 
@@ -316,42 +98,25 @@ The env contract is:
   (`tick error: … Request timed out`), and `OPENRAL_REASONER_TIMEOUT_S` is the
   way past it. Before raising it, read `llm_s` / `prompt_tokens` on the tick
   (below) — a ceiling hit driven by a growing prompt wants context management,
-  not a longer timeout.
+  not a longer timeout. The default is 10 s per call; a curated model can set its own (`ReasonerModel.timeout_s`: `glm-5.3-flash-cloud` and `glm-flash-latest-openrouter` 60 s, `qwen3.8-flash-openrouter` 30 s).
 - `OPENRAL_REASONER_FIRST_CALL_TIMEOUT_S` — optional, openai dialect only. The
-  read timeout of each request while the model may be loading: a cold local
-  model loads on a request, and a server such as Ollama abandons the load when
-  the client hangs up, so with only the per-call timeout (10 s on a bare URL)
-  every tick timed out and the model never loaded (#665). It applies until the
-  endpoint first replies, and again after a request times out (the server may
-  have unloaded an idle model, Ollama's `keep_alive`); once a reply arrives,
-  `OPENRAL_REASONER_TIMEOUT_S` bounds every request again. Default **120 s** on
-  a bare URL, on the `ollama` / `vllm` named endpoints and for a locally hosted
-  curated model; off on a cloud endpoint (a named endpoint that takes a key, or
-  a curated cloud model's own endpoint), which has no model to load. Setting it
-  applies it anywhere; a value at or below the per-call timeout turns it off.
-  Logged as `reasoner.llm.first_call_timeout` (info at start, warning when a
-  timeout turns it back on). The SDK still retries a timed-out request twice,
-  so a server that never answers holds a tick for three times this long: raise
-  it for a model that needs more than two minutes to load rather than relying
-  on the retries.
-- `OPENRAL_REASONER_MAX_SKILL_TOOLS` — optional per-tick cap on skill tools.
+  read timeout of each request while the model may be loading. A cold local model
+  loads on a request, and Ollama abandons the load when the client hangs up, so
+  the per-call timeout alone would time out every tick. It applies until the
+  endpoint first replies, and again after a request times out. Default **120 s**
+  on a bare URL, on the `ollama` / `vllm` named endpoints and for a locally hosted
+  curated model; off on a cloud endpoint. A value at or below the per-call timeout
+  turns it off. The SDK retries a timed-out request twice, so a server that never
+  answers holds a tick for three times this long.
+- `OPENRAL_REASONER_MAX_SKILL_TOOLS` — optional per-tick cap `k` on skill tools.
   The reasoner ranks the palette's skills against the active mission task and
-  any pending operator prompts by keyword overlap and offers at most `k` (#494).
-  Inside those `k` slots it keeps, in order: the skill in flight; the best match
-  for the newest top-priority pending operator prompt (with `k` ≥ 2 it is offered
-  on the tick the prompt arrives); the task's last dispatched skill (outside a
-  mission, the last one dispatched); the best navigate and look-at skill not
-  already kept (the workflow's APPROACH / FRAME steps; never the last free slot);
-  then the highest scores, so at least one ranked substitute is always offered
-  while a slot remains. With no task and no pending prompt the last ranking is
-  kept. Equal scores (in every pick) prefer
-  skills not yet tried for the active task (so substituting a skill reaches past the
-  top `k`), then higher weight precision (fp32/bf16/fp16, then fp8, int8, 4-bit, from
-  the manifest's `quantization.dtype`), then the id. `cosmos3-edge` defaults to 4 (its tool
-  calls run away with 14 near-identical skills; 19/20 valid with 4); every other
-  curated model sees the whole palette. `0` removes the cap; any positive value
-  sets it for any model, curated or not. A call to a skill outside the subset is
-  refused like an off-palette id.
+  pending operator prompts by keyword overlap and offers at most `k`: first the
+  skill in flight, then the best match for the newest operator prompt, then the
+  task's last dispatched skill, then the best navigate and look-at skill, then the
+  highest scores. Ties prefer skills not yet tried for the task, then higher weight
+  precision, then the id. `cosmos3-edge` defaults to 4; every other curated model
+  sees the whole palette. `0` removes the cap. A call to a skill outside the subset
+  is refused like an off-palette id.
 - `OPENRAL_REASONER_DIALECT=anthropic|openai` — required only for an uncurated
   raw model id.
 - `OPENRAL_REASONER_TOOL_CHOICE=auto|required` — for an uncurated model on a
@@ -362,7 +127,7 @@ The env contract is:
   doctor`). Curated models and named `openai` endpoints carry their own value,
   so there it is ignored with a `reasoner.tool_choice_ignored` warning.
 
-#### Models that refuse forced tool use (#522)
+#### Models that refuse forced tool use
 
 The reasoner asks for exactly one tool call per tick (`tool_choice` `required`,
 Anthropic `any`). Some models refuse that: the Claude 5 generation answers
@@ -371,7 +136,7 @@ some OpenAI-compatible gateways refuse `required` in thinking mode. The clients
 handle this without configuration:
 
 - The curated Claude 5 entries run `tool_choice: auto` from the start, with a
-  16000-token cap because they think before calling a tool and thinking counts
+  16000-token cap (`_CLAUDE5_MAX_TOKENS`) because they think before calling a tool and thinking counts
   against `max_tokens` (an uncurated `anthropic` model gets the same cap).
 - Any other model whose 400 refuses forced tool use is retried once with
   `auto`; if that retry succeeds the client stays on `auto`, logged as
@@ -392,10 +157,6 @@ handle this without configuration:
   OpenRouter's `openai/gpt-5.5`). Every other OpenAI-compatible endpoint stays on
   Chat Completions; one that asks for `max_completion_tokens` gets it after one
   400 (`reasoner.max_tokens_param_switched`).
-- Checked live on 2026-11-09 (idle robot → starts the pick skill; skill
-  running → `wait`): `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`,
-  and on `ENDPOINT=openai` `gpt-5.5`, `gpt-5.6`, `gpt-5.6-luna`/`-sol`/`-terra`,
-  `gpt-6-luna`/`-sol`/`-astra`, `gpt-6.1-sol`/`-terra` — all correct, 1–5 s a tick.
 
 ```bash
 # Curated cloud model
@@ -436,19 +197,7 @@ Each var maps across directly:
 | `OPENRAL_REASONER_LLM_MAX_TOKENS` | `OPENRAL_REASONER_MAX_TOKENS` |
 | `OPENRAL_REASONER_LLM_TIMEOUT_S` | `OPENRAL_REASONER_TIMEOUT_S` |
 
-`PROVIDER` split into two axes — *which model* and *where it runs* — so each
-old provider value maps onto a model plus an endpoint:
-
-| Legacy `PROVIDER=` | Model-first replacement |
-|---|---|
-| `anthropic` | curated `claude-opus-4-8` / `claude-opus-5-5` / `claude-sonnet-5-5` / `claude-haiku-5-5`, or `ENDPOINT=anthropic` + a raw model id |
-| `openrouter` / `gemini` / `xai` / `deepseek` / `huggingface` | `ENDPOINT=<name>` + `API_KEY` (an OpenAI key: `ENDPOINT=openai`) |
-| `ollama` / `vllm` | `ENDPOINT=<name>` (no key); Ollama Cloud: `ENDPOINT=ollama_cloud` + `API_KEY` |
-| `cosmos` | curated `cosmos3-edge` (managed autostart included) |
-| `openai-compatible` | `ENDPOINT=<url>` + `DIALECT=openai` |
-
-A named endpoint carries its own base URL, dialect, auth posture, cold-start
-timeout and `tool_choice` quirk, so `DIALECT` is needed only for a bare URL.
+`PROVIDER` split into two axes (which model, where it runs): a hosted provider becomes `ENDPOINT=<name>` (`anthropic`, `openrouter`, `gemini`, `xai`, `deepseek`, `huggingface`, `ollama`, `ollama_cloud`, `vllm`, or `openai`), `cosmos` becomes the curated `cosmos3-edge`, and `openai-compatible` becomes `ENDPOINT=<url>` + `DIALECT=openai`. A named endpoint carries its own base URL, dialect, auth posture, cold-start timeout and `tool_choice` quirk, so `DIALECT` is needed only for a bare URL.
 
 Tests use a deterministic `FakeToolUseClient` under
 [`tests/integration/fakes/`](../../tests/integration/fakes/) — the only test
@@ -512,134 +261,81 @@ think before they act, so a tick can take longer than on Opus 4.8; raise
 
 ### Managed local — NVIDIA Cosmos 3 Edge
 
-[Cosmos 3 Edge](../../docs/reference/cosmos3-edge-reasoner.md) (released
-2026-07-20) is the 4B on-device tier of NVIDIA's Cosmos 3 omnimodal
-world-model family, built for physical reasoning, task planning, and embodied
-decision making on Jetson Thor / RTX-class GPUs. Unlike the general-purpose
-LLMs above it is trained on robotics/AV/warehouse data, with spatial grounding
-and physical-plausibility judgment, and its `describe_image` completion gate
-runs on the same local model (no separate cloud VLM). Weights are
-**OpenMDW-1.1** (commercial use OK). One env var is enough; the managed vLLM
-server auto-starts on the first tick (first boot downloads ~8 GB):
+[Cosmos 3 Edge](../../docs/reference/cosmos3-edge-reasoner.md) is the 4B on-device
+tier of NVIDIA's Cosmos 3 family (OpenMDW-1.1 weights, commercial use OK). One env
+var is enough; the managed vLLM sidecar auto-starts on the first tick (first boot
+downloads about 8 GB):
 
 ```bash
 export OPENRAL_REASONER_MODEL=cosmos3-edge
 ```
 
-Requires an NVIDIA GPU (Ampere+; BF16 is the only officially-tested
-precision; **≥12 GB recommended**). An 8 GB 4070 was enough for validation,
-but the knobs differ by serving stack: the pinned stable stack needed
-`OPENRAL_COSMOS3_GPU_MEM_UTIL=0.95` merely to boot (inference remains blocked);
-the working vLLM-main native implementation needed expandable CUDA segments
-plus `--kv-cache-dtype fp8`. Pre-warm the pinned sidecar with
-`python tools/cosmos3_reasoner_sidecar.py`, or point
-`OPENRAL_REASONER_ENDPOINT` at a compatible self-managed server.
+It needs an NVIDIA GPU (Ampere or newer; 12 GB or more recommended, 8 GB works for
+small palettes). A down managed endpoint auto-starts
+`tools/cosmos3_reasoner_sidecar.py`; disable with `OPENRAL_COSMOS3_AUTOSTART=0`,
+bound first boot with `OPENRAL_COSMOS3_BOOT_TIMEOUT_S`, or point
+`OPENRAL_REASONER_ENDPOINT` at a self-managed vLLM or NIM server. Serving defaults,
+the Jetson sizing and the measured tool-call reliability are on the assessment page.
 
-> ⚠️ **Live status (2026-09-07): works on linux-aarch64; still blocked on
-> x86_64.** Read the two platforms separately — the lock resolves a *different
-> vLLM* for each, and only one carries the native Edge model
-> ([vllm#48291](https://github.com/vllm-project/vllm/pull/48291)).
->
-> * **aarch64 (Jetson AGX Thor, vLLM 0.28.0): working.** The architecture
->   resolves natively, the server serves, and a `tool_choice="required"` tick
->   returned a **validated tool call at 1.26–1.36 s warm** — inside the 0.2 Hz
->   budget. The first tool-call request costs ~64 s while xgrammar builds the
->   grammar, so the first tick after boot blows a 5 s budget; later ones do not.
-> * **x86_64 (vLLM 0.24.0): still blocked.** That release predates the native
->   model and crashes on inference via the Transformers-fallback
->   `get_rope_index` bug. On a nightly it worked (validated tool call ~1.5 s on
->   an 8 GB 4070, `--kv-cache-dtype fp8`). **Use a curated cloud model there
->   until the x86 branch resolves a vLLM with #48291.**
->
-> Getting there needed three sidecar fixes, all landed: the `--universal` lock
-> was unsatisfiable on aarch64 (`nvidia-nccl-cu13` pinned across all of linux
-> against a torch that needs a newer one); the flattened reasoner view *breaks*
-> the native loader, which reads the diffusers layout by path; and FlashInfer's
-> JIT sampler needs CUDA toolkit headers a JetPack image does not ship, so the
-> sidecar now defaults `VLLM_USE_FLASHINFER_SAMPLER=0`. Full findings in the
-> [assessment page](../../docs/reference/cosmos3-edge-reasoner.md).
+### OpenRouter and Ollama Cloud — the unmeasured `*-openrouter` / `*-cloud` models
 
-### OpenRouter — the `*-openrouter` models (not yet measured)
+These 30 entries have `measured=False`: they are offered because their catalog entry
+declares tools and image input, not because they cleared the tool-calling bar. The
+client logs `reasoner.model.unmeasured` when it builds one and `openral doctor`
+warns. Latency against the 10 s cloud default is unknown, except the three models
+with their own timeout (listed under `OPENRAL_REASONER_TIMEOUT_S`). An alias such as
+`~google/gemini-pro-latest` resolves server-side, so the client logs
+`reasoner.model.served` when the answering model changes and the tick span carries
+`reasoner.served_model`.
 
-**Offered unmeasured**, like the Ollama Cloud set below. On 2026-11-16 the
-maintainer chose them from the 182 OpenRouter models whose catalog entry declares tools,
-`tool_choice`, image input and a window of 32K or more (none due to expire): the newest
-flagship and the newest fast tier of each major vendor, taking only the ones with image
-input. Claude and GPT stay on their own entries. Where OpenRouter has a
-`~<vendor>/<family>-latest` alias that passes the same filter, the entry uses it, so it
-always serves the family's newest model (an alias could later point at a model without
-vision or tools: `~deepseek/deepseek-v4-flash-latest` already has no vision). The other
-families have no alias and name the newest model as of 2026-11-16. Measured on
-`so101_follower` before the credit ran out (2026-11-15, on the model the alias then
-served), valid ticks / median:
+**OpenRouter** (OpenRouter key; Claude and GPT keep their own entries):
 
-| `OPENRAL_REASONER_MODEL` | OpenRouter id | measured |
-|---|---|---|
-| `gemini-pro-latest-openrouter` | `~google/gemini-pro-latest` | — |
-| `gemini-flash-latest-openrouter` | `~google/gemini-flash-latest` | — |
-| `grok-latest-openrouter` | `~x-ai/grok-latest` | — |
-| `deepseek-flash-latest-openrouter` | `~deepseek/deepseek-flash-latest` | 8/8 as V4.1 Flash, 3–6 s (one 12.9 s) |
-| `kimi-latest-openrouter` | `~moonshotai/kimi-latest` | — |
-| `glm-flash-latest-openrouter` | `~z-ai/glm-flash-latest` | 2/2 as GLM-5.3 Flash, 18–33 s (over the 10 s timeout) |
-| `qwen3.8-max-prime-openrouter` | `qwen/qwen3.8-max-prime` | — |
-| `qwen3.8-flash-openrouter` | `qwen/qwen3.8-flash` (`tool_choice: auto`) | 5/5 on `auto`, 11.6 s; 400 on `required` |
-| `glm-5.3-flashx-openrouter` | `z-ai/glm-5.3-flashx` | — |
-| `mistral-large-4-openrouter` | `mistralai/mistral-large-4-0` | — |
-| `mistral-small-4-openrouter` | `mistralai/mistral-small-2603` | 23/23, 0.9 s (8 were `wait`) |
-| `muse-wonder-openrouter` | `meta/muse-wonder` | — |
-| `muse-ember-openrouter` | `meta/muse-ember` | 12/12, 3.5 s |
-| `minimax-m3-openrouter` | `minimax/minimax-m3` | — |
-| `minimax-m3.1-flash-openrouter` | `minimax/minimax-m3.1-flash` | 16/16, 2.0 s |
-| `nemotron-3.5-super-vl-openrouter` | `nvidia/nemotron-3.5-super-vl` | 3/4, 6.0 s (one hit the token cap) |
+| `OPENRAL_REASONER_MODEL` | OpenRouter id |
+|---|---|
+| `gemini-pro-latest-openrouter` | `~google/gemini-pro-latest` |
+| `gemini-flash-latest-openrouter` | `~google/gemini-flash-latest` |
+| `grok-latest-openrouter` | `~x-ai/grok-latest` |
+| `deepseek-flash-latest-openrouter` | `~deepseek/deepseek-flash-latest` |
+| `kimi-latest-openrouter` | `~moonshotai/kimi-latest` |
+| `glm-flash-latest-openrouter` | `~z-ai/glm-flash-latest` |
+| `qwen3.8-max-prime-openrouter` | `qwen/qwen3.8-max-prime` |
+| `qwen3.8-flash-openrouter` | `qwen/qwen3.8-flash` (`tool_choice: auto`) |
+| `glm-5.3-flashx-openrouter` | `z-ai/glm-5.3-flashx` |
+| `mistral-large-4-openrouter` | `mistralai/mistral-large-4-0` |
+| `mistral-small-4-openrouter` | `mistralai/mistral-small-2603` |
+| `muse-wonder-openrouter` | `meta/muse-wonder` |
+| `muse-ember-openrouter` | `meta/muse-ember` |
+| `minimax-m3-openrouter` | `minimax/minimax-m3` |
+| `minimax-m3.1-flash-openrouter` | `minimax/minimax-m3.1-flash` |
+| `nemotron-3.5-super-vl-openrouter` | `nvidia/nemotron-3.5-super-vl` |
 
-Measure each against the bar (≥ 17/20 on `so101_follower` and on `franka_panda`'s full
-palette, frames, under the 10 s cloud timeout) and drop those that miss it.
-
-At runtime the `*-openrouter` and `*-cloud` entries carry `measured=False`: the client
-logs `reasoner.model.unmeasured` when it builds one, and `openral doctor` reports it as a
-warning. The two measured as slower than the 10 s cloud default get their own timeout
-(`ReasonerModel.timeout_s`): GLM Flash, latest and `glm-5.3-flash-cloud` 60 s, Qwen 3.8
-Flash 30 s; `OPENRAL_REASONER_TIMEOUT_S` still wins. An alias resolves server-side, so
-the client logs `reasoner.model.served` with the model that actually answered whenever
-it changes, and the tick span carries it as `reasoner.served_model`.
-
-### Ollama Cloud — the `*-cloud` models (not yet measured)
-
-Ollama Cloud (ollama.com) serves large models over the same OpenAI-compatible API as a
-local Ollama, behind an ollama.com API key: set `OPENRAL_REASONER_API_KEY` to it (the
-website's and the robot console's **Ollama API key** setting does this for you) and pick
-a `*-cloud` model. Any other ollama.com tag runs uncurated with
+**Ollama Cloud** (ollama.com serves large models over the same OpenAI-compatible API
+as a local Ollama, behind an ollama.com API key). Set `OPENRAL_REASONER_API_KEY` to
+the key (the robot console's **Ollama API key** setting does this) and pick a
+`*-cloud` model. Any other ollama.com tag runs uncurated with
 `OPENRAL_REASONER_ENDPOINT=ollama_cloud`.
 
-**These 14 are offered unmeasured**, unlike every other registry entry: on 2026-11-16
-the maintainer chose every ollama.com model whose `/api/show` declares both `tools`
-and `vision`, while the account had no Ollama Cloud credit to run them. Latency against
-the 10 s cloud timeout is unknown. Two were measured through OpenRouter the day before
-on `so101_follower` (MiniMax M3.1 Flash 16/16 valid, median 2.0 s; DeepSeek V4.1 Flash
-8/8, 3–6 s). Measure each on Ollama Cloud against the bar (≥ 17/20 on `so101_follower`
-and on `franka_panda`'s full palette) and drop those that miss it.
-
-| `OPENRAL_REASONER_MODEL` | Ollama tag | size |
-|---|---|---|
-| `deepseek-v4.1-flash-cloud` | `deepseek-v4.1-flash` | 763B, FP8 |
-| `gemma4-31b-cloud` | `gemma4:31b` | 33B, BF16 |
-| `glm-5.3-flash-cloud` | `glm-5.3-flash` | 321B, FP8 |
-| `inkling-2-small-cloud` | `inkling-2-small` | 594B, NVFP4 |
-| `kimi-k2.6-cloud` | `kimi-k2.6` | 1.0T, INT4 |
-| `kimi-k2.7-code-cloud` | `kimi-k2.7-code` | 1.0T, INT4 |
-| `kimi-k3-cloud` | `kimi-k3` | 2.8T, MXFP4 |
-| `kimi-k3.1-pro-cloud` | `kimi-k3.1-pro` | 2.8T, MXFP4 |
-| `mimo-v2.6-flash-cloud` | `mimo-v2.6-flash` | 309B, FP8 |
-| `mimo-v2.6-pro-cloud` | `mimo-v2.6-pro` | 1.0T, FP8 |
-| `minimax-m3-cloud` | `minimax-m3` | — |
-| `minimax-m3.1-flash-cloud` | `minimax-m3.1-flash` | 428B |
-| `mistral-large-4-cloud` | `mistral-large-4` | 1.05T |
-| `muse-spark-open-cloud` | `muse-spark-open` | 822B, FP8 |
+| `OPENRAL_REASONER_MODEL` | Ollama tag |
+|---|---|
+| `deepseek-v4.1-flash-cloud` | `deepseek-v4.1-flash` |
+| `gemma4-31b-cloud` | `gemma4:31b` |
+| `glm-5.3-flash-cloud` | `glm-5.3-flash` |
+| `inkling-2-small-cloud` | `inkling-2-small` |
+| `kimi-k2.6-cloud` | `kimi-k2.6` |
+| `kimi-k2.7-code-cloud` | `kimi-k2.7-code` |
+| `kimi-k3-cloud` | `kimi-k3` |
+| `kimi-k3.1-pro-cloud` | `kimi-k3.1-pro` |
+| `mimo-v2.6-flash-cloud` | `mimo-v2.6-flash` |
+| `mimo-v2.6-pro-cloud` | `mimo-v2.6-pro` |
+| `minimax-m3-cloud` | `minimax-m3` |
+| `minimax-m3.1-flash-cloud` | `minimax-m3.1-flash` |
+| `mistral-large-4-cloud` | `mistral-large-4` |
+| `muse-spark-open-cloud` | `muse-spark-open` |
 
 Ollama Cloud ignores `tool_choice` like a local Ollama (the entries and the
-`ollama_cloud` preset send `auto`), and it loads every model with its full window
-(262K–1M tokens), so the client's truncated-prompt check, which guards a local
-Ollama's 4096-token default, is off for it.
+`ollama_cloud` preset send `auto`). It loads every model with its full window, so
+the client's truncated-prompt check, which guards a local Ollama's 4096-token
+default, is off for it.
 
 ### On the robot — Qwen 3.5 4B / 9B via Ollama
 
@@ -682,49 +378,17 @@ Ollama ignores `tool_choice`
 so the `ollama` endpoint sends `auto`: a prose reply gets the one nudge, then
 counts as an invalid plan.
 
-The 4B, measured through the real client (Ollama 0.32.14, RTX 5070 Laptop 8 GB,
-32K window, thinking on, 20 ticks each; the curation bar is ≥ 17/20, #494):
+Both entries meet the curation bar (at least 17/20 valid calls through the real
+client with a 32K window and thinking on, on `so101_follower` and on the
+`franka_panda` full palette). Measured on Ollama 0.32.14, RTX 5090:
 
-| prompt | skills | tokens | valid | median tick |
-|---|---|---|---|---|
-| `so101_follower` + query tools | 3 | 9,229 | 18/20 | 9.2 s |
-| `franka_panda` + query tools, full palette | 14 | 20,379 | 20/20 | 9.7 s |
+| model | `so101_follower` (9,286 tokens) | `franka_panda` full palette (20,436 tokens) | median tick |
+|---|---|---|---|
+| `qwen3.5-4b` | 19/20 | 18/20 | 2.5 s |
+| `qwen3.5-9b` | 17-20/20 | 20/20 | 3.1-3.8 s |
 
-The 9B was first measured on Ollama 0.40.16 (same laptop, 12% of the model on
-the CPU): `so101_follower` 20/20 (18.8 s), `franka_panda` full palette 20/20
-(16.3 s), frames 2/2. Re-measured on the pinned 0.32.14 (#559), both models on
-an RTX 5090 (32 GB, all on the GPU), same harness:
-
-| model | Ollama | `so101_follower` (9,286 tokens) | `franka_panda` full palette (20,436 tokens) | frames |
-|---|---|---|---|---|
-| `qwen3.5-4b` | 0.32.14 | 19/20 (2.5 s) | 18/20 (2.6 s) | 2/2 |
-| `qwen3.5-9b` | 0.32.14 | 18, 17, 20 /20 (3.1–3.3 s) | 20/20 (3.8 s) | 4/6 |
-| `qwen3.5-9b` | 0.40.16 | 19, 18, 19 /20 (3.0–3.2 s) | — | 6/6 |
-
-The pin holds the 9B to the bar (55/60 vs 56/60 on 0.40.16). Its frames are
-not a version effect: asked 10 times each, the "eraser on the square" frame was
-right 7/10 on 0.32.14 and 7/10 and 6/10 on 0.40.16 (the 4B 10/10 on 0.32.14);
-the "not on it" frame was 10/10 everywhere.
-
-On the laptop the 4B's `describe_image` answered both SO-101 eraser frames (2/2). Re-run on
-Ollama 0.40.16: `so101_follower` 18/20 again, frames 2/2 (ticks slower there
-because a CI job held 3.4 GB of the same GPU). With
-thinking off (`reasoning_effort: none`) ticks drop to ~2 s but validity to
-16/20, under the bar, so the entry keeps thinking on.
-Failures were a nested `place_target` sent as a JSON string and a
-hallucinated tool name; both come back to the model as invalid-plan feedback.
-
-Not curated, same harness: `qwen3-vl:4b-instruct` 17/20 but 1/2 frames and
-24 s ticks; `gemma4:e4b` 17/20, 1/2 frames, and it re-dispatched a skill the
-context reported done; `ministral-3:3b` 15/20 (`franka_panda` 9/20);
-`granite3.2-vision:2b` 0/20 (a 16K model under a 21K prompt); `qwen3-vl:4b` is
-a thinking-only tag (165 s first tick). `lfm3-vl` needs a newer Ollama than
-0.32.
-
-Ollama Cloud models are not curated: none could be run here without an
-`OLLAMA_API_KEY`. One works through the escape hatch below with
-`OPENRAL_REASONER_ENDPOINT=https://ollama.com/v1`, `OPENRAL_REASONER_DIALECT=openai`
-and the key as `OPENRAL_REASONER_API_KEY` (sent as `Authorization: Bearer`).
+With thinking off, ticks drop to about 2 s but validity falls below the bar, so
+both entries keep thinking on.
 
 ### Uncurated local endpoint — explicit escape hatch
 
@@ -772,14 +436,12 @@ Each `ReasonerCore.tick` opens an OTel span named `reasoner.tick`
 | `reasoner.tick.coalesced_triggers` | When requests merged | Triggers that arrived while the previous tick was in flight and were folded into this one. |
 | `reasoner.tick.skipped_since_last` | Always | Timer beats suppressed since the previous LLM call. |
 | `reasoner.wait.until` / `reasoner.wait.timeout_s` | The model chose `wait` | What the wait is for and its bound. |
-| `reasoner.llm_s` | Ticks that reached the LLM | Wall-clock of the LLM round-trip alone. |
-| `reasoner.prompt_tokens` | When the client surfaces usage | Provider-reported prompt tokens, cache reads included. |
+| `reasoner.llm_s` | Ticks that reached the LLM | Wall-clock of the provider round-trip alone. `ReasonerTickResult.elapsed_s` is end-to-end, so `elapsed_s - llm_s` is the reasoner-side overhead. |
+| `reasoner.prompt_tokens` | When the client reports usage | Provider-reported prompt tokens, cache reads included. Latency that grows with this is a context-size problem: window or summarize the history rather than raising `OPENRAL_REASONER_TIMEOUT_S`. |
 | `reasoner.tier` | Always | Trigger tier that drove this call: `A` (safety), `B` (replan: hal/sensor/rskill/wam), `C` (critic), `D` (operator/perception), or `heartbeat`. |
 | `reasoner.offered_skills` | When a skill-tool cap is set | Skill ids offered this tick (`ReasonerCore.offered_palette`). The ranking (every skill's score and the query) is on the `reasoner.skill_subset` log, emitted when the subset changes. |
 | `reasoner.mission_json` | When a mission is active | `MissionState.to_summary()` JSON — the ordered task queue (id/text/status/attempts/failures/verdict/rskill_id/depth/steps, with `max_attempts` and `max_dispatches`) the live dashboard renders as the Mission card checklist, plus `goal` (the operator goal the queue serves) and `splits` (each task `decompose_mission` subdivided, by id: its text and the steps it ran; its children's dot-path ids hang under it). A task's budget is `failures` of `max_attempts` and `attempts` of `max_dispatches`. Each entry of `steps` is one dispatch at the task: `rskill_id`, `prompt` and `outcome` — `running`, `ok`, `failed` (aborted, rejected, or counted as a failure by the ladder), `cancelled` (operator / e-stop) or `interrupted` (never reported back). Absent on bare-goal deploys. |
 | `reasoner.error_kind` | Provider failure | `ROSPlanningError` subclass name; an `exception` event is added to the span. |
-| `reasoner.llm_s` | Every tick that reached the LLM | Wall-clock of the provider round-trip **alone**. `ReasonerTickResult.elapsed_s` is end-to-end tick time (context render + call + bookkeeping), so `elapsed_s - llm_s` is the reasoner-side overhead — without the split a tick that grew from 6 s to 99 s cannot be attributed. |
-| `reasoner.prompt_tokens` | When the client reports usage | Provider-reported prompt tokens (Anthropic cache reads included). Tick latency that grows in step with this is a context-size problem — window or summarize the history rather than raising `OPENRAL_REASONER_TIMEOUT_S`. |
 
 `reasoner.llm_s` and `reasoner.prompt_tokens` also appear on the
 `reasoner.tick.selected` structured log, readable without opening Jaeger.
@@ -797,18 +459,3 @@ round-trip can be observed end-to-end inside the deploy image.
 
 - [`openral_reasoner.core`](../../python/reasoner/src/openral_reasoner/core.py) — transport-agnostic orchestrator.
 - [`packages/openral_prompt_router`](../openral_prompt_router/) — F10 prompt fan-in.
-
-### Collision diagnostics
-
-Typed collision evidence on `/openral/failure/safety` preserves the kernel's
-link/object IDs and adjudication configuration. Prompt summaries retain both
-actors, signed distance and whether the check was measured or predicted; joint
-vectors remain available in the original ROS message for replay. The robot
-context lists configured joint names, simulator aliases and parent/child links
-without inventing anatomical labels. A predicted collision is not a measurement
-of physical contact, and voxel IDs do not establish an obstacle's identity.
-A world voxel's coordinates render as `cell_center_m[<base_frame>]` and
-`grid_origin_m[<base_frame>]`, labelled with the robot manifest's `base_frame`
-(the kernel's voxel grid frame, never the map). The schema and the ROS message
-keep their `world_cell_center_m` / `world_grid_origin_m` wire names; only the
-prompt renames them.

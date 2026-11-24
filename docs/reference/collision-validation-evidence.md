@@ -1,5 +1,9 @@
 # Collision-stack validation evidence
 
+!!! note "Historical ledger"
+    Validation rounds behind the collision stack's numbers. Read for provenance; the code and the [robots reference](robots.md) describe current behaviour. Kept as a record; it is not maintained against master.
+
+
 Where the numbers in the collision stack's code comments, READMEs and PR bodies
 came from, what each validation round actually concluded, and what is still
 open.

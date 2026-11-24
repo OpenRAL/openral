@@ -1,21 +1,25 @@
 # DDS transport for large messages
 
 The deploy graph moves megabyte samples on best-effort topics: depth clouds
-(an Isaac 512×384 depth camera back-projects to ~2.4–2.8 MB of xyz float32), the
-robot self-filter's output cloud, depth and colour images. Under ROS 2 Jazzy's
-default RMW (Fast DDS 2.14) most of them never arrived. `openral deploy sim` and
-`openral deploy run` now export a Fast DDS profile that fixes it; this page is the
-evidence and the reasoning.
+(an Isaac 512x384 depth camera back-projects to ~2.4-2.8 MB), the robot
+self-filter's output cloud, depth and colour images. Under a bare host's
+default RMW, Fast DDS 2.14 (ROS 2 Jazzy), most of them never arrived.
+`openral deploy sim` and `openral deploy run` therefore export a Fast DDS
+profile that fixes it.
+
+**Scope.** The dev and inference images set
+`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`. There the launch skips the profile
+(`dds_transport_ready:` prints `fastdds_profile=n/a`) and this page does not
+apply; Cyclone best-effort lost 9/40 clouds at 2.8 MB in the measurements below
+(row d). The rest of this page covers hosts running Fast DDS.
 
 ## Symptom
 
-Isaac deploy sim on Spark (2026-10-04, RMW unset, no profile): the sim sensor
-bridge published `/openral/cameras/head_zed/points` at 3.3 Hz (~2.8 MB each), the
-robot self-filter emitted `/openral/world_cloud/self_filtered` at 1.9 Hz with gaps
-up to 2.0 s, while its own stats counted no drops — the clouds never reached it.
-octomap_server consumes the filtered cloud, so the map updated at < 2 Hz, and the
-grasp-target leg (which needs a self-filtered cloud within 0.1 s of each depth
-frame, `VisionAttachmentBridge.kept_points`) refused most captures as `unfiltered`.
+Without the profile, the sim bridge's depth cloud arrived at ~3 Hz and the
+self-filter's output at < 2 Hz with gaps up to 2 s, while its own stats counted
+no drops (the clouds never reached it). octomap_server updated at < 2 Hz, and
+the grasp-target leg, which needs a self-filtered cloud within 0.1 s of each
+depth frame, refused most captures as `unfiltered`.
 
 ## Root cause
 
@@ -61,7 +65,7 @@ exceed the cliff, so the options below still apply.
 | (b) RELIABLE publisher **and** subscriber, default Fast DDS | 40/40 | 19 ms | 4 ms | needs every reader changed |
 | (b) RELIABLE publisher, BEST_EFFORT subscriber | 2/40 | – | 4 ms | the reader's QoS decides |
 | (d) Cyclone DDS, best effort | 31/40 | 9 ms | 5 ms | lossy too |
-| (d) Cyclone DDS, reliable both ends | 40/40 | 9 ms | 5 ms | not the deploy RMW |
+| (d) Cyclone DDS, reliable both ends | 40/40 | 9 ms | 5 ms | needs every reader changed |
 
 Why not the others:
 
@@ -75,8 +79,8 @@ Why not the others:
   5 mm `mask_without_removed_points` cell is still 0.71 MB (a plane at 1 m) to
   1.06 MB (a 0.5–1.5 m tilted plane); only octomap's 15 mm cell gets it under
   (0.08–0.16 MB), and that would starve the grasp leg's matching.
-- **(d) Cyclone** is not the deploy RMW (`_apply_rmw_default` explains why) and was
-  lossy best-effort too.
+- **(d) Cyclone** was lossy best-effort too, and is the image default only
+  because the images pin it (see Scope).
 
 ## The fix
 
@@ -118,76 +122,39 @@ non-blocking `publish()` on every live-ROS run.
 
 ### Service replies
 
-The profile also carries `data_writer` profiles for twenty service reply writers: the
-`change_state` and `get_state` replies of the ten Nav2 nodes the lifecycle manager drives.
-They are named by reply topic (`rr/<service>Reply`), which `rmw_fastrtps` looks a writer
-profile up by. Before sending a service reply, the RMW waits for the client's reply reader
-to be discovered, for at most that writer's `reliability.max_blocking_time` (Fast DDS
-default: 100 ms). If discovery is slower, it drops the reply and logs `failed to send
-response to <service> (timeout): client will not receive response`.
-
-On the ~30-process deploy graph, discovery can be slower than 100 ms. Nav2's lifecycle
-manager waits on `change_state` with no timeout, so one dropped reply left Nav2
-unconfigured for the whole run: `controller_server`, `collision_monitor` and
-`bt_navigator`, on Spark and on a laptop, 2026-11-04/05. These twenty replies may wait 5 s.
-
-The profile names those twenty replies rather than using the catch-all `service`
-profile, because the wait runs on the server's executor thread. The safety kernel serves
-its lifecycle and `estop_reset` services from a single-threaded executor, so a fresh
-client (an operator's `ros2 lifecycle get`) could have held its only thread for up to 5 s.
-`tests/unit/test_fastdds_profile_service_scope.py` holds the profile to the twenty names.
+The profile carries `data_writer` profiles for twenty service reply writers:
+the `change_state` and `get_state` replies of the ten Nav2 nodes the lifecycle
+manager drives, named by reply topic (`rr/<service>Reply`). The RMW waits for
+the client's reply reader to be discovered for at most `max_blocking_time`
+(default 100 ms) and otherwise drops the reply. On the ~30-process graph
+discovery can be slower, and Nav2's lifecycle manager waits on `change_state`
+with no timeout, so one dropped reply left Nav2 unconfigured for the run.
+These twenty replies may wait 5 s. They are named individually rather than
+using the catch-all `service` profile, because the wait runs on the server's
+executor thread and would block the safety kernel's single-threaded one.
+`tests/unit/test_fastdds_profile_service_scope.py` holds the profile to the
+twenty names.
 
 ### Localhost discovery reach
 
-The profile also sets `maxInitialPeersRange` to 120 on the UDP transport.
+With `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` there is no multicast: a
+participant announces itself only to the unicast ports of the first N
+participant ids on the host, so two participants that both start after the Nth
+never find each other. A deploy sim graph is about 50 processes and Nav2 starts
+last, so Nav2's nodes did not discover each other. The profile therefore sets
+`maxInitialPeersRange` to **120** on the UDP transport (60 one-node processes
+all discovered each other).
 
-With `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` there is no multicast. A participant announces
-itself only to the unicast ports of the first N participant ids on the host, so two
-participants that both start after the Nth never discover each other.
-
-Measured on Jazzy (2026-11-16) with 60 one-node processes, each serving one service, and a
-61st process probing them:
-
-| Profile | Services found |
-|---|---|
-| Shipped before this change | processes 1-30 only; none of 34-60 |
-| `maxInitialPeersRange` 128 (shipped until #664) | all 60 |
-| `maxInitialPeersRange` 120 (re-measured 2026-11-19) | all 60 |
-| `SUBNET` discovery, no profile | all 60 |
-
-A deploy sim graph is about 50 processes, and Nav2 starts last. Its `bt_navigator` never found
-`planner_server` or `behavior_server`, `lifecycle_manager_navigation` aborted the bring-up, and
-every navigate goal was rejected as "action server inactive". The same blind spot explains
-lifecycle replies that never arrived.
-
-#### Why 120 and not more: adjacent domains
-
-A participant's unicast ports are `7400 + 250 × domain + 10 + 2 × id` and the one after, so
-each domain owns 250 ports and participant id 125 of domain N is participant id 0 of domain
-N+1. A range of 128 therefore announced a graph on domain N to the first three participants
-of domain N+1. The two graphs merged, and a second `openral deploy sim` one domain up was
-refused as an occupied graph (issue #664; found with sims on domains 31 and 32). 120 keeps
-ids 0-119, whose last port is one below the next domain's first.
-
-Measured on Jazzy (2026-11-19), one node on domain 127 and one on 126, both under the
-profile with the range set as shown, `LOCALHOST` discovery:
-
-| `maxInitialPeersRange` | Nodes a probe on each domain sees |
-|---|---|
-| 128 | both nodes, on both domains |
-| 126 | both nodes, on domain 126 |
-| 125, 121, 120 | its own domain's node only |
-
-`tests/integration/test_adjacent_domain_isolation_live.py` runs this against the shipped
-profile. The measurements are `LOCALHOST` to `LOCALHOST`; 120 rather than 125 because id
-120's ports are the next domain's two multicast ports, which a `SUBNET` graph listens on
-(not measured).
-
-Adjacent domains can still leak, and the occupied-graph refusal names the two ways: a graph
-started by an OpenRAL from before the fix, or under a profile of your own
-(`FASTRTPS_DEFAULT_PROFILES_FILE`) with a range above 120. Restart that graph with the
-range at 120, or keep the two at least two domains apart: a range of 128 reaches one domain
-up, and one more for every further 125.
+Not higher, because each domain owns 250 UDP ports and participant id 125 of
+domain N is id 0 of domain N+1. A range of 128 announced a graph to the first
+participants of the next domain, merging two graphs and making a second
+`openral deploy sim` one domain up refuse as an occupied graph; 120 keeps the
+last port one below the next domain's first.
+`tests/integration/test_adjacent_domain_isolation_live.py` checks this against
+the shipped profile. Adjacent domains can still leak under an older OpenRAL or
+a custom `FASTRTPS_DEFAULT_PROFILES_FILE` with a range above 120: restart with
+the range at 120, or keep the two domains at least two apart. The XML header
+comments in `fastdds_large_data.xml` carry the full reasoning.
 
 ## Reproduce
 
