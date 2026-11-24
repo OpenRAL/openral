@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """``SimAttachedHAL.read_state`` over an MJCF it does not own: indices and gripper units.
 
-Real ALOHA manifest (``robots/aloha_bimanual/robot.yaml``) on the real gym-aloha MJCF,
-behind ``FakeSimEnv`` (the ``SimRollout`` boundary double, CLAUDE.md §1.11). Two defects
-found in review (#754):
+Real ALOHA manifest (``robots/aloha_bimanual/robot.yaml``) on the real gym-aloha MJCF. The
+gripper case runs the real gym-aloha env (``scenes/sim/aloha_transfer_cube.yaml``). The index
+case needs an unnamed joint ahead of both arms, which no shipped scene has, so it compiles
+the gym-aloha MJCF with one and serves it through ``FakeSimEnv`` (the repo's ``SimRollout``
+boundary double, ``tests/unit/fakes/``), whose only role here is to hand over the real
+``MjModel`` / ``MjData``. Two defects found in review (#754):
 
 * the joint-name index skipped unnamed joints, so every joint after one read another
   joint's ``qpos`` (here: an unnamed joint ahead of both arms shifted every arm joint);
@@ -19,12 +22,13 @@ from typing import Any
 
 import pytest
 from openral_core import RobotDescription
-from openral_core.assets import AssetFetchError, AssetRefError, resolve_asset
+from openral_core.assets import AssetFetchError, resolve_asset
 from openral_hal.sim_attached import SimAttachedHAL
 
 from tests.unit.fakes.fake_sim_env import FakeSimEnv
 
 mujoco = pytest.importorskip("mujoco")
+pytest.importorskip("gym_aloha", reason="the ALOHA twin ships with gym-aloha")
 
 
 def _aloha(*, unnamed_joint: bool = False) -> tuple[RobotDescription, Any, Any]:
@@ -32,8 +36,8 @@ def _aloha(*, unnamed_joint: bool = False) -> tuple[RobotDescription, Any, Any]:
     assert desc.assets.mjcf is not None
     try:
         path = resolve_asset(desc.assets.mjcf, "mjcf")
-    except (AssetFetchError, AssetRefError) as exc:
-        pytest.skip(f"gym-aloha MJCF unavailable: {exc}")
+    except AssetFetchError as exc:
+        pytest.skip(f"gym-aloha MJCF not fetchable: {exc}")
     spec = mujoco.MjSpec.from_file(str(path))
     if unnamed_joint:
         # gym-aloha's jointless ``midair`` body precedes both arms: an unnamed slide on it
@@ -71,9 +75,26 @@ def test_an_unnamed_joint_does_not_shift_the_joints_after_it() -> None:
 def test_an_affine_gripper_reads_its_opening_not_its_finger_travel(
     finger_m: float, opening: float
 ) -> None:
-    desc, model, data = _aloha()
-    finger = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "vx300s_left/left_finger")
-    data.qpos[int(model.jnt_qposadr[finger])] = finger_m
-    mujoco.mj_forward(model, data)
-    state = _hal(desc, model, data).read_state()
-    assert state.position[state.name.index("left_gripper")] == pytest.approx(opening)
+    pytest.importorskip("openral_sim")
+    from openral_hal.sim_bringup import build_sim_env_from_yaml
+
+    env, seed = build_sim_env_from_yaml(
+        "scenes/sim/aloha_transfer_cube.yaml", robot_id_fallback="aloha_bimanual"
+    )
+    try:
+        hal = SimAttachedHAL(
+            env,
+            RobotDescription.from_yaml("robots/aloha_bimanual/robot.yaml"),
+            env_reset_seed=seed,
+        )
+        hal.connect()
+        handles = hal.mujoco_handles()
+        assert handles is not None
+        model, data = handles
+        finger = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "vx300s_left/left_finger")
+        data.qpos[int(model.jnt_qposadr[finger])] = finger_m
+        mujoco.mj_forward(model, data)
+        state = hal.read_state()
+        assert state.position[state.name.index("left_gripper")] == pytest.approx(opening)
+    finally:
+        env.close()

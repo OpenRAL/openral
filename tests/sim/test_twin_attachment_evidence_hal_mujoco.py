@@ -41,7 +41,7 @@ pytest.importorskip("mujoco")
 import mujoco
 import numpy as np
 from openral_core import AttachedCollisionObject, RobotDescription
-from openral_core.assets import AssetFetchError, AssetRefError, resolve_asset
+from openral_core.assets import AssetFetchError, resolve_asset
 from openral_core.exceptions import ROSConfigError
 from openral_core.tracking_thresholds import load_tracking_thresholds
 from openral_hal._sim_attachment_evidence import (
@@ -107,10 +107,12 @@ class _Rig:
 def _description(robot: str) -> tuple[RobotDescription, Path]:
     desc = RobotDescription.from_yaml(str(_ROOT / "robots" / robot / "robot.yaml"))
     assert desc.assets.mjcf is not None
+    if str(desc.assets.mjcf).startswith("gym_aloha:"):
+        pytest.importorskip("gym_aloha", reason="aloha_bimanual's twin ships with gym-aloha")
     try:
         path = resolve_asset(desc.assets.mjcf, "mjcf")
-    except (AssetFetchError, AssetRefError) as exc:
-        pytest.skip(f"{robot} twin files not available on this host: {exc}")
+    except AssetFetchError as exc:
+        pytest.skip(f"{robot} twin files not fetchable on this host: {exc}")
     assert path is not None
     return desc, path
 
@@ -635,3 +637,26 @@ def test_every_hand_gets_a_share_of_the_kernel_primitive_cap(robot: str, per_han
     cap = load_tracking_thresholds().caps.attached_max_primitives
     assert tracker._max_primitives_per_hand == per_hand
     assert tracker._max_primitives_per_hand * len(tracker._hands) <= cap
+
+
+def test_names_are_adopted_only_from_a_twin_whose_chain_moves_alike() -> None:
+    """``adopt_kernel_names`` compares the arm across configurations, not only at qpos0.
+
+    The Panda twin against itself adopts. Against a copy whose ``joint4`` axis is flipped,
+    the two chains agree at qpos0 (every joint at zero) but move the hand differently, so
+    the names are refused and nothing changes.
+    """
+    desc, path = _description("franka_panda")
+    scene = SimAttachmentEvidenceTracker(mujoco.MjModel.from_xml_path(str(path)), desc)
+    same = SimAttachmentEvidenceTracker(mujoco.MjModel.from_xml_path(str(path)), desc)
+    spec = mujoco.MjSpec.from_file(str(path))
+    spec.joint("joint4").axis = -np.asarray(spec.joint("joint4").axis)
+    spec.joint("joint4").range = -np.asarray(spec.joint("joint4").range)[::-1]
+    flipped = SimAttachmentEvidenceTracker(spec.compile(), desc)
+    (before,) = [(h.attach_link, list(h.touch_links)) for h in scene._hands]
+
+    assert not scene.adopt_kernel_names(flipped)
+    assert [(h.attach_link, list(h.touch_links)) for h in scene._hands] == [before]
+    same._hands[0].attach_link = "kernel_hand"
+    assert scene.adopt_kernel_names(same)
+    assert scene._hands[0].attach_link == "kernel_hand"

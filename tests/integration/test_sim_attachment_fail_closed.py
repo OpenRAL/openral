@@ -5,9 +5,8 @@ Issue #752: when ``SimAttachmentEvidenceTracker`` refused a robot, ``SimSensorBr
 heartbeating an empty, fresh ``/openral/attachment_state``, so the safety kernel read
 "nothing carried" while the twin could close its gripper on a payload. Now:
 
-* a twin that drives a gripper (``twin_drives_gripper``) and whose tracker refuses, or
-  that has no post-step hook to feed it, has the stream withdrawn (its publisher
-  destroyed), so the kernel's attached check fails closed;
+* a twin that drives a gripper (``twin_drives_gripper``) and whose tracker refuses has the
+  stream withdrawn (its publisher destroyed), so the kernel's attached check fails closed;
 * a twin with no gripper keeps the empty heartbeat, which is the truth there;
 * the SO-101, one of the robots the issue listed, arms;
 * a scene model whose bodies the kernel does not name (LIBERO's robosuite Panda, beside a
@@ -66,11 +65,9 @@ def setup_bridge() -> Iterator[Callable[..., Any]]:
         *,
         scene: str = "scenes/sim/so101_tube_insertion.yaml",
         kernel_link_names: list[str] | None = None,
-        post_step_hook: bool = True,
     ) -> Any:
         env, seed = build_sim_env_from_yaml(scene, robot_id_fallback=description.name)
-        hal_class = SimAttachedHAL if post_step_hook else _no_post_step_hook_hal()
-        hal = hal_class(
+        hal = SimAttachedHAL(
             env,
             RobotDescription.from_yaml(f"robots/{description.name}/robot.yaml"),
             env_reset_seed=seed,
@@ -87,28 +84,18 @@ def setup_bridge() -> Iterator[Callable[..., Any]]:
             attachment_kernel_checked=True,
             attachment_kernel_link_names=kernel_link_names,
         )
-        made.append((bridge, node, hal))
+        made.append((bridge, node, env))
         bridge._setup_attachment_state()
         return bridge
 
     try:
         yield build
     finally:
-        for bridge, node, _hal in made:
+        for bridge, node, env in made:
             bridge.teardown()
             node.destroy_node()
+            env.close()  # SimAttachedHAL.disconnect does not close the env it was given
         rclpy.shutdown()
-
-
-def _no_post_step_hook_hal() -> type[Any]:
-    from openral_hal.sim_attached import SimAttachedHAL
-
-    class _NoHook(SimAttachedHAL):
-        """A sim HAL that exposes MuJoCo handles but has no post-step observer hook."""
-
-        add_post_step_observer = None  # type: ignore[assignment]  # reason: the hook is absent
-
-    return _NoHook
 
 
 def _so101() -> Any:
@@ -133,15 +120,6 @@ def test_a_gripper_twin_the_tracker_refuses_withdraws_the_stream(
     assert bridge._attachment_pub is None and bridge._attachment_timer is None
     # Destroyed, not just dropped: no silent publisher stays advertised on the topic.
     assert bridge._node.count_publishers("/openral/attachment_state") == 0
-
-
-def test_a_tracker_nothing_would_feed_withdraws_the_stream(
-    setup_bridge: Callable[..., Any],
-) -> None:
-    """A HAL with MuJoCo handles but no post-step hook never updates the tracker."""
-    bridge = setup_bridge(_so101(), post_step_hook=False)
-    assert bridge._attachment_tracker is None
-    assert bridge._attachment_pub is None and bridge._attachment_timer is None
 
 
 def test_a_twin_without_a_gripper_keeps_the_empty_heartbeat(

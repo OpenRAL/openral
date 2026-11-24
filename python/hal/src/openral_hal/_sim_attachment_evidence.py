@@ -1785,6 +1785,39 @@ def probe_contact_force(
     )
 
 
+def _chain_signature(
+    model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    description: RobotDescription,
+) -> tuple[int | None, dict[str, tuple[int, float, float]]]:
+    """What ``adopt_kernel_names`` compares two models of one robot by.
+
+    The body the first manifest joint hangs from (the arm's fixed mount), and every
+    non-gripper manifest joint's qpos address with the range it is posed over (its
+    ``position_limits`` clipped to one turn).
+    """
+    anchor = next(
+        (
+            int(model.body_parentid[int(model.jnt_bodyid[joint_id])])
+            for joint in description.joints
+            if joint.sim_joint_name
+            and (joint_id := _sim_joint_id(model, joint.sim_joint_name)) >= 0
+        ),
+        None,
+    )
+    posable: dict[str, tuple[int, float, float]] = {}
+    for joint in description.joints:
+        joint_id = _sim_joint_id(model, joint.sim_joint_name) if joint.sim_joint_name else -1
+        if joint.role == "gripper" or joint_id < 0:
+            continue
+        low, high = joint.position_limits or (-math.pi, math.pi)
+        posable[joint.name] = (
+            int(model.jnt_qposadr[joint_id]),
+            max(low, -math.pi),
+            min(high, math.pi),
+        )
+    return anchor, posable
+
+
 class SimAttachmentEvidenceTracker:
     """Confirm free-object grasp/release from exact MuJoCo contacts and motion.
 
@@ -1914,17 +1947,7 @@ class SimAttachmentEvidenceTracker:
         for hand in self._hands:
             robot_bodies.update(hand.body_groups)
         self._robot_body_ids = frozenset(robot_bodies)
-        # The first manifest joint's body: the anchor ``adopt_kernel_names`` compares two
-        # models' attach frames against.
-        self._anchor_body_id = next(
-            (
-                int(model.jnt_bodyid[joint_id])
-                for joint in description.joints
-                if joint.sim_joint_name
-                and (joint_id := _sim_joint_id(model, joint.sim_joint_name)) >= 0
-            ),
-            None,
-        )
+        self._anchor_body_id, self._posable_joints = _chain_signature(model, description)
 
         # The body the robot's ``base_frame`` TF denotes (ADR-0095), which is the
         # frame the octomap bridge publishes the occupancy grid in and therefore
@@ -1953,25 +1976,34 @@ class SimAttachmentEvidenceTracker:
         MJCF the kernel's collision model was lowered from (menagerie: ``hand``,
         ``left_finger``). ``twin``, already bound to the kernel (``bind_kernel_links``
         returned nothing), carries the kernel's names for the same hands. They are taken
-        only when both models have the same hands and each attach body sits at the same
-        pose relative to the first manifest joint's body at ``qpos0`` (within
-        ``tolerance``, m and rad), so a payload posed in this model's attach body is posed
-        in the frame the kernel's link denotes. Contacts stay measured on this model's
-        bodies; only the published names change.
+        only when both models have the same hands and resolve the same non-gripper manifest
+        joints, and each attach body sits at the same pose relative to the arm's fixed mount
+        (the first manifest joint's parent body), within ``tolerance`` (m and rad), at
+        ``qpos0`` and at four spread configurations of those joints across their limits.
+        So the two chains move each hand alike, and a payload posed in this model's attach
+        body is posed in the frame the kernel's link denotes wherever the arm goes.
+        Contacts stay measured on this model's bodies; only the published names change.
 
         Returns:
             Whether the names were adopted; on ``False`` nothing changed.
         """
-        mine, theirs = self._attach_poses(), twin._attach_poses()
-        if mine is None or theirs is None or len(mine) != len(theirs):
+        if (
+            len(self._hands) != len(twin._hands)
+            or not self._posable_joints
+            or self._posable_joints.keys() != twin._posable_joints.keys()
+        ):
             return False
-        for (t_a, r_a), (t_b, r_b) in zip(mine, theirs, strict=True):
-            cos = (float(np.trace(r_a.T @ r_b)) - 1) / 2
-            if (
-                np.linalg.norm(t_a - t_b) > tolerance
-                or math.acos(max(-1.0, min(1.0, cos))) > tolerance
-            ):
+        for config in (None, 0.2, 0.4, 0.6, 0.8):
+            mine, theirs = self._attach_poses(config), twin._attach_poses(config)
+            if mine is None or theirs is None:
                 return False
+            for (t_a, r_a), (t_b, r_b) in zip(mine, theirs, strict=True):
+                cos = (float(np.trace(r_a.T @ r_b)) - 1) / 2
+                if (
+                    np.linalg.norm(t_a - t_b) > tolerance
+                    or math.acos(max(-1.0, min(1.0, cos))) > tolerance
+                ):
+                    return False
         for hand, other in zip(self._hands, twin._hands, strict=True):
             hand.manifest_links = other.manifest_links or frozenset(
                 (hand.attach_link, *hand.touch_links)
@@ -1979,14 +2011,23 @@ class SimAttachmentEvidenceTracker:
             hand.attach_link, hand.touch_links = other.attach_link, list(other.touch_links)
         return True
 
-    def _attach_poses(self) -> list[tuple[NDArray[np.float64], NDArray[np.float64]]] | None:
-        """Each hand's attach body pose in the anchor body's frame at ``qpos0``."""
+    def _attach_poses(
+        self, config: float | None
+    ) -> list[tuple[NDArray[np.float64], NDArray[np.float64]]] | None:
+        """Each hand's attach body pose in the anchor body's frame.
+
+        At ``qpos0`` for ``config=None``; else every posable manifest joint ``i`` at the
+        fraction ``(config + 0.37 i) mod 1`` of its range, so the joints spread apart.
+        """
         import mujoco  # noqa: PLC0415  # reason: optional sim dependency
 
         anchor = self._anchor_body_id
         if anchor is None:
             return None
         data = mujoco.MjData(self._model)
+        if config is not None:
+            for i, (addr, low, high) in enumerate(self._posable_joints.values()):
+                data.qpos[addr] = low + ((config + 0.37 * i) % 1.0) * (high - low)
         mujoco.mj_kinematics(self._model, data)
         rot = data.xmat[anchor].reshape(3, 3)
         return [
