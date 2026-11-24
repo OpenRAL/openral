@@ -56,8 +56,19 @@ def test_tracker_node_grounds_relays_binds_and_never_regresses() -> None:
             [obj] = tracked[-1].objects
             assert obj.object_id == "trk:1" and obj.declaration_key == f"orange@{stamp}"
             assert all(s.revision >= activated_ns for s in tracked)
-            assert wait(lambda: bool(fast) and fast[-1].tracked_objects_valid, 5.0)
-            assert [o.object_id for o in fast[-1].tracked_objects.objects] == ["trk:1"]
+
+            # The tracker heartbeats an empty set from activation on, so a valid snapshot alone
+            # may still be one relayed before the grounding set: wait for the track itself.
+            def relayed() -> bool:
+                return (
+                    bool(fast)
+                    and fast[-1].tracked_objects_valid
+                    and [o.object_id for o in fast[-1].tracked_objects.objects] == ["trk:1"]
+                )
+
+            assert wait(relayed, 5.0), [
+                [o.object_id for o in m.tracked_objects.objects] for m in fast[-3:]
+            ]
 
             # The grounded, unheld orange's box is the grasp region (`tracking`).
             def region_valid() -> bool:
