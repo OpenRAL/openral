@@ -56,9 +56,11 @@ same URDF with `mujoco.MjSpec` into `derived-<hash>/aloha_agilex.xml` beside it:
   RoboTwin's own encoding.
 - The base, wheels, castors and the two **rear arms** (`lr_*` / `rr_*`) are welded
   at zero: RoboTwin drives only the front arms.
-- COLLADA visuals are dropped; STL visuals (the base tray, the camera mast) are
-  kept. The frame columns (`box2_Link`) exist only as `.dae`, so the arm pedestals
-  render floating above the base.
+- A link with other geometry drops its COLLADA visual (the arm links render their
+  STL collision mesh, the same shape). A link whose only geometry is `.dae` keeps
+  it, converted to OBJ beside the MJCF and decimated on a 4 mm grid: the frame that
+  carries the arms and the camera mast on the cart (`box2_Link`), the castors and
+  the camera housings. Converting `box2_Link`'s 215 MB file takes ~10 s, once.
 - The gains are OpenRAL's sim-only choice (kv sized so the 30 N·m clamp allows the
   3 rad/s velocity limit), not a model of the real servos.
 - It starts at qpos 0, RoboTwin's home pose (config.yml), inside every range.

@@ -11,6 +11,12 @@ naming, so the joint names match the manifest's ``sim_joint_name``s
 paths point into the installed robosuite package, so the cache is keyed by where
 that package lives as well as its version: RoboCasa's pinned clone and the PyPI
 wheel both report 1.5.2. Nothing is vendored.
+
+robosuite leaves two of its visual geoms collidable (the Omron base's torso
+column, ``mobilebase0_fixed_support`` / ``mobilebase0_support``, beside their
+group-0 collision proxies). Read by OpenRAL's convention that a visual geom has
+``contype = conaffinity = 0``, the column vanishes and the arm floats above the
+base (#760), so every group-1 (visual) geom is made non-colliding.
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import os
 import uuid
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from openral_core.exceptions import ROSConfigError
@@ -47,7 +54,9 @@ def compose_robot_mjcf(name: str) -> Path:
     base = Path(os.environ.get("OPENRAL_CACHE_DIR") or Path.home() / ".cache" / "openral")
     package = Path(str(robosuite.__file__)).parent
     install = hashlib.sha256(str(package).encode()).hexdigest()[:12]
-    out: Path = base / "robosuite" / f"{robosuite.__version__}-{install}" / f"{name}.xml"
+    # Keyed by this module's source too, so a change to the composition re-composes.
+    derive = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
+    out: Path = base / "robosuite" / f"{robosuite.__version__}-{install}-{derive}" / f"{name}.xml"
     if out.is_file():
         return out
     model = create_robot(name, idn=0)
@@ -58,6 +67,11 @@ def compose_robot_mjcf(name: str) -> Path:
         )
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(f".{out.name}.{uuid.uuid4().hex}.tmp")
-    tmp.write_text(model.get_xml(), encoding="utf-8")
+    root = ET.fromstring(model.get_xml())
+    for geom in root.iter("geom"):
+        if geom.get("group") == "1":
+            geom.set("contype", "0")
+            geom.set("conaffinity", "0")
+    tmp.write_text(ET.tostring(root, encoding="unicode"), encoding="utf-8")
     os.replace(tmp, out)
     return out
