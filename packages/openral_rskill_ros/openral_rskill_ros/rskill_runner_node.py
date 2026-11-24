@@ -18,7 +18,7 @@ Action-goal lifecycle (CLAUDE.md §3 rSkill packaging + the F1 design):
 3. **cancel_cb** — drain the in-flight chunk (≤100 ms), then idle-hold the last commanded
    joint state. Runner stays ``active``, ready for the next goal.
 4. **/openral/estop + /openral/safety_status subscriptions** — defense in depth alongside
-   ``safety_node`` (CLAUDE.md §1.5); aborts with ``failure_reason="safety_estop"`` /
+   ``safety_node`` (CLAUDE.md §1.1); aborts with ``failure_reason="safety_estop"`` /
    ``failure_kind=FAILURE_SAFETY_ESTOP`` and transitions to ``inactive``. OR-ed into one seam,
    ``RskillRunnerNode._safety_abort_reason``, read by the ``ROSPublishingHAL`` apply-wait
    and (via ``RskillRunnerNode._raise_if_safety_aborted``) every other blocking wait on the
@@ -1029,7 +1029,7 @@ if _ROS2_AVAILABLE:
                 callback_group=self._action_cb_group,
             )  # fmt: skip
 
-            # /openral/estop defense in depth (CLAUDE.md §1.5). Subscribe
+            # /openral/estop defense in depth (CLAUDE.md §1.1). Subscribe
             # so the runner aborts even if safety_node already brakes the
             # HAL.
             estop_qos = QoSProfile(
