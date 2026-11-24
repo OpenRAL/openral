@@ -1,16 +1,18 @@
 # SPDX-License-Identifier: Apache-2.0
-"""`openral_hal_unitree`'s controller configs and launch must agree with the G1 manifest
-and with `UnitreeHgRealHAL`.
+"""`openral_hal_unitree`'s controller configs and launch must agree with the G1 / H2
+manifests and with `UnitreeHgRealHAL`.
 
 The bringup's YAML is a hand-maintained derivative of NVIDIA's `unitree_g1_bringup`
-config (isaac_ros_robots @ 520aa94f), trimmed to the 29-DoF hands-less body; nothing
-else compares it with `robots/g1/robot.yaml` or with the HAL's constants. A drift is
+config (isaac_ros_robots @ 520aa94f) — trimmed to the 29-DoF hands-less G1, and for the
+H2 (which NVIDIA supports only in the hardware interface) rebuilt around OpenRAL's own
+`urdf/h2_real_hardware.urdf.xacro`; nothing else compares it with `robots/<id>/robot.yaml`
+or with the HAL's constants. A drift is
 silent on hardware — a controller claiming a joint the hardware does not export never
 activates, an upper-body joint the HAL thinks it owns but the policy also commands
 fights the policy, an e-stop list that misses a controller leaves it running. These
-tests read the real files (no ROS install needed); the launch-description test and the
-upstream-xacro parity test run where those sources exist and skip with a reason
-otherwise.
+tests read the real files (no ROS install needed); the launch-description test, the
+upstream parity tests and the H2 export checks run where those sources exist and skip
+with a reason otherwise.
 """
 
 from __future__ import annotations
@@ -18,6 +20,8 @@ from __future__ import annotations
 import importlib.util
 import os
 import re
+import shutil
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -43,6 +47,14 @@ _LAUNCH = _PKG / "launch" / "real_bringup.launch.py"
 _G1_CONFIG = _PKG / "config" / "g1"
 _CONTROLLER_MANAGER = _G1_CONFIG / "controller_manager.yaml"
 _POLICIES = sorted((_G1_CONFIG / "policies").glob("*.yaml"))
+_H2_CONFIG = _PKG / "config" / "h2"
+_H2_XACRO = _PKG / "urdf" / "h2_real_hardware.urdf.xacro"
+#: Every model the bringup ships a config/<model>/ for.
+_MODELS = ("g1", "h2")
+#: (model, policy file) for every shipped policy of every model.
+_ALL_POLICIES = [
+    (m, p) for m in _MODELS for p in sorted((_PKG / "config" / m / "policies").glob("*.yaml"))
+]
 
 #: The G1 joints of NVIDIA's real-hardware ros2_control xacro
 #: (`unitree_g1_description/urdf/g1_real_ros2_control.urdf.xacro` @ 520aa94f, the
@@ -54,9 +66,16 @@ def _yaml(path: Path) -> Any:  # reason: arbitrary YAML document
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
-def _manifest_joints() -> list[str]:
-    desc = RobotDescription.from_yaml(str(_REPO / "robots" / "g1" / "robot.yaml"))
-    return [j.name for j in desc.joints]
+def _manifest(model: str = "g1") -> RobotDescription:
+    return RobotDescription.from_yaml(str(_REPO / "robots" / model / "robot.yaml"))
+
+
+def _manifest_joints(model: str = "g1") -> list[str]:
+    return [j.name for j in _manifest(model).joints]
+
+
+def _cm(model: str) -> Path:
+    return _PKG / "config" / model / "controller_manager.yaml"
 
 
 def _params(doc: dict[str, Any], controller: str) -> dict[str, Any]:
@@ -86,17 +105,35 @@ def _load_tool() -> types.ModuleType:
     return module
 
 
-def _ready_policies() -> list[Path]:
-    return [p for p in _POLICIES if _yaml(p)["openral_policy"]["status"] == "ready"]
+def _ready_policies() -> list[Any]:  # reason: pytest.param's ParameterSet is private
+    return [
+        pytest.param(m, p, id=f"{m}-{p.stem}")
+        for m, p in _ALL_POLICIES
+        if _yaml(p)["openral_policy"]["status"] == "ready"
+    ]
+
+
+def _resolve_gains(base: dict[str, Any], policy: dict[str, Any], gain: str) -> list[Any]:
+    """Emulates isaac_ros_deploy gain_utils: patterns in param-name order, later match wins."""
+    patterns = dict(sorted({**base[gain], **policy[gain]}.items()))  # std::map order
+    resolved = []
+    for joint in policy["joints"]:
+        value = None
+        for pattern, v in patterns.items():
+            if re.fullmatch(pattern, joint):
+                value = v
+        resolved.append(value)
+    return resolved
 
 
 # ── controller_manager.yaml ───────────────────────────────────────────────────
 
 
-def test_whole_body_controllers_cover_exactly_the_manifest_joints() -> None:
-    """Broadcaster, safety and freeze each span the 29 manifest joints — no hands, no gaps."""
-    doc = _yaml(_CONTROLLER_MANAGER)
-    manifest = _manifest_joints()
+@pytest.mark.parametrize("model", _MODELS)
+def test_whole_body_controllers_cover_exactly_the_manifest_joints(model: str) -> None:
+    """Broadcaster, safety and freeze each span the manifest joints — no hands, no gaps."""
+    doc = _yaml(_cm(model))
+    manifest = _manifest_joints(model)
     for controller in ("joint_state_broadcaster", "safety_controller", "freeze_controller"):
         joints = _params(doc, controller)["joints"]
         assert len(joints) == len(set(joints)), f"{controller} lists a joint twice"
@@ -106,12 +143,13 @@ def test_whole_body_controllers_cover_exactly_the_manifest_joints() -> None:
         )
 
 
-def test_every_declared_controller_type_is_a_known_plugin() -> None:
+@pytest.mark.parametrize("model", _MODELS)
+def test_every_declared_controller_type_is_a_known_plugin(model: str) -> None:
     """Upstream plugins, except safety_controller and inference_controller, which run
     through OpenRAL's guards (#548, #565)."""
     types_ = {
         name: spec["type"]
-        for name, spec in _params(_yaml(_CONTROLLER_MANAGER), "controller_manager").items()
+        for name, spec in _params(_yaml(_cm(model)), "controller_manager").items()
         if isinstance(spec, dict)
     }
     assert types_ == {
@@ -126,22 +164,25 @@ def test_every_declared_controller_type_is_a_known_plugin() -> None:
     }
 
 
-def test_the_safety_controllers_emergency_handover_matches_the_hal_estop() -> None:
+@pytest.mark.parametrize("model", _MODELS)
+def test_the_safety_controllers_emergency_handover_matches_the_hal_estop(model: str) -> None:
     """Upstream's own out-of-domain swap and `/openral/estop` move the same controllers."""
-    ood = _params(_yaml(_CONTROLLER_MANAGER), "safety_controller")["out_of_domain_detection"]
-    hal = UnitreeHgRealHAL()
+    ood = _params(_yaml(_cm(model)), "safety_controller")["out_of_domain_detection"]
+    hal = UnitreeHgRealHAL(robot_model=model)
     assert ood["emergency_controller"] == hal.freeze_controller
     assert ood["deactivate_controllers"] == hal.controller_names()
 
 
-def test_the_policy_starts_blended_out() -> None:
+@pytest.mark.parametrize("model", _MODELS)
+def test_the_policy_starts_blended_out(model: str) -> None:
     """Nothing in OpenRAL raises blend_ratio; the operator does, on the gantry."""
-    assert _params(_yaml(_CONTROLLER_MANAGER), "safety_controller")["blend_ratio"] == 0.0
+    assert _params(_yaml(_cm(model)), "safety_controller")["blend_ratio"] == 0.0
 
 
-def test_the_blend_ramp_is_within_the_guards_cap() -> None:
+@pytest.mark.parametrize("model", _MODELS)
+def test_the_blend_ramp_is_within_the_guards_cap(model: str) -> None:
     """GuardedSafetyController refuses to configure outside (0, 1.0] /s (issue #548)."""
-    speed = _params(_yaml(_CONTROLLER_MANAGER), "safety_controller")["max_blend_ratio_speed"]
+    speed = _params(_yaml(_cm(model)), "safety_controller")["max_blend_ratio_speed"]
     assert 0.0 < speed <= 1.0
 
 
@@ -159,21 +200,23 @@ def test_the_guarded_plugin_is_exported_under_the_configured_name() -> None:
     assert "controller_interface openral_hal_unitree_controllers.xml" in cmake
 
 
-def test_the_upper_body_controller_listens_where_the_hal_publishes() -> None:
-    fwd = _params(_yaml(_CONTROLLER_MANAGER), "upper_body_forward_joint_command_controller")
+@pytest.mark.parametrize("model", _MODELS)
+def test_the_upper_body_controller_listens_where_the_hal_publishes(model: str) -> None:
+    fwd = _params(_yaml(_cm(model)), "upper_body_forward_joint_command_controller")
     # Exactly one input mode may be set upstream; OpenRAL uses the chunked one.
     assert fwd["joint_command_trajectory_topic"] == "~/joint_commands_trajectory"
     assert "joint_command_topic" not in fwd and "joint_state_topic" not in fwd
     resolved = "/upper_body_forward_joint_command_controller/joint_commands_trajectory"
-    bindings = UnitreeHgRealHAL().command_bindings()
+    bindings = UnitreeHgRealHAL(robot_model=model).command_bindings()
     assert bindings[resolved] is ControllerKind.JOINT_COMMAND_TRAJECTORY
     # Holds its activation pose until commanded (no upstream `default_position` homing).
     assert "default_position" not in fwd
 
 
-def test_manager_rate_is_upstreams_200_hz() -> None:
+@pytest.mark.parametrize("model", _MODELS)
+def test_manager_rate_is_upstreams_200_hz(model: str) -> None:
     """The README's rate table is pinned to the file, so it cannot quietly go stale."""
-    assert _params(_yaml(_CONTROLLER_MANAGER), "controller_manager")["update_rate"] == 200
+    assert _params(_yaml(_cm(model)), "controller_manager")["update_rate"] == 200
 
 
 # ── policies/*.yaml ───────────────────────────────────────────────────────────
@@ -185,16 +228,18 @@ def test_both_policies_are_ready_and_gr00t_wbc_is_the_default() -> None:
     assert statuses == {"agile_velocity": "ready", "gr00t_decoupled_wbc": "ready"}
     desc = RobotDescription.from_yaml(str(_REPO / "robots" / "g1" / "robot.yaml"))
     assert desc.hal.parameters.defaults["s0_policy"] == "gr00t_decoupled_wbc"
-    assert _load_launch_module()._DEFAULT_POLICY == "gr00t_decoupled_wbc"
+    assert _load_launch_module()._DEFAULT_POLICIES["g1"] == "gr00t_decoupled_wbc"
     assert UnitreeHgRealHAL().s0_policy == "gr00t_decoupled_wbc"
 
 
-@pytest.mark.parametrize("policy", _ready_policies(), ids=lambda p: p.stem)
-def test_a_ready_policy_splits_the_body_disjointly_between_s0_and_openral(policy: Path) -> None:
+@pytest.mark.parametrize(("model", "policy"), _ready_policies())
+def test_a_ready_policy_splits_the_body_disjointly_between_s0_and_openral(
+    model: str, policy: Path
+) -> None:
     doc = _yaml(policy)
     s0 = doc["openral_policy"]["s0_joints"]
     upper = _params(doc["controllers"], "upper_body_forward_joint_command_controller")["joints"]
-    manifest = set(_manifest_joints())
+    manifest = set(_manifest_joints(model))
     assert not set(s0) & set(upper)
     assert set(s0) | set(upper) == manifest
     assert len(s0) + len(upper) == len(manifest)
@@ -233,27 +278,17 @@ def test_gr00t_split_matches_the_bundle_action_and_the_hal() -> None:
 
 def test_gr00t_arm_gains_resolve_to_the_g1_motor_gains() -> None:
     """Emulates isaac_ros_deploy gain_utils: patterns in param-name order, later match wins."""
-    import re
-
     base = _params(_yaml(_CONTROLLER_MANAGER), "upper_body_forward_joint_command_controller")
     doc = _yaml(_G1_CONFIG / "policies" / "gr00t_decoupled_wbc.yaml")
     policy = _params(doc["controllers"], "upper_body_forward_joint_command_controller")
     expected_kp = [100.0, 100.0, 40.0, 40.0, 20.0, 20.0, 20.0] * 2
     expected_kd = [5.0, 5.0, 2.0, 2.0, 2.0, 2.0, 2.0] * 2
     for gain, expected in (("kp", expected_kp), ("kd", expected_kd)):
-        patterns = dict(sorted({**base[gain], **policy[gain]}.items()))  # std::map order
-        resolved = []
-        for joint in policy["joints"]:
-            value = None
-            for pattern, v in patterns.items():
-                if re.fullmatch(pattern, joint):
-                    value = v
-            resolved.append(value)
-        assert resolved == expected, gain
+        assert _resolve_gains(base, policy, gain) == expected, gain
 
 
-@pytest.mark.parametrize("policy", _ready_policies(), ids=lambda p: p.stem)
-def test_a_ready_policys_velocity_source_is_the_hal_twist_topic(policy: Path) -> None:
+@pytest.mark.parametrize(("model", "policy"), _ready_policies())
+def test_a_ready_policys_velocity_source_is_the_hal_twist_topic(model: str, policy: Path) -> None:
     doc = _yaml(policy)
     meta = doc["openral_policy"]
     inference = _params(doc["controllers"], "inference_controller")
@@ -266,7 +301,7 @@ def test_a_ready_policys_velocity_source_is_the_hal_twist_topic(policy: Path) ->
         "command/body/velocity": meta["velocity_command_type"]
     }
     assert meta["velocity_command_type"] == "geometry_msgs/msg/Twist"
-    hal = UnitreeHgRealHAL(s0_policy=policy.stem)
+    hal = UnitreeHgRealHAL(robot_model=model, s0_policy=policy.stem)
     assert hal.command_bindings()[topic] is ControllerKind.TWIST
     # Writes through the safety controller like upstream's agile_velocity group.
     assert inference["command_prefix"] == "safety_controller"
@@ -280,9 +315,11 @@ def test_a_ready_policys_velocity_source_is_the_hal_twist_topic(policy: Path) ->
 # ── stale-input watchdog must be enforced, never silently ignored (#565) ──────
 
 
-@pytest.mark.parametrize("policy", _ready_policies(), ids=lambda p: p.stem)
-def test_a_shipped_policys_watchdog_is_enforced_by_the_configured_type(policy: Path) -> None:
-    require_watchdog_enforced(load_s0_policy(policy), _yaml(_CONTROLLER_MANAGER))
+@pytest.mark.parametrize(("model", "policy"), _ready_policies())
+def test_a_shipped_policys_watchdog_is_enforced_by_the_configured_type(
+    model: str, policy: Path
+) -> None:
+    require_watchdog_enforced(load_s0_policy(policy), _yaml(_cm(model)))
 
 
 def test_the_watchdog_keys_on_upstreams_inference_controller_are_refused() -> None:
@@ -356,16 +393,49 @@ def test_a_policy_without_a_positive_float_timeout_is_refused(
 # ── launch file (pure helpers; no ROS) ────────────────────────────────────────
 
 
-def test_launch_chain_and_defaults_agree_with_the_hal_and_manifest() -> None:
+@pytest.mark.parametrize("model", _MODELS)
+def test_launch_chain_and_defaults_agree_with_the_hal_and_manifest(model: str) -> None:
     launch = _load_launch_module()
-    assert list(launch._S0_CHAIN) == UnitreeHgRealHAL().controller_names()
-    assert UnitreeHgRealHAL().freeze_controller == launch._HOLD_CONTROLLER
-    desc = RobotDescription.from_yaml(str(_REPO / "robots" / "g1" / "robot.yaml"))
+    assert launch._ROBOT_MODELS == _MODELS
+    assert set(launch._XACRO) == set(_MODELS) == set(launch._DEFAULT_POLICIES)
+    hal = UnitreeHgRealHAL(robot_model=model)
+    assert list(launch._S0_CHAIN) == hal.controller_names()
+    assert hal.freeze_controller == launch._HOLD_CONTROLLER
+    desc = _manifest(model)
+    assert desc.hal.real == "openral_hal.unitree_real:UnitreeHgRealHAL"
     assert desc.hal.real_bringup == f"{launch._PACKAGE}:{_LAUNCH.name}"
-    assert desc.hal.parameters.defaults["robot_model"] == launch._DEFAULT_ROBOT_MODEL
-    assert desc.hal.parameters.defaults["s0_policy"] == launch._DEFAULT_POLICY
-    assert launch._DEFAULT_ROBOT_MODEL in launch._ROBOT_MODELS
-    assert s0_policy_path(launch._DEFAULT_ROBOT_MODEL, launch._DEFAULT_POLICY).is_file()
+    assert desc.hal.parameters.defaults["robot_model"] == model
+    assert desc.hal.parameters.defaults["s0_policy"] == launch._DEFAULT_POLICIES[model]
+    assert hal.s0_policy == launch._DEFAULT_POLICIES[model]
+    assert s0_policy_path(model, launch._DEFAULT_POLICIES[model]).is_file()
+
+
+@pytest.mark.parametrize(
+    ("model", "policy"), [("g1", "gr00t_decoupled_wbc"), ("h2", "agile_velocity")]
+)
+def test_under_deploy_the_model_and_policy_come_from_the_manifest(model: str, policy: str) -> None:
+    """`deploy run` forwards no launch arguments; its `robot_yaml` names the robot."""
+    resolve = _load_launch_module().resolve_model_and_policy
+    robot_yaml = str(_REPO / "robots" / model / "robot.yaml")
+    assert resolve("", "", robot_yaml) == (model, policy)
+    # An explicit policy is honoured (the HAL then needs `--hal s0_policy=`).
+    if model == "g1":
+        assert resolve("", "agile_velocity", robot_yaml) == ("g1", "agile_velocity")
+    # A model that contradicts the deployed manifest would drive the other robot's joint table.
+    other = "h2" if model == "g1" else "g1"
+    with pytest.raises(ROSConfigError, match="contradicts"):
+        resolve(other, "", robot_yaml)
+
+
+def test_a_hand_run_must_name_the_model() -> None:
+    """No manifest, no guess: the G1 and H2 graphs drive different joint tables."""
+    resolve = _load_launch_module().resolve_model_and_policy
+    with pytest.raises(ROSConfigError, match="hand run must name it"):
+        resolve("", "", None)
+    with pytest.raises(ROSConfigError, match="not one of"):
+        resolve("h7", "", None)
+    assert resolve("h2", "", None) == ("h2", "agile_velocity")
+    assert resolve("g1", "", None) == ("g1", "gr00t_decoupled_wbc")
 
 
 def test_a_placeholder_or_missing_policy_is_refused(tmp_path: Path) -> None:
@@ -458,3 +528,162 @@ def test_joint_names_and_order_match_nvidias_real_g1_ros2_control_xacro() -> Non
     assert set(upstream) == set(_manifest_joints())
     broadcaster = _params(_yaml(_CONTROLLER_MANAGER), "joint_state_broadcaster")["joints"]
     assert broadcaster == upstream
+
+
+# ── H2: joint order, NVIDIA's hardware table, the AGILE export ────────────────
+
+#: NVIDIA's H2 motor table: `h2_body_joint_index_table()` in
+#: `unitree_hg/unitree_hg_ros2_control/src/joint_index_tables.cpp` @ 520aa94f. The H2 has
+#: no NVIDIA description, so this table is the upstream contract the xacro must meet.
+_H2_TABLE = Path("unitree_hg/unitree_hg_ros2_control/src/joint_index_tables.cpp")
+#: The AGILE export's directory override (else the policy file's `bundle_dir`).
+_H2_AGILE_ENV = "OPENRAL_H2_AGILE_DIR"
+
+
+def _xacro_joints(text: str, system: str) -> list[str]:
+    body = text.split(f'<ros2_control name="{system}"', 1)[1].split("</ros2_control>", 1)[0]
+    return re.findall(r'<xacro:real_joint name="([^"]+)"', body)
+
+
+def test_h2_whole_body_order_is_the_xacro_order_is_sdk_motor_order() -> None:
+    """Manifest = xacro = every whole-body list: ankle roll before pitch, head last."""
+    xacro = _xacro_joints(_H2_XACRO.read_text(encoding="utf-8"), "UnitreeH2System")
+    manifest = _manifest_joints("h2")
+    assert len(xacro) == 31
+    assert xacro == manifest
+    assert xacro.index("left_ankle_roll_joint") < xacro.index("left_ankle_pitch_joint")
+    assert xacro[-2:] == ["head_pitch_joint", "head_yaw_joint"]
+    doc = _yaml(_cm("h2"))
+    for controller in ("joint_state_broadcaster", "safety_controller", "freeze_controller"):
+        assert _params(doc, controller)["joints"] == xacro, controller
+    text = _H2_XACRO.read_text(encoding="utf-8")
+    assert "<plugin>unitree_hg_ros2_control/UnitreeHgSystemInterface</plugin>" in text
+    assert '<param name="robot_variant">h2</param>' in text
+
+
+def test_h2_xacro_joints_match_nvidias_h2_motor_table() -> None:
+    """Name AND SDK-index parity with the pinned hardware interface's H2 table.
+
+    Runs where `$OPENRAL_ISAAC_ROS_ROBOTS_SRC` points at an isaac_ros_robots checkout (the
+    deps.repos pin); the installed package ships no sources, so it skips otherwise.
+    """
+    src = os.environ.get(_UPSTREAM_XACRO_ENV)
+    if not src or not (Path(src) / _H2_TABLE).is_file():
+        pytest.skip(
+            f"${_UPSTREAM_XACRO_ENV} unset or not an isaac_ros_robots checkout — "
+            "vcs import packages/openral_hal_unitree/deps.repos"
+        )
+    cpp = (Path(src) / _H2_TABLE).read_text(encoding="utf-8")
+    body = cpp.split("h2_body_joint_index_table()", 1)[1].split("return table;", 1)[0]
+    table = re.findall(r'\{"([a-z_]+)", (\d+)\}', body)
+    assert [int(i) for _, i in table] == list(range(31))
+    xacro = _xacro_joints(_H2_XACRO.read_text(encoding="utf-8"), "UnitreeH2System")
+    assert [n for n, _ in table] == xacro
+
+
+def test_h2_xacro_renders_31_controlled_joints_of_the_pinned_urdf() -> None:
+    """`xacro` expands the include + macro; every controlled joint is a URDF joint."""
+    exe = shutil.which("xacro")
+    if exe is None:
+        pytest.skip("xacro not on PATH — source ROS 2")
+    from openral_hal._unitree_h2_assets import ensure_h2_urdf
+
+    try:
+        body = ensure_h2_urdf()
+    except ROSConfigError as exc:
+        pytest.skip(f"pinned H2.urdf unavailable: {exc}")
+    out = subprocess.run(
+        [exe, str(_H2_XACRO), f"body_urdf:={body}", "network_interface:=enp3s0"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert out.returncode == 0, out.stderr
+    import xml.etree.ElementTree as ET
+
+    root = ET.fromstring(out.stdout)
+    (control,) = root.findall("ros2_control")
+    controlled = [j.get("name") for j in control.findall("joint")]
+    assert controlled == _manifest_joints("h2")
+    movable = {j.get("name") for j in root.findall("joint") if j.get("type") != "fixed"}
+    assert set(controlled) == movable
+    params = {p.get("name"): p.text for p in control.find("hardware").findall("param")}  # type: ignore[union-attr] # reason: asserted present by the system block
+    assert params["robot_variant"] == "h2" and params["network_interface"] == "enp3s0"
+    assert root.find("link[@name='imu_in_pelvis']") is not None  # imu_sensor_broadcaster frame
+
+
+def test_h2_agile_split_and_upper_body_gains() -> None:
+    """AGILE owns legs + waist roll/pitch; OpenRAL keeps waist yaw, both arms and the head,
+    at the gains the policy was trained with (the export's default stiffness/damping)."""
+    doc = _yaml(_H2_CONFIG / "policies" / "agile_velocity.yaml")
+    s0 = doc["openral_policy"]["s0_joints"]
+    assert {"waist_roll_joint", "waist_pitch_joint"} <= set(s0)
+    assert len(s0) == 14 and all(
+        "hip" in j or "knee" in j or "ankle" in j or "waist" in j for j in s0
+    )
+    hal = UnitreeHgRealHAL(robot_model="h2")
+    upper = _params(doc["controllers"], "upper_body_forward_joint_command_controller")
+    assert upper["joints"] == hal.upper_body_joints()
+    assert set(s0) == set(hal.s0_joints())
+    assert {"waist_yaw_joint", "head_pitch_joint", "head_yaw_joint"} <= set(upper["joints"])
+    base = _params(_yaml(_cm("h2")), "upper_body_forward_joint_command_controller")
+    arm_kp = [90.0, 60.0, 20.0, 60.0, 4.0, 4.0, 4.0]
+    arm_kd = [2.0, 1.0, 0.4, 1.0, 0.2, 0.2, 0.2]
+    assert _resolve_gains(base, upper, "kp") == [300.0, *arm_kp, *arm_kp, 100.0, 100.0]
+    assert _resolve_gains(base, upper, "kd") == [5.0, *arm_kd, *arm_kd, 5.0, 5.0]
+    assert 200 / _params(doc["controllers"], "inference_controller")["decimation"] == 50.0
+
+
+def _h2_agile_export() -> Path:
+    meta = load_s0_policy(s0_policy_path("h2", "agile_velocity")).openral_policy
+    override = os.environ.get(_H2_AGILE_ENV)
+    bundle = Path(override) if override else Path(str(meta.bundle_dir)).expanduser()
+    if not (bundle / meta.leapp_config).is_file():
+        pytest.skip(
+            f"H2 AGILE export not downloaded — hf download {meta.hf_repo} --revision "
+            f"{meta.hf_revision} --local-dir {meta.bundle_dir} (or set ${_H2_AGILE_ENV})"
+        )
+    return bundle / meta.leapp_config
+
+
+def test_h2_agile_policy_file_matches_the_pinned_export() -> None:
+    """Split, rate, joints and gains against the export itself (pins verified first)."""
+    path = _h2_agile_export()
+    policy = load_s0_policy(s0_policy_path("h2", "agile_velocity"))
+    if not os.environ.get(_H2_AGILE_ENV):
+        assert resolve_leapp_config(policy, "") == path  # SHA-256 pins checked here
+    export = _yaml(path)
+    (model,) = export["models"].values()
+    out = {o["name"]: o for o in model["outputs"]}
+    action = out["joint_pos"]["element_names"][0]
+    assert set(action) == set(policy.openral_policy.s0_joints)
+    assert out["joint_pos_kp_gains"]["element_names"][0] == action
+    inputs = {i["name"]: i for i in model["inputs"]}
+    assert set(inputs["robot_joint_pos"]["element_names"][0]) == set(_manifest_joints("h2"))
+    assert inputs["base_velocity"]["kind"] == "command/body/velocity"
+    assert export["pipeline"]["configs"]["frequency"] == 50.0
+    assert model["parameters"]["sha256sum"] == policy.openral_policy.sha256["agile_velocity.onnx"]
+    art = export["agile"]["articulations"]["robot"]
+    stiffness = dict(zip(art["joint_names"], art["default_joint_stiffness"], strict=True))
+    damping = dict(zip(art["joint_names"], art["default_joint_damping"], strict=True))
+    base = _params(_yaml(_cm("h2")), "upper_body_forward_joint_command_controller")
+    upper = _params(policy.controllers, "upper_body_forward_joint_command_controller")
+    assert _resolve_gains(base, upper, "kp") == pytest.approx(
+        [stiffness[j] for j in upper["joints"]]
+    )
+    assert _resolve_gains(base, upper, "kd") == pytest.approx([damping[j] for j in upper["joints"]])
+
+
+def test_a_bundle_that_fails_its_pins_is_refused(tmp_path: Path) -> None:
+    """The Hub bundle is checked file by file; a missing one names the download command."""
+    policy = load_s0_policy(s0_policy_path("h2", "agile_velocity"))
+    meta = policy.openral_policy.model_copy(update={"bundle_dir": str(tmp_path)})
+    moved = policy.model_copy(update={"openral_policy": meta})
+    with pytest.raises(ROSConfigError, match="hf download nvidia/agile_wbc_unitree_h2"):
+        resolve_leapp_config(moved, "")
+    for name in meta.sha256:
+        (tmp_path / name).write_text("not the export\n", encoding="utf-8")
+    with pytest.raises(ROSConfigError, match="SHA-256 mismatch"):
+        resolve_leapp_config(moved, "")
+    # The explicit override stays the operator's escape hatch, unchecked.
+    assert resolve_leapp_config(moved, str(tmp_path / meta.leapp_config)).is_file()

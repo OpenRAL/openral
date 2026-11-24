@@ -3,8 +3,9 @@ project(openral_hal_unitree)
 
 # Bringup-only package: the Unitree hg HAL node itself is the generic
 # `openral_hal_node` (openral_hal.unitree_real:UnitreeHgRealHAL). This installs the
-# NVIDIA ros2_control bringup + per-model / per-policy controller configs that
-# `robots/g1/robot.yaml` names through `hal.real_bringup`.
+# NVIDIA ros2_control bringup + per-model / per-policy controller configs (and the H2's
+# real-hardware xacro, which NVIDIA does not ship) that `robots/g1/robot.yaml` and
+# `robots/h2/robot.yaml` name through `hal.real_bringup`.
 find_package(ament_cmake REQUIRED)
 
 # GuardedSafetyController (issues #548, #565) and GuardedInferenceController (#565) subclass
@@ -63,7 +64,7 @@ else()
 endif()
 
 install(
-  DIRECTORY launch config
+  DIRECTORY launch config urdf
   DESTINATION share/${PROJECT_NAME}
 )
 

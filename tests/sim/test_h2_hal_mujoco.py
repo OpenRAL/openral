@@ -1,9 +1,10 @@
 """Sim tests for ``openral_hal.H2MujocoHAL`` against real MuJoCo physics.
 
 These tests load Unitree's official H2 MJCF (``unitree_mujoco`` @ ``1eb6642e``,
-fetched pinned with per-file SHA-256 by ``openral_hal._unitree_h2_assets``) and
-exercise the full HAL lifecycle — connect → read_state → send_action → idle_step
-→ estop / disconnect — against a real ``mj_step`` loop. No mocks.
+fetched pinned with per-file SHA-256 by ``openral_hal._unitree_h2_assets``, with
+the URDF's wrist-pitch fix applied) and exercise the full HAL lifecycle — connect →
+read_state → send_action → idle_step → estop / disconnect — against a real
+``mj_step`` loop. No mocks.
 
 The point is the H2 "real hardware first day" contract (CLAUDE.md §1.11): the
 31-DoF action layout is unitree_sdk2 motor order, the qpos addressing survives
@@ -12,8 +13,8 @@ the torque ``motor`` actuators tracks position targets. The twin runs with
 gravity ON and the free joint pinned upright (ADR-0087), like the G1 glide.
 
 Upstream drift guards pin facts the manifest documents: the URDF joint limits,
-the SDK motor order, the URDF/MJCF mass difference and the URDF/MJCF wrist-pitch
-disagreement — a silent upstream change fails here first.
+the SDK motor order, the URDF/MJCF mass difference and the twin's wrist-pitch fix — a silent
+upstream change fails here first.
 """
 
 from __future__ import annotations
@@ -160,9 +161,11 @@ class TestH2Description:
         assert desc.sim.joint_qpos_addr == H2_DESCRIPTION.sim.joint_qpos_addr
         assert desc.sim.joint_qvel_addr == H2_DESCRIPTION.sim.joint_qvel_addr
 
-    def test_sim_only_no_real_hal(self) -> None:
+    def test_hal_entrypoints(self) -> None:
         assert H2_DESCRIPTION.hal.sim == "openral_hal.h2:H2MujocoHAL"
-        assert H2_DESCRIPTION.hal.real is None
+        # Real hardware: the Unitree hg HAL over NVIDIA's ros2_control stack (issue #513).
+        assert H2_DESCRIPTION.hal.real == "openral_hal.unitree_real:UnitreeHgRealHAL"
+        assert H2_DESCRIPTION.hal.parameters.defaults["robot_model"] == "h2"
 
     def test_humanoid_tags_and_modes(self) -> None:
         caps = H2_DESCRIPTION.capabilities
@@ -253,21 +256,33 @@ class TestUpstreamAssets:
         assert mjcf_explicit == pytest.approx(67.040, abs=1e-3)
         assert float(sum(_model().body_mass)) == pytest.approx(71.288, abs=1e-2)
 
-    def test_urdf_and_mjcf_disagree_on_wrist_pitch_origin(self) -> None:
-        # unitree_ros H2.urdf puts the wrist-pitch joint 0.079 m past wrist-roll;
-        # unitree_mujoco h2_mujoco.xml puts it at 0.038 m (the wrist-yaw offset
-        # absorbs the difference). The manifest follows the URDF (safety-kernel
-        # FK); the twin runs the MJCF. If upstream reconciles, update both.
-        assert _URDF_PATH is not None
+    def test_twin_wrist_pitch_axis_follows_the_fixed_urdf(self) -> None:
+        # unitree_ros moved the wrist-pitch axis from 0.038 m to 0.079 m past
+        # wrist roll (25746e8c / 2ded279c, in the pinned 41dec58c); unitree_mujoco
+        # still has 0.038 m. ensure_h2_mjcf applies the same fix, so the twin's
+        # wrist pitch and yaw frames are the URDF's, and the pinned upstream MJCF
+        # still carries the old placement (a re-pin that picks up the fix fails here).
+        assert _URDF_PATH is not None and _MJCF_PATH is not None
         urdf = {j.get("name"): j for j in ET.parse(_URDF_PATH).getroot().iter("joint")}
-        origin = urdf["left_wrist_pitch_joint"].find("origin")
-        assert origin is not None
-        urdf_x = float(origin.get("xyz", "nan").split()[0])
+        upstream = mujoco.MjModel.from_xml_path(str(_MJCF_PATH.parent / "h2_mujoco.xml"))
         model = _model()
-        body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "left_wrist_pitch_link")
-        mjcf_x = float(model.body_pos[body][0])
-        assert urdf_x == pytest.approx(0.079007)
-        assert mjcf_x == pytest.approx(0.037994)
+        for side in ("left", "right"):
+            for link, joint in (("wrist_pitch", "wrist_pitch"), ("wrist_yaw", "wrist_yaw")):
+                origin = urdf[f"{side}_{joint}_joint"].find("origin")
+                assert origin is not None
+                want = [float(v) for v in origin.get("xyz", "").split()]
+                body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"{side}_{link}_link")
+                assert list(model.body_pos[body]) == pytest.approx(want, abs=1e-9)
+            pitch = mujoco.mj_name2id(
+                upstream, mujoco.mjtObj.mjOBJ_BODY, f"{side}_wrist_pitch_link"
+            )
+            assert float(upstream.body_pos[pitch][0]) == pytest.approx(0.037994)
+        # Only the axis moved: every geom and body COM is where upstream puts it at q = 0.
+        data, data_up = mujoco.MjData(model), mujoco.MjData(upstream)
+        mujoco.mj_kinematics(model, data)
+        mujoco.mj_kinematics(upstream, data_up)
+        assert abs(data.geom_xpos - data_up.geom_xpos).max() < 1e-9
+        assert abs(data.xipos - data_up.xipos).max() < 1e-9
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -465,16 +480,16 @@ class TestBodyTwistGlide:
         assert x1 - x0 == pytest.approx(0.5 * 0.05, rel=1e-6)
         assert (y1, yaw1) == pytest.approx((y0, yaw0), abs=1e-9)
 
-    def test_default_twist_interval_without_a_control_rate(self) -> None:
-        # The H2 manifest declares no control rate, so the deploy HAL (no settle pin)
-        # keeps the 0.05 s glide interval, not one 2 ms physics step per twist.
+    def test_default_twist_interval_is_one_control_period(self) -> None:
+        # The manifest declares 50 Hz, so the deploy HAL (no settle pin) integrates one
+        # 20 ms control period per twist, not one 1 ms physics step.
         hal = H2MujocoHAL()
         hal.connect()
         try:
             x0, _, _ = hal.base_pose
             hal.send_action(_twist_action(vx=0.5))
             x1, _, _ = hal.base_pose
-            assert x1 - x0 == pytest.approx(0.5 * 0.05, rel=1e-6)
+            assert x1 - x0 == pytest.approx(0.5 * 0.02, rel=1e-6)
         finally:
             hal.disconnect()
 

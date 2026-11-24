@@ -1,0 +1,219 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Policy-independent ros2_control graph for the real Unitree H2 (31 DoF), brought up by
+# `openral_hal_unitree/launch/real_bringup.launch.py robot_model:=h2`.
+#
+# The G1 file (../g1/controller_manager.yaml) with the H2's joints. NVIDIA ships no H2
+# bringup or description at isaac_ros_robots @ 520aa94ffb7732467870a87dcb66a8bfd33cbe60 —
+# only the H2 row of the hardware interface (`unitree_hg_ros2_control`,
+# `robot_variant: h2`, src/joint_index_tables.cpp `h2_body_joint_index_table`). So the
+# robot_description is OpenRAL's `urdf/h2_real_hardware.urdf.xacro` (the pinned
+# unitree_ros H2.urdf + a ros2_control block), and every whole-body joint list below is in
+# that table's order = unitree_sdk2 motor order = robots/h2/robot.yaml: legs with the
+# ankle ROLL before pitch (the opposite of the G1), waist yaw/roll/pitch, arms, then
+# head pitch/yaw (motors 29-30). Test-enforced against the manifest, the xacro and, where
+# an isaac_ros_robots checkout is available, upstream's table.
+#
+# Same deliberate differences from upstream's G1 config as the G1 file (only the S0
+# controllers; the upper-body controller holds its activation pose until commanded and
+# subscribes node-privately). The policy-dependent half lives in `policies/<policy>.yaml`.
+#
+# Rate: 200 Hz controller manager, the policy at 200 / decimation (AGILE: 50 Hz) — the
+# G1's validated rate, NOT yet run on an H2 (see this package's README "Rates").
+#
+# Gains below (freeze 10/1, safety 100/2) are the G1's, unchanged: no H2 hardware value
+# has been measured. On a ~70 kg robot with 360 N·m hips the freeze hold is even further
+# from balancing than on the G1 — the robot stays on its gantry (README "E-stop").
+
+controller_manager:
+  ros__parameters:
+    update_rate: 200  # Hz — the G1's validated rate; unvalidated on an H2 (README "Rates")
+    # Command limiting is owned by safety_controller (upstream rationale: the manager's
+    # own limit enforcement deactivates the whole chain on a 0.5 deg overshoot).
+    enforce_command_limits: false
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+    imu_sensor_broadcaster:
+      type: imu_sensor_broadcaster/IMUSensorBroadcaster
+    # Position hold with low-gain impedance; the e-stop and safety_controller's
+    # out-of-domain detector both hand the joints to it.
+    freeze_controller:
+      type: isaac_ros_deploy_ros2_control/FreezeController
+    # Chainable: blends, rate-limits and range-checks everything the two controllers
+    # below write into its `<joint>/<interface>_raw` reference interfaces. NVIDIA's
+    # SafetyController through OpenRAL's guard (src/guarded_safety_controller.cpp,
+    # issue #548): max_blend_ratio_speed is fixed at configure and capped at 1.0 /s,
+    # and every activation resets blend_ratio to 0.0 (starts blended out).
+    safety_controller:
+      type: openral_hal_unitree/GuardedSafetyController
+    # The S0 whole-body policy (ONNX through Triton). Owns the legs; see policies/.
+    # NVIDIA's InferenceController through OpenRAL's guard (src/guarded_inference_controller.cpp,
+    # issue #565): the Jazzy release (v4.6) has no stale-input watchdog, so the guard adds
+    # v5.0's `topic_input_timeout_ms` — a stale velocity command invalidates the policy's
+    # output and safety_controller holds the pose captured at stale entry.
+    inference_controller:
+      type: openral_hal_unitree/GuardedInferenceController
+    # What OpenRAL's Python HAL commands: the upper-body joints, nothing else.
+    upper_body_forward_joint_command_controller:
+      type: isaac_ros_deploy_ros2_control/ForwardJointCommandController
+
+joint_state_broadcaster:
+  ros__parameters:
+    joints:
+      - left_hip_pitch_joint
+      - left_hip_roll_joint
+      - left_hip_yaw_joint
+      - left_knee_joint
+      - left_ankle_roll_joint
+      - left_ankle_pitch_joint
+      - right_hip_pitch_joint
+      - right_hip_roll_joint
+      - right_hip_yaw_joint
+      - right_knee_joint
+      - right_ankle_roll_joint
+      - right_ankle_pitch_joint
+      - waist_yaw_joint
+      - waist_roll_joint
+      - waist_pitch_joint
+      - left_shoulder_pitch_joint
+      - left_shoulder_roll_joint
+      - left_shoulder_yaw_joint
+      - left_elbow_joint
+      - left_wrist_roll_joint
+      - left_wrist_pitch_joint
+      - left_wrist_yaw_joint
+      - right_shoulder_pitch_joint
+      - right_shoulder_roll_joint
+      - right_shoulder_yaw_joint
+      - right_elbow_joint
+      - right_wrist_roll_joint
+      - right_wrist_pitch_joint
+      - right_wrist_yaw_joint
+      - head_pitch_joint
+      - head_yaw_joint
+    interfaces:
+      - position
+      - velocity
+      - effort
+
+imu_sensor_broadcaster:
+  ros__parameters:
+    sensor_name: imu
+    frame_id: imu_in_pelvis
+
+# The G1's SDK-matched hold gains. NOT a balance controller: a free-standing H2 handed
+# to it is held stiffly at its measured pose and can still fall. See README "E-stop".
+freeze_controller:
+  ros__parameters:
+    kp:
+      ".*": 10.0
+    kd:
+      ".*": 1.0
+    joints:
+      - left_hip_pitch_joint
+      - left_hip_roll_joint
+      - left_hip_yaw_joint
+      - left_knee_joint
+      - left_ankle_roll_joint
+      - left_ankle_pitch_joint
+      - right_hip_pitch_joint
+      - right_hip_roll_joint
+      - right_hip_yaw_joint
+      - right_knee_joint
+      - right_ankle_roll_joint
+      - right_ankle_pitch_joint
+      - waist_yaw_joint
+      - waist_roll_joint
+      - waist_pitch_joint
+      - left_shoulder_pitch_joint
+      - left_shoulder_roll_joint
+      - left_shoulder_yaw_joint
+      - left_elbow_joint
+      - left_wrist_roll_joint
+      - left_wrist_pitch_joint
+      - left_wrist_yaw_joint
+      - right_shoulder_pitch_joint
+      - right_shoulder_roll_joint
+      - right_shoulder_yaw_joint
+      - right_elbow_joint
+      - right_wrist_roll_joint
+      - right_wrist_pitch_joint
+      - right_wrist_yaw_joint
+      - head_pitch_joint
+      - head_yaw_joint
+
+safety_controller:
+  ros__parameters:
+    blend_strategy: "interpolate"
+    # Per-joint velocity clamp on the interpolated target (regex; unmatched = unclamped).
+    interpolate_max_velocity:
+      ".*(shoulder|elbow|wrist|head).*": 1.2
+    kp:
+      ".*": 100.0
+    kd:
+      ".*": 2.0
+    # 0.0 = policy output fully blended out. Stays 0.0 at bringup on purpose: the operator
+    # raises it (`ros2 param set /safety_controller blend_ratio 1.0`) with the robot on its
+    # gantry, after the first velocity command is flowing. Nothing in OpenRAL raises it.
+    blend_ratio: 0.0
+    # The guard refuses to configure above 1.0 /s or at 0 (0 freezes the blend, so it
+    # could no longer be blended out) and refuses any runtime change.
+    max_blend_ratio_speed: 1.0
+    out_of_domain_detection:
+      velocity_threshold:
+        mean_velocity: 10.0
+        max_velocity: 35.0
+      emergency_controller: "freeze_controller"
+      switch_timeout: 2.0
+      # Jazzy's FORCE_AUTO does not deactivate conflicting controllers, so the safety
+      # controller names the chain it hands over to freeze_controller explicitly —
+      # the same list `UnitreeHgRealHAL.controller_names()` swaps out on /openral/estop.
+      deactivate_controllers:
+        - safety_controller
+        - inference_controller
+        - upper_body_forward_joint_command_controller
+    joints:
+      - left_hip_pitch_joint
+      - left_hip_roll_joint
+      - left_hip_yaw_joint
+      - left_knee_joint
+      - left_ankle_roll_joint
+      - left_ankle_pitch_joint
+      - right_hip_pitch_joint
+      - right_hip_roll_joint
+      - right_hip_yaw_joint
+      - right_knee_joint
+      - right_ankle_roll_joint
+      - right_ankle_pitch_joint
+      - waist_yaw_joint
+      - waist_roll_joint
+      - waist_pitch_joint
+      - left_shoulder_pitch_joint
+      - left_shoulder_roll_joint
+      - left_shoulder_yaw_joint
+      - left_elbow_joint
+      - left_wrist_roll_joint
+      - left_wrist_pitch_joint
+      - left_wrist_yaw_joint
+      - right_shoulder_pitch_joint
+      - right_shoulder_roll_joint
+      - right_shoulder_yaw_joint
+      - right_elbow_joint
+      - right_wrist_roll_joint
+      - right_wrist_pitch_joint
+      - right_wrist_yaw_joint
+      - head_pitch_joint
+      - head_yaw_joint
+
+# Joints come from the policy file (the leg/upper-body split is the policy's).
+upper_body_forward_joint_command_controller:
+  ros__parameters:
+    joint_command_trajectory_topic: "~/joint_commands_trajectory"
+    command_prefix: "safety_controller"
+    command_suffix: "_raw"
+    # Upstream's arm gains (cuMotion IK controller flat gains).
+    kp:
+      ".*": 20.0
+    kd:
+      ".*": 1.0

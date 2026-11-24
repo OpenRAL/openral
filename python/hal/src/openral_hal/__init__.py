@@ -51,8 +51,8 @@ Public surface:
   visual-only wrist bracket; MJCF pinned at a SHA from
   ``bensonlee5/anvil-openarm-mujoco`` via
   ``openral_hal._anvil_openarm_v2_assets`` (``openarm:anvil_v2_bimanual``).
-- ``UnitreeHgRealHAL`` / ``G1_REAL_DESCRIPTION``: real adapter for the Unitree
-  hg humanoids (G1 now) over NVIDIA's isaac_ros_robots / isaac_ros_deploy
+- ``UnitreeHgRealHAL`` / ``G1_REAL_DESCRIPTION`` / ``H2_REAL_DESCRIPTION``: real
+  adapter for the Unitree hg humanoids (G1, H2) over NVIDIA's isaac_ros_robots / isaac_ros_deploy
   ros2_control stack; the legs belong to the C++ S0 whole-body policy, so it
   commands the upper body (JointCommandTrajectory) and a base twist only, and
   its e-stop swaps the S0 chain for ``freeze_controller`` in one request.
@@ -129,6 +129,7 @@ from openral_hal.so100_mujoco import SO100MujocoHAL
 from openral_hal.so100_sim import SO100DigitalTwin, SO100DigitalTwinConfig
 from openral_hal.unitree_real import (
     G1_REAL_DESCRIPTION,
+    H2_REAL_DESCRIPTION,
     UnitreeHgRealHAL,
 )
 from openral_hal.ur import (
@@ -157,6 +158,7 @@ __all__ = [
     "GALAXEA_A1_DESCRIPTION",
     "H1_DESCRIPTION",
     "H2_DESCRIPTION",
+    "H2_REAL_DESCRIPTION",
     "HAL",
     "OPENARM_DESCRIPTION",
     "OPENARM_REAL_DESCRIPTION",

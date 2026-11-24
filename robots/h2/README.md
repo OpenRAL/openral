@@ -2,13 +2,9 @@
 
 Canonical `RobotDescription` manifest for the **Unitree H2** humanoid: 31
 actuated joints (2 × 6 legs + 3 waist + 2 × 7 arms + 2 head), bare wrists, no
-end-effectors. One manifest covers the MuJoCo digital twin (`H2MujocoHAL`) today
-and the real H2 over `unitree_sdk2` later.
-
-**Phase 1 scope:** description + MuJoCo twin + tests. `hal.real` is `null`: the
-real-hardware HAL (`unitree_sdk2` low-level, `rt/lowcmd` / `rt/lowstate`) and the
-C++ S0 whole-body controller are a later phase, owned separately, so
-`deploy run --robot h2` raises `ROSCapabilityMismatch` until then.
+end-effectors. One manifest covers the MuJoCo digital twin (`H2MujocoHAL`) and
+the real H2 (`UnitreeHgRealHAL` over NVIDIA's ros2_control stack, the G1's path —
+see [Real hardware](#real-hardware)).
 
 ## Sources and licences
 
@@ -92,8 +88,8 @@ a software PD loop, `tau = kp (q* - q) - kd dq` clamped to `ctrlrange`, before
 every `mj_step`. It also runs during `idle_step`, so a held pose is actively
 held. The public contract stays "position targets in radians".
 
-The free joint is **pinned upright** every step (the ADR-0087 kinematic glide,
-as on the G1). `BODY_TWIST` slides the pinned base in the plane, and the joints
+By default (`s0_controller: none`) the free joint is **pinned upright** every
+step (the ADR-0087 kinematic glide, as on the G1). `BODY_TWIST` slides the pinned base in the plane, and the joints
 keep their hold targets. The upstream MJCF spawns the pelvis at 1.2 m with the
 feet 0.157 m in the air. On `connect`, the HAL lowers the pin so the lowest
 foot-sphere surface sits on `z = 0`, which puts the pelvis at 1.0425 m.
@@ -110,6 +106,54 @@ joints feel almost no gravity load. The G1 glide behaves the same way. The joint
 convergence tests prove indexing and PD tracking. They do **not** prove that the
 gains hold a gravity-loaded pose.
 
+### Sim S0: `s0_controller: agile_velocity`
+
+`H2MujocoHAL(s0_controller="agile_velocity")` (scene
+[`scenes/deploy/h2_walk.yaml`](../../scenes/deploy/h2_walk.yaml)) runs the real H2's
+S0 export — WBC-AGILE, the pinned and SHA-256-checked Hub bundle below — as a
+**sim-only** Python S0 on the **unpinned** free base, mirroring the G1's
+`gr00t_wbc` mode. Download the bundle first (`hf download nvidia/agile_wbc_unitree_h2
+--revision 222da1df… --local-dir ~/.cache/openral/unitree/h2/agile_velocity`);
+without it the HAL refuses with that command.
+
+- The ONNX steps at its 50 Hz (every 20th 1 ms physics step) with its feedback
+  tensors looped as the C++ `InferenceController` does
+  (`openral_hal._h2_agile_velocity.LeappVelocityPolicy`, shared with the unit
+  rollout test). Inputs are mapped by the export's `element_names`: pelvis angular
+  velocity (MuJoCo free-joint `qvel[3:6]`, body frame), quaternion as
+  `(qx, qy, qz, qw)`, `(vx, vy, wz)`, 31 joint positions / velocities in Isaac Lab
+  breadth-first order. Verified each run in `tests/sim/test_h2_agile_s0_mujoco.py`:
+  the export's own history outputs (projected gravity, 0.2 × angular velocity,
+  joint-pos − default, 0.05 × joint vel) match the twin state to 1e-5.
+- Each policy tick writes the 14 targets **and** kp/kd into the software PD of
+  legs + waist roll/pitch; targets past the MJCF joint ranges are clamped, counted
+  (`H2MujocoHAL.s0_clamp_counts`) and logged once per joint
+  (`hal.h2.s0_controller.target_clamped`). The other 17 joints keep the policy's
+  training gains (`agile.articulations.robot.default_joint_stiffness/_damping`).
+- `BODY_TWIST` is the velocity command (zero = stand); a `JOINT_POSITION` on a
+  policy joint, or a whole-vector one, is refused. A fall (pelvis < 0.6 m — the
+  training termination is 0.615 m — or torso tilt > 45°) cuts every torque and
+  refuses commands until `reset_to_pose` / reconnect.
+- The twin starts in the policy's default pose (hip pitch −0.1, knee 0.3, ankle
+  pitch −0.2) with the feet on a floor the twin adds (the bare MJCF has none).
+
+**Measured** (2026-11-24, MuJoCo 3.8.0, stock MJCF dynamics): stands 10 s with
+~0.01 m drift and < 1° torso tilt, pelvis settling from 1.04 to ~0.94 m (training
+target 0.915 m). At `vx = 0.4` it walks ~2.1–2.5 m in 10 s (**~0.21 m/s, ~50 %
+tracking**), < 3.5° tilt; `vy = 0.3` gives ~0.23 m/s; `wz = 0.5` turns ~4.3 rad in
+10 s (~87 %). The policy stands still below ~0.2 m/s (the training's null-command
+band). While walking it asks for ankle pitch up to ~1.1 rad against the MJCF's
+0.611 rad limit (clamped on ~20 % of ticks at 0.4 m/s) and ankle roll to −0.76 rad
+against −0.349 rad. The forward under-tracking did not move with any sim knob tried:
+armature 0.01–0.1 (training uses 0.02), timestep 1 ms vs 5 ms (training: 200 Hz,
+decimation 4), joint frictionloss 0.2 / 0.1 / 0.003 and damping 0 (WBC-AGILE's own
+sim2mujoco recipe), widened ankle limits, feet-only collision (training's
+`feet_only` profile), floor friction 2.0, stiffer contacts, elliptic cones, noslip.
+The H2 Plus USD it was trained on is a conversion of this same `unitree_mujoco`
+MJCF (with the same wrist fix), so the kinematics match; the gap is the
+PhysX→MuJoCo contact/actuator model, not a mapping bug. The policy's upstream
+sim2mujoco validation itself only gates on balance.
+
 ## Upstream disagreements (not papered over)
 
 - **Mass.** The `H2.urdf` links sum to **75.59 kg**. The MJCF's explicit
@@ -117,14 +161,20 @@ gains hold a gravity-loaded pose.
   so MuJoCo infers about 4.25 kg from its mesh and the compiled model weighs
   **71.29 kg**. The real robot's mass is not verified here.
   `tests/sim/test_h2_hal_mujoco.py` pins all three numbers.
-- **Wrist kinematics.** `H2.urdf` places the wrist-pitch joint 0.079 m past the
-  wrist roll. `h2_mujoco.xml` places it at 0.038 m, and its wrist-yaw offset
-  absorbs the difference, so the hand frame lands in about the same place. The
-  `unitree_rl_mjlab` H2 MJCF agrees with the URDF (0.081 m). The manifest
-  follows the URDF, which is what the safety kernel's collision model is lowered
-  from. The twin runs the MJCF, so the kernel's wrist-pitch frame is up to
-  4.1 cm off the simulated one. A test pins the disagreement so that an upstream
-  fix is noticed.
+- **Wrist kinematics (resolved).** The pinned `H2.urdf` (`unitree_ros` @
+  `41dec58c`) puts the wrist-pitch axis 0.079007 m past wrist roll; the pinned
+  `h2_mujoco.xml` (`unitree_mujoco` @ `1eb6642e`) puts it at 0.037994 m. Unitree
+  fixed the URDF in `unitree_ros` `25746e8c` / `2ded279c` (2026-11-03/04, "fix h2
+  wrist_pitch_joint location"), moving the axis to 0.079007 m and offsetting the
+  pitch link and yaw joint so every link stays put at q = 0. `unitree_mujoco` and
+  `xr_teleoperate` still carry the pre-fix value; `unitree_rl_mjlab`'s independent
+  H2 export (0.0806 m) and the roll link's clevis geometry (x 0.051–0.093 m) agree
+  with the fix. `ensure_h2_mjcf` therefore returns a derived twin
+  (`h2_mujoco.openral-<hash>.xml`) with Unitree's URDF fix applied, so the twin,
+  the manifest and the safety kernel share one wrist kinematics. The two
+  placements agree at q = 0 and differ by up to 23 mm at the hand at the
+  ±0.576 rad pitch limit. `tests/sim/test_h2_hal_mujoco.py` pins this and fails
+  if a re-pin of `unitree_mujoco` picks up the fix upstream.
 - **Head and wrist meshes** differ between the two repos (see above).
 
 ## Sensors
@@ -154,14 +204,16 @@ datasheet or a calibrated unit pins them.
   uses URDF sampling.
 - The URDF's fixed `left_hand_link` / `right_hand_link` carry collision meshes,
   so they are declared as `fixed_attachments` and are part of the kernel model.
-- **Known non-conservative gap:** `H2.urdf` has `<visual>` but no `<collision>`
-  on 11 links: `{left,right}_hip_pitch_link`, `{left,right}_ankle_roll_link`,
-  `waist_yaw_link`, `waist_roll_link`, `{left,right}_wrist_roll_link`,
-  `{left,right}_wrist_pitch_link` and `head_pitch_link`. The URDF lowering
-  therefore emits no primitive for them, and the kernel does not see the
-  forearm (`wrist_roll_link`). `tests/unit/test_collision_geometry_enclosure.py`
-  tracks this as a strict xfail. Closing it needs a lowering from visual
-  geometry, or upstream collision meshes.
+- **Visual-only links are covered.** `H2.urdf` has `<visual>` but no
+  `<collision>` on 11 links (`{left,right}_hip_pitch_link`,
+  `{left,right}_ankle_roll_link`, `waist_yaw_link`, `waist_roll_link`,
+  `{left,right}_wrist_roll_link`, `{left,right}_wrist_pitch_link`,
+  `head_pitch_link`). With the twin's wrist frames fixed (above), the lowering
+  folds the twin's meshes in and fits those links from their `<visual>` plus
+  twin CAD, so the kernel sees the forearms. The enclosure test now passes for
+  H2 (it was a strict xfail). `wrist_roll`↔`wrist_yaw` is exempt as always-
+  colliding under the primitives, though the real meshes are 10.5 mm apart at
+  rest and 0.5–0.8 mm apart at the pitch stops — flagged for Safety-WG review.
 - **The ACM regeneration is a safety input and needs safety-WG review**
   (CLAUDE.md §3) before anything relies on it.
 - `footprint_polygon` / `footprint_radius` (0.50 m) cover the whole body at the
@@ -171,17 +223,52 @@ datasheet or a calibrated unit pins them.
   `h2_mujoco.xml` posed by `mj_forward`, in the pelvis frame; see the comment in
   `robot.yaml`. It is pose-dependent.
 
+## Real hardware
+
+> **Status: yellow — untested on hardware.** Wired and unit/integration-tested;
+> not yet run on an H2.
+
+`hal.real` is `openral_hal.unitree_real:UnitreeHgRealHAL` and `hal.real_bringup`
+is `openral_hal_unitree:real_bringup.launch.py`, as for the G1
+([package README](../../packages/openral_hal_unitree/README.md#h2)). NVIDIA's
+`unitree_hg_ros2_control` drives the 31 motors (`robot_variant: h2`); OpenRAL
+supplies the robot_description NVIDIA does not ship
+(`urdf/h2_real_hardware.urdf.xacro` around the pinned `H2.urdf`).
+
+**S0 policy:** NVIDIA WBC-AGILE, `nvidia/agile_wbc_unitree_h2` @ `222da1df`
+(NVIDIA Open Model License, commercial use permitted; trained on the **H2 Plus**),
+in C++ as an `InferenceController` at 50 Hz under a 200 Hz controller manager. It
+owns the 12 legs + waist roll/pitch; OpenRAL commands waist yaw, both arms and
+the head (17 joints) and a planar base twist. A `JOINT_POSITION` action on a
+policy-owned joint is refused. `deploy run` with `robot_id: h2` builds this HAL
+from `hal.parameters.defaults` (`robot_model: h2`, `s0_policy: agile_velocity`),
+and the bringup launch reads the same two values from this manifest.
+
+`action_spec.control_freq_hz: 50` is the policy's rate; the twin now also takes
+one 20 ms control period (20 physics steps) per action, and a `BODY_TWIST`
+integrates over that period. The real-path safety fields (`max_ee_accel_m_s2`,
+`contact_force_threshold_n`, `self_collision_margin_m`, the starting-pose ramp,
+`joint_state_staleness_limit_s`) are the G1's provisional values — none was
+measured on an H2.
+
+**Open hardware gates** (issue #513; hazard-log Entry 074 and its Safety-WG
+review): stay on a gantry until `freeze_controller` (a stiff hold, not balance)
+is characterised; check the IMU frame (`imu_in_pelvis`) on hardware; the S0 loop
+runs at 200 Hz; confirm the C++ chain clamps the policy's targets to the joint
+limits (an open-loop rollout asks for a left ankle roll of −0.371 rad against the
+−0.349 rad limit; walking in the MuJoCo twin, ankle pitch up to ~1.1 rad against
+0.611 rad); Safety-WG review of the allowed-collision list and of this
+bring-up.
+
 ## Policies
 
-No pretrained H2 locomotion or whole-body checkpoint is public:
-
-- `unitree_rl_mjlab` has `Unitree-H2-Flat` / `-Rough` training tasks but ships
-  no checkpoint.
-- NVIDIA GEAR-SONIC (`GR00T-WholeBodyControl`) has an H2 config but no H2 weights.
-
-`BODY_TWIST` is therefore the kinematic glide only. Its kernel bounds,
-`max_base_linear_speed_m_s: 0.5` and `max_base_angular_speed_rad_s: 0.5`, come
-from the `unitree_rl_mjlab` H2 play command box.
+- **Real S0:** WBC-AGILE (above) — the only public H2 checkpoint known.
+  `unitree_rl_mjlab` has `Unitree-H2-Flat` / `-Rough` training tasks but ships
+  no checkpoint; NVIDIA GEAR-SONIC has an H2 config but no H2 weights.
+- **Sim:** the kinematic glide by default; `s0_controller: agile_velocity` runs
+  the real S0 export as a sim-only walking S0 (above). `BODY_TWIST` kernel bounds, `max_base_linear_speed_m_s: 0.5` and
+  `max_base_angular_speed_rad_s: 0.5`, come from the `unitree_rl_mjlab` H2 play
+  command box.
 
 ## At a glance
 
@@ -192,19 +279,22 @@ from the `unitree_rl_mjlab` H2 play command box.
 | Joints | 31 actuated; the floating base is implicit world state |
 | End-effectors | none (bare wrists) |
 | Embodiment tags | `h2`, `unitree_h2`, `humanoid`, `mobile_base` |
-| Control modes | `joint_position`, `body_twist` (sim glide) |
-| `sdk_kind` | `open` |
+| Control modes | `joint_position`, `body_twist` (sim glide or sim AGILE S0; real: S0 velocity command) |
+| Control rate | 50 Hz (`action_spec.control_freq_hz`) |
+| `sdk_kind` | `closed_with_api` (real path links `unitree_sdk2`'s prebuilt core) |
 | `hal.sim` | `openral_hal.h2:H2MujocoHAL` |
-| `hal.real` | _null_ (later phase) |
+| `hal.real` | `openral_hal.unitree_real:UnitreeHgRealHAL` (yellow, untested on hardware) |
 
 ## Pair with
 
 | Component | Path |
 | --- | --- |
-| Python HAL adapter | `openral_hal.h2.H2MujocoHAL` |
-| Python description | `openral_hal.H2_DESCRIPTION` (in-code mirror of this manifest) |
+| Python HAL adapter | `openral_hal.h2.H2MujocoHAL` (sim), `openral_hal.unitree_real.UnitreeHgRealHAL` (real) |
+| Python description | `openral_hal.H2_REAL_DESCRIPTION` (in-code mirror of this manifest; `H2_DESCRIPTION` is its sim baseline) |
+| Real bringup | [`packages/openral_hal_unitree/`](../../packages/openral_hal_unitree/README.md) (`config/h2/`, `urdf/h2_real_hardware.urdf.xacro`) |
 | Asset fetcher | `openral_hal._unitree_h2_assets` (`unitree:h2`) |
-| Sim test | `tests/sim/test_h2_hal_mujoco.py` |
+| Sim tests | `tests/sim/test_h2_hal_mujoco.py`, `tests/sim/test_h2_agile_s0_mujoco.py` (AGILE S0) |
+| Real-HAL tests | `tests/unit/test_unitree_real_hal.py`, `tests/unit/test_unitree_real_bringup_config.py`, `tests/unit/test_h2_agile_velocity_rollout.py`, `tests/integration/test_unitree_real_hal_ros2_control_live.py` |
 | Sibling humanoids | [`robots/g1/`](../g1/README.md), [`robots/h1/`](../h1/README.md) |
 
 ## See also

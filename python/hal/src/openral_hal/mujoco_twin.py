@@ -18,8 +18,9 @@ overriding the per-robot hooks (``_per_step``, ``_apply_targets``, ``_drive_base
 ``_on_load``, ``_on_idle``, ``_compose``), chosen by its HAL subclass; the building
 blocks for the humanoids live here (``_GlideTwin``: the ADR-0087 pinned glide base;
 ``_SoftwarePDTwin``: a position loop over torque actuators; ``_FreeBaseTwin``: a base
-pose read off the free joint; ``_PlanarBaseTwin``: a kinematic wheeled base on MJCF
-planar joints). The rollout never holds a reference to its HAL.
+pose read off the free joint; ``_S0PolicyTwin``: floor, held velocity command and fall
+guard of a free base a sim-only S0 policy balances; ``_PlanarBaseTwin``: a kinematic
+wheeled base on MJCF planar joints). The rollout never holds a reference to its HAL.
 
 Only ``mujoco`` is needed (imported lazily, on ``load``): ``openral_sim`` is never
 imported here, so a bare twin runs on a host without it.
@@ -39,7 +40,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, NotRequired, Required, TypedDic
 import numpy as np
 import structlog
 from numpy.typing import NDArray
-from openral_core.exceptions import ROSConfigError
+from openral_core.exceptions import ROSConfigError, ROSSafetyViolation
 from openral_core.schemas import (
     Action,
     ControlMode,
@@ -1361,6 +1362,160 @@ class _FreeBaseTwin(MujocoTwinRollout):
         _model, data = self._require_loaded("base_pose")
         x, y, yaw, _z = capture_base_pin(data.qpos)
         return (x, y, yaw)
+
+
+class _S0PolicyTwin(_FreeBaseTwin):
+    """A free-base humanoid a sim-only S0 policy balances and walks (G1 GR00T WBC, H2 AGILE).
+
+    The shared parts: a colliding floor (added when the MJCF has no world plane, switched
+    on when its only plane is visual), the held ``(vx, vy, wz)`` velocity command
+    (``read_base_twist``; an idle slice zeroes it), and the fall guard — a pelvis below
+    ``fall_pelvis_height_m`` or a torso tilted past ``fall_tilt_rad`` latches ``fallen``,
+    the subclass cuts every torque, and every command raises ``ROSSafetyViolation`` until
+    the subclass clears the latch (``reset_to_pose`` / reconnect).
+    """
+
+    #: The S0 controller's name, in messages and log fields.
+    s0_name: ClassVar[str]
+    #: Pelvis height (m, world z) below which the robot counts as fallen.
+    fall_pelvis_height_m: ClassVar[float]
+    #: Torso tilt from vertical (rad) beyond which the robot counts as fallen.
+    fall_tilt_rad: ClassVar[float] = math.radians(45.0)
+
+    fallen: bool = False
+    _s0_command: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    _torso_body_id: int = -1
+
+    def _load_model(self, mj: Any) -> mujoco.MjModel:  # noqa: ANN401  # reason: the mujoco module
+        """The base model, with a floor plane added when it has no world plane at all.
+
+        The camera rig adds a (visual) staging floor whenever the manifest declares a
+        camera, so a model without a plane was loaded unrigged and recompiling the MJCF
+        from its spec loses nothing. The MJCF on disk is unchanged.
+
+        Raises:
+            ROSConfigError: The MJCF cannot be loaded or recompiled.
+        """
+        model = super()._load_model(mj)
+        if self._world_planes(model):
+            return model
+        try:
+            spec = mj.MjSpec.from_file(self.mjcf_path)
+            spec.worldbody.add_geom(
+                name="s0_floor", type=mj.mjtGeom.mjGEOM_PLANE, size=[0.0, 0.0, 0.05]
+            )
+            floored: mujoco.MjModel = spec.compile()
+        except ValueError as exc:
+            raise ROSConfigError(
+                f"Could not add a floor to MJCF '{self.mjcf_path}': {exc}"
+            ) from exc
+        return floored
+
+    def read_base_twist(self) -> tuple[float, float, float, float, float, float]:
+        """The held velocity command: joint actions leave it, an idle slice zeroes it."""
+        vx, vy, wz = self._s0_command
+        return (vx, vy, 0.0, 0.0, 0.0, wz)
+
+    def step_action_group(self, actions: list[Action]) -> TwinStepResult:
+        """One command under the S0, refused once fallen (before or during the period).
+
+        Raises:
+            ROSSafetyViolation: The fall detector has latched.
+        """
+        self._raise_if_fallen()
+        result = super().step_action_group(actions)
+        self._latch_if_fallen()  # the state the last mj_step left, before success
+        self._raise_if_fallen()
+        return result
+
+    def _on_idle(self) -> None:
+        """Idle: zero the velocity command; the S0 policy keeps balancing."""
+        self._s0_command = (0.0, 0.0, 0.0)
+
+    @staticmethod
+    def _world_planes(model: mujoco.MjModel) -> list[int]:
+        import mujoco as mj  # reason: optional sim-only dep
+
+        return [
+            g
+            for g in range(model.ngeom)
+            if model.geom_type[g] == mj.mjtGeom.mjGEOM_PLANE and model.geom_bodyid[g] == 0
+        ]
+
+    def _enable_ground_contact(self) -> None:
+        """Make the world plane collide (the free base needs a floor to stand on).
+
+        A colliding plane is used as-is; a visual-only one (the camera rig's
+        ``camrig_floor``) has its collision bits switched on in the loaded model.
+        """
+        import mujoco as mj  # reason: optional sim-only dep
+
+        model = self.model
+        assert model is not None
+        planes = self._world_planes(model)
+        if any(model.geom_contype[g] or model.geom_conaffinity[g] for g in planes):
+            return
+        for g in planes:
+            model.geom_contype[g] = 1
+            model.geom_conaffinity[g] = 1
+        # The broad phase prunes by the per-body OR of its geoms' bits, compiled
+        # in; without these the world body still reads "never collides".
+        model.body_contype[0] |= 1
+        model.body_conaffinity[0] |= 1
+        log.info(
+            f"hal.{self.description.name}.s0_controller.ground_contact_enabled",
+            geoms=[mj.mj_id2name(model, mj.mjtObj.mjOBJ_GEOM, g) for g in planes],
+        )
+
+    def _bind_torso(self, body: str = "torso_link") -> None:
+        """Find the body whose tilt the fall detector reads.
+
+        Raises:
+            ROSConfigError: The MJCF has no such body.
+        """
+        import mujoco as mj  # reason: optional sim-only dep
+
+        assert self.model is not None
+        self._torso_body_id = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_BODY, body)
+        if self._torso_body_id < 0:
+            raise ROSConfigError(f"{self.s0_name} MJCF has no {body!r} body for fall detection.")
+
+    def _torso_tilt_rad(self) -> float:
+        assert self.data is not None
+        r22 = float(self.data.xmat[self._torso_body_id][8])
+        return math.acos(max(-1.0, min(1.0, r22)))
+
+    def _detect_fall(self) -> bool:
+        assert self.data is not None
+        return (
+            float(self.data.qpos[2]) < self.fall_pelvis_height_m
+            or self._torso_tilt_rad() > self.fall_tilt_rad
+        )
+
+    def _latch_if_fallen(self) -> None:
+        """Latch a fall the current state shows and cut every torque at once."""
+        if self.fallen or not self._detect_fall():
+            return
+        assert self.data is not None
+        self.fallen = True
+        self.data.ctrl[:] = 0.0
+        log.critical(
+            f"hal.{self.description.name}.s0_controller.fall_detected",
+            robot=self.description.name,
+            s0_controller=self.s0_name,
+            pelvis_height_m=round(float(self.data.qpos[2]), 3),
+            torso_tilt_deg=round(math.degrees(self._torso_tilt_rad()), 1),
+            action="all joint torques cut; reset_to_pose or reconnect to re-arm",
+        )
+
+    def _raise_if_fallen(self) -> None:
+        if self.fallen:
+            raise ROSSafetyViolation(
+                f"{self.description.name.upper()} '{self.description.name}' fell under the "
+                f"{self.s0_name} S0 controller (pelvis < {self.fall_pelvis_height_m} m or "
+                f"torso tilt > {math.degrees(self.fall_tilt_rad):g}°); joint torques are cut. "
+                "reset_to_pose or reconnect to re-arm."
+            )
 
 
 class _PlanarBaseTwin(MujocoTwinRollout):

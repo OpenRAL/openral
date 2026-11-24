@@ -38,10 +38,13 @@ _REPO = Path(__file__).resolve().parents[2]
 _SCOPE_MODULE = "openral_core.ros_graph_scope"
 #: The gate itself, captured before any test wraps it.
 _GATE = ros_graph_scope.require_host_confined_real_bringup
-#: What a walk past the gate may stop on: a vendor package this host lacks, or the G1's
+#: What a walk past the gate may stop on: a vendor package this host lacks, the G1's
 #: S0 LEAPP bundle, which is built on the robot's own host
-#: (``openral_hal.unitree_s0_policy.resolve_leapp_config``).
-_PAST_THE_GATE = re.compile(r"not found|S0 policy LEAPP config .+ does not exist")
+#: (``openral_hal.unitree_s0_policy.resolve_leapp_config``), or the Unitree launch's
+#: refusal to guess the hg model with no ``robot_model:=`` and no deploying manifest.
+_PAST_THE_GATE = re.compile(
+    r"not found|S0 policy LEAPP config .+ does not exist|a hand run must name it"
+)
 
 
 def _in_tree_real_bringups() -> list[Path]:
