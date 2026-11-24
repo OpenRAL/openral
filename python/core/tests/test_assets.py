@@ -248,25 +248,33 @@ def test_robotwin_cache_write_failure_is_not_a_fetch_failure(
 
 @pytest.mark.parametrize("ref", ["robosuite:PandaOmron", "robotwin:aloha_agilex"])
 def test_mobile_manipulator_visuals_form_one_connected_robot(ref: str) -> None:
-    """Every visual geom (``contype = conaffinity = 0``) touches the rest of the robot (#760).
+    """Every drawn geom touches the rest of the robot (#760).
 
-    Visual-only viewers (the dashboard, the site's renders) draw just these. A
-    frame left out (aloha's COLLADA-only ``box2_Link``) or a visual left
-    collidable (robosuite's Omron torso column) leaves the arms floating above
-    the base. World-frame boxes of the visuals, at the default pose, linked
-    when within 2 cm, must form one component.
+    A viewer draws a body's visual geoms (``contype = conaffinity = 0``), or its
+    collision geoms when it has no visual (aloha's arm links). A frame left out
+    (aloha's COLLADA-only ``box2_Link``) or a visual left collidable
+    (robosuite's Omron torso column) leaves the arms floating above the base.
+    World-frame boxes of those geoms, at the default pose, linked when within
+    2 cm, must form one component.
     """
     mujoco = pytest.importorskip("mujoco")
     np = pytest.importorskip("numpy")
     try:
         path = resolve_asset(ref, "mjcf")
-    except AssetRefError as exc:  # robosuite missing, or the RoboTwin archive unreachable
-        pytest.skip(f"{ref} not resolvable on this host: {exc}")
+    except AssetFetchError as exc:
+        pytest.skip(f"{ref}: upstream not reachable on this host: {exc}")
+    except AssetRefError as exc:
+        if ref.startswith("robotwin:"):  # a derive failure is a failure, not a skip
+            raise
+        pytest.skip(f"robosuite >= 1.5 not installed: {exc}")
     assert path is not None
     model = mujoco.MjModel.from_xml_path(str(path))
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
-    visual = np.flatnonzero((model.geom_contype == 0) & (model.geom_conaffinity == 0))
+    is_visual = (model.geom_contype == 0) & (model.geom_conaffinity == 0)
+    has_visual = np.zeros(model.nbody, bool)
+    has_visual[model.geom_bodyid[is_visual]] = True
+    visual = np.flatnonzero(is_visual | ~has_visual[model.geom_bodyid])
     corners = np.array(np.meshgrid([-1, 1], [-1, 1], [-1, 1])).reshape(3, -1).T
     boxes = []
     for g in visual:
@@ -282,4 +290,4 @@ def test_mobile_manipulator_visuals_form_one_connected_robot(ref: str) -> None:
     while (grown := near[reached].any(0) | reached).sum() > reached.sum():
         reached = grown
     stray = sorted({model.body(model.geom_bodyid[g]).name for g in visual[~reached]})
-    assert not stray, f"{ref}: visuals detached from the robot: {stray}"
+    assert not stray, f"{ref}: geometry detached from the robot: {stray}"

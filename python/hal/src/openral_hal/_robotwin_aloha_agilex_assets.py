@@ -319,12 +319,13 @@ def _collada_parts(
     ns = _COLLADA_NS
     meshes: dict[str, tuple[NDArray[np.float64], NDArray[np.int64]]] = {}
     scale = 1.0
+    up_axis = "Y_UP"  # the COLLADA default when <up_axis> is absent
     scene: ET.Element | None = None
     for _, el in ET.iterparse(dae):
         if el.tag == f"{ns}unit":
             scale = float(el.get("meter", "1"))
-        elif el.tag == f"{ns}up_axis" and el.text != "Z_UP":
-            raise ROSConfigError(f"{dae.name}: up_axis {el.text}, only Z_UP is handled")
+        elif el.tag == f"{ns}up_axis":
+            up_axis = str(el.text).strip()
         elif el.tag == f"{ns}geometry":
             mesh = el.find(f"{ns}mesh")
             if mesh is None or any(
@@ -355,6 +356,8 @@ def _collada_parts(
             el.clear()
         elif el.tag == f"{ns}visual_scene":
             scene = el
+    if up_axis != "Z_UP":
+        raise ROSConfigError(f"{dae.name}: up_axis {up_axis}, only Z_UP is handled")
     if scene is None:
         raise ROSConfigError(f"{dae.name}: no <visual_scene>")
     return meshes, scene, scale
@@ -380,8 +383,11 @@ def _collada_to_obj(dae: Path, obj: Path) -> None:
 
     def walk(node: ET.Element, parent: NDArray[np.float64]) -> None:
         nonlocal count
-        if any(node.find(f"{ns}{t}") is not None for t in ("translate", "rotate", "scale")):
-            raise ROSConfigError(f"{dae.name}: node {node.get('id')} is not a <matrix>")
+        other = ("translate", "rotate", "scale", "lookat", "skew", "instance_node")
+        if any(node.find(f"{ns}{t}") is not None for t in other) or (
+            len(node.findall(f"{ns}matrix")) > 1
+        ):
+            raise ROSConfigError(f"{dae.name}: node {node.get('id')} is not one <matrix>")
         text = node.findtext(f"{ns}matrix")
         world = parent @ np.array(text.split(), float).reshape(4, 4) if text else parent
         for inst in node.findall(f"{ns}instance_geometry"):
@@ -418,10 +424,11 @@ def _frozen_urdf_xml(urdf: Path, mesh_dir: Path) -> str:
     The wheels, castors and the two rear (``lr_`` / ``rr_``) arms are welded at
     their zero pose: RoboTwin drives only the front arms, and the manifest's
     14 joints name only those. MuJoCo cannot load ``.dae``: a link that has
-    other geometry (the arm links' STL collision mesh, the same shape) drops its
-    COLLADA visual; a link that has none keeps it, converted to OBJ in
-    ``mesh_dir``. That is ``box2_Link``, the frame that carries the arms and the
-    camera mast on the cart (without it the arms float, #760), and the castors.
+    other geometry (the arm links' collidable STL collision mesh, the same shape)
+    drops its COLLADA visual; a link that has none keeps it, converted to OBJ in
+    ``mesh_dir``. At the pinned revision that is ``box2_Link``, the frame that
+    carries the arms and the camera mast on the cart (without it the arms float,
+    #760), the four ``*_castor_link`` housings and ``camera_link1`` / ``camera_link2``.
     """
     root = ET.parse(urdf).getroot()
     for link in root.findall("link"):
@@ -439,7 +446,12 @@ def _frozen_urdf_xml(urdf: Path, mesh_dir: Path) -> str:
             src = urdf.parent / str(mesh.get("filename"))
             obj = mesh_dir / f"{src.stem}.obj"
             if not obj.is_file():
-                _collada_to_obj(src, obj)
+                try:
+                    _collada_to_obj(src, obj)
+                except (KeyError, ValueError, StopIteration, ET.ParseError) as exc:
+                    raise ROSConfigError(
+                        f"Converting {src.name} to OBJ failed: {type(exc).__name__}: {exc}"
+                    ) from exc
             mesh.set("filename", str(obj))
     for joint in root.findall("joint"):
         name = str(joint.get("name"))
