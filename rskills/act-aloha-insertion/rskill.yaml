@@ -74,8 +74,7 @@ source_repo: "hf://lerobot/act_aloha_sim_insertion_human"
 description: >
   ACT (~52M params, chunk=100) finetuned on the ALOHA bimanual
   sim-insertion demonstration set. Insertion is the harder ALOHA task
-  in the original paper; the 0.20 success rate reflects that. See the
-  norm-stats note above re: the legacy safetensors-resident buffers.
+  in the original paper; the 0.20 success rate reflects that.
 
 # Task-data gate: trained + validated on the ALOHA sim
 # insertion task, so the benchmark runner accepts the aloha_insertion
