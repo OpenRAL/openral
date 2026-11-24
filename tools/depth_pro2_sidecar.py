@@ -40,6 +40,8 @@ scrub_environ: Callable[..., None] = _common.scrub_environ
 _DEFAULT_HOME = Path.home() / ".cache" / "openral" / "depth-pro2-sidecar"
 _VENV_ENV = "OPENRAL_DEPTH_PRO2_SIDECAR_VENV"
 _HOME_ENV = "OPENRAL_DEPTH_PRO2_SIDECAR_HOME"
+#: The research-weights opt-in ``openral_rskill.loader`` reads (CLAUDE.md §1.9).
+_ALLOW_NONCOMMERCIAL_ENV = "OPENRAL_ALLOW_NONCOMMERCIAL"
 
 #: ``ml-depth-pro-2`` commit the package is installed from (pinned, CLAUDE.md §1.8).
 DEPTH_PRO2_SHA = "aa389cbb0b74341664ed663a0966c859905cd6c0"
@@ -86,6 +88,14 @@ def ensure_venv(home: Path, *, override: str | None = None) -> Path:
 
 
 def main() -> int:
+    # Every Depth Pro 2 checkpoint is Apple ML Research licensed (research use only): the
+    # same guard rSkill.from_yaml applies to an apple-amlr manifest, here for an operator
+    # who starts this launcher directly instead of through depth_estimator_sidecar.py.
+    if os.environ.get(_ALLOW_NONCOMMERCIAL_ENV) != "1":
+        raise SystemExit(
+            "depth-pro2-sidecar: Depth Pro 2 weights are research-use only (Apple Machine "
+            f"Learning Research Model license); set {_ALLOW_NONCOMMERCIAL_ENV}=1 to serve them"
+        )
     # The weights are public: no operator credential, HF_TOKEN included, reaches the venv.
     scrub_environ(hf_token=False)
     p = argparse.ArgumentParser(

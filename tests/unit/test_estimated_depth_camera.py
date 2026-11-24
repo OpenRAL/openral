@@ -294,7 +294,7 @@ class TestMetricDepth:
             str(_REPO / "rskills/rskill-da3_small-any-depth-bf16/rskill.yaml")
         ).depth_estimator
         assert small is not None
-        with pytest.raises(ValueError, match="no metric reading"):
+        with pytest.raises(ROSConfigError, match="no metric reading"):
             metres_from_output(np.ones((2, 2)), small, fx=1.0, fy=1.0)
 
     @pytest.mark.parametrize(
@@ -309,10 +309,12 @@ class TestMetricDepth:
         ],
     )
     def test_the_provider_accepts_only_a_skill_that_fits_its_mode(
-        self, skill: str, metric: bool, refusal: str | None
+        self, skill: str, metric: bool, refusal: str | None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Metric mode needs metres; the SLAM mode needs the model's own camera."""
-        depth_skill = pytest.importorskip("openral_perception_ros.depth_provider_node").depth_skill
+        from openral_rskill.depth_estimator import depth_skill
+
+        monkeypatch.setenv("OPENRAL_ALLOW_NONCOMMERCIAL", "1")  # Depth Pro 2 is apple-amlr
         manifest = str(_REPO / "rskills" / skill / "rskill.yaml")
         if refusal is None:
             _, repo = depth_skill(manifest, metric=metric)
@@ -320,6 +322,17 @@ class TestMetricDepth:
         else:
             with pytest.raises(ROSConfigError, match=refusal):
                 depth_skill(manifest, metric=metric)
+
+    def test_research_only_depth_pro2_is_refused_without_the_opt_in(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The provider loads through the license gate: no world map from apple-amlr weights."""
+        from openral_rskill.depth_estimator import depth_skill
+
+        monkeypatch.delenv("OPENRAL_ALLOW_NONCOMMERCIAL", raising=False)
+        manifest = _REPO / "rskills/rskill-depth_pro2_s-any-metric_depth-bf16/rskill.yaml"
+        with pytest.raises(ROSConfigError, match="OPENRAL_ALLOW_NONCOMMERCIAL"):
+            depth_skill(manifest, metric=True)
 
     def test_far_and_invalid_returns_are_dropped(self) -> None:
         depth = metres_from_output(np.array([[300.0, np.nan, 3000.0]]), _DA3, fx=300.0, fy=300.0)
@@ -467,14 +480,37 @@ class TestDeployAutoPick:
         assert inv.estimated_depth_camera == "top"  # type: ignore[attr-defined]
         argv = inv.argv_template  # type: ignore[attr-defined]
         assert "estimated_depth_camera:=top" in argv and "enable_octomap:=true" in argv
-        assert not [a for a in argv if a.startswith("estimated_depth_rskill:=")]
+        # The default skill, checked before launch and forwarded as an absolute manifest.
+        da3m = _REPO / "rskills/rskill-da3metric_large-any-metric_depth-bf16/rskill.yaml"
+        assert f"estimated_depth_rskill:={da3m}" in argv
 
-    def test_the_scenes_depth_rskill_comes_with_the_pick(self, tmp_path: Path) -> None:
-        dp2 = "rskill-depth_pro2_s-any-metric_depth-bf16"
+    def test_the_scenes_depth_rskill_comes_with_the_pick(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENRAL_ALLOW_NONCOMMERCIAL", "1")  # Depth Pro 2 is research-only
+        dp2 = "rskills/rskill-depth_pro2_s-any-metric_depth-bf16/rskill.yaml"  # repo-relative
         inv = self._resolve(
             tmp_path, f"\n  enable_octomap: true\n  estimated_depth_rskill: {dp2}\n"
         )
-        assert f"estimated_depth_rskill:={dp2}" in inv.argv_template  # type: ignore[attr-defined]
+        assert f"estimated_depth_rskill:={_REPO / dp2}" in inv.argv_template  # type: ignore[attr-defined]
+
+    @pytest.mark.parametrize(
+        ("skill", "refusal"),
+        [
+            ("rskill-da3_small-any-depth-bf16", "predicts relative depth"),
+            ("rskill-sam2_1-any-grasped_object_mask-bf16", "not a depth_estimator"),
+            ("rskill-depth_pro2_s-any-metric_depth-bf16", "OPENRAL_ALLOW_NONCOMMERCIAL"),
+            ("rskill-no-such-depth", "no manifest at"),
+        ],
+    )
+    def test_an_unusable_depth_rskill_is_refused_before_launch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, skill: str, refusal: str
+    ) -> None:
+        """Not inside the running graph, where the refusal would leave the robot halted."""
+        monkeypatch.delenv("OPENRAL_ALLOW_NONCOMMERCIAL", raising=False)
+        runtime = f"\n  enable_octomap: true\n  estimated_depth_rskill: {skill}\n"
+        with pytest.raises(ROSConfigError, match=refusal):
+            self._resolve(tmp_path, runtime)
 
     def test_an_explicit_camera_is_kept(self, tmp_path: Path) -> None:
         inv = self._resolve(tmp_path, "\n  enable_octomap: true\n  estimated_depth_camera: top\n")
@@ -503,3 +539,23 @@ class TestDeployAutoPick:
         assert inv.estimated_depth_camera is None
         assert inv.octomap_cloud_topic is None
         assert not [a for a in inv.argv_template if a.startswith("estimated_depth_camera:=")]
+
+
+def test_the_depth_pro2_launcher_refuses_research_weights_without_the_opt_in() -> None:
+    """An operator starting ``tools/depth_pro2_sidecar.py`` directly hits the license gate."""
+    import os
+    import subprocess
+    import sys
+
+    env = {k: v for k, v in os.environ.items() if k != "OPENRAL_ALLOW_NONCOMMERCIAL"}
+    tool = _REPO / "tools/depth_pro2_sidecar.py"
+    proc = subprocess.run(
+        [sys.executable, str(tool), "--model", "apple/DepthPro2-S", "--port", "5799"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode != 0
+    assert "OPENRAL_ALLOW_NONCOMMERCIAL=1" in proc.stderr

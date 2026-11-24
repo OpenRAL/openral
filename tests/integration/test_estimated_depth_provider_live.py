@@ -59,7 +59,9 @@ _FRAME = "test_camera_optical_frame"
 
 
 @contextlib.contextmanager
-def _provider(prefix: str, port: int, log: Path, frame: str, skill: str) -> Iterator[str]:
+def _provider(
+    prefix: str, port: int, log: Path, frame: str, skill: str, *, opt_in: bool = True
+) -> Iterator[str]:
     """Run the provider lifecycle node (UNCONFIGURED); yield its node name."""
     params = {
         "manifest_path": str(_REPO / "rskills" / skill / "rskill.yaml"),
@@ -80,6 +82,10 @@ def _provider(prefix: str, port: int, log: Path, frame: str, skill: str) -> Iter
     argv += ["-r", f"__node:={name}"]
     env = dict(os.environ)
     env["PYTHONPATH"] = f"{_REPO / 'packages/openral_perception_ros'}:{env.get('PYTHONPATH', '')}"
+    # Depth Pro 2's research-only weights: the provider's license gate needs the opt-in.
+    env.pop("OPENRAL_ALLOW_NONCOMMERCIAL", None)
+    if opt_in:
+        env["OPENRAL_ALLOW_NONCOMMERCIAL"] = "1"
     with log.open("wb") as out:
         proc = subprocess.Popen(argv, stdout=out, stderr=subprocess.STDOUT, env=env)
         try:
@@ -126,6 +132,7 @@ def _run(
     focal_raster: float | None = None,
     skill: str = _DA3M,
     toggle: bool = False,
+    opt_in: bool = True,
 ) -> tuple[dict[str, Any], Any, str]:
     """Feed the provider RGB + CameraInfo for ``wait_s``; return what it published.
 
@@ -179,7 +186,7 @@ def _run(
         image.height, image.width, image.encoding = _H, _W, "rgb8"
         image.step = _W * 3
         image.data = bytes(np.full((_H, _W, 3), 120, np.uint8).tobytes())
-        with _provider(prefix, sidecar.port, log, frame, skill) as provider:
+        with _provider(prefix, sidecar.port, log, frame, skill, opt_in=opt_in) as provider:
             # A refused manifest fails configure; the tests read that from the log.
             got["active"] = _transition(node, provider, "configure", "activate")
 
@@ -266,6 +273,14 @@ def test_a_metric_skill_is_sent_the_focal_and_its_metres_pass_through(tmp_path: 
     assert sidecar.f_px and all(f == pytest.approx(_F, rel=1e-3) for f in sidecar.f_px)
     pts = read_points_numpy(got["cloud"], field_names=("x", "y", "z"))
     assert np.allclose(pts[:, 2], _PLANE_Z_M, atol=1e-4)
+
+
+def test_research_only_depth_pro2_is_refused_without_the_opt_in(tmp_path: Path) -> None:
+    """The DP2 skill without ``OPENRAL_ALLOW_NONCOMMERCIAL=1``: configure fails, no cloud."""
+    got, sidecar, log = _run("apple/DepthPro2-S", tmp_path, wait_s=8.0, skill=_DP2, opt_in=False)
+    assert got["active"] is False
+    assert sidecar.requests == 0 and "cloud" not in got
+    assert "OPENRAL_ALLOW_NONCOMMERCIAL" in log
 
 
 def test_a_relative_skill_is_refused_in_metric_mode(tmp_path: Path) -> None:

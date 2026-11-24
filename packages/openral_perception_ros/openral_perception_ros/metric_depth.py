@@ -116,7 +116,9 @@ def metres_from_output(
         assert contract.canonical_focal_px is not None  # contract validator guarantees it
         depth *= 0.5 * (fx + fy) / contract.canonical_focal_px
     elif contract.output is not DepthOutput.METRIC:
-        raise ValueError(f"a {contract.output.value!r} depth model has no metric reading")
+        from openral_core import ROSConfigError
+
+        raise ROSConfigError(f"a {contract.output.value!r} depth model has no metric reading")
     depth[~np.isfinite(depth) | (depth <= 0.0)] = 0.0
     return depth.astype(np.float32)
 

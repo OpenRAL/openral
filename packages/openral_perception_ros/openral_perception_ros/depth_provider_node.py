@@ -11,7 +11,10 @@ how the raw output becomes metres; every reply must come from the manifest's mod
 **SLAM mode** (``rgb_camera_info_topic`` empty, ``DeployRuntime.slam_mono_camera``): the
 skill must predict its own camera (``predicts_intrinsics``, DA3-SMALL measured
 0.27 GB / ~27 Hz on an 8 GB Ada); depth + that K feed **nvblox** and cuVSLAM, which is
-what gives a lidar-less, camera-only robot a navigable ``/map``.
+what gives a lidar-less, camera-only robot a navigable ``/map``. DA3-SMALL's output is
+``relative`` (not documented as metric): this mode publishes it unconverted, as
+*approximately* metres, so the ``/map`` and cuVSLAM's scale carry that scale error. It
+never reaches the safety kernel's world map (metric mode refuses a ``relative`` skill).
 
 **Metric mode** (``DeployRuntime.estimated_depth_camera``, world collision): with
 ``rgb_camera_info_topic`` set, the skill's ``output`` must be ``metric`` or
@@ -29,7 +32,8 @@ never converted with a guessed focal.
 
 **Lifecycle.** A managed lifecycle node (``openral_depth_provider`` /
 ``openral_estimated_depth_provider`` in ``deploy_e2e``, autostarted ACTIVE): configure
-reads the parameters, refuses an unusable rSkill (:func:`depth_skill`) and opens the
+reads the parameters, refuses an unusable rSkill
+(``openral_rskill.depth_estimator.depth_skill``, license gate included) and opens the
 sidecar socket and topics; only ACTIVE forwards frames and publishes; deactivate stops
 both (the sidecar is its own process and keeps its weights, so no VRAM is freed);
 cleanup / shutdown close the socket. The estimated-depth provider is a reasoner
@@ -44,47 +48,7 @@ conversion half is covered by `tests/unit/test_depth_convert.py` and the
 from __future__ import annotations
 
 import io
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:  # pragma: no cover
-    from openral_core import DepthEstimatorContract
-
-
-def depth_skill(manifest_path: str, *, metric: bool) -> tuple[DepthEstimatorContract, str]:
-    """The depth_estimator contract and model repo the provider serves, refused if unusable.
-
-    Metric mode needs a ``metric`` / ``canonical_focal`` model; the SLAM mode (no RGB
-    ``CameraInfo``) needs one that predicts its own camera. The repo is the
-    ``weights_uri`` without ``hf://`` and revision: what every sidecar reply must name.
-
-    Example:
-        >>> root = "rskills/rskill-da3metric_large-any-metric_depth-bf16/rskill.yaml"
-        >>> contract, repo = depth_skill(root, metric=True)
-        >>> contract.output.value, repo
-        ('canonical_focal', 'depth-anything/DA3METRIC-LARGE')
-        >>> try:
-        ...     depth_skill(root, metric=False)
-        ... except Exception as exc:
-        ...     print(type(exc).__name__, "predicts no camera" in str(exc))
-        ROSConfigError True
-    """
-    from openral_core import ROSConfigError, RSkillManifest
-
-    manifest = RSkillManifest.from_yaml(manifest_path)
-    contract = manifest.depth_estimator
-    if contract is None or manifest.weights_uri is None:
-        raise ROSConfigError(f"depth_provider: {manifest.name} is not a depth_estimator")
-    if metric and contract.output.value == "relative":
-        raise ROSConfigError(
-            f"depth_provider: {manifest.name} predicts relative depth; metric mode needs a "
-            "metric or canonical_focal depth_estimator"
-        )
-    if not metric and not contract.predicts_intrinsics:
-        raise ROSConfigError(
-            f"depth_provider: {manifest.name} predicts no camera; the SLAM mode needs a "
-            "depth_estimator with predicts_intrinsics"
-        )
-    return contract, manifest.weights_uri.removeprefix("hf://").partition("@")[0]
+from typing import Any
 
 
 def main(args: Any = None) -> None:
@@ -177,6 +141,7 @@ def main(args: Any = None) -> None:
             """Read parameters, check the rSkill, open the socket, topics (idle until ACTIVE)."""
             del state
             from openral_core import ROSConfigError
+            from openral_rskill.depth_estimator import depth_skill
 
             gp = self.get_parameter
             missing = [
@@ -440,11 +405,17 @@ def main(args: Any = None) -> None:
                 self._sock = self._make_socket()
                 self.get_logger().warning(f"sidecar request failed (socket reset): {exc}")
                 return
-            if not rep.get("ok") or rep.get("model") != self._model:
+            if not rep.get("ok"):
+                dropped = f"sidecar error {rep.get('error')!r}"
+            elif rep.get("model") != self._model:
+                dropped = (
+                    f"the sidecar serves {rep.get('model')!r}, not the rSkill's {self._model!r}"
+                )
+            else:
+                dropped = ""
+            if dropped:
                 self.get_logger().warning(
-                    f"depth_provider: frame dropped: sidecar error {rep.get('error')!r}, or it "
-                    f"serves {rep.get('model')!r}, not the rSkill's {self._model!r}",
-                    throttle_duration_sec=5.0,
+                    f"depth_provider: frame dropped: {dropped}", throttle_duration_sec=5.0
                 )
                 return
 

@@ -725,15 +725,15 @@ _Boot helper + server for the Depth Anything 3 monocular metric-depth sidecar, c
 _Manifest-driven entry point for `kind: depth_estimator` rSkills; the deploy launch starts every depth sidecar through it._
 
 - `BACKEND_GROUP = "openral.depth_estimator_backends"` (L29) — entry-point group out-of-tree depth backends register under, keyed by `runtime` value (OpenRAL Pro ships `tensorrt`). The entry point is `(manifest_path, host, port) -> int` and serves the same wire protocol.
-- `family_command(manifest_path, host, port) -> list[str]` (L35) — argv for the in-tree `runtime: pytorch` sidecar of the contract's `family` (`da3_depth_sidecar.py` / `depth_pro2_sidecar.py`), with repo + revision from `weights_uri` and `process_res`.
-- `main() -> int` (L66) — `--manifest`, `--host`, `--port`; loads the skill through `rSkill.from_yaml` (license gate: a non-commercial skill needs `OPENRAL_ALLOW_NONCOMMERCIAL=1`), then execs the family sidecar or calls the entry-point backend.
+- `family_command(manifest_path, host, port) -> list[str]` (L35) — argv for the in-tree `runtime: pytorch` sidecar of the contract's `family` (`da3_depth_sidecar.py` / `depth_pro2_sidecar.py`), with repo + revision from `weights_uri` and, for `da3` only, `process_res` (the Depth Pro 2 launcher takes none).
+- `main() -> int` (L67) — `--manifest`, `--host`, `--port`; loads the skill through `rSkill.from_yaml` (license gate: a non-commercial skill needs `OPENRAL_ALLOW_NONCOMMERCIAL=1`), then execs the family sidecar or calls the entry-point backend.
 
 ### `tools/depth_pro2_sidecar.py` + `tools/_depth_pro2_server.py`
 _Boot helper + server for Apple Depth Pro 2 (`apple/DepthPro2-*`), the same ZMQ REQ/REP + msgpack wire as the DA3 sidecar. Installs `depth_pro_2` from GitHub at a pinned commit into an isolated py3.12 venv; research-only weights, so start it through `depth_estimator_sidecar.py`._
 
-- `DEPTH_PRO2_SHA: str` (L45) — `ml-depth-pro-2` commit the package is installed from.
-- `ensure_venv(home, *, override=None) -> Path` (L53) — Returns the sidecar venv python, provisioning it under a file lock if absent (`$OPENRAL_DEPTH_PRO2_SIDECAR_VENV` reuses one).
-- `main() -> int` (L88) — argparse (`--model` required, `--revision`, `--host`, `--port` default 5772, `--home`, `--venv`); execs into `_depth_pro2_server.py`.
+- `DEPTH_PRO2_SHA: str` (L47) — `ml-depth-pro-2` commit the package is installed from.
+- `ensure_venv(home, *, override=None) -> Path` (L55) — Returns the sidecar venv python, provisioning it under a file lock if absent (`$OPENRAL_DEPTH_PRO2_SIDECAR_VENV` reuses one).
+- `main() -> int` (L90) — Refuses (`SystemExit`) unless `OPENRAL_ALLOW_NONCOMMERCIAL=1` (every Depth Pro 2 checkpoint is research-only, so a directly started launcher hits the same gate as an `apple-amlr` manifest); argparse (`--model` required, `--revision`, `--host`, `--port` default 5772, `--home`, `--venv`); execs into `_depth_pro2_server.py`.
 - `main() -> int` (_depth_pro2_server.py L56) — ZMQ REP loop (`ping`/`depth`/`shutdown`); each `depth` request must carry `f_px` (the checkpoint has no field-of-view head) and is inferred on its own (`DepthPro2.infer`, bf16 autocast); replies metres at the input's size with a NaN K, or an error object.
 
 ### `tools/internvla_n1_sidecar.py` + `tools/_internvla_n1_server.py`
