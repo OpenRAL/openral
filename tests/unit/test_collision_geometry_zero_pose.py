@@ -239,6 +239,11 @@ _UNADJUDICATED: dict[str, str] = {
     # is no declared rest pose (no SRDF) to check instead. Needs a measured
     # rest pose or a WG call on the resting contact, never an exemption.
     "so100_follower": "folded q = 0: the upper arm rests on the base (exact hulls touch)",
+    # q = 0 points both ViperX arms at each other across the table: in the gym-aloha MJCF
+    # the real meshes interpenetrate up to 45 mm there (left gripper_link into the right
+    # one), so the kernel trips correctly. The twin rests at keyframe 0 instead, checked
+    # below; a declared rest pose (an SRDF home) is the WG item that retires this entry.
+    "aloha_bimanual": "q = 0 crosses the two arms (meshes 45 mm deep); its rest is keyframe 0",
 }
 
 
@@ -488,3 +493,22 @@ def test_real_self_collision_still_trips(
     q = {j.name: 0.0 for j in robot.joints} | q_overrides
     tripped = {frozenset((a, b)) for a, b, _gap in _tripping_pairs(robot, q)}
     assert frozenset(pair) in tripped, f"{name}: {pair} no longer trips at {q_overrides}"
+
+
+def test_aloha_rests_clear_at_its_twins_keyframe() -> None:
+    """At gym-aloha's keyframe 0 (where its twin and HAL start) the kernel trips on nothing.
+
+    The pose is the MJCF's own ``<key qpos>`` for each arm (shoulder -0.96, elbow 1.16,
+    wrist -0.3) with the fingers at 0.024 m, read as the manifest's [0, 1] opening.
+    """
+    robot = _load("aloha_bimanual")
+    arm = dict(
+        zip(
+            ("waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"),
+            (0.0, -0.96, 1.16, 0.0, -0.3, 0.0),
+            strict=True,
+        )
+    )
+    q = {f"{side}_{name}": value for side in ("left", "right") for name, value in arm.items()}
+    q |= {f"{side}_gripper": (0.024 - 0.021) / 0.036 for side in ("left", "right")}
+    assert _tripping_pairs(robot, q) == []

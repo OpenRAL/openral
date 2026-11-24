@@ -178,7 +178,7 @@ def _aloha_joint_specs() -> list[JointSpec]:
             start=1,
         ):
             child_link = f"{side}_link{idx}"
-            parent_link = "world" if suffix == "waist" else prev_link
+            parent_link = f"vx300s_{side}" if suffix == "waist" else prev_link
             specs.append(
                 JointSpec(
                     name=f"{side}_{suffix}",

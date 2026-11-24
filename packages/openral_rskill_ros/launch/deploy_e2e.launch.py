@@ -1115,6 +1115,26 @@ class _ReachModel:
         return float(max(values.max(), score(*self.extremes(best)).max()))
 
 
+def _mjcf_kernel_link_names(
+    description: RobotDescription,
+    model: Any,  # reason: mujoco.MjModel has no type stubs
+) -> dict[str, str]:
+    """Manifest link -> its name in a kernel model lowered from this MJCF (its body name).
+
+    ``lower_collision_params`` names each link after its MJCF body, so link-name
+    parameters written in the manifest's naming (``grasp_contact_links``,
+    ``tracked_grasp_extra_contact_links``) are refused by a kernel loaded from it: the
+    SO-100's ``gripper_finger`` / ``gripper_base`` are ``Moving_Jaw`` / ``Fixed_Jaw`` there.
+    Mapped as the collision lowering maps them (``_mjcf_link_bodies``).
+    """
+    from openral_safety.urdf_lowering import _mjcf_link_bodies
+
+    return {
+        link: str(model.body(body).name)
+        for link, body in _mjcf_link_bodies(description, model).items()
+    }
+
+
 def _mjcf_dof_mismatches(
     model: Any,  # reason: mujoco.MjModel has no type stubs
     lowered: dict[str, object],
@@ -3487,6 +3507,10 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     collision_params: dict[str, object] = collision_params_from_description(
         description, margin_m=margin_m
     )
+    # Manifest link -> the kernel's link name. Identity unless the model is lowered from
+    # the MJCF, whose links are its body names (SO-100's `gripper_base` is `Fixed_Jaw`):
+    # link-name parameters handed to the kernel are translated through it.
+    kernel_link_name: dict[str, str] = {}
     if description.assets.mjcf:
         try:
             import mujoco
@@ -3525,6 +3549,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 )
             elif mjcf_params.get("self_collision_enabled"):
                 collision_params = mjcf_params
+                kernel_link_name = _mjcf_kernel_link_names(description, model)
             else:
                 print(
                     "[deploy_e2e] MJCF has no primitive collision geometry; "
@@ -3669,7 +3694,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # the kernel resolves the same names either way and a GraspDeclaration can never name a
     # link the robot does not grip with. Omitted when empty (an empty list has no ROS
     # parameter type), and refused when the flag is on.
-    grasp_contact_links = list(description.grasp_contact_links())
+    grasp_contact_links = [
+        kernel_link_name.get(link, link) for link in description.grasp_contact_links()
+    ]
     if grasp_allowance_enabled and not grasp_contact_links:
         from openral_core.exceptions import ROSConfigError
 
@@ -3718,7 +3745,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # A fixed jaw that is a body link (the SO-101's `gripper`), K2 only: the legacy
     # allowlist above is unchanged. Omitted when empty (no ROS parameter type).
     if kernel_params["tracked_grasp_exemption_enabled"] and description.fixed_jaw_links():
-        kernel_params["tracked_grasp_extra_contact_links"] = list(description.fixed_jaw_links())
+        kernel_params["tracked_grasp_extra_contact_links"] = [
+            kernel_link_name.get(link, link) for link in description.fixed_jaw_links()
+        ]
     # How old a producer-measured grasp/place region may be and still exempt anything. The
     # regions are measured off the voxel map, so the bound is derived from that map's own
     # freshness deadline: twice it (the kernel's own default, passed explicitly so the

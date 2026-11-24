@@ -74,6 +74,7 @@ __all__ = [
     "parse_srdf_disabled_pairs",
     "sample_acm_from_urdf",
     "select_lowering",
+    "twin_coupled_joints",
 ]
 
 _AcmPairs = set[frozenset[str]]
@@ -1887,7 +1888,11 @@ def _urdf_link_meshes(
     pairs: dict[str, str] = {}
     joints: list[JointSpec | MimicJoint] = [*robot.joints, *robot.mimic_joints]
     for joint in joints:
-        urdf_joint = model.joint_map.get(joint.sim_joint_name or joint.name)
+        # The twin's joint name, else the manifest's: a twin that names its joints otherwise
+        # (the SO-ARMs' ``Rotation`` / ``1``) must not skip the frame check (#754 review).
+        urdf_joint = model.joint_map.get(joint.sim_joint_name or "") or model.joint_map.get(
+            joint.name
+        )
         if urdf_joint is None:
             continue
         want = _xyzrpy_matrix((*joint.origin_xyz, *joint.origin_rpy))
@@ -2299,6 +2304,48 @@ def _manifest_to_mjcf_affine(
     return float(lo), float(hi - lo)
 
 
+def twin_coupled_joints(
+    robot: RobotDescription, model: object
+) -> dict[int, list[tuple[int, float, float]]]:
+    """``mjcf_coupled_joints`` plus the followers the twin drives by a mirror actuator.
+
+    gym-aloha couples no joints: each ViperX gripper's second finger has its own position
+    actuator, which ``MujocoTwinRollout`` drives at the negated target
+    (``sim.grippers[].mirror_actuator_index``). Such a follower is added as
+    ``q_follower = -q_leader`` (both ways, like an equality) when that actuator is a
+    joint-transmission actuator on its own joint with the leader's gain and bias and the
+    negated control range, so it settles there.
+
+    Example:
+        >>> # twin_coupled_joints(aloha_bimanual, gym_aloha_model)[left_finger_jid]
+        >>> # -> [(right_finger_jid, 0.0, -1.0)]
+    """
+    import mujoco
+    import numpy as np
+
+    m: Any = model
+    out = {k: list(v) for k, v in mjcf_coupled_joints(model).items()}
+    joint_trn = int(mujoco.mjtTrn.mjTRN_JOINT)
+    by_name = {j.name: j for j in robot.joints}
+    for g in robot.sim.grippers if robot.sim else []:
+        a, b = g.actuator_index, g.mirror_actuator_index
+        leader = by_name.get(g.joint or "")
+        if a is None or b is None or leader is None or not (0 <= a < m.nu and 0 <= b < m.nu):
+            continue
+        if int(m.actuator_trntype[a]) != joint_trn or int(m.actuator_trntype[b]) != joint_trn:
+            continue
+        la, fb = int(m.actuator_trnid[a, 0]), int(m.actuator_trnid[b, 0])
+        if la == fb or not (
+            np.allclose(m.actuator_gainprm[a, :3], m.actuator_gainprm[b, :3])
+            and np.allclose(m.actuator_biasprm[a, :3], m.actuator_biasprm[b, :3])
+            and np.allclose(m.actuator_ctrlrange[b], -m.actuator_ctrlrange[a][::-1])
+        ):
+            continue
+        out.setdefault(la, []).append((fb, 0.0, -1.0))
+        out.setdefault(fb, []).append((la, 0.0, -1.0))
+    return out
+
+
 def _declared_mimic_followers(
     robot: RobotDescription, model: object, followers: Mapping[int, list[tuple[int, float, float]]]
 ) -> set[int]:
@@ -2425,9 +2472,9 @@ def fit_collision_geometry_from_mjcf(
     data = mujoco.MjData(model)
     link_body = _mjcf_link_bodies(robot, model)
 
-    # Equality-coupled followers of each joint, from whichever side it is driven,
-    # minus the ones the manifest models as mimic links of their own.
-    followers = mjcf_coupled_joints(model)
+    # Equality-coupled (or mirror-actuated) followers of each joint, from whichever side
+    # it is driven, minus the ones the manifest models as mimic links of their own.
+    followers = twin_coupled_joints(robot, model)
     declared = _declared_mimic_followers(robot, model, followers)
     followers = {
         leader: [f for f in fs if f[0] not in declared] for leader, fs in followers.items()
@@ -2622,7 +2669,7 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
     # Equality followers (the OpenArm's second finger) are set from the driven
     # joint at every sample: `mj_kinematics` does not enforce equalities, and
     # a follower left at zero would be swept at the wrong opening.
-    coupled = mjcf_coupled_joints(model)
+    coupled = twin_coupled_joints(robot, model)
     sweep: list[tuple[int, float, float, list[tuple[int, float, float]]]] = []
     for j in robot.joints:
         ji = jid(j.sim_joint_name)
