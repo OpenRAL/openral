@@ -529,18 +529,24 @@ safety:
 sdk_kind: "closed_with_api"
 # Explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).
 #
-# hal.real is set, but the H2 is NOT cleared for hardware. Issue #513's safety
-# blockers (OpenRAL/management hazard-log Entry 074, Safety-WG review
-# safety/reviews/2026-11-07-unitree-g1-h2-real-hw.md, gate item 5): the H2
-# collision geometry and the wrist-pitch placement are addressed in the PR that
-# set this; still open, and owned by the first bring-up, are
+# hal.real is set, but the H2 is NOT cleared for hardware. Issue #513's blockers
+# (OpenRAL/management hazard-log Entry 074 gate 5) are closed by Entry 105
+# (ACCEPTED 2026-11-24 with conditions; review
+# safety/reviews/2026-11-24-unitree-h2-real-hal.md): collision geometry for the
+# visual-only links, the H2 ACM, and the wrist-pitch placement. Still open, owned
+# by the first bring-up (Entry 074 gates 1-4 and Entry 105 C2-C4):
 #   * freeze_controller holds the measured pose, it does not balance — the robot
 #     stays on a gantry until the e-stop behaviour is characterised;
 #   * the IMU frame (`imu_in_pelvis` in config/h2/controller_manager.yaml) must
 #     be checked on hardware;
 #   * the S0 loop runs at 200 Hz (policy 50 Hz), below CLAUDE.md §3's 500-1000 Hz;
-#   * the AGILE checkpoint was trained on the H2 Plus;
-# and Safety-WG review of the H2 allowed-collision list and of this bring-up.
+#   * the gains and the safety fields below are G1 / training values (C2);
+#   * wrist pitch stays at ±0.576 rad or tighter, or the wrist_roll<->wrist_yaw
+#     ACM exemption reopens (C3);
+#   * the AGILE checkpoint was trained on the H2 Plus: confirm the unit's variant
+#     and mass before blending it in (C4).
+# C1 (S0 targets clamped to these joint limits on the real chain) is met by
+# GuardedSafetyController's `joint_position_limits`, pinned to this file.
 hal:
   sim: "openral_hal.h2:H2MujocoHAL"
   real: "openral_hal.unitree_real:UnitreeHgRealHAL"

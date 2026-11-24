@@ -33,7 +33,7 @@ controller_manager @ 200 Hz ──────────────┼──�
    upper_body_forward_joint_command_controller ─┐   (writes <joint>/<if>_raw)
    inference_controller  (ONNX via Triton, 50 Hz)┤
                                                  ▼
-   safety_controller: blend_ratio · velocity clamp · out-of-domain → freeze_controller
+   safety_controller: blend_ratio · velocity clamp · joint-limit clamp · out-of-domain → freeze_controller
       (NVIDIA's SafetyController through OpenRAL's GuardedSafetyController, see below)
                                                  ▼
    unitree_hg_ros2_control/UnitreeHgSystemInterface: CRC32 · 500 ms state freshness ·
@@ -318,8 +318,12 @@ hardware.
    `max_base_angular_speed_rad_s: 1.0`, collision) **before** the HAL sees it — unchanged.
 2. The HAL refuses leg targets, non-planar or non-finite twists, wrong dimensions.
 3. NVIDIA `SafetyController` (through `GuardedSafetyController`) then blends, rate-limits (arms ≤ 1.2 rad/s target motion) and
-   watches for out-of-domain velocities; the hardware interface checks finiteness, CRC and
-   state freshness. These are **additional** layers below OpenRAL's — none replaces or
+   watches for out-of-domain velocities; the guard then **clamps every joint's position
+   command to the manifest's limits** (`joint_position_limits` in `config/<model>/
+   controller_manager.yaml`, pinned to the manifest by the bring-up test; hazard-log
+   Entry 105 C1). Nothing else bounds an S0 target: the kernel never sees one, upstream's
+   `SafetyController` does not range-check positions, and the hardware interface checks only
+   finiteness, CRC and state freshness. These are **additional** layers below OpenRAL's — none replaces or
    relaxes the kernel, and no OpenRAL flag disables any of them.
 
 Neither policy's trained velocity-command range is stated in its pinned repo; the
@@ -343,12 +347,14 @@ Same graph, HAL and e-stop as the G1, with these differences:
 * **Gains.** `freeze_controller` (10 / 1) and `safety_controller` (100 / 2) are the G1's
   values, unchanged — no H2 value has been measured. On a ~70 kg robot with 360 N·m hips
   the freeze hold is further still from balance.
-* **Hardware gates still open** (issue #513, hazard-log Entry 074, Safety-WG review
-  `safety/reviews/2026-11-07-unitree-g1-h2-real-hw.md`): the robot stays on a gantry until
-  freeze is characterised; the IMU frame (`imu_in_pelvis`) is checked on hardware; the S0
-  loop runs at 200 Hz (policy 50 Hz); the checkpoint was trained on the H2 Plus; joint-limit
-  clamping of the policy's targets (open-loop ankle-roll overshoot above) is confirmed in the
-  C++ chain; Safety-WG reviews the H2 allowed-collision list and the bring-up.
+* **Hardware gates still open** (issue #513; hazard-log Entry 074 gates 1–4 and Entry 105,
+  accepted 2026-11-24 with conditions; reviews `safety/reviews/2026-11-07-unitree-g1-h2-real-hw.md`
+  and `2026-11-24-unitree-h2-real-hal.md`): the robot stays on a gantry until freeze is
+  characterised; the IMU frame (`imu_in_pelvis`) is checked on hardware; the S0 loop runs at
+  200 Hz (policy 50 Hz); H2 gains and safety fields are measured on the gantry (C2); wrist
+  pitch stays at ±0.576 rad or tighter (C3); the unit's variant and mass are confirmed, since
+  the checkpoint was trained on the H2 Plus (C4). C1 (joint-limit clamping of S0 targets) is
+  met by `GuardedSafetyController` above, for the G1 too.
 
 ## Rates
 

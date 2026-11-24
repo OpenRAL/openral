@@ -144,6 +144,24 @@ def test_whole_body_controllers_cover_exactly_the_manifest_joints(model: str) ->
 
 
 @pytest.mark.parametrize("model", _MODELS)
+def test_the_safety_controller_clamps_to_the_manifest_joint_limits(model: str) -> None:
+    """Hazard-log Entry 105 C1: the guard's limits are the manifest's, joint for joint.
+
+    GuardedSafetyController clamps every position command to ``joint_position_limits`` (the
+    gtest proves the clamp); this pins the values it clamps to. A drifted limit here would
+    let an S0 target past the manifest's range on hardware, where the kernel never sees it.
+    """
+    params = _params(_yaml(_cm(model)), "safety_controller")
+    limits = params["joint_position_limits"]
+    manifest = {j.name: j.position_limits for j in _manifest(model).joints}
+    assert len(limits["lower"]) == len(limits["upper"]) == len(params["joints"])
+    for joint, lower, upper in zip(params["joints"], limits["lower"], limits["upper"], strict=True):
+        expected = manifest[joint]
+        assert expected is not None, f"{joint} has no manifest position_limits"
+        assert (lower, upper) == tuple(expected), joint
+
+
+@pytest.mark.parametrize("model", _MODELS)
 def test_every_declared_controller_type_is_a_known_plugin(model: str) -> None:
     """Upstream plugins, except safety_controller and inference_controller, which run
     through OpenRAL's guards (#548, #565)."""
