@@ -7,7 +7,7 @@
 # drive a 50 Hz leg policy under gravity. Pair with InternVLA-N1 VLN for
 # closed-loop language-driven navigation:
 #
-#   OPENRAL_ALLOW_NONCOMMERCIAL=1 OPENRAL_INTERNVLA_N1_DEPTH=none \
+#   OPENRAL_ALLOW_NONCOMMERCIAL=1 \
 #     openral deploy sim --config scenes/deploy/g1_vln.yaml
 #   ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill \
 #     "{rskill_id: 'OpenRAL/rskill-internvla_n1-mobile_base-vln-nf4', \

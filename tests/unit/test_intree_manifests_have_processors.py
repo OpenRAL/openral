@@ -120,6 +120,9 @@ def test_every_modern_intree_manifest_declares_processors() -> None:
       promptable mask model (SAM 2.1): a ``transformers`` processor, not a
       lerobot ``PolicyProcessorPipeline``, and ``processors`` is likewise
       FORBIDDEN by the schema.
+    * Depth-estimator rSkills (``kind: depth_estimator``) run a monocular depth
+      model in its own sidecar from a ``depth_estimator`` contract, with no
+      lerobot policy pipeline.
     """
     manifests = list(discover_intree_rskills())
     assert manifests, "no in-tree rskills/*/rskill.yaml manifests discovered"
@@ -137,6 +140,7 @@ def test_every_modern_intree_manifest_declares_processors() -> None:
             "ros_service",
             "detector",
             "segmenter",
+            "depth_estimator",
             "vlm",
             "reward",
             "playbook",

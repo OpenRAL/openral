@@ -23,6 +23,7 @@ import math
 from collections.abc import Collection, Sequence
 from typing import TYPE_CHECKING, Final, NamedTuple
 
+from openral_core.exceptions import ROSConfigError
 from openral_core.tracking_thresholds import load_tracking_thresholds
 
 if TYPE_CHECKING:
@@ -395,3 +396,57 @@ def optical_mount(spec: SensorSpec, sensors: Sequence[SensorSpec]) -> OpticalMou
         mount = spec
     frame = str(mount.frame_id)
     return OpticalMount(mount, frame, optical_frame_id(frame))
+
+
+#: ``SensorModality.DEPTH``'s value, compared as a str so this module never imports schemas.
+_DEPTH: Final[str] = "depth"
+
+
+def policy_depth_source(
+    sensors: Sequence[SensorSpec], camera: str, *, estimated_depth_camera: str | None = None
+) -> str:
+    """The camera whose ``DEPTH_IMAGE`` stream carries depth for RGB ``camera``, or why none does.
+
+    A policy that reads metric depth for ``camera`` gets it from one of, in order:
+
+    * an estimate: ``camera`` is ``DeployRuntime.estimated_depth_camera``, so the depth
+      provider runs the configured ``depth_estimator`` rSkill on its frames;
+    * ``camera`` itself, when it is a ``depth`` sensor;
+    * the same physical device: a ``depth`` sensor that ``camera`` ``shares_mount_with``,
+      or one that ``shares_mount_with`` ``camera`` (an RGB-D camera's two streams).
+
+    A depth sensor elsewhere on the robot does not count: its pixels are not ``camera``'s.
+
+    Raises:
+        ROSConfigError: ``camera`` is not one of ``sensors``, or nothing gives it depth
+            (the message names both fixes).
+
+    Example:
+        >>> from openral_core import SensorModality, SensorSpec
+        >>> rgb = SensorSpec(name="top", modality=SensorModality.RGB, frame_id="f", rate_hz=30)
+        >>> policy_depth_source([rgb], "top", estimated_depth_camera="top")
+        'top'
+        >>> zed = SensorSpec(name="zed", modality=SensorModality.DEPTH, frame_id="z", rate_hz=30)
+        >>> paired = rgb.model_copy(update={"shares_mount_with": "zed"})
+        >>> policy_depth_source([paired, zed], "top")
+        'zed'
+    """
+    by_name = {s.name: s for s in sensors}
+    spec = by_name.get(camera)
+    if spec is None:
+        raise ROSConfigError(f"policy camera {camera!r} is not a sensor ({sorted(by_name)})")
+    if camera == estimated_depth_camera or spec.modality == _DEPTH:
+        return camera
+    partner = by_name.get(spec.shares_mount_with or "")
+    if partner is not None and partner.modality == _DEPTH:
+        return partner.name
+    for s in sensors:
+        if s.modality == _DEPTH and s.shares_mount_with == camera:
+            return s.name
+    raise ROSConfigError(
+        f"camera {camera!r} has no depth: no depth sensor shares its mount and it is not "
+        f"the estimated-depth camera (estimated_depth_camera={estimated_depth_camera!r}). "
+        f"Set runtime.estimated_depth_camera: {camera} (with runtime.estimated_depth_rskill "
+        "naming a metric depth_estimator rSkill, or its default), or declare an RGB-D depth "
+        f"sensor with shares_mount_with: {camera} in the robot manifest."
+    )
