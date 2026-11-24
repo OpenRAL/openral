@@ -282,7 +282,7 @@ class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rcl
         # Defense-in-depth: external estop publishers (deadman watchdog,
         # hardware estop pendant, human estop forwarder, the C++ kernel
         # itself) also latch us so we stop forwarding candidates without
-        # waiting for the operator to reset (CLAUDE.md §1.5).
+        # waiting for the operator to reset (CLAUDE.md §1.1).
         self._estop_sub = self.create_subscription(
             Empty, "/openral/estop", self._on_external_estop, estop_qos
         )

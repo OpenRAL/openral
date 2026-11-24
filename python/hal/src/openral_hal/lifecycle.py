@@ -32,7 +32,7 @@ The base class owns: standard publishers (``/joint_states`` +
 ``/openral/estop``); the 1 Hz ``DiagnosticsHeartbeat``; the per-tick
 OTel ``hal.read_state``/``hal.send_action`` spans the dashboard's Robot
 State / Commands / Identity cards consume; and the estop latch
-(CLAUDE.md §1.5 defense in depth).
+(CLAUDE.md §1.1 defense in depth).
 
 ROS 2 imports are deferred so this module imports cleanly without a
 live ROS 2 install (pure-Python CI / linting).
@@ -825,7 +825,7 @@ if _ROS2_AVAILABLE:
             # in on_configure so module import stays import-safe without
             # ``openral_observability`` on the path.
             self._heartbeat: Any = None
-            # CLAUDE.md §1.5 — estop latch.
+            # CLAUDE.md §1.1 — estop latch.
             self._estopped: bool = False
             # Monotonic tick counters stamped on hal.read_state /
             # hal.send_action spans so the dashboard correlates ticks
@@ -1313,7 +1313,7 @@ if _ROS2_AVAILABLE:
                 self._on_safe_action,
                 chunk_qos,
             )
-            # CLAUDE.md §1.5 — defense-in-depth estop.
+            # CLAUDE.md §1.1 — defense-in-depth estop.
             estop_qos = QoSProfile(
                 reliability=QoSReliabilityPolicy.RELIABLE,
                 durability=QoSDurabilityPolicy.VOLATILE,

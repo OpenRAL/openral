@@ -5,7 +5,7 @@ Subscribes to ``/openral/human_estop`` (where UI / Slack / voice
 adapters publish), and republishes onto ``/openral/estop`` plus emits a
 ``FailureTrigger(KIND_HUMAN, HumanEvidence(channel=...))`` on
 ``/openral/failure/safety``. The C++ safety kernel + HAL both subscribe
-to ``/openral/estop`` independently (defense in depth, CLAUDE.md §1.5).
+to ``/openral/estop`` independently (defense in depth, CLAUDE.md §1.1).
 """
 
 from __future__ import annotations
