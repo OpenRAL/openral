@@ -298,6 +298,11 @@ def main() -> None:  # noqa: PLR0915  # reason: one node, its callbacks share th
 
         def __init__(self) -> None:
             super().__init__("instance_mask_propagator")
+            from openral_observability import refuse_unavailable_transitions
+
+            # A change_state the current state lacks (a repeated deactivate) is refused,
+            # not raised out of the executor (rclpy kills the node on an unknown id).
+            refuse_unavailable_transitions(self)
             self.active = False
             self.pub: Any = None
             self.subs: list[Any] = []
