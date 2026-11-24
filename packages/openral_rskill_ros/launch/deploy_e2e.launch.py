@@ -1273,11 +1273,52 @@ def _cloud_shows_the_robot(
     return hal_mode == "real" or scene_backend == "isaacsim" or estimated_depth
 
 
-#: DA3 checkpoint and sidecar port for ``DeployRuntime.estimated_depth_camera``. Metric
-#: (canonical focal-300 depth), Apache-2.0; its own port so mono SLAM's ``DA3-SMALL``
+#: Default ``kind: depth_estimator`` rSkill and sidecar port for
+#: ``DeployRuntime.estimated_depth_camera`` (``estimated_depth_rskill`` overrides the skill):
+#: DA3METRIC-LARGE, canonical focal-300 depth, Apache-2.0. Its own port so mono SLAM's
 #: sidecar on 5771 can run beside it.
-_ESTIMATED_DEPTH_MODEL = "depth-anything/DA3METRIC-LARGE"
+_ESTIMATED_DEPTH_RSKILL = "rskill-da3metric_large-any-metric_depth-bf16"
 _ESTIMATED_DEPTH_PORT = 5772
+#: The mono SLAM path's depth skill: DA3-SMALL, which predicts its own camera.
+_SLAM_DEPTH_RSKILL = "rskill-da3_small-any-depth-bf16"
+_SLAM_DEPTH_PORT = 5771
+
+
+def _depth_rskill_manifest(ref: str) -> str:
+    """The ``rskill.yaml`` a depth-skill reference names: a path to it, or a ``rskills/`` dir.
+
+    Example:
+        >>> _depth_rskill_manifest(_SLAM_DEPTH_RSKILL).endswith(
+        ...     "rskills/rskill-da3_small-any-depth-bf16/rskill.yaml"
+        ... )
+        True
+    """
+    from openral_core.exceptions import ROSConfigError
+
+    path = pathlib.Path(ref) if ref.endswith(".yaml") else pathlib.Path(_RSKILLS_DIR) / ref
+    if not ref.endswith(".yaml"):
+        path = path / "rskill.yaml"
+    elif not path.is_absolute():
+        path = _REPO_ROOT / path
+    if not path.is_file():
+        raise ROSConfigError(f"depth_estimator rSkill {ref!r}: no manifest at {path}")
+    return str(path)
+
+
+def _depth_sidecar_process(manifest: str, port: int, name: str) -> object:
+    """The sidecar ``tools/depth_estimator_sidecar.py`` boots for a depth_estimator rSkill.
+
+    Its launcher needs an interpreter that imports ``openral_core`` / ``openral_rskill``
+    (the manifest + license gate), hence the launch's own ``sys.executable``, plus ``uv``
+    on PATH: it provisions the backend's venv on first boot (minutes). If an operator-run
+    sidecar already holds the port this one fails to bind and exits without tearing the
+    launch down, so the external one keeps serving.
+    """
+    from launch.actions import ExecuteProcess
+
+    tool = str(_REPO_ROOT / "tools" / "depth_estimator_sidecar.py")
+    cmd = [sys.executable, tool, "--manifest", manifest, "--port", str(port)]
+    return ExecuteProcess(cmd=cmd, name=name, output="screen")
 
 
 def _optical_mounts(sensors: Sequence[SensorSpec], hal_mode: str) -> dict[str, str]:
@@ -1370,15 +1411,17 @@ def _optical_tf_node(parent: str, optical: str) -> Node:
 def _build_estimated_depth_nodes(
     camera: str,
     *,
+    manifest: str,
     rgb_camera_info_topic: str,
     rgb_image_rectified: bool,
     cloud_frame: str,
     optical_parent: str | None,
     use_sim_time: bool,
 ) -> list:  # type: ignore[type-arg]  # reason: launch actions, deferred import
-    """The DA3METRIC sidecar + depth provider that give ``camera`` a world-collision cloud.
+    """The depth_estimator sidecar + depth provider that give ``camera`` a world-collision cloud.
 
-    The provider converts DA3's canonical output to metres through the camera's own
+    ``manifest`` is the ``kind: depth_estimator`` rSkill (default DA3METRIC-LARGE). The
+    provider converts its output to metres through the camera's own
     ``CameraInfo`` focal (``rgb_camera_info_topic``: :func:`_live_camera_info_topic`,
     the driver's calibration on a real deploy; the frame is first rectified to a pinhole
     with that ``CameraInfo``'s lens model, or, ``rgb_image_rectified``, read through its
@@ -1392,23 +1435,10 @@ def _build_estimated_depth_nodes(
     its venv on first boot (minutes); until it answers the provider publishes nothing, so
     the kernel's world-voxel deadline stops motion rather than run on an empty map.
     """
-    from launch.actions import ExecuteProcess
-
     optical_tf = [] if optical_parent is None else [_optical_tf_node(optical_parent, cloud_frame)]
     return [
         *optical_tf,
-        ExecuteProcess(
-            cmd=[
-                sys.executable,
-                str(_REPO_ROOT / "tools" / "da3_depth_sidecar.py"),
-                "--model",
-                _ESTIMATED_DEPTH_MODEL,
-                "--port",
-                str(_ESTIMATED_DEPTH_PORT),
-            ],
-            name="da3_metric_depth_sidecar",
-            output="screen",
-        ),
+        _depth_sidecar_process(manifest, _ESTIMATED_DEPTH_PORT, "estimated_depth_sidecar"),
         Node(
             package="openral_perception_ros",
             executable="depth_provider_node.py",
@@ -1427,6 +1457,7 @@ def _build_estimated_depth_nodes(
                     # (a top camera sharing a mount may stamp ``world``).
                     "depth_frame_id": cloud_frame,
                     "sidecar_port": _ESTIMATED_DEPTH_PORT,
+                    "manifest_path": manifest,
                     # A large model's first frames (CUDA warm-up) can exceed 2 s.
                     "request_timeout_ms": 10000,
                 }
@@ -2814,6 +2845,7 @@ def _build_visual_slam_includes(
     mono_camera: str = "",
     mono_depth_frame: str = "",
     depth_sidecar_autostart: bool = True,
+    depth_manifest: str = "",
     nav2_depth_camera: str = "",
 ) -> list[object]:
     """Build the cuVSLAM (+ optional nvblox) includes for the visual backend.
@@ -2830,15 +2862,16 @@ def _build_visual_slam_includes(
     depth stream (the manifest's depth sensor, ``_depth_camera``); empty leaves nvblox without
     an input, which its depth height filter refuses at startup.
 
-    ``mono_camera`` (pycuvslam only) selects the mono RGBD path: one RGB camera + the DA3
-    metric-depth provider. Auto-composes ``depth_provider_node`` (RGB → 32FC1 depth, framed at
-    ``mono_depth_frame`` so nvblox can place it via the HAL's ``base → <camera>_optical_frame``
-    TF) and nvblox — cuVSLAM gets depth for scale, nvblox for the occupancy grid + voxels. The
-    DA3 sidecar (``tools/da3_depth_sidecar.py``) spawns alongside by default
+    ``mono_camera`` (pycuvslam only) selects the mono RGBD path: one RGB camera + the depth
+    provider running ``depth_manifest`` (default DA3-SMALL, ``_SLAM_DEPTH_RSKILL``).
+    Auto-composes ``depth_provider_node`` (RGB → 32FC1 depth, framed at ``mono_depth_frame``
+    so nvblox can place it via the HAL's ``base → <camera>_optical_frame`` TF) and nvblox —
+    cuVSLAM gets depth for scale, nvblox for the occupancy grid + voxels. The
+    depth sidecar (``tools/depth_estimator_sidecar.py``) spawns alongside by default
     (``depth_sidecar_autostart``); the depth provider retries until it answers (first boot
     provisions the sidecar venv). ``False`` = operator-run/shared.
     """
-    from launch.actions import ExecuteProcess, IncludeLaunchDescription
+    from launch.actions import IncludeLaunchDescription
     from launch.launch_description_sources import PythonLaunchDescriptionSource
     from launch_ros.actions import Node
 
@@ -2850,28 +2883,11 @@ def _build_visual_slam_includes(
         depth_image = camera_topic(mono_camera, CameraTopicKind.DEPTH_IMAGE)
         depth_info = camera_topic(mono_camera, CameraTopicKind.DEPTH_CAMERA_INFO)
         depth_frame = mono_depth_frame or f"{mono_camera}_optical_frame"
+        manifest = depth_manifest or _depth_rskill_manifest(_SLAM_DEPTH_RSKILL)
         actions: list[object] = []
         if depth_sidecar_autostart:
-            # DA3 metric-depth sidecar (ZMQ :5771). The launcher needs an
-            # interpreter that can import openral_core (its shared sidecar
-            # helpers import it), hence the launch's own sys.executable (the
-            # OpenRAL venv), plus `uv` on PATH; it provisions its own venv on first boot —
-            # which can take minutes; the depth provider retries until it
-            # answers. If an operator-run sidecar already holds the port, this
-            # one fails to bind and exits; ExecuteProcess death does not tear
-            # down the launch, so the external sidecar keeps serving.
-            actions.append(
-                ExecuteProcess(
-                    cmd=[
-                        sys.executable,
-                        str(_REPO_ROOT / "tools" / "da3_depth_sidecar.py"),
-                        "--port",
-                        "5771",
-                    ],
-                    name="da3_depth_sidecar",
-                    output="screen",
-                )
-            )
+            # The depth provider retries until the sidecar answers (first boot provisions).
+            actions.append(_depth_sidecar_process(manifest, _SLAM_DEPTH_PORT, "depth_sidecar"))
         return [
             *actions,
             # cuVSLAM in RGBD mode: track the single RGB camera fused with DA3 depth.
@@ -2901,6 +2917,8 @@ def _build_visual_slam_includes(
                         "depth_topic": depth_image,
                         "camera_info_topic": depth_info,
                         "depth_frame_id": depth_frame,
+                        "sidecar_port": _SLAM_DEPTH_PORT,
+                        "manifest_path": manifest,
                     }
                 ],
                 output="screen",
@@ -5204,6 +5222,10 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         extra_nodes.extend(
             _build_estimated_depth_nodes(
                 estimated_depth_camera,
+                manifest=_depth_rskill_manifest(
+                    LaunchConfiguration("estimated_depth_rskill").perform(context).strip()
+                    or _ESTIMATED_DEPTH_RSKILL
+                ),
                 rgb_camera_info_topic=estimated_info_topic,
                 rgb_image_rectified=estimated_rectified,
                 cloud_frame=mount.cloud_frame,
@@ -6539,7 +6561,7 @@ def generate_launch_description() -> LaunchDescription:
             "estimated_depth_camera",
             default_value="",
             description=(
-                "RGB camera whose DA3METRIC depth feeds the world-collision map "
+                "RGB camera whose estimated depth feeds the world-collision map "
                 "(sidecar on ZMQ :5772 + depth provider; its cloud becomes octomap's "
                 "input). From DeployRuntime.estimated_depth_camera. Empty = off. "
                 "REFUSED whenever the robot or the scene has any measured depth or "
@@ -6548,10 +6570,20 @@ def generate_launch_description() -> LaunchDescription:
             ),
         ),
         DeclareLaunchArgument(
+            "estimated_depth_rskill",
+            default_value="",
+            description=(
+                "kind: depth_estimator rSkill for estimated_depth_camera: a rskills/ "
+                "directory name or an rskill.yaml path. From "
+                "DeployRuntime.estimated_depth_rskill. Empty = "
+                f"{_ESTIMATED_DEPTH_RSKILL} (DA3METRIC-LARGE)."
+            ),
+        ),
+        DeclareLaunchArgument(
             "slam_depth_sidecar_autostart",
             default_value="true",
             description=(
-                "Spawn tools/da3_depth_sidecar.py (ZMQ :5771) alongside the mono "
+                "Spawn the depth sidecar (DA3-SMALL rSkill, ZMQ :5771) alongside the mono "
                 "RGBD graph. From DeployRuntime.slam_depth_sidecar_autostart; "
                 "false = operator-run/shared sidecar. Ignored without "
                 "slam_mono_camera."

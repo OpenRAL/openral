@@ -2,14 +2,18 @@
 """Live ROS: the depth provider's metric mode turns an RGB camera into a world-map cloud.
 
 ``DeployRuntime.estimated_depth_camera`` runs the real ``depth_provider_node`` on an RGB
-camera against a DA3METRIC sidecar. Here the sidecar is a fake at its ZMQ boundary
-(``fakes/fake_da3_sidecar.py``) answering with the canonical depth of a plane 1.5 m in
-front of the camera; everything else is real: the node process, its parameters, ROS
-transport, ``CameraInfo`` in, depth + ``CameraInfo`` + ``PointCloud2`` out. Pinned:
+camera with a ``kind: depth_estimator`` rSkill's manifest (DA3METRIC by default, Depth
+Pro 2 where named). Here the sidecar is a fake at its ZMQ boundary
+(``fakes/fake_depth_sidecar.py``) answering with a plane 1.5 m in front of the camera;
+everything else is real: the node process, its parameters, ROS transport, ``CameraInfo``
+in, depth + ``CameraInfo`` + ``PointCloud2`` out. Pinned:
 
 * the cloud is the plane at 1.5 m, in the RGB ``CameraInfo``'s optical frame, through the
   camera's own K scaled to DA3's raster (never DA3's estimated K);
-* a sidecar serving a non-metric checkpoint (``DA3-SMALL``) yields no cloud at all;
+* a sidecar serving another model than the skill's (``DA3-SMALL``) yields no cloud at all,
+  and a ``relative`` skill is refused at startup;
+* a ``metric`` skill (Depth Pro 2) is sent the rectified ``fx`` as ``f_px`` and its metres
+  pass through to the same plane;
 * a full-resolution ``CameraInfo`` for a downscaled image still gives the plane at 1.5 m,
   while one of another aspect ratio (another view: K would be wrong) yields no cloud;
 * a distorted lens (the real Arducam ``plumb_bob`` calibration) is rectified first, and
@@ -44,14 +48,19 @@ pytest.importorskip("zmq")
 _REPO = Path(__file__).resolve().parents[2]
 _NODE = _REPO / "packages/openral_perception_ros/openral_perception_ros/depth_provider_node.py"
 _W, _H, _F = 640, 480, 500.0
+_DA3M = "rskill-da3metric_large-any-metric_depth-bf16"
+_DP2 = "rskill-depth_pro2_s-any-metric_depth-bf16"
 _RASTER = (120, 160)  # DA3's (h, w): a quarter of the camera image
 _PLANE_Z_M = 1.5
 _FRAME = "test_camera_optical_frame"
 
 
 @contextlib.contextmanager
-def _provider(prefix: str, port: int, log: Path, frame: str) -> Iterator[subprocess.Popen[bytes]]:
+def _provider(
+    prefix: str, port: int, log: Path, frame: str, skill: str
+) -> Iterator[subprocess.Popen[bytes]]:
     params = {
+        "manifest_path": str(_REPO / "rskills" / skill / "rskill.yaml"),
         "image_topic": f"{prefix}/image",
         "rgb_camera_info_topic": f"{prefix}/camera_info",
         "depth_topic": f"{prefix}/depth",
@@ -90,18 +99,23 @@ def _run(
     info_scale: tuple[float, float] = (1.0, 1.0),
     lens: tuple[str, list[float]] = ("plumb_bob", [0.0] * 5),
     focal_raster: float | None = None,
-) -> tuple[dict[str, Any], int, str]:
+    skill: str = _DA3M,
+) -> tuple[dict[str, Any], Any, str]:
     """Feed the provider RGB + CameraInfo for ``wait_s``; return what it published."""
     import rclpy
     from rclpy.qos import qos_profile_sensor_data
     from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 
-    from tests.integration.fakes.fake_da3_sidecar import FakeDa3Sidecar
+    from tests.integration.fakes.fake_depth_sidecar import FakeDepthSidecar
 
     # The focal DA3 "sees" at its raster: the camera's, or a rectified lens's pinhole.
     focal_raster = focal_raster if focal_raster is not None else _F * _RASTER[1] / _W
-    sidecar = FakeDa3Sidecar(
-        model=model, plane_z_m=_PLANE_Z_M, raster_hw=_RASTER, focal_px=focal_raster
+    sidecar = FakeDepthSidecar(
+        model=model,
+        plane_z_m=_PLANE_Z_M,
+        raster_hw=_RASTER,
+        focal_px=focal_raster,
+        metric=skill == _DP2,
     )
     prefix = f"/test_{uuid.uuid4().hex[:8]}/cam"
     log = tmp_path / "provider.log"
@@ -134,7 +148,7 @@ def _run(
         image.height, image.width, image.encoding = _H, _W, "rgb8"
         image.step = _W * 3
         image.data = bytes(np.full((_H, _W, 3), 120, np.uint8).tobytes())
-        with _provider(prefix, sidecar.port, log, frame):
+        with _provider(prefix, sidecar.port, log, frame, skill):
             deadline = time.monotonic() + wait_s
             # Cloud and CameraInfo arrive on separate topics, in either order.
             while time.monotonic() < deadline and not ("cloud" in got and "info" in got):
@@ -148,7 +162,7 @@ def _run(
         node.destroy_node()
         rclpy.shutdown()
         sidecar.close()
-    return got, sidecar.requests, log.read_text(errors="replace")
+    return got, sidecar, log.read_text(errors="replace")
 
 
 def test_a_metric_sidecar_gives_the_plane_as_a_cloud_in_the_camera_frame(
@@ -156,8 +170,8 @@ def test_a_metric_sidecar_gives_the_plane_as_a_cloud_in_the_camera_frame(
 ) -> None:
     from sensor_msgs_py.point_cloud2 import read_points_numpy
 
-    got, requests, log = _run("depth-anything/DA3METRIC-LARGE", tmp_path, wait_s=30.0)
-    assert "cloud" in got, f"no cloud after {requests} sidecar requests; provider log:\n{log}"
+    got, sidecar, log = _run("depth-anything/DA3METRIC-LARGE", tmp_path, wait_s=30.0)
+    assert "cloud" in got, f"no cloud after {sidecar.requests} requests; provider log:\n{log}"
     cloud = got["cloud"]
     assert cloud.header.frame_id == _FRAME
     pts = read_points_numpy(cloud, field_names=("x", "y", "z"))
@@ -172,11 +186,32 @@ def test_a_metric_sidecar_gives_the_plane_as_a_cloud_in_the_camera_frame(
     assert float(pts[:, 0].max()) == pytest.approx(_W / 2.0 * _PLANE_Z_M / _F, rel=0.02)
 
 
-def test_a_non_metric_sidecar_feeds_the_map_nothing(tmp_path: Path) -> None:
-    got, requests, log = _run("depth-anything/DA3-SMALL", tmp_path, wait_s=8.0)
-    assert requests > 0, f"the provider never asked the sidecar; log:\n{log}"
+def test_a_sidecar_serving_another_model_feeds_the_map_nothing(tmp_path: Path) -> None:
+    """The DA3METRIC skill's provider against a sidecar that serves DA3-SMALL."""
+    got, sidecar, log = _run("depth-anything/DA3-SMALL", tmp_path, wait_s=8.0)
+    assert sidecar.requests > 0, f"the provider never asked the sidecar; log:\n{log}"
     assert "cloud" not in got
-    assert "not DA3METRIC" in log
+    assert "not the rSkill's 'depth-anything/DA3METRIC-LARGE'" in log
+
+
+def test_a_metric_skill_is_sent_the_focal_and_its_metres_pass_through(tmp_path: Path) -> None:
+    """Depth Pro 2: the rectified fx goes out as ``f_px``; the plane comes back in metres."""
+    from sensor_msgs_py.point_cloud2 import read_points_numpy
+
+    got, sidecar, log = _run("apple/DepthPro2-S", tmp_path, wait_s=30.0, skill=_DP2)
+    assert "cloud" in got, f"no cloud after {sidecar.requests} requests; provider log:\n{log}"
+    assert sidecar.f_px and all(f == pytest.approx(_F, rel=1e-3) for f in sidecar.f_px)
+    pts = read_points_numpy(got["cloud"], field_names=("x", "y", "z"))
+    assert np.allclose(pts[:, 2], _PLANE_Z_M, atol=1e-4)
+
+
+def test_a_relative_skill_is_refused_in_metric_mode(tmp_path: Path) -> None:
+    """DA3-SMALL is not metric: the provider refuses to start rather than map its depth."""
+    got, sidecar, log = _run(
+        "depth-anything/DA3-SMALL", tmp_path, wait_s=8.0, skill="rskill-da3_small-any-depth-bf16"
+    )
+    assert sidecar.requests == 0 and "cloud" not in got
+    assert "predicts relative depth" in log
 
 
 def test_the_launch_resolved_frame_wins_over_the_camera_info_frame(tmp_path: Path) -> None:
@@ -196,10 +231,10 @@ def test_a_full_resolution_camera_info_scales_to_a_downscaled_image(tmp_path: Pa
     """A driver's own CameraInfo at 2x the republished image: K scales, the plane holds."""
     from sensor_msgs_py.point_cloud2 import read_points_numpy
 
-    got, requests, log = _run(
+    got, sidecar, log = _run(
         "depth-anything/DA3METRIC-LARGE", tmp_path, wait_s=30.0, info_scale=(2.0, 2.0)
     )
-    assert "cloud" in got, f"no cloud after {requests} sidecar requests; provider log:\n{log}"
+    assert "cloud" in got, f"no cloud after {sidecar.requests} requests; provider log:\n{log}"
     pts = read_points_numpy(got["cloud"], field_names=("x", "y", "z"))
     assert np.allclose(pts[:, 2], _PLANE_Z_M, atol=1e-4)
     assert got["info"].k[0] == pytest.approx(_F / 4.0)
@@ -207,10 +242,10 @@ def test_a_full_resolution_camera_info_scales_to_a_downscaled_image(tmp_path: Pa
 
 def test_a_camera_info_of_another_aspect_feeds_the_map_nothing(tmp_path: Path) -> None:
     """A 640x360 CameraInfo does not describe a 640x480 image: its K would misplace depth."""
-    got, requests, log = _run(
+    got, sidecar, log = _run(
         "depth-anything/DA3METRIC-LARGE", tmp_path, wait_s=8.0, info_scale=(1.0, 0.75)
     )
-    assert requests == 0, "a frame whose CameraInfo cannot describe it never reaches DA3"
+    assert sidecar.requests == 0, "a frame whose CameraInfo cannot describe it never reaches DA3"
     assert "cloud" not in got
     assert "is not a resize of CameraInfo" in log
 
@@ -227,14 +262,14 @@ def test_a_distorted_lens_goes_through_its_rectified_pinhole(tmp_path: Path) -> 
         (_F, _F, _W / 2.0 - 0.5, _H / 2.0 - 0.5), (_W, _H), "plumb_bob", _ARDUCAM_D
     )
     assert rect.maps is not None and rect.k[0] == rect.k[1] != _F
-    got, requests, log = _run(
+    got, sidecar, log = _run(
         "depth-anything/DA3METRIC-LARGE",
         tmp_path,
         wait_s=30.0,
         lens=("plumb_bob", _ARDUCAM_D),
         focal_raster=rect.k[0] * _RASTER[1] / _W,
     )
-    assert "cloud" in got, f"no cloud after {requests} sidecar requests; provider log:\n{log}"
+    assert "cloud" in got, f"no cloud after {sidecar.requests} requests; provider log:\n{log}"
     pts = read_points_numpy(got["cloud"], field_names=("x", "y", "z"))
     assert np.allclose(pts[:, 2], _PLANE_Z_M, atol=1e-4)
     # The rectified pinhole, not the raw K, and no distortion left on the depth CameraInfo.
@@ -244,11 +279,11 @@ def test_a_distorted_lens_goes_through_its_rectified_pinhole(tmp_path: Path) -> 
 
 
 def test_an_unsupported_lens_feeds_the_map_nothing(tmp_path: Path) -> None:
-    got, requests, log = _run(
+    got, sidecar, log = _run(
         "depth-anything/DA3METRIC-LARGE",
         tmp_path,
         wait_s=8.0,
         lens=("kannala_brandt", [0.1, 0.0, 0.0, 0.0]),
     )
-    assert requests == 0 and "cloud" not in got
+    assert sidecar.requests == 0 and "cloud" not in got
     assert "unsupported distortion_model" in log

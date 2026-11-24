@@ -227,6 +227,7 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     p.add_argument("--model", default="depth-anything/DA3-SMALL")
+    p.add_argument("--revision", default=None, help="Pinned Hub commit of --model.")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=5771)
     p.add_argument("--process-res", type=int, default=504)
@@ -260,6 +261,8 @@ def main() -> int:
         "--process-res",
         str(args.process_res),
     ]
+    if args.revision:
+        cmd += ["--revision", args.revision]
     print(f"[da3-sidecar] launching server: model={args.model} port={args.port}", flush=True)
     os.execvpe(str(py), cmd, env)
 

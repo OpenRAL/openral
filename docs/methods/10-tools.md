@@ -630,8 +630,8 @@ Mirrors `openral rskill new`; exists so power users can scaffold without install
 _Generate the standard agent-skill `SKILL.md` discovery view for every in-tree rSkill from its `rskill.yaml`._
 The single canonical producer of the `SKILL.md` mirror: `rskill.yaml` is authoritative and the generated file is discovery-only, never hand-edited. `--check` fails on any stale or missing `SKILL.md`, across every skill kind including `playbook`.
 
-- `render_skill_md(manifest_path: Path) -> str` (L173) — Render the `SKILL.md` text (YAML frontmatter + capability/verb summary + license/provenance) from one manifest; `_KIND_NOUN` maps each `kind` to its discovery noun. The weights' permissive / NOT-permissive wording comes from `RSkillLicensePosture.allows_commercial_use` (`_weights_permissive`), the loader's own gate, so it cannot drift from it.
-- `main(argv=None) -> int` (L277) — Entry point. No args = regenerate every `rskills/<id>/SKILL.md`; positional ids regenerate a subset; `--check` reports stale/missing without writing (exit 1 on drift).
+- `render_skill_md(manifest_path: Path) -> str` (L174) — Render the `SKILL.md` text (YAML frontmatter + capability/verb summary + license/provenance) from one manifest; `_KIND_NOUN` maps each `kind` to its discovery noun. The weights' permissive / NOT-permissive wording comes from `RSkillLicensePosture.allows_commercial_use` (`_weights_permissive`), the loader's own gate, so it cannot drift from it.
+- `main(argv=None) -> int` (L278) — Entry point. No args = regenerate every `rskills/<id>/SKILL.md`; positional ids regenerate a subset; `--check` reports stale/missing without writing (exit 1 on drift).
 
 ### `tools/rldx_sidecar.py`
 _Boot helper for the RLDX-1 inference sidecar, companion to `openral_sim.policies.rldx`._
@@ -717,9 +717,24 @@ _Boot helper + server for the Depth Anything 3 monocular metric-depth sidecar, c
 - `ensure_venv(home, *, override=None) -> Path` (L168) — Returns the sidecar venv python, provisioning it if absent. x86_64 installs the plain requirement set; aarch64 substitutes packages with no aarch64 wheel and applies an nvrtc override, load-bearing because the model's JIT-fused op otherwise fails on later requests.
 - `_site_packages(py) -> Path` (L133) — the `site-packages` of the venv owning `py`; `SystemExit` if absent.
 - `_defer_pycolmap_import(py) -> None` (L141) — aarch64 only: rewrites the installed package's eager `import pycolmap` into a lazy proxy, since that dependency has no aarch64 wheel but is only needed by a code path this sidecar never calls. A deferred import, not a stub — the real error still raises if that path is used.
-- `main() -> int` (L222) — argparse (`--model` default `depth-anything/DA3-SMALL`, `--host`, `--port` default 5771, `--process-res` default 504, `--home`, `--venv`); execs into `_da3_depth_server.py`. No JIT/fuser env knobs needed, since the nvrtc override fixes the issue at install time.
-- `_load(model_id) -> (torch, model)` / `_infer(torch, model, image, process_res) -> (depth, K, latency_ms)` — load DA3 to CUDA in eval mode; one image → metric depth `(H, W)` float32 + 3×3 intrinsics.
+- `main() -> int` (L222) — argparse (`--model` default `depth-anything/DA3-SMALL`, `--revision` (pinned Hub commit), `--host`, `--port` default 5771, `--process-res` default 504, `--home`, `--venv`); execs into `_da3_depth_server.py`. No JIT/fuser env knobs needed, since the nvrtc override fixes the issue at install time.
+- `_load(model_id, revision=None) -> (torch, model)` / `_infer(torch, model, image, process_res) -> (depth, K, latency_ms)` — load DA3 to CUDA in eval mode; one image → metric depth `(H, W)` float32 + 3×3 intrinsics.
 - `main() -> int` (_da3_depth_server.py L70) — ZMQ REP loop (`ping`/`depth`/`shutdown`) that replies with an error object rather than dying on a bad frame. Validated live on both an 8 GB Ada GPU and a GB10 aarch64 host.
+
+### `tools/depth_estimator_sidecar.py`
+_Manifest-driven entry point for `kind: depth_estimator` rSkills; the deploy launch starts every depth sidecar through it._
+
+- `BACKEND_GROUP = "openral.depth_estimator_backends"` (L29) — entry-point group out-of-tree depth backends register under, keyed by `runtime` value (OpenRAL Pro ships `tensorrt`). The entry point is `(manifest_path, host, port) -> int` and serves the same wire protocol.
+- `family_command(manifest_path, host, port) -> list[str]` (L35) — argv for the in-tree `runtime: pytorch` sidecar of the contract's `family` (`da3_depth_sidecar.py` / `depth_pro2_sidecar.py`), with repo + revision from `weights_uri` and `process_res`.
+- `main() -> int` (L66) — `--manifest`, `--host`, `--port`; loads the skill through `rSkill.from_yaml` (license gate: a non-commercial skill needs `OPENRAL_ALLOW_NONCOMMERCIAL=1`), then execs the family sidecar or calls the entry-point backend.
+
+### `tools/depth_pro2_sidecar.py` + `tools/_depth_pro2_server.py`
+_Boot helper + server for Apple Depth Pro 2 (`apple/DepthPro2-*`), the same ZMQ REQ/REP + msgpack wire as the DA3 sidecar. Installs `depth_pro_2` from GitHub at a pinned commit into an isolated py3.12 venv; research-only weights, so start it through `depth_estimator_sidecar.py`._
+
+- `DEPTH_PRO2_SHA: str` (L45) — `ml-depth-pro-2` commit the package is installed from.
+- `ensure_venv(home, *, override=None) -> Path` (L53) — Returns the sidecar venv python, provisioning it under a file lock if absent (`$OPENRAL_DEPTH_PRO2_SIDECAR_VENV` reuses one).
+- `main() -> int` (L88) — argparse (`--model` required, `--revision`, `--host`, `--port` default 5772, `--home`, `--venv`); execs into `_depth_pro2_server.py`.
+- `main() -> int` (_depth_pro2_server.py L56) — ZMQ REP loop (`ping`/`depth`/`shutdown`); each `depth` request must carry `f_px` (the checkpoint has no field-of-view head) and is inferred on its own (`DepthPro2.infer`, bf16 autocast); replies metres at the input's size with a NaN K, or an error object.
 
 ### `tools/internvla_n1_sidecar.py` + `tools/_internvla_n1_server.py`
 _Boot helper + server for InternVLA-N1/DualVLN, companion to `openral_sim.policies.internvla_n1`. Runs out-of-process over ZMQ because upstream's pinned transformers version conflicts with the workspace's; provisions a py3.12 venv from an inference-only pin set (a cached venv on another Python is rebuilt) and serves the Qwen2.5-VL-7B S2 planner + NavDP DiT S1 policy, mapping discrete VLN-CE actions to a `BODY_TWIST`._

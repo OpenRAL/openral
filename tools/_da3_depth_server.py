@@ -41,13 +41,13 @@ import zmq
 from PIL import Image
 
 
-def _load(model_id: str) -> tuple[Any, Any]:
+def _load(model_id: str, revision: str | None = None) -> tuple[Any, Any]:
     import torch
     from depth_anything_3.api import (  # type: ignore[import-not-found,import-untyped,unused-ignore]  # reason: runs in the isolated DA3 sidecar venv (da3venv), absent from the main lint env
         DepthAnything3,
     )
 
-    model = DepthAnything3.from_pretrained(model_id).to("cuda").eval()
+    model = DepthAnything3.from_pretrained(model_id, revision=revision).to("cuda").eval()
     return torch, model
 
 
@@ -70,6 +70,7 @@ def _infer(torch: Any, model: Any, image: Image.Image, process_res: int) -> tupl
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", default="depth-anything/DA3-SMALL")
+    ap.add_argument("--revision", default=None, help="Pinned Hub commit of --model.")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=5771)
     ap.add_argument("--process-res", type=int, default=504)
@@ -77,7 +78,7 @@ def main() -> int:
 
     print(f"[da3-server] loading {args.model}...", flush=True)
     t0 = time.perf_counter()
-    torch, model = _load(args.model)
+    torch, model = _load(args.model, args.revision)
     print(
         f"[da3-server] loaded in {time.perf_counter() - t0:.1f}s; "
         f"VRAM {torch.cuda.memory_allocated() / 1e9:.2f} GB",

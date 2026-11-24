@@ -353,6 +353,74 @@
       "title": "ControlModeSemantics",
       "type": "object"
     },
+    "DepthEstimatorContract": {
+      "additionalProperties": false,
+      "description": "Manifest contract for ``kind: \"depth_estimator\"`` rSkills.\n\nA monocular depth model turns one RGB frame into a dense depth raster. The\ndepth provider node (``openral_perception_ros``) sends it frames over the\nsidecar wire and converts the raw output to metres with the camera's own\ncalibrated focal length, never a focal the model guesses: a cloud placed for\ncollision checking must scale with the real lens.\n\nRequired when ``RSkillManifest.kind`` is ``\"depth_estimator\"``; forbidden for\nevery other kind. ``RSkillManifest.runtime`` picks the backend: ``pytorch`` runs\nthe in-tree sidecar for ``family``; any other runtime (``tensorrt``) is looked up\nin the ``openral.depth_estimator_backends`` entry-point group.\n\nAttributes:\n    family: Which network the backend runs (``DepthEstimatorFamily``).\n    output: What the raw output means (``DepthOutput``).\n    canonical_focal_px: The focal length (pixels) ``canonical_focal`` output is\n        expressed at. REQUIRED for ``canonical_focal``, forbidden otherwise.\n    process_res: Longest side the backend resizes a frame to before inference;\n        ``None`` = the model's native input resolution (Depth Pro 2 runs at the\n        input's own size).\n    predicts_intrinsics: The backend returns its own pinhole estimate with every\n        raster. Only such a model can serve the SLAM path, which has no\n        ``CameraInfo`` to convert with.\n\nExample:\n    >>> c = DepthEstimatorContract(\n    ...     family=DepthEstimatorFamily.DA3,\n    ...     output=DepthOutput.CANONICAL_FOCAL,\n    ...     canonical_focal_px=300.0,\n    ...     process_res=504,\n    ... )\n    >>> (c.output.value, c.canonical_focal_px, c.predicts_intrinsics)\n    ('canonical_focal', 300.0, False)",
+      "properties": {
+        "family": {
+          "$ref": "#/$defs/DepthEstimatorFamily"
+        },
+        "output": {
+          "$ref": "#/$defs/DepthOutput"
+        },
+        "canonical_focal_px": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Canonical Focal Px"
+        },
+        "process_res": {
+          "anyOf": [
+            {
+              "minimum": 14,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Process Res"
+        },
+        "predicts_intrinsics": {
+          "default": false,
+          "title": "Predicts Intrinsics",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "family",
+        "output"
+      ],
+      "title": "DepthEstimatorContract",
+      "type": "object"
+    },
+    "DepthEstimatorFamily": {
+      "description": "Model family of a ``kind: \"depth_estimator\"`` rSkill: which network the backend runs.\n\nAttributes:\n    DA3: Depth Anything 3 (``depth-anything/DA3*``), the ``depth-anything-3``\n        package. ``DA3METRIC-*`` predicts canonical depth; the main series\n        (``DA3-SMALL`` ..) predicts relative depth plus its own camera.\n    DEPTH_PRO2: Apple Depth Pro 2 (``apple/DepthPro2-*``), the ``depth_pro_2``\n        package. Predicts metres given the camera's focal length in pixels.\n\nExample:\n    >>> DepthEstimatorFamily.DEPTH_PRO2.value\n    'depth_pro2'",
+      "enum": [
+        "da3",
+        "depth_pro2"
+      ],
+      "title": "DepthEstimatorFamily",
+      "type": "string"
+    },
+    "DepthOutput": {
+      "description": "What a depth estimator's raw output means, so the consumer knows how to get metres.\n\nAttributes:\n    METRIC: Metres along the optical axis. The backend is given the camera's focal\n        length in pixels of the image it sees (Depth Pro 2's ``f_px``).\n    CANONICAL_FOCAL: Depth at a fixed canonical focal length:\n        ``metres = mean(fx, fy) * raw / canonical_focal_px``, with ``fx``/``fy`` the\n        camera focal scaled to the output raster (DA3METRIC, focal 300).\n    RELATIVE: Not documented as metric (DA3 main series). Never converted to metres\n        for collision checking; only the SLAM path uses it, with the model's own K.\n\nExample:\n    >>> DepthOutput.CANONICAL_FOCAL.value\n    'canonical_focal'",
+      "enum": [
+        "metric",
+        "canonical_focal",
+        "relative"
+      ],
+      "title": "DepthOutput",
+      "type": "string"
+    },
     "DetectorContract": {
       "additionalProperties": false,
       "description": "Manifest contract for ``kind: \"detector\"`` rSkills.\n\nCarries the configuration the runtime\n``ObjectsDetector`` needs to instantiate an\nexported detection model (RT-DETR / D-FINE ONNX) and match its output\nindices to semantic class labels.\n\nRequired when ``RSkillManifest.kind`` is ``\"detector\"``; forbidden\nfor all other kinds (enforced by\n``RSkillManifest._check_kind_consistency``).\n\nAttributes:\n    labels: Ordered class-label list; the integer class-id the model\n        emits is used as an index into this list.  At least one label\n        is required.\n    input_size: Model input resolution as ``(width, height)`` in pixels.\n        Both dimensions must be > 0.  Default ``(640, 640)`` matches the\n        RT-DETR / D-FINE default export resolution.\n    score_threshold: Detections with confidence below this value are\n        discarded before publishing.  Must be in ``[0.0, 1.0]``.\n        Default ``0.5``.\n    engine: Optional explicit backend selector (``DetectorEngine``).\n        ``None`` (default) keeps the legacy ``runtime``-keyed dispatch.\n        Set it to disambiguate backends that share a ``runtime`` \u2014 e.g.\n        ``zeroshot_hf`` for an in-process Transformers open-vocabulary\n        detector, which is ``runtime: pytorch`` like the VLM sidecar.\n    mode: Invocation mode (``DetectorMode``; default ``continuous``).\n        Declares whether the detector is an always-on background producer\n        (output reaches the reasoner via world state) or an on-demand\n        prompted locator (surfaces the ``locate_in_view`` tool).\n\nExample:\n    >>> c = DetectorContract(\n    ...     labels=[\"person\", \"bicycle\", \"car\"],\n    ...     input_size=(640, 640),\n    ...     score_threshold=0.4,\n    ... )\n    >>> c.labels[0]\n    'person'\n    >>> c.mode\n    <DetectorMode.CONTINUOUS: 'continuous'>",
@@ -842,6 +910,7 @@
         "flux_non_commercial",
         "lfm1.0",
         "openmdw-1.1",
+        "apple-amlr",
         "proprietary",
         "unknown"
       ],
@@ -1591,6 +1660,7 @@
         "ros_service",
         "detector",
         "segmenter",
+        "depth_estimator",
         "vlm",
         "reward",
         "playbook"
@@ -1959,6 +2029,17 @@
       "anyOf": [
         {
           "$ref": "#/$defs/SegmenterContract"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "depth_estimator": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DepthEstimatorContract"
         },
         {
           "type": "null"

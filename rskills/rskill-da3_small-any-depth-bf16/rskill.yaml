@@ -1,0 +1,67 @@
+# rSkill manifest — Depth Anything 3 small (kind: depth_estimator).
+#
+# The mono visual-SLAM depth source (DeployRuntime.slam_mono_camera): one RGB frame in,
+# depth plus the model's own pinhole estimate out, fused by cuVSLAM (RGBD odometry) and
+# nvblox (occupancy grid) on a lidar-less robot. Not documented as metric, so the depth
+# provider never feeds it to the world-collision map (output: relative).
+
+schema_version: "0.2"
+name: "OpenRAL/rskill-da3_small-any-depth-bf16"
+version: "0.1.0"
+license: "apache-2.0"
+kind: "depth_estimator"
+
+embodiment_tags: ["any"]
+
+sensors_required:
+  - modality: "rgb"
+    min_width: 320
+    min_height: 240
+
+actuators_required: []
+
+runtime: "pytorch"  # in-tree sidecar: tools/da3_depth_sidecar.py (depth-anything-3 venv)
+quantization:
+  dtype: "bf16"  # fp32 weights, bf16 autocast inside DepthAnything3.inference
+  backend: "pytorch"
+# MEASURED 2026-11-24, RTX 5070 Laptop 8 GB, tools/depth_estimator_sidecar.py, 12 frames each,
+# whole sidecar process (CUDA context included) from nvidia-smi; latency = the server's own
+# inference time, the first call (CUDA warm-up) excluded.
+# 558 MiB (0.27 GB of it the model, per the earlier RTX 4070 Laptop measurement).
+min_vram_gb:
+  bf16: 0.6
+
+weights_uri: "hf://depth-anything/DA3-SMALL@e08cab65ca0ec38e7826075418411ab90cab4da3"
+
+chunk_size: 1
+# Warm median 74.7 ms (p90 145.2) at 640x480, 93.7 ms (p90 131.5) at 1280x720; first call
+# 1325 ms. (An RTX 4070 Laptop measured ~27 Hz earlier.) Budget = the worst p90 + headroom.
+latency_budget:
+  per_chunk_ms: 200.0
+
+depth_estimator:
+  family: "da3"
+  output: "relative"
+  process_res: 504
+  predicts_intrinsics: true  # DA3 main series returns its own K with every raster
+
+paper_url: "https://arxiv.org/abs/2511.10647"
+source_repo: "hf://depth-anything/DA3-SMALL"
+
+description: >
+  Depth Anything 3 small packaged as a monocular depth estimator for mono visual SLAM.
+  Estimates depth and its own camera intrinsics from one RGB frame, which cuVSLAM and
+  nvblox fuse into pose and an occupancy grid on a lidar-less robot. Wraps
+  depth-anything/DA3-SMALL. Not documented as metric, so it never feeds collision
+  checking. Emits no actions and drives no actuators.
+
+actions:
+  - "detect"
+
+objects:
+  - "scene geometry"
+
+scenes:
+  - "indoor"
+  - "warehouse"
+  - "kitchen"

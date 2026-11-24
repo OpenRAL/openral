@@ -22,15 +22,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 from numpy.typing import NDArray
-from openral_core import RobotDescription
+from openral_core import RobotDescription, RSkillManifest
 from openral_perception_ros.lens_rectify import (
     build_rectifier,
     distortion_problem,
     rectified_stream_k,
 )
 from openral_perception_ros.metric_depth import (
-    DA3_CANONICAL_FOCAL_PX,
-    da3_metric_depth,
+    metres_from_output,
     points_from_depth,
     scale_intrinsics,
 )
@@ -38,6 +37,11 @@ from openral_perception_ros.metric_depth import (
 cv2 = pytest.importorskip("cv2")
 
 _REPO = Path(__file__).resolve().parents[2]
+_DA3 = RSkillManifest.from_yaml(
+    str(_REPO / "rskills/rskill-da3metric_large-any-metric_depth-bf16/rskill.yaml")
+).depth_estimator
+assert _DA3 is not None and _DA3.canonical_focal_px is not None
+_DA3_FOCAL = _DA3.canonical_focal_px
 
 
 def _arducam() -> tuple[tuple[float, float, float, float], tuple[int, int], list[float]]:
@@ -130,8 +134,8 @@ def test_a_rectified_point_comes_back_at_its_metric_depth() -> None:
     fx, fy, cx, cy = scale_intrinsics(r.k, r.size, (dw, dh))
     col, row = round(fx * point[0] / point[2] + cx), round(fy * point[1] / point[2] + cy)
     canonical = np.zeros((dh, dw), dtype=np.float32)
-    canonical[row, col] = point[2] * DA3_CANONICAL_FOCAL_PX / (0.5 * (fx + fy))
-    depth = da3_metric_depth(canonical, fx=fx, fy=fy)
+    canonical[row, col] = point[2] * _DA3_FOCAL / (0.5 * (fx + fy))
+    depth = metres_from_output(canonical, _DA3, fx=fx, fy=fy)
     (got,) = points_from_depth(depth, fx=fx, fy=fy, cx=cx, cy=cy, max_range_m=3.0)
     assert np.allclose(got, point, atol=point[2] / min(fx, fy))
 
