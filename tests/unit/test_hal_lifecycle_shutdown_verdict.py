@@ -139,3 +139,36 @@ def test_signal_teardown_is_idempotent_with_the_cleanup_path(
     finally:
         node.destroy_node()
         rclpy.shutdown()
+
+
+def test_signal_teardown_releases_viewers_before_the_hal_disconnects() -> None:
+    """`shutdown_hal` runs `on_signal_shutdown_pre_disconnect` first, then disconnects.
+
+    The signal path runs no lifecycle transition, so the sensor bridge's teardown
+    (which closes the MuJoCo passive viewer) never ran: the viewer thread outlived
+    `main()`, and GLFW's atexit `terminate` aborted (-6) or segfaulted (-11) the HAL
+    process on every twin (#742). The manifest node closes its viewer in this hook.
+    """
+    import rclpy
+
+    rclpy.init()
+    calls: list[str] = []
+    env = _sim_env(task_success_value=True)
+    node = _node(env, "openral_hal_shutdown_viewer_order_test")
+    node.on_signal_shutdown_pre_disconnect = lambda: calls.append("pre_disconnect")
+    try:
+        assert str(node.trigger_configure()).endswith("SUCCESS")
+        hal = node._hal
+        disconnect = hal.disconnect
+
+        def recorded_disconnect() -> None:
+            calls.append("disconnect")
+            disconnect()
+
+        hal.disconnect = recorded_disconnect
+        node.shutdown_hal()
+        node.shutdown_hal()  # idempotent: the hook does not run again without a HAL
+        assert calls == ["pre_disconnect", "disconnect"]
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()

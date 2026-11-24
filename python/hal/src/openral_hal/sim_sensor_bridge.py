@@ -3204,6 +3204,15 @@ class SimSensorBridge:
         self._tf_broadcaster = None
         self._static_tf_broadcaster = None
         self._world_base_published = False
+        self.close_viewer()
+
+    def close_viewer(self) -> None:
+        """Close the MuJoCo passive viewer, if one is open. Idempotent; no rclpy calls.
+
+        Also reached on a signal-driven exit, where ``teardown`` never runs (the rclpy
+        context is already down): a viewer thread still running when GLFW's atexit
+        ``terminate`` fires aborts (or segfaults) the HAL process.
+        """
         if self._viewer is not None:
             with contextlib.suppress(Exception):  # reason: viewer already closed
                 self._viewer.close()

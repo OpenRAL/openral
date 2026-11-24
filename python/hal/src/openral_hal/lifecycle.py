@@ -1115,6 +1115,15 @@ if _ROS2_AVAILABLE:
             renderers). Default: no-op.
             """
 
+        def on_signal_shutdown_pre_disconnect(self) -> None:
+            """Subclass extension point before ``shutdown_hal`` disconnects the HAL.
+
+            The signal-driven exit runs no lifecycle transition, so
+            ``on_cleanup_pre_disconnect`` never runs on it. Release here what must
+            not outlive the interpreter (a viewer window's GL thread), without rclpy
+            calls: the context is already down. Default: no-op.
+            """
+
         # ── Lifecycle ────────────────────────────────────────────────────
 
         @log_lifecycle_errors
@@ -1449,6 +1458,7 @@ if _ROS2_AVAILABLE:
             if hal is None:
                 return
             try:
+                self.on_signal_shutdown_pre_disconnect()
                 hal.disconnect()
                 release_env = getattr(hal, "release_env", None)
                 if callable(release_env):
@@ -3363,6 +3373,11 @@ if _ROS2_AVAILABLE:
                 self.destroy_publisher(self._sim_scene_pub)
                 self._sim_scene_pub = None
                 self._sim_scene_payload = None
+
+        def on_signal_shutdown_pre_disconnect(self) -> None:
+            """Close the sensor bridge's viewer before the HAL's model goes (signal exit)."""
+            if self._bridge is not None:
+                self._bridge.close_viewer()
 
         def on_cleanup_pre_disconnect(self) -> None:
             """Idempotent teardown of the sensor + mobile-base bridges + ResetToPose."""
