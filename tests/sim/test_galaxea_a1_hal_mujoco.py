@@ -162,10 +162,14 @@ def test_derived_mjcf_loads_from_anywhere_under_a_relative_cache(
     """A relative cache path still yields an MJCF that finds its meshes once moved."""
     import mujoco
     from openral_hal._galaxea_a1_assets import _derive_mjcf, ensure_a1_urdf
+    from openral_hal._pinned_files import is_download_failure
 
     try:
         urdf = ensure_a1_urdf()
     except ROSConfigError as exc:
+        # Only an unreachable download skips; a digest mismatch is a failure.
+        if not is_download_failure(exc):
+            raise
         pytest.skip(f"Galaxea A1 vendor files not fetchable on this host: {exc}")
     monkeypatch.chdir(urdf.parents[2])
     xml = _derive_mjcf(urdf.relative_to(urdf.parents[2]))

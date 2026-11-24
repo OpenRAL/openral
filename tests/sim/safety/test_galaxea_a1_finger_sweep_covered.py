@@ -55,10 +55,14 @@ def _outside_m(hull: ConvexHull, points: NDArray[np.float64]) -> NDArray[np.floa
 @pytest.fixture(scope="module")
 def robot_and_meshes() -> tuple[RobotDescription, dict[str, NDArray[np.float64]]]:
     from openral_hal._galaxea_a1_assets import ensure_a1_urdf
+    from openral_hal._pinned_files import is_download_failure
 
     try:
         urdf = ensure_a1_urdf()
     except ROSConfigError as exc:
+        # Only an unreachable download skips; a digest mismatch is a failure.
+        if not is_download_failure(exc):
+            raise
         pytest.skip(f"Galaxea A1 vendor files not fetchable on this host: {exc}")
     robot = RobotDescription.from_yaml(str(_MANIFEST))
     meshes = {

@@ -1070,6 +1070,11 @@ class SimAttachedHAL:
                 + "). Refusing to publish a fabricated /joint_states: the backend's "
                 "SimRollout must emit obs['joint_positions'] for every description joint."
             )
+        if not np.isfinite(position).all():
+            raise ROSRuntimeError(
+                f"{type(self._env).__name__} reports non-finite joint positions for robot "
+                f"{self.description.name!r}; refusing to publish them as measured /joint_states."
+            )
         return JointState(
             name=[j.name for j in joints],
             position=position,

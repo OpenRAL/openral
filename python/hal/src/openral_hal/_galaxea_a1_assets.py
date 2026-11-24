@@ -219,7 +219,10 @@ def ensure_a1_mjcf() -> Path:
     """
     urdf = ensure_a1_urdf()
     path = urdf.parent.parent / f"derived-{_DERIVE_KEY}" / "a1.xml"
-    if not path.is_file():
+    # The derived XML pins an absolute meshdir: a cache tree moved since (copied from a
+    # build host, say) would still point at the old meshes, so re-derive when it differs.
+    meshdir = f'meshdir="{(urdf.parent.parent / "meshes").resolve()}"'
+    if not path.is_file() or meshdir not in path.read_text(encoding="utf-8"):
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
         tmp.write_text(_derive_mjcf(urdf), encoding="utf-8")

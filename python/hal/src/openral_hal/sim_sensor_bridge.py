@@ -4460,9 +4460,27 @@ class SimSensorBridge:
         if self._attachment_tracker is not None and handles is not None:
             from openral_hal._sim_attachment_evidence import SimAttachmentEvidenceTracker
 
-            self._attachment_tracker = SimAttachmentEvidenceTracker(
-                handles[0], self._description, stable_ticks=1
+            fresh = SimAttachmentEvidenceTracker(handles[0], self._description, stable_ticks=1)
+            # Named as setup named the one it replaces: on a model the kernel lowered from the
+            # MJCF (the WidowX's `wx250s/*`), the constructor's manifest names are ones the
+            # kernel rejects, and its never-acknowledged revision would stall the bridge.
+            unknown = (
+                []
+                if self._attachment_kernel_link_names is None
+                else fresh.bind_kernel_links(self._attachment_kernel_link_names)
             )
+            if unknown:  # same model and names as setup, which armed: not expected
+                # Withdraw the stream as setup does: an empty heartbeat would tell the kernel
+                # "nothing carried" while the sim may hold a payload.
+                if self._attachment_timer is not None:
+                    self._node.destroy_timer(self._attachment_timer)
+                    self._attachment_timer = None
+                self._attachment_pub = None
+                self._node.get_logger().error(
+                    f"sim attachment evidence disarmed at reset: links {unknown} are not in "
+                    "the safety kernel's collision model; /openral/attachment_state withdrawn"
+                )
+            self._attachment_tracker = None if unknown else fresh
         update = getattr(self._hal, "update_attached_objects", None)
         read = getattr(self._hal, "read_attached_objects", None)
         if self._attachment_pub is None or not callable(update) or not callable(read):

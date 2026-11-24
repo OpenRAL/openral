@@ -19,8 +19,9 @@ What is proved:
 * nothing is looser than the single-gripper case: every hand needs both of its own
   jaws, hands' jaws and touch links are disjoint, a payload held by one hand is
   never a candidate for the other, and a record that moves to another slot of the
-  published set loses its support witness (the safety kernel keys witness
-  re-arming by slot).
+  published set is published unchanged, its support witness included. This checks the
+  tracker's snapshot only; how the safety kernel keeps a moved record's witness (it
+  keys re-arming across slots) is tested in the kernel suite.
 
 No mocks (CLAUDE.md §1.11): when ``mujoco`` is missing or a twin's upstream files
 cannot be fetched (``AssetFetchError``), that case skips with the reason.

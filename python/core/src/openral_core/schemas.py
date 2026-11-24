@@ -4131,7 +4131,12 @@ class RobotDescription(BaseModel):
                 )
         # Duplicate guard — a gripper can't be listed twice (would
         # double-apply the write in send_action).
-        targets = [g.joint or g.end_effector for g in self.sim.grippers]
+        # Keyed by kind: a joint and an end effector may share a name (aloha_agilex's
+        # `left_gripper` is both) and are distinct targets.
+        targets = [
+            ("joint", g.joint) if g.joint is not None else ("end_effector", g.end_effector)
+            for g in self.sim.grippers
+        ]
         if len(targets) != len(set(targets)):
             raise ValueError(f"sim.grippers contains duplicate joint names: {targets}")
         return self

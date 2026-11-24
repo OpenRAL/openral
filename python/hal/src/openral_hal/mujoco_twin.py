@@ -295,6 +295,7 @@ class MujocoTwinRollout:
                     f"only {model.nkey} keyframes ({self.mjcf_path})"
                 )
             mj.mj_resetDataKeyframe(model, data, self.keyframe_index)
+        self._check_gripper_actuators(int(model.nu))
         mj.mj_forward(model, data)
         # Nothing is assigned before the MJCF has loaded: a refused load leaves the
         # rollout closed (no clock, no handles, no renders), and so does a refused
@@ -705,7 +706,13 @@ class MujocoTwinRollout:
         # A follower jaw a gripper already snaps (the R1 Pro's finger_joint2, inside its
         # leader's qpos_addrs) is not written again: its own entry would undo the snap.
         gripper_owned = {a for g in self.grippers_by_joint.values() for a in g.qpos_addrs}
-        for name, value in zip(self.joint_names, pose, strict=True):
+        # Ordinary joints first, grippers last: a gripper's snap (and the equality followers
+        # it drags) is final, whatever row a follower the mapping does not list carries.
+        rows = sorted(
+            zip(self.joint_names, pose, strict=True),
+            key=lambda row: row[0] in self.grippers_by_joint,
+        )
+        for name, value in rows:
             qpos_addr = self.joint_qpos_addr.get(name)
             gripper = self.grippers_by_joint.get(name)
             if qpos_addr is None or (gripper is None and qpos_addr in gripper_owned):
@@ -899,23 +906,50 @@ class MujocoTwinRollout:
             return gripper
         if not lone:
             return None
-        gripper = self.grippers_by_joint.get(name or "")
-        ee = next((e for e in self.description.end_effectors if e.name == name), None)
-        if gripper is None and ee is not None and ee.parent_link is not None:
-            # A declared end effector (the name the safety kernel bounds a gripper command
-            # by) drives the gripper joint hanging from its parent link, when exactly one does.
-            parents = {j.name: j.parent_link for j in self.description.joints}
-            on_link = [g for j, g in self.grippers_by_joint.items() if parents[j] == ee.parent_link]
-            gripper = on_link[0] if len(on_link) == 1 else None
-        if gripper is None and len(self.grippers_by_joint) == 1 and (name is None or ee):
-            gripper = next(iter(self.grippers_by_joint.values()))
+        joint = self._gripper_joint_named(name)
+        ee_names = {ee.name for ee in self.description.end_effectors}
+        if joint is None and len(self.grippers_by_joint) == 1 and name in {None, *ee_names}:
+            joint = next(iter(self.grippers_by_joint))
+        gripper = self.grippers_by_joint.get(joint or "")
         if gripper is None or gripper.write_mode is not GripperWriteMode.NORMALISED:
             raise ROSConfigError(
                 f"{self.backend}: GRIPPER_POSITION ee_name={action.ee_name!r} names no "
                 f"normalised gripper joint (have: {sorted(self.grippers_by_joint)})."
             )
-        self._require_open_unit(name)
+        self._require_joint_gripper_open_unit(joint)
         return gripper
+
+    def _gripper_joint_named(self, name: str | None) -> str | None:
+        """The joint gripper a slot's ``ee_name`` names: the joint itself, or an end effector's.
+
+        A declared end effector (the name the safety kernel bounds a gripper command by)
+        names the one gripper joint hanging from its ``parent_link``.
+        """
+        if name in self.grippers_by_joint:
+            return name
+        ee = next((e for e in self.description.end_effectors if e.name == name), None)
+        if ee is None or ee.parent_link is None:
+            return None
+        parents = {j.name: j.parent_link for j in self.description.joints}
+        on_link = [j for j in self.grippers_by_joint if parents[j] == ee.parent_link]
+        return on_link[0] if len(on_link) == 1 else None
+
+    def _require_joint_gripper_open_unit(self, joint: str | None) -> None:
+        """``_require_open_unit`` for the end effector that owns gripper ``joint``.
+
+        Checked on the gripper the command resolved to, so naming it by its joint cannot
+        skip a convention its end effector declares.
+
+        Raises:
+            ROSConfigError: The owning end effector declares another convention.
+        """
+        parents = {j.name: j.parent_link for j in self.description.joints}
+        for ee in self.description.end_effectors:
+            owns = ee.name == joint or (
+                ee.parent_link is not None and ee.parent_link == parents.get(joint or "")
+            )
+            if owns:
+                self._require_open_unit(ee.name)
 
     def _split_end_effector_grippers(
         self, actions: list[Action]
@@ -939,6 +973,15 @@ class MujocoTwinRollout:
                 else None
             )
             if gripper is None:
+                if action.control_mode is ControlMode.GRIPPER_POSITION:
+                    # A slot-group gripper slot: `compose_slot_group` places it by joint name,
+                    # so an end-effector name resolves here, the same way a lone slot's does.
+                    joint = self._gripper_joint_named(action.ee_name)
+                    if joint is not None:
+                        self._require_joint_gripper_open_unit(joint)
+                        if joint != action.ee_name:
+                            rest.append(action.model_copy(update={"ee_name": joint}))
+                            continue
                 rest.append(action)
                 continue
             require_supported_control_mode(self.description, action)
@@ -1172,6 +1215,30 @@ class MujocoTwinRollout:
                 "base at another speed than commanded. Leave body_twist_dt_s unset."
             )
         self.body_twist_dt_s = float(pinned)
+
+    def _check_gripper_actuators(self, nu: int) -> None:
+        """Refuse a gripper whose actuator (or mirror) is missing or past ``nu``, at load.
+
+        Checked here, not at the write: a mixed command writes the arm row before its
+        gripper slots, so a gripper refused there would leave that row in ``ctrl``.
+
+        Raises:
+            ROSConfigError: A gripper has no actuator index, or one outside the model.
+        """
+        for gripper in (*self.grippers_by_joint.values(), *self.grippers_by_end_effector.values()):
+            name = gripper.joint or gripper.end_effector or ""
+            primary = self._gripper_actuator_index(gripper, name)
+            if primary is None:
+                raise ROSConfigError(
+                    f"Gripper {name!r} has no actuator index — set "
+                    "sim.grippers[].actuator_index or include the joint in "
+                    "sim.actuator_index."
+                )
+            for idx in (primary, gripper.mirror_actuator_index):
+                if idx is not None and not 0 <= idx < nu:
+                    raise ROSConfigError(
+                        f"Gripper {name!r} names actuator {idx}, but {self.mjcf_path} has {nu}."
+                    )
 
     def _gripper_actuator_index(
         self, gripper: SimGripperDescription, joint_name: str

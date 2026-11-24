@@ -204,3 +204,35 @@ def test_idle_step_holds_the_measured_pose(hal: Any) -> None:
     after = np.asarray(hal.read_state().position)
     print(f"idle: max |delta| {np.max(np.abs(after - before)):.4f}")
     np.testing.assert_allclose(after, before, atol=0.03)
+
+
+def test_a_stop_does_not_let_a_gripper_command_resume_the_cut_short_target(hal: Any) -> None:
+    """After ``stop_stale_motion``, a gripper command holds the arm where the stop left it.
+
+    RoboTwin's targets are absolute, and the HAL packs each command onto the previous
+    one: before the fix a stop kept that cached vector, so the next gripper command
+    re-sent the interrupted arm target and the arm finished the move the stop cut short.
+    """
+    from openral_core import Action, ControlMode
+
+    arm = _arm_indices(hal)
+    start = np.asarray(hal.read_state().position)
+    target = start.copy()
+    target[arm[1]] += 2.6  # left_joint2 (range 0..3.14): too long for one step to finish
+    hal.send_action(
+        Action(control_mode=ControlMode.JOINT_POSITION, joint_targets=[target[arm].tolist()])
+    )
+    hal.stop_stale_motion()
+    stopped = np.asarray(hal.read_state().position)
+    close_right = Action(
+        control_mode=ControlMode.GRIPPER_POSITION, gripper=[0.0], ee_name="right_gripper"
+    )
+    after = _step(hal, close_right, 10)
+    print(
+        f"left_joint2 start={start[arm[1]]:.3f} target={target[arm[1]]:.3f} "
+        f"stopped={stopped[arm[1]]:.3f} after={after[arm[1]]:.3f}"
+    )
+    # The stop really cut the move short ...
+    assert abs(stopped[arm[1]] - target[arm[1]]) > 0.15
+    # ... and the gripper command holds the arm there instead of finishing the move.
+    assert abs(after[arm[1]] - stopped[arm[1]]) < 0.03

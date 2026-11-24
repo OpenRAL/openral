@@ -408,6 +408,9 @@ class _Hand:
     attachment: AttachedCollisionObject | None = None
     place_attested_stamp_ns: int | None = None
     refused: set[int] = field(default_factory=set)  # unattachable payloads, logged once
+    # The manifest attach/touch link names, kept when ``bind_kernel_links`` renames the hand
+    # to its sim bodies: a grasp declaration names the hand in the manifest's namespace.
+    manifest_links: frozenset[str] = frozenset()
 
 
 def _joint_gripper_hands(
@@ -1802,9 +1805,13 @@ class SimAttachmentEvidenceTracker:
                 )
             claimed |= set(hand.body_groups)
         # Every record together must fit the kernel's attached-primitive cap.
-        self._max_primitives_per_hand = max(
-            1, load_tracking_thresholds().caps.attached_max_primitives // len(self._hands)
-        )
+        cap = load_tracking_thresholds().caps.attached_max_primitives
+        if len(self._hands) > cap:
+            raise ROSConfigError(
+                f"{len(self._hands)} sim grippers cannot share the kernel's attached-primitive "
+                f"cap of {cap}: each record needs at least one primitive."
+            )
+        self._max_primitives_per_hand = cap // len(self._hands)
 
         robot_bodies = _resolve_robot_bodies(model, description.joints)
         for hand in self._hands:
@@ -1847,6 +1854,7 @@ class SimAttachmentEvidenceTracker:
             attach = str(self._model.body(hand.attach_body_id).name)
             touch = [str(self._model.body(body).name) for body in sorted(hand.body_groups)]
             if all(name in kernel_link_names for name in (attach, *touch)):
+                hand.manifest_links = frozenset(names)
                 hand.attach_link, hand.touch_links = attach, touch
                 continue
             unknown += [name for name in names if name not in kernel_link_names]
@@ -2415,7 +2423,8 @@ class SimAttachmentEvidenceTracker:
             or declaration.object_id not in ("", object_id)
             or (
                 declaration.contact_links
-                and not set(declaration.contact_links) & set(hand.touch_links)
+                and not set(declaration.contact_links)
+                & (set(hand.touch_links) | hand.manifest_links)
             )
         ):
             return
@@ -2550,14 +2559,21 @@ class SimAttachmentEvidenceTracker:
             return None
         if any(hand.place_attested_stamp_ns == declaration.stamp_ns for hand in self._hands):
             return None  # one declaration, one attestation (across hands) — the hysteresis
-        return support_contact_witness(
-            self._model,
-            data,
-            root_body_id=root,
-            robot_body_ids=self._robot_body_ids,
-            stamp_ns=stamp_ns,
-            support_roots=self._place_target_bodies,
-        )
+        try:
+            return support_contact_witness(
+                self._model,
+                data,
+                root_body_id=root,
+                robot_body_ids=self._robot_body_ids,
+                stamp_ns=stamp_ns,
+                support_roots=self._place_target_bodies,
+            )
+        except ROSConfigError as exc:
+            # An unattestable support (an unnamed body) is no attestation, the fail-closed
+            # answer for this payload alone: raised out of `update`, it would abort every hand's
+            # transition on every tick the support persists, holding back another hand's release.
+            _LOGGER.warning("sim.place_witness_refused", object_id=object_id, reason=str(exc))
+            return None
 
     def _place_phase_transition(
         self,

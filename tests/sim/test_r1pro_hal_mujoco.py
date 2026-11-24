@@ -23,7 +23,7 @@ pytest.importorskip("mujoco")
 pytest.importorskip("huggingface_hub")
 
 import numpy as np
-from openral_core import Action, ControlMode, RobotDescription
+from openral_core import Action, ControlMode, JointSpec, RobotDescription
 from openral_core.assets import AssetFetchError, resolve_asset
 from openral_hal._mujoco_arm import MujocoArmHAL
 from openral_hal._sim_attachment_evidence import SimAttachmentEvidenceTracker
@@ -34,6 +34,8 @@ pytestmark = pytest.mark.sim
 _ROOT = Path(__file__).resolve().parents[2]
 _TRACK_TOL_RAD = 0.05
 _GRIPPER_TOL = 0.05
+#: The mirrored ``finger_joint2`` reads its slide in metres (0-0.05 m): 5 mm, not 0.05.
+_SLIDE_TOL_M = 0.005
 _SETTLE_SIM_S = 3.0
 _TORSO = [0.3, -0.6, -0.3, 0.2]
 #: joint1..joint7 per arm, inside every manifest limit and away from them.
@@ -56,6 +58,12 @@ def connected() -> Iterator[tuple[RobotDescription, MujocoArmHAL]]:
         yield desc, hal
     finally:
         hal.disconnect()
+
+
+def _tolerance(joint: JointSpec) -> float:
+    if joint.name.endswith("finger_joint2"):
+        return _SLIDE_TOL_M
+    return _GRIPPER_TOL if joint.role == "gripper" else _TRACK_TOL_RAD
 
 
 def _send_for(hal: MujocoArmHAL, action: Action, sim_s: float) -> None:
@@ -83,7 +91,7 @@ def test_tracks_torso_arms_and_grippers(
     for joint, commanded in zip(desc.joints, target, strict=True):
         # The mirrored finger reads its slide in metres.
         want = 0.05 * gripper if joint.name.endswith("finger_joint2") else commanded
-        tol = _GRIPPER_TOL if joint.role == "gripper" else _TRACK_TOL_RAD
+        tol = _tolerance(joint)
         have = got[joint.name]
         assert abs(have - want) < tol, f"{joint.name}: commanded {want:.3f}, settled {have:.3f}"
 
@@ -114,6 +122,7 @@ def test_cameras_render(connected: tuple[RobotDescription, MujocoArmHAL]) -> Non
     """Head and wrist cameras render at their manifest intrinsics and see the scene."""
     desc, hal = connected
     frames = hal.read_images()
+    assert [s.name for s in desc.sensors] == ["head", "left_wrist", "right_wrist"]
     for sensor in desc.sensors:
         intr = sensor.intrinsics
         assert intr is not None
@@ -190,7 +199,7 @@ def test_a_named_gripper_action_drives_only_that_hand(
     for joint in desc.joints:
         # Both left slides close (joint1 normalised, joint2 metres); the rest hold.
         want = 0.0 if joint.name.startswith("left_gripper_finger") else before[joint.name]
-        tol = _GRIPPER_TOL if joint.role == "gripper" else _TRACK_TOL_RAD
+        tol = _tolerance(joint)
         assert abs(after[joint.name] - want) < tol, f"{joint.name}: {after[joint.name]:.3f}"
 
 

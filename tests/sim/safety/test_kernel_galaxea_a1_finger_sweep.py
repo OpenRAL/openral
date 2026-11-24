@@ -93,10 +93,14 @@ def _finger_in_base(params: dict[str, object], link: str) -> NDArray[np.float64]
 def _obstacles(desc: RobotDescription, params: dict[str, object]) -> dict[str, NDArray[np.float64]]:
     """Base-frame points: inside the closed finger, and reached only by the open one."""
     from openral_hal._galaxea_a1_assets import ensure_a1_urdf
+    from openral_hal._pinned_files import is_download_failure
 
     try:
         urdf = ensure_a1_urdf()
     except ROSConfigError as exc:
+        # Only an unreachable download skips; a digest mismatch is a failure.
+        if not is_download_failure(exc):
+            raise
         pytest.skip(f"Galaxea A1 vendor files not fetchable on this host: {exc}")
     (closed,) = [
         np.asarray(c.vertices, dtype=np.float64)
