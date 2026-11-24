@@ -119,6 +119,25 @@ def test_attached_collision_follows_the_attachment_producer() -> None:
     assert module._attached_collision_deadline_ms("real") == 1000.0
 
 
+def test_a_hal_file_vision_leg_turns_the_attached_check_on(tmp_path: Path) -> None:
+    """The vision leg a HAL params file enables couples to the attached check too (#754).
+
+    An Isaac scene with ``object_tracking`` off measures no grasps, so the check is off; a
+    params file that turns ``vision_attachment_enabled`` on (no launch argument) must turn
+    it back on, or the kernel would receive a payload it never checks.
+    """
+    scene = str(_REPO_ROOT / "scenes" / "deploy" / "isaac_franka_urdf.yaml")
+    off = _safety_kernel_params("franka_panda", deploy_config=scene)
+    assert off.get("attached_collision_enabled", False) is False
+    hal_file = tmp_path / "hal.yaml"
+    hal_file.write_text(
+        "openral_hal_test:\n  ros__parameters:\n    vision_attachment_enabled: true\n",
+        encoding="utf-8",
+    )
+    on = _safety_kernel_params("franka_panda", deploy_config=scene, hal_params_file=str(hal_file))
+    assert on["attached_collision_enabled"] is True
+
+
 def _make_launch_context(robot_yaml: Path) -> object:
     """Return a ``launch.LaunchContext`` populated from the launch itself.
 
@@ -164,7 +183,7 @@ def _make_launch_context(robot_yaml: Path) -> object:
     return ctx
 
 
-def _safety_kernel_params(robot_id: str) -> dict[str, object]:
+def _safety_kernel_params(robot_id: str, **extra: str) -> dict[str, object]:
     """Compose the launch graph and return the safety_kernel's evaluated params.
 
     Drives ``compose_runtime_graph`` end-to-end and resolves the
@@ -178,6 +197,7 @@ def _safety_kernel_params(robot_id: str) -> dict[str, object]:
 
     module = _import_launch_module(_LAUNCH_FILE)
     ctx = _make_launch_context(_REPO_ROOT / "robots" / robot_id / "robot.yaml")
+    ctx.launch_configurations.update(extra)  # type: ignore[attr-defined]  # reason: LaunchContext
     entities = module.compose_runtime_graph(ctx)
 
     # ``LifecycleNode.node_name`` only resolves after the action has

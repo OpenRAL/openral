@@ -3749,7 +3749,13 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             hal_mode, scene_backend, estimated_depth=bool(estimated_depth_camera)
         )
     )
-    if vision_attachment_enabled and not has_collision_capsules:
+    hal_file_params = _hal_file_params(hal_params_file, hal_node_name)
+    # The vision leg runs if either the launch argument or the HAL params file turns it on, and
+    # the coupling rule (never without the kernel's attached check) holds for both (#754 review).
+    vision_leg_runs = bool(vision_attachment_enabled) or (
+        hal_file_params.get("vision_attachment_enabled") is True
+    )
+    if vision_leg_runs and not has_collision_capsules:
         from openral_core.exceptions import ROSConfigError
 
         # Coupling rule: the vision leg never runs without the kernel's attached check, and
@@ -3760,7 +3766,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         )
     kernel_checks_attachments = has_collision_capsules and _attached_collision_enabled(
         hal_mode,
-        vision_attachment_enabled,
+        vision_leg_runs,
         object_tracking=object_tracking,
         scene_backend=scene_backend,
     )
@@ -3805,7 +3811,6 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             f"grasp_allowance_enabled is on but robot {description.name!r} declares no "
             "role: gripper joint, so there is no contact link the exemption could apply to."
         )
-    hal_file_params = _hal_file_params(hal_params_file, hal_node_name)
     # On real the HAL's vision target leg is the only grasp-region producer (in sim the HAL's
     # MuJoCo evidence tracker is), so the exemption must not arm without it — checked here as
     # well as in `openral deploy run`, so a bare `ros2 launch` cannot skip it.
