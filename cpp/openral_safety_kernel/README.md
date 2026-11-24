@@ -832,7 +832,7 @@ When the set changes without a provider, only payloads NEW to the set are snapsh
 that was already carried keeps its own attach-time baseline, moved to its new slot
 (`carry_attached_contacts`), instead of being re-baselined against whatever it overlaps at that
 instant — the other hand's attach or release must not exempt the shelf a carried box is being
-lowered into. With a provider the whole set is retaken, as before. A detach or a different
+lowered into. With a provider the whole set is retaken, as before. A set change is handled this way whether or not the producer bumped the revision: a same-revision reorder or removal moves each baseline with its payload, so no slot keeps a baseline that belongs to another payload (`ASameRevisionReorderKeepsEachResidueWithItsPayload`). A detach or a different
 object / epoch / link retakes the snapshot for that object. Tests (`test_collision.cpp`):
 `CarriedPayloadIsNotRebaselinedWhenAnotherJoins`, `CarryAttachedContactsMovesBlocksIncludingACycle`,
 `CarrySlotBitsFollowThePayloadNotTheSlot`; node tests:

@@ -5249,7 +5249,12 @@ void SafetyKernelLifecycleNode::on_world_state(
   // (`spark:~/openral-runs/2026-08-15-round8/`) logged every clean release that
   // way, as `place_region_rejected`, when what happened was an ordinary disarm.
   // Announcing the drop here keeps a detach one `place_region_dropped` line.
-  if (msg->attachment_revision != attached_revision_) {
+  // A set change is handled like a revision edge even under the same revision: producers do
+  // not have to bump it, and a reordered or shrunk set under an unchanged revision must still
+  // move each payload's baseline with it (left in place, a slot's baseline would belong to
+  // whichever payload now sits there).
+  const bool revision_edge = msg->attachment_revision != attached_revision_;
+  if (revision_edge || attached_set_identity_ != set_identity) {
     attached_revision_ = msg->attachment_revision;
     if (attached_model_.n_objects == 0) {
       attached_contact_snapshot_mask_ = 0;
