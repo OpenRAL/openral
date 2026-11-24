@@ -62,3 +62,47 @@ def test_grasp_links_are_named_as_the_mjcf_kernel_names_them(
     kernel = set(lowered["collision_link_names"])
     wanted = [*desc.grasp_contact_links(), *desc.fixed_jaw_links()]
     assert {names.get(link, link) for link in wanted} <= kernel
+
+
+def test_hand_links_reach_the_kernel_in_its_naming(launch_module: Any) -> None:
+    """Workspace-contact and exemption-provider hand links are renamed like the grasp ones."""
+    params = {
+        "workspace_contact_links": ["gripper_finger", "wrist"],
+        "exemption_provider_links": ["gripper_base"],
+        "grasp_contact_links": ["Moving_Jaw"],
+    }
+    names = {"gripper_finger": "Moving_Jaw", "gripper_base": "Fixed_Jaw", "wrist": "Wrist"}
+    out = launch_module._hand_links_in_kernel_naming(params, names)
+    assert out["workspace_contact_links"] == ["Moving_Jaw", "Wrist"]
+    assert out["exemption_provider_links"] == ["Fixed_Jaw"]
+    assert out["grasp_contact_links"] == ["Moving_Jaw"]
+    assert launch_module._hand_links_in_kernel_naming(params, {}) == params
+
+
+def test_a_real_deploy_refuses_geometry_fitted_to_a_twin_alone(launch_module: Any) -> None:
+    """ALOHA's kernel model is gym-aloha's (no URDF of a real rig): sim only (#754 review)."""
+    from openral_core import RobotDescription
+    from openral_core.exceptions import ROSConfigError
+
+    aloha = RobotDescription.from_yaml(str(REPO_ROOT / "robots/aloha_bimanual/robot.yaml"))
+    launch_module._refuse_twin_only_geometry_on_real(aloha, "sim")
+    with pytest.raises(ROSConfigError, match="fitted to the sim twin only"):
+        launch_module._refuse_twin_only_geometry_on_real(aloha, "real")
+    openarm = RobotDescription.from_yaml(str(REPO_ROOT / "robots/openarm/robot.yaml"))
+    launch_module._refuse_twin_only_geometry_on_real(openarm, "real")  # has its URDF
+
+
+def test_self_filter_hand_links_are_named_as_the_collision_model(launch_module: Any) -> None:
+    """The robot self-filter poses the kernel's model, so its hand links use its naming."""
+    from openral_core import RobotDescription
+
+    so100 = RobotDescription.from_yaml(str(REPO_ROOT / "robots/so100_follower/robot.yaml"))
+    rename = {"gripper_finger": "Moving_Jaw", "gripper_base": "Fixed_Jaw"}
+    plain = launch_module._self_filter_params({}, so100, "/joint_states", 0.02)
+    named = launch_module._self_filter_params(
+        {}, so100, "/joint_states", 0.02, kernel_link_name=rename
+    )
+    assert named["robot_mask_hand_links"] == [
+        rename.get(h, h) for h in plain["robot_mask_hand_links"]
+    ]
+    assert "Moving_Jaw" in named["robot_mask_hand_links"]

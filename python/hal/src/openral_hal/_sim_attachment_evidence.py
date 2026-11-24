@@ -429,6 +429,10 @@ class _Hand:
     # The manifest attach/touch link names, kept when ``bind_kernel_links`` renames the hand
     # to its sim bodies: a grasp declaration names the hand in the manifest's namespace.
     manifest_links: frozenset[str] = frozenset()
+    # Manifest link -> the kernel model's name for it, when the hand was renamed (an
+    # MJCF-lowered kernel, or names adopted from the kernel's twin): a grasp declaration
+    # leaves this producer with its ``contact_links`` in the kernel's naming.
+    kernel_names: dict[str, str] = field(default_factory=dict)
 
 
 def _joint_gripper_hands(
@@ -1793,7 +1797,9 @@ def _chain_signature(
 
     The body the first manifest joint hangs from (the arm's fixed mount), and every
     non-gripper manifest joint's qpos address with the range it is posed over (its
-    ``position_limits`` clipped to one turn).
+    ``position_limits`` clipped to one turn). Empty when any non-gripper manifest joint
+    does not resolve in the model: the arm moves by it, so a check that skipped it could
+    adopt a hand frame that differs.
     """
     anchor = next(
         (
@@ -1806,9 +1812,13 @@ def _chain_signature(
     )
     posable: dict[str, tuple[int, float, float]] = {}
     for joint in description.joints:
-        joint_id = _sim_joint_id(model, joint.sim_joint_name) if joint.sim_joint_name else -1
-        if joint.role == "gripper" or joint_id < 0:
+        if joint.role == "gripper":
             continue
+        joint_id = _sim_joint_id(model, joint.sim_joint_name) if joint.sim_joint_name else -1
+        if joint_id < 0:
+            # A commanded arm joint this model cannot pose: no comparison can cover it,
+            # so no chain signature (``adopt_kernel_names`` refuses).
+            return anchor, {}
         low, high = joint.position_limits or (-math.pi, math.pi)
         posable[joint.name] = (
             int(model.jnt_qposadr[joint_id]),
@@ -1855,7 +1865,7 @@ class SimAttachmentEvidenceTracker:
         translation_tolerance_m: float = 0.01,
         rotation_tolerance_rad: float = 0.15,
     ) -> None:
-        self._model = model
+        self._model, self._description = model, description
         self._stable_ticks = stable_ticks
         self._release_ticks = release_ticks
         self._translation_tolerance_m = translation_tolerance_m
@@ -2005,11 +2015,41 @@ class SimAttachmentEvidenceTracker:
                 ):
                     return False
         for hand, other in zip(self._hands, twin._hands, strict=True):
-            hand.manifest_links = other.manifest_links or frozenset(
-                (hand.attach_link, *hand.touch_links)
-            )
+            manifest = other.manifest_links or frozenset((hand.attach_link, *hand.touch_links))
+            # The twin's own map when it was renamed; else its names ARE the manifest's.
+            hand.kernel_names = dict(other.kernel_names) or {name: name for name in manifest}
+            hand.manifest_links = manifest
             hand.attach_link, hand.touch_links = other.attach_link, list(other.touch_links)
         return True
+
+    def _link_bodies(self, links: Collection[str]) -> dict[str, str]:
+        """Manifest links -> this model's body names.
+
+        A link is the body of the joint (or mimic joint) whose ``child_link`` it is, through
+        that joint's ``sim_joint_name``, or for a ``fixed_attachments`` child the body of its
+        own name (the collision lowering's own rules, so the names match a kernel model
+        lowered from this MJCF). Links neither resolves are left out.
+        """
+        rows = [(j.child_link, j.sim_joint_name) for j in self._description.joints] + [
+            (m.child_link, m.sim_joint_name) for m in self._description.mimic_joints
+        ]
+        out: dict[str, str] = {}
+        for child_link, sim_joint_name in rows:
+            if child_link in links and sim_joint_name:
+                joint_id = _sim_joint_id(self._model, sim_joint_name)
+                if joint_id >= 0:
+                    body = int(self._model.jnt_bodyid[joint_id])
+                    out[child_link] = str(self._model.body(body).name)
+        # A ``fixed_attachments`` child (a finger rigid on a mimic link) is the MJCF body of
+        # its own name, as the collision lowering maps it.
+        import mujoco  # noqa: PLC0415  # reason: optional sim dependency
+
+        for row in self._description.fixed_attachments:
+            if row.child_link in links and row.child_link not in out:
+                body = int(mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_BODY, row.child_link))
+                if body >= 0:
+                    out[row.child_link] = row.child_link
+        return out
 
     def _attach_poses(
         self, config: float | None
@@ -2058,6 +2098,7 @@ class SimAttachmentEvidenceTracker:
             touch = [str(self._model.body(body).name) for body in sorted(hand.body_groups)]
             if all(name in kernel_link_names for name in (attach, *touch)):
                 hand.manifest_links = frozenset(names)
+                hand.kernel_names = {hand.attach_link: attach} | self._link_bodies(names)
                 hand.attach_link, hand.touch_links = attach, touch
                 continue
             unknown += [name for name in names if name not in kernel_link_names]
@@ -2580,14 +2621,21 @@ class SimAttachmentEvidenceTracker:
             if self._grasp_frozen
             else self._grasp_region(data, stamp_ns=stamp_ns)
         )
+        # In the kernel's naming: it matches contact links against its own collision links.
+        names = {k: v for hand in self._hands for k, v in hand.kernel_names.items()}
+        contact_links = tuple(names.get(link, link) for link in declaration.contact_links)
         try:
             # Re-validated, not model_copy'd: the grasp caps are far tighter than
             # PlaceRegion's, and a model_copy would skip them.
             return GraspDeclaration.model_validate(
-                {**declaration.model_dump(exclude={"region"}), "region": region}
+                {
+                    **declaration.model_dump(exclude={"region", "contact_links"}),
+                    "contact_links": contact_links,
+                    "region": region,
+                }
             )
         except ValueError:
-            return declaration.model_copy(update={"region": None})
+            return declaration.model_copy(update={"region": None, "contact_links": contact_links})
 
     def set_voxel_resolution(self, resolution_m: float) -> None:
         """Record the occupancy lattice's cell edge (from ``/openral/world_voxels``).

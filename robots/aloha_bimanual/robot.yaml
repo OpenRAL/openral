@@ -241,6 +241,8 @@ mimic_joints:
 # Each arm's base plate on the table, and each gripper's rigid prop plate: their own bodies
 # in the twin, named as the MJCF bodies so the collision lowering maps them. Poses are the
 # gym-aloha MJCF's.
+# SIM ONLY: this layout (and the collision_geometry fitted to it) is gym-aloha's, not a
+# measured rig; a real deploy refuses a kernel model with no URDF behind it.
 fixed_attachments:
   - name: "left_base_mount"
     parent_link: "world"

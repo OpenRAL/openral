@@ -40,7 +40,7 @@ pytest.importorskip("mujoco")
 
 import mujoco
 import numpy as np
-from openral_core import AttachedCollisionObject, RobotDescription
+from openral_core import AttachedCollisionObject, GraspDeclaration, RobotDescription
 from openral_core.assets import AssetFetchError, resolve_asset
 from openral_core.exceptions import ROSConfigError
 from openral_core.tracking_thresholds import load_tracking_thresholds
@@ -657,6 +657,37 @@ def test_names_are_adopted_only_from_a_twin_whose_chain_moves_alike() -> None:
 
     assert not scene.adopt_kernel_names(flipped)
     assert [(h.attach_link, list(h.touch_links)) for h in scene._hands] == [before]
+    # A commanded arm joint one model cannot pose is never left out of the comparison.
+    joints = [
+        j.model_copy(update={"sim_joint_name": "joint4_unmapped"})
+        if j.sim_joint_name == "joint4"
+        else j
+        for j in desc.joints
+    ]
+    blind = SimAttachmentEvidenceTracker(
+        mujoco.MjModel.from_xml_path(str(path)), desc.model_copy(update={"joints": joints})
+    )
+    assert not blind.adopt_kernel_names(same)
+    assert not scene.adopt_kernel_names(blind)
     same._hands[0].attach_link = "kernel_hand"
     assert scene.adopt_kernel_names(same)
     assert scene._hands[0].attach_link == "kernel_hand"
+
+
+def test_a_grasp_declaration_leaves_in_the_kernels_naming() -> None:
+    """On an MJCF-lowered kernel (SO-100's links are its body names) the declaration the
+    producer publishes names ``Moving_Jaw``, the kernel's link, not ``gripper_finger``: the
+    kernel matches ``contact_links`` against its own collision links (#754 review)."""
+    rig = _rig("so100_follower")
+    kernel = [rig.model.body(b).name for b in range(1, rig.model.nbody)]
+    assert rig.tracker.bind_kernel_links(kernel) == []
+    rig.tracker.set_grasp_declaration(
+        GraspDeclaration(
+            target_id="payload0",
+            contact_links=("gripper_finger",),
+            timeout_s=60.0,
+            stamp_ns=rig.step_ns,
+        )
+    )
+    out = rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.step_ns)
+    assert out is not None and out.contact_links == ("Moving_Jaw",)

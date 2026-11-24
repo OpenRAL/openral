@@ -2328,9 +2328,11 @@ def twin_coupled_joints(
     joint_trn = int(mujoco.mjtTrn.mjTRN_JOINT)
     by_name = {j.name: j for j in robot.joints}
     for g in robot.sim.grippers if robot.sim else []:
-        a, b = g.actuator_index, g.mirror_actuator_index
+        # The primary actuator as the twin resolves it (``sim.actuator_index`` when the
+        # gripper entry leaves its own unset).
+        a, b = _gripper_actuator(robot, g), g.mirror_actuator_index
         leader = by_name.get(g.joint or "")
-        if a is None or b is None or leader is None or not (0 <= a < m.nu and 0 <= b < m.nu):
+        if b is None or leader is None or not (0 <= a < m.nu and 0 <= b < m.nu):
             continue
         if int(m.actuator_trntype[a]) != joint_trn or int(m.actuator_trntype[b]) != joint_trn:
             continue

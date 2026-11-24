@@ -65,8 +65,17 @@ def setup_bridge() -> Iterator[Callable[..., Any]]:
         *,
         scene: str = "scenes/sim/so101_tube_insertion.yaml",
         kernel_link_names: list[str] | None = None,
+        no_mujoco: bool = False,
     ) -> Any:
-        env, seed = build_sim_env_from_yaml(scene, robot_id_fallback=description.name)
+        if no_mujoco:
+            # A rollout with no MuJoCo handles (an Isaac / SAPIEN backend's shape), through
+            # the SimRollout boundary double.
+            from tests.unit.fakes.fake_sim_env import FakeSimEnv
+
+            env: Any = FakeSimEnv(action_dim=6)
+            seed: int | None = None
+        else:
+            env, seed = build_sim_env_from_yaml(scene, robot_id_fallback=description.name)
         hal = SimAttachedHAL(
             env,
             RobotDescription.from_yaml(f"robots/{description.name}/robot.yaml"),
@@ -160,3 +169,13 @@ def test_a_scene_model_takes_the_kernel_twins_names(setup_bridge: Callable[..., 
     # Contacts stay measured on the scene's own bodies.
     model, _ = bridge._hal.mujoco_handles()
     assert model.body(hand.attach_body_id).name == "robot0_right_hand"
+
+
+def test_a_kernel_checked_hal_without_mujoco_contacts_withdraws_the_stream(
+    setup_bridge: Callable[..., Any],
+) -> None:
+    """The launch said this scene measures grasps (a ``mujoco`` backend label), the HAL has
+    no MuJoCo handles: nothing would measure, so the stream is withdrawn (#754 review)."""
+    bridge = setup_bridge(_so101(), no_mujoco=True)
+    assert bridge._attachment_pub is None and bridge._attachment_timer is None
+    assert bridge._node.count_publishers("/openral/attachment_state") == 0

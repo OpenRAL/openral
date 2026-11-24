@@ -19,7 +19,7 @@
 # Run::
 #
 #     openral deploy sim --config scenes/deploy/isaac_panda_mobile_urdf.yaml \
-#       --no-enable-octomap --hal viewer_enabled=false
+#       --hal viewer_enabled=false   # object tracking needs the octomap leg: keep it on
 
 robot_id: "panda_mobile"
 
@@ -39,3 +39,22 @@ scene:
     # wrong layout; the identity-checked ping handshake still guards reuse.
     boot_timeout_s: 1200
     timeout_ms: 120000
+
+runtime:
+  # Object tracking (#418, sim-only): the tracker owns /openral/attachment_state, so the
+  # kernel checks what the hand carries. Without it this Isaac scene measures no grasps
+  # and the launch turns the attached-payload check off (#752 review). Needs the octomap
+  # leg and the vision leg on the front_depth depth camera.
+  enable_octomap: true
+  object_tracking: tracking
+  grounding_wait_s: 15.0
+  object_detector_locators: [omdet-turbo-locator]
+  vision_attachment:
+    enabled: true
+    camera: front_depth
+    rgb_topic: /openral/cameras/front_depth/image
+    rgb_camera_info_topic: /openral/cameras/front_depth/camera_info
+    depth_topic: /openral/cameras/front_depth/depth/image
+    depth_camera_info_topic: /openral/cameras/front_depth/depth/camera_info
+    tf_frames:
+      panda_finger_pair: panda_hand_tcp

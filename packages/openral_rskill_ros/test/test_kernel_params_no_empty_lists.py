@@ -92,13 +92,29 @@ def test_the_self_filter_runs_wherever_the_cloud_shows_the_robot() -> None:
 
 
 def test_attached_collision_follows_the_attachment_producer() -> None:
-    """Sim has its attachment manager; real only with the vision leg, and then always."""
+    """On only where something measures grasps (#752).
+
+    A MuJoCo scene (or the bare twin) has the HAL's contact tracker; tracking and the vision
+    leg publish attachments on any backend; real only with the vision leg, and then always.
+    An Isaac / SAPIEN scene with neither has nothing measuring, so the check is off.
+    """
     module = _import_launch_module(_LAUNCH_FILE)
 
     assert module._attached_collision_enabled("sim", False) is True
     assert module._attached_collision_enabled("sim", True) is True
+    assert module._attached_collision_enabled("sim", False, scene_backend="mujoco") is True
+    assert module._attached_collision_enabled("sim", False, scene_backend="isaacsim") is False
+    assert module._attached_collision_enabled("sim", False, scene_backend="sapien") is False
+    assert module._attached_collision_enabled("sim", True, scene_backend="isaacsim") is True
+    assert (
+        module._attached_collision_enabled(
+            "sim", False, object_tracking="tracking", scene_backend="isaacsim"
+        )
+        is True
+    )
     assert module._attached_collision_enabled("real", False) is False
     assert module._attached_collision_enabled("real", True) is True
+    assert module._attached_collision_enabled("real", False, object_tracking="tracking") is False
     assert module._attached_collision_deadline_ms("sim") == 5000.0
     assert module._attached_collision_deadline_ms("real") == 1000.0
 

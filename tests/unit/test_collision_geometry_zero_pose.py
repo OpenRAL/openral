@@ -498,17 +498,25 @@ def test_real_self_collision_still_trips(
 def test_aloha_rests_clear_at_its_twins_keyframe() -> None:
     """At gym-aloha's keyframe 0 (where its twin and HAL start) the kernel trips on nothing.
 
-    The pose is the MJCF's own ``<key qpos>`` for each arm (shoulder -0.96, elbow 1.16,
-    wrist -0.3) with the fingers at 0.024 m, read as the manifest's [0, 1] opening.
+    The pose is read from the MJCF's own ``<key qpos>`` through each manifest joint's
+    ``sim_joint_name``; the finger slide is read back as the [0, 1] opening the gripper's
+    ``urdf_curve`` maps (the inverse of its affine). Skips without gym-aloha.
     """
+    mujoco = pytest.importorskip("mujoco")
+    pytest.importorskip("gym_aloha", reason="the ALOHA twin ships with gym-aloha")
+    from openral_core.assets import resolve_asset
+
     robot = _load("aloha_bimanual")
-    arm = dict(
-        zip(
-            ("waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"),
-            (0.0, -0.96, 1.16, 0.0, -0.3, 0.0),
-            strict=True,
-        )
-    )
-    q = {f"{side}_{name}": value for side in ("left", "right") for name, value in arm.items()}
-    q |= {f"{side}_gripper": (0.024 - 0.021) / 0.036 for side in ("left", "right")}
+    assert robot.assets.mjcf is not None
+    model = mujoco.MjModel.from_xml_path(str(resolve_asset(robot.assets.mjcf, "mjcf")))
+    key = model.key_qpos[0]
+    q: dict[str, float] = {}
+    for joint in robot.joints:
+        assert joint.sim_joint_name is not None
+        jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint.sim_joint_name)
+        value = float(key[int(model.jnt_qposadr[jid])])
+        if joint.urdf_curve:
+            (u0, x0), (u1, x1) = joint.urdf_curve[0], joint.urdf_curve[-1]
+            value = u0 + (value - x0) * (u1 - u0) / (x1 - x0)
+        q[joint.name] = value
     assert _tripping_pairs(robot, q) == []

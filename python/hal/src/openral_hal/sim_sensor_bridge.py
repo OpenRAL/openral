@@ -4083,6 +4083,7 @@ class SimSensorBridge:
                 0.2,
                 self._publish_attachment_state,
             )
+            self._withdraw_if_unmeasured()
         update = getattr(self._hal, "update_attached_objects", None)
         read = getattr(self._hal, "read_attached_objects", None)
         if not callable(update) or not callable(read):
@@ -4176,6 +4177,27 @@ class SimSensorBridge:
                 # The twin can close a gripper on a payload but nothing measures it.
                 self._withdraw_attachment_stream(
                     f"automatic sim attachment evidence refused: {exc}"
+                )
+
+    def _withdraw_if_unmeasured(self) -> None:
+        """Withdraw the heartbeat when the kernel checks payloads nothing here can measure.
+
+        The launch turns the kernel's attached check on for a MuJoCo scene (this HAL's
+        contact tracker measures grasps there) and off for an Isaac / SAPIEN one with no
+        tracking or vision leg. A scene whose declared backend says MuJoCo but whose HAL
+        has no MuJoCo handles (ManiSkill scenes historically declare ``mujoco``) would
+        otherwise heartbeat "nothing carried" to a kernel that trusts it (#754 review).
+        """
+        if (
+            self._attachment_kernel_checked
+            and getattr(self._hal, "mujoco_handles", lambda: None)() is None
+        ):
+            from openral_hal._sim_attachment_evidence import twin_drives_gripper
+
+            if twin_drives_gripper(self._description):
+                self._withdraw_attachment_stream(
+                    "the safety kernel checks attached payloads but this sim HAL has no "
+                    "MuJoCo contacts to measure grasps"
                 )
 
     def _bind_attachment_tracker(self, tracker: Any) -> list[str]:

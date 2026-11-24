@@ -19,7 +19,7 @@
 # Run::
 #
 #     openral deploy sim --config scenes/deploy/isaac_openarm_warehouse.yaml \
-#       --no-enable-octomap --hal viewer_enabled=false
+#       --hal viewer_enabled=false   # object tracking needs the octomap leg: keep it on
 
 robot_id: "openarm"
 
@@ -52,3 +52,23 @@ scene:
         usd: "isaac:Isaac/Props/YCB/Axis_Aligned_Physics/006_mustard_bottle.usd"
         dynamic: true
         xyz: [-0.55, 5.35, 0.35]
+
+runtime:
+  # Object tracking (#418, sim-only): the tracker owns /openral/attachment_state, so the
+  # kernel checks what the hand carries. Without it this Isaac scene measures no grasps
+  # and the launch turns the attached-payload check off (#752 review). Needs the octomap
+  # leg and the vision leg on the head_zed depth camera.
+  enable_octomap: true
+  object_tracking: tracking
+  grounding_wait_s: 15.0
+  object_detector_locators: [omdet-turbo-locator]
+  vision_attachment:
+    enabled: true
+    camera: head_zed
+    rgb_topic: /openral/cameras/head_zed/image
+    rgb_camera_info_topic: /openral/cameras/head_zed/camera_info
+    depth_topic: /openral/cameras/head_zed/depth/image
+    depth_camera_info_topic: /openral/cameras/head_zed/depth/camera_info
+    tf_frames:
+      openarm_left_link7: openarm_left_ee_base_link
+      openarm_right_link7: openarm_right_ee_base_link
