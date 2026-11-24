@@ -9,12 +9,16 @@ chunk is dropped as ``attached_overflow``. Before anything is attached,
 kernel certify its motion. Seen on the OpenArm twin (lab Orin, 2026-09-22):
 zero publishers on ``/openral/attachment_state`` and not one joint chunk
 reached the arm. Since #683 every twin has the attachment API too, so the
-attachment staging subscription is open beside the heartbeat; the MuJoCo
-evidence tracker (and with it the declaration subscriptions) still arms on
-none of these robots' twins.
+attachment staging subscription is open beside the heartbeat; since #754 the
+MuJoCo evidence tracker (and with it the declaration subscriptions) arms on
+each of these robots' twins.
 
 Real ``SimSensorBridge`` on a real rclpy node against real MuJoCo twins of
-three different robots, so the guarantee is the bridge's, not one HAL's.
+three different robots, so the guarantee is the bridge's, not one HAL's. Each
+twin is built the way deploy builds it (``MujocoArmHAL.from_description`` on
+the robot's manifest): the HALs' in-code description constants declare no
+``role: gripper`` joint, so the tracker refuses them and the bridge withdraws
+the stream (#752).
 """
 
 from __future__ import annotations
@@ -34,22 +38,28 @@ _LIVE_ROS_REASON = (
 )
 
 
-def _openarm() -> Any:
-    from openral_hal.openarm import OpenArmMujocoHAL
+def _twin(robot: str) -> Any:
+    """``robots/<robot>/robot.yaml``'s MuJoCo twin, as ``resolve_hal`` builds it in deploy sim."""
+    from pathlib import Path
 
-    return OpenArmMujocoHAL(gravity_enabled=False)
+    from openral_core import RobotDescription
+    from openral_hal._mujoco_arm import MujocoArmHAL
+
+    repo = Path(__file__).resolve().parents[2]
+    desc = RobotDescription.from_yaml(str(repo / "robots" / robot / "robot.yaml"))
+    return MujocoArmHAL.from_description(desc, gravity_enabled=False)
+
+
+def _openarm() -> Any:
+    return _twin("openarm")
 
 
 def _so100() -> Any:
-    from openral_hal.so100_mujoco import SO100MujocoHAL
-
-    return SO100MujocoHAL(gravity_enabled=False)
+    return _twin("so100_follower")
 
 
 def _franka() -> Any:
-    from openral_hal.franka_panda import FrankaPandaHAL
-
-    return FrankaPandaHAL(gravity_enabled=False)
+    return _twin("franka_panda")
 
 
 def _sim_attached_tabletop() -> Any:
@@ -146,14 +156,14 @@ def test_a_twin_heartbeats_an_empty_fresh_set(
             bridge = SimSensorBridge(node, hal, hal.description, viewer_enabled=False)
             try:
                 bridge.setup()
-                # Publisher, heartbeat and attachment staging exist. The evidence
-                # tracker refuses these twins' gripper layouts, so nothing can
-                # measure a declared target: no declaration is subscribed.
+                # Publisher, heartbeat and attachment staging exist, and the evidence
+                # tracker arms on the twin's gripper, so declarations are subscribed.
                 assert bridge._attachment_pub is not None
                 assert bridge._attachment_timer is not None
                 assert bridge._attachment_sub is not None
-                assert bridge._place_declaration_sub is None
-                assert bridge._grasp_declaration_sub is None
+                assert bridge._attachment_tracker is not None
+                assert bridge._place_declaration_sub is not None
+                assert bridge._grasp_declaration_sub is not None
 
                 deadline = time.monotonic() + 2.0
                 while not received and time.monotonic() < deadline:
@@ -238,6 +248,7 @@ def test_a_twin_beside_the_vision_leg_never_holds_the_action_ack() -> None:
         BoxShape,
         Pose6D,
     )
+    from openral_hal.openarm import OpenArmMujocoHAL
     from openral_hal.sim_sensor_bridge import SimSensorBridge
     from openral_msgs.msg import AttachedCollisionObject as ObjectMsg
     from openral_msgs.msg import AttachedCollisionPrimitive as PrimitiveMsg
@@ -245,7 +256,9 @@ def test_a_twin_beside_the_vision_leg_never_holds_the_action_ack() -> None:
     from rclpy.node import Node
     from std_msgs.msg import UInt64
 
-    hal = _openarm()
+    # The in-code twin: it declares no depth camera, so the ack waits on no depth frame
+    # (the manifest's ``head_zed`` would hold it for one, rightly) and only staging is tested.
+    hal = OpenArmMujocoHAL(gravity_enabled=False)
     link = "openarm_left_link7"
     cup = AttachedCollisionObject(
         object_id="cup",
