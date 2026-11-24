@@ -2270,7 +2270,7 @@ def _manifest_to_mjcf_affine(
     position in ``joints``), is checked to be one.
 
     Raises:
-        ROSConfigError: The gripper's actuator does not drive ``leader`` 1:1.
+        ROSConfigError: The gripper has no actuator, or it does not drive ``leader`` 1:1.
     """
     import mujoco
 
@@ -2279,6 +2279,11 @@ def _manifest_to_mjcf_affine(
     if grip is None or grip.write_mode != GripperWriteMode.NORMALISED:
         return 0.0, 1.0
     act = _gripper_actuator(robot, grip)
+    if act < 0:
+        raise ROSConfigError(
+            f"sim.grippers[{joint!r}] sets no actuator_index and sim.actuator_index has no "
+            f"{joint!r} entry, so the twin has no actuator to write it to"
+        )
     if not (
         0 <= act < m.nu
         and int(m.actuator_trntype[act]) == int(mujoco.mjtTrn.mjTRN_JOINT)
