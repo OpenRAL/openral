@@ -1,18 +1,21 @@
 # openral_hal_unitree
 
-Real-hardware bringup (only) for the **Unitree hg humanoid family** — the G1 today; the
-H2 uses the same NVIDIA hardware interface (`robot_variant: h2`) and joins by adding a
-`config/h2/` and a row in `openral_hal.unitree_real._MODELS`.
+Real-hardware bringup (only) for the **Unitree hg humanoid family** — the **G1** (29 DoF)
+and the **H2** (31 DoF), both on NVIDIA's `unitree_hg_ros2_control` hardware interface
+(`robot_variant: g1` / `h2`).
 
 The HAL lifecycle node is the generic [`openral_hal_node`](../openral_hal_node/README.md)
 running `openral_hal.unitree_real:UnitreeHgRealHAL` (`hal.real` in
-[`robots/g1/robot.yaml`](../../robots/g1/robot.yaml)). This package ships what that node
+[`robots/g1/robot.yaml`](../../robots/g1/robot.yaml) and
+[`robots/h2/robot.yaml`](../../robots/h2/robot.yaml)). This package ships what that node
 cannot: `launch/real_bringup.launch.py` (named by `hal.real_bringup`), the controller
-configs under `config/<model>/`, and `deps.repos`.
+configs under `config/<model>/`, the H2's real-hardware xacro (`urdf/`; NVIDIA ships none),
+and `deps.repos`.
 
 > **Status: yellow.** Configs, launch and HAL are unit-tested against the pinned upstream
-> sources and the G1 manifest; nothing here has run on a G1 yet. Treat the first
-> bring-up as a validation run, on a gantry.
+> sources and the G1 / H2 manifests; nothing here has run on a G1 or an H2 yet. Treat the
+> first bring-up of each as a validation run, on a gantry. The H2 has further open
+> hardware gates — see [H2](#h2).
 
 ## Architecture: NVIDIA owns S0, OpenRAL proposes
 
@@ -30,7 +33,7 @@ controller_manager @ 200 Hz ──────────────┼──�
    upper_body_forward_joint_command_controller ─┐   (writes <joint>/<if>_raw)
    inference_controller  (ONNX via Triton, 50 Hz)┤
                                                  ▼
-   safety_controller: blend_ratio · velocity clamp · out-of-domain → freeze_controller
+   safety_controller: blend_ratio · velocity clamp · joint-limit clamp · out-of-domain → freeze_controller
       (NVIDIA's SafetyController through OpenRAL's GuardedSafetyController, see below)
                                                  ▼
    unitree_hg_ros2_control/UnitreeHgSystemInterface: CRC32 · 500 ms state freshness ·
@@ -58,8 +61,9 @@ A `JOINT_POSITION` action that names (or, with `Action.joint_names=None`, implie
 policy-owned joint is refused with `ROSCapabilityMismatch` before anything is published.
 The HAL's `s0_policy` (manifest `hal.parameters.defaults.s0_policy`) and the launch's
 `policy:=` default must name the same file (test-enforced for the defaults); override
-both together. Consequence: a skill whose
-whole-vector `starting_pose` ramp covers the legs cannot run on the real G1 until it is
+both together. On the H2, WBC-AGILE owns the 12 legs + waist roll/pitch, leaving OpenRAL
+waist yaw, both 7-DoF arms and the head (17 joints). Consequence: a skill whose
+whole-vector `starting_pose` ramp covers the legs cannot run on the real robot until it is
 expressed over the upper-body joints.
 
 ## Layout
@@ -68,7 +72,10 @@ expressed over the upper-body joints.
 config/g1/controller_manager.yaml        policy-independent graph (29 DoF, no Dex3 hands)
 config/g1/policies/gr00t_decoupled_wbc.yaml   GR00T WBC (DEFAULT): inference params + split + arm gains
 config/g1/policies/agile_velocity.yaml   WBC-AGILE: inference_controller params + joint split
-launch/real_bringup.launch.py            robot_model:=g1 policy:=gr00t_decoupled_wbc
+config/h2/controller_manager.yaml        the same graph for the H2 (31 DoF, SDK motor order)
+config/h2/policies/agile_velocity.yaml   H2 WBC-AGILE (DEFAULT): inference params + split + gains + Hub pins
+urdf/h2_real_hardware.urdf.xacro         H2 robot_description: pinned unitree_ros H2.urdf + ros2_control block
+launch/real_bringup.launch.py            robot_model:=g1|h2 [policy:=<stem>]
 ../../tools/build_gr00t_wbc_leapp.py     builds the GR00T LEAPP bundle on the robot host
 include/, src/guarded_safety_controller.cpp   GuardedSafetyController plugin (issue #548)
 test/test_guarded_safety_controller.cpp  its gtest against the real upstream controller
@@ -127,6 +134,26 @@ commands only the 12 legs, so check the installed export's `target/joint/positio
 element names against `s0_joints` before use. Its licence is not stated in the pinned
 repos — check it before redistributing a deployment image.
 
+**H2: WBC-AGILE** (`config/h2/policies/agile_velocity.yaml`, the only H2 policy). NVIDIA
+publishes the export on the Hub — `nvidia/agile_wbc_unitree_h2` @ `222da1df`, LEAPP 0.5.2
+(`Velocity-H2-History-v0`), NVIDIA Open Model License, trained on the **H2 Plus**. 50 Hz;
+the action is 14 absolute joint targets (12 legs + waist roll/pitch) plus per-joint kp/kd;
+inputs are base angular velocity and orientation, the velocity command and all 31 joints
+by name. The policy file pins the revision and every file's SHA-256 (`hf_repo`,
+`hf_revision`, `sha256`), and the launch re-checks them each time it resolves the bundle:
+
+```bash
+hf download nvidia/agile_wbc_unitree_h2 --revision 222da1dfecdb708fb77a64096451ce162feec2da \
+    --local-dir ~/.cache/openral/unitree/h2/agile_velocity
+```
+
+The upper body runs at the gains the policy was trained with (the export's default
+stiffness/damping — not measured H2 motor gains). `tests/unit/test_h2_agile_velocity_rollout.py`
+drives the ONNX as the controller does (feedback looped, initial values from the
+safetensors) with the state held fixed: finite targets on exactly the 14 S0 joints, a live
+velocity input. In that open loop it asks for a left ankle roll of −0.371 rad against
+`H2.urdf`'s −0.349 rad limit — see [H2](#h2).
+
 ## Install
 
 Host: ROS 2 **Jazzy**, a CUDA GPU (Jetson Thor/Orin or x86 + NVIDIA dGPU), and the
@@ -147,6 +174,10 @@ colcon build --packages-up-to unitree_hg_ros2_control unitree_g1_description \
     isaac_ros_deploy_ros2_control
 just ros2-build                                            # this package
 ```
+
+The H2 needs no NVIDIA description package: the launch renders `urdf/h2_real_hardware.urdf.xacro`
+around the pinned `unitree_ros` `H2.urdf`, which `openral_hal._unitree_h2_assets.ensure_h2_urdf()`
+fetches (SHA-256-checked) into `~/.cache/openral/unitree_h2/` on first use.
 
 Build this package with the NVIDIA workspace sourced: its `GuardedSafetyController` and
 `GuardedInferenceController` plugins are compiled only when CMake finds
@@ -180,8 +211,8 @@ Build-time network fetches you should know about:
 
 ## Bring-up
 
-0. **S0 bundle** (GR00T, the default): `uv run python tools/build_gr00t_wbc_leapp.py` once
-   on the robot host.
+0. **S0 bundle**, once on the robot host — G1 (GR00T, the default):
+   `uv run python tools/build_gr00t_wbc_leapp.py`; H2: the `hf download` above.
 1. **Network.** Wire the host NIC to the robot and give it `192.168.123.99/24` (robot:
    `192.168.123.161`; values from isaac_ros_robots' `setup_network.py`, which also adds the
    `239.0.0.0/8` multicast route DDS discovery needs). Export the NIC name:
@@ -191,10 +222,13 @@ Build-time network fetches you should know about:
    Unitree's built-in locomotion service (`MotionSwitcherClient::ReleaseMode`); from then
    on only this graph holds it up.
 3. **Start.** Either the whole deploy (`openral deploy run --config <scene>` with
-   `robot_id: g1` — it includes this launch through `hal.real_bringup`), or the graph
+   `robot_id: g1` or `h2` — it includes this launch through `hal.real_bringup`, and the
+   launch takes `robot_model` and the default `policy` from that manifest's
+   `hal.parameters.defaults`, refusing a contradicting `robot_model:=`), or the graph
    alone to check wiring, under the OpenRAL venv interpreter (the launch imports
-   `openral_hal`, which `/opt/ros`'s system Python cannot see):
-   `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST .venv/bin/python "$(command -v ros2)" launch openral_hal_unitree real_bringup.launch.py`
+   `openral_hal`, which `/opt/ros`'s system Python cannot see). A hand run must name the
+   model — the G1 and H2 joint tables are not interchangeable, so there is no default:
+   `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST .venv/bin/python "$(command -v ros2)" launch openral_hal_unitree real_bringup.launch.py robot_model:=g1`
    (it refuses an unset or `SUBNET` range — what `setup.bash` exports — unless
    `OPENRAL_ALLOW_NETWORK_ROS=1` under SROS2 Enforce, ADR-0130; see `docs/reference/ros-graph-security.md`).
    Never both: two graphs
@@ -284,21 +318,51 @@ hardware.
    `max_base_angular_speed_rad_s: 1.0`, collision) **before** the HAL sees it — unchanged.
 2. The HAL refuses leg targets, non-planar or non-finite twists, wrong dimensions.
 3. NVIDIA `SafetyController` (through `GuardedSafetyController`) then blends, rate-limits (arms ≤ 1.2 rad/s target motion) and
-   watches for out-of-domain velocities; the hardware interface checks finiteness, CRC and
-   state freshness. These are **additional** layers below OpenRAL's — none replaces or
+   watches for out-of-domain velocities; the guard then **clamps every joint's position
+   command to the manifest's limits** (`joint_position_limits` in `config/<model>/
+   controller_manager.yaml`, pinned to the manifest by the bring-up test; hazard-log
+   Entry 105 C1). Nothing else bounds an S0 target: the kernel never sees one, upstream's
+   `SafetyController` does not range-check positions, and the hardware interface checks only
+   finiteness, CRC and state freshness. These are **additional** layers below OpenRAL's — none replaces or
    relaxes the kernel, and no OpenRAL flag disables any of them.
 
 Neither policy's trained velocity-command range is stated in its pinned repo; the
 kernel's BODY_TWIST bound is still the walking twin's (0.5 m/s, 1.0 rad/s). Tighten it, not
 loosen it, if a policy's range turns out smaller.
 
+## H2
+
+Same graph, HAL and e-stop as the G1, with these differences:
+
+* **Description.** NVIDIA's isaac_ros_robots @ `520aa94f` supports the H2 only in the
+  hardware interface (`h2_body_joint_index_table`, a transcription of unitree_sdk2's
+  `H2JointIndex`). `urdf/h2_real_hardware.urdf.xacro` adds upstream's ros2_control block
+  (same plugin, same five command / three state interfaces per joint, `robot_variant: h2`,
+  the `imu` sensor) to the pinned `H2.urdf`. Joint order = that table = SDK motor order =
+  `robots/h2/robot.yaml`: ankle **roll before pitch** (the G1 is pitch-then-roll), head
+  pitch/yaw last (motors 29–30). `test_unitree_real_bringup_config.py` pins the xacro, the
+  three whole-body controllers and the manifest to one list, renders the xacro with `xacro`,
+  and — with `$OPENRAL_ISAAC_ROS_ROBOTS_SRC` pointing at an isaac_ros_robots checkout —
+  checks names and motor indices against upstream's table.
+* **Gains.** `freeze_controller` (10 / 1) and `safety_controller` (100 / 2) are the G1's
+  values, unchanged — no H2 value has been measured. On a ~70 kg robot with 360 N·m hips
+  the freeze hold is further still from balance.
+* **Hardware gates still open** (issue #513; hazard-log Entry 074 gates 1–4 and Entry 105,
+  accepted 2026-11-24 with conditions; reviews `safety/reviews/2026-11-07-unitree-g1-h2-real-hw.md`
+  and `2026-11-24-unitree-h2-real-hal.md`): the robot stays on a gantry until freeze is
+  characterised; the IMU frame (`imu_in_pelvis`) is checked on hardware; the S0 loop runs at
+  200 Hz (policy 50 Hz); H2 gains and safety fields are measured on the gantry (C2); wrist
+  pitch stays at ±0.576 rad or tighter (C3); the unit's variant and mass are confirmed, since
+  the checkpoint was trained on the H2 Plus (C4). C1 (joint-limit clamping of S0 targets) is
+  met by `GuardedSafetyController` above, for the G1 too.
+
 ## Rates
 
 | Loop | Rate | Source |
 |---|---|---|
-| `controller_manager` (hardware read/write, safety, forward controller) | 200 Hz | `config/g1/controller_manager.yaml` (upstream's validated value) |
-| S0 policy (`inference_controller`, decimation 4) | 50 Hz | policy file (GR00T's own rate: dt 0.005 × 4) |
-| OpenRAL runner / HAL (`action_spec.control_freq_hz`) | 50 Hz | `robots/g1/robot.yaml` |
+| `controller_manager` (hardware read/write, safety, forward controller) | 200 Hz | `config/<model>/controller_manager.yaml` (upstream's validated G1 value; the H2 reuses it, unvalidated) |
+| S0 policy (`inference_controller`, decimation 4) | 50 Hz | policy file (GR00T's own rate: dt 0.005 × 4; H2 AGILE: the export's `frequency`) |
+| OpenRAL runner / HAL (`action_spec.control_freq_hz`) | 50 Hz | `robots/g1/robot.yaml`, `robots/h2/robot.yaml` |
 
 CLAUDE.md §3 sketches S0 at 500–1000 Hz. **This S0 runs at 200 Hz** (policy at 50 Hz),
 because that is the rate NVIDIA validated for this hardware interface and policy; raising
@@ -319,6 +383,8 @@ it is unvalidated and not done here. The 200 Hz loop is still C++ and bounded (�
 | CUDA / TensorRT runtime | NVIDIA proprietary EULA | **GPU mandatory** for the Isaac ROS stack |
 | GR00T-WholeBodyControl @ 1e1ec4f5 Walk/Balance ONNX (default S0) | **NVIDIA Open Model License** (weights; code Apache-2.0) | commercial use permitted under its terms; fetched + SHA-256-checked by `tools/build_gr00t_wbc_leapp.py`, never vendored |
 | `isaac_ros_agile_unitree_g1` (AGILE LEAPP export) | **not stated in the pinned repos** | verify before redistribution |
+| `nvidia/agile_wbc_unitree_h2` @ 222da1df (H2 S0) | **NVIDIA Open Model License** | commercial use permitted under its terms; downloaded + SHA-256-checked, never vendored |
+| `unitree_ros` @ 41dec58c `H2.urdf` + meshes | BSD-3-Clause | fetched + SHA-256-checked by `openral_hal._unitree_h2_assets` |
 
 No GPL. Nothing here is vendored: all third-party code is fetched at the pinned SHAs by
 the operator, as for `openral_hal_openarm`.

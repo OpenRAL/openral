@@ -26,6 +26,14 @@
 //     which on the hg hardware leaves the joints unclaimed at zero torque.)
 //   * while any position reference is NaN, holds every joint at the pose captured at the
 //     first such tick (blend input 1.0, as v5.0).
+//   * clamps every joint's position command to the manifest's joint limits
+//     (`joint_position_limits.lower` / `.upper`, one value per `joints` entry, required),
+//     after upstream has written it and on every path (policy, upper body, stale hold).
+//     Nothing else on the real chain bounds an S0 target: the kernel never sees one, the
+//     hg hardware interface only rejects non-finite commands, and upstream's
+//     SafetyController blends and rate-limits but does not range-check positions
+//     (hazard-log Entry 105, condition C1: the H2 AGILE policy asks for ankle pitch up to
+//     ~1.1 rad against a 0.611 rad limit in sim).
 // `blend_ratio` stays writable: it is the operator's gantry blend-in path. Who may
 // set it is a graph-access question (host confinement today, SROS2 enclaves next).
 
@@ -33,6 +41,7 @@
 #define OPENRAL_HAL_UNITREE__GUARDED_SAFETY_CONTROLLER_HPP_
 
 #include <atomic>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -77,6 +86,11 @@ constexpr double kMaxBlendRatioSpeed = 1.0;
 /// Why `max_blend_ratio_speed` is refused at configure, or nullopt when it is allowed.
 std::optional<std::string> blend_speed_refusal(double speed);
 
+/// Why `joint_position_limits` is refused at configure, or nullopt when there is one finite
+/// `lower < upper` pair per joint.
+std::optional<std::string> position_limits_refusal(size_t joints, const std::vector<double>& lower,
+                                                   const std::vector<double>& upper);
+
 /// Why a runtime parameter set is refused, or nullopt when every parameter may change.
 /// While `activating`, a non-zero `blend_ratio` is refused too: upstream's on_activate
 /// copies the target into the applied blend with no ramp, and the parameter service runs
@@ -100,6 +114,13 @@ private:
   // Stale-reference hold; update thread only, sized at activation.
   std::vector<double> hold_;
   bool hold_active_{false};
+  // Joint position limits, one per joint in `joints` order; fixed at configure.
+  std::vector<double> lower_;
+  std::vector<double> upper_;
+  // Ticks a joint's position command was clamped (update thread only; logged throttled).
+  uint64_t clamped_ticks_{0};
+
+  void clamp_position_commands();
 };
 
 }  // namespace openral_hal_unitree

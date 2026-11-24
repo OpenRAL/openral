@@ -1,0 +1,110 @@
+<?xml version="1.0"?>
+<!--
+SPDX-License-Identifier: Apache-2.0
+
+Real-hardware robot_description for the Unitree H2 (31 DoF), loaded by
+`launch/real_bringup.launch.py robot_model:=h2`.
+
+NVIDIA's isaac_ros_robots @ 520aa94ffb7732467870a87dcb66a8bfd33cbe60 supports the H2 in
+`unitree_hg_ros2_control` (`robot_variant: h2`) but ships no H2 description or bringup,
+so this file is OpenRAL's counterpart of its `unitree_g1_description/urdf/
+g1_real_hardware.urdf.xacro` + `g1_real_ros2_control.urdf.xacro` (Apache-2.0): the same
+hardware block and per-joint interfaces, around the official H2 URDF.
+
+`body_urdf` is the pinned unitreerobotics/unitree_ros @ 41dec58c `robots/h2_description/
+H2.urdf` (BSD-3-Clause, SHA-256-checked), which the launch resolves through
+`openral_hal._unitree_h2_assets.ensure_h2_urdf()` — the URDF robots/h2/robot.yaml names.
+
+Joint order = upstream's `h2_body_joint_index_table` (src/joint_index_tables.cpp) =
+unitree_sdk2 motor order = robots/h2/robot.yaml: ankle ROLL before pitch, head last.
+The hardware interface maps each joint by name (sdk_index_map.cpp), so a joint missing
+from that table fails on_init; tests/unit/test_unitree_real_bringup_config.py pins the
+list against the manifest, the controller config and (with a checkout) the table.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="H2">
+
+  <xacro:arg name="body_urdf" default=""/>
+  <xacro:arg name="network_interface" default="eth0"/>
+  <xacro:arg name="motor_temp_warn_threshold" default="120"/>
+
+  <xacro:include filename="$(arg body_urdf)"/>
+
+  <!-- Upstream's `real_joint` macro (g1_real_ros2_control.urdf.xacro), unchanged. -->
+  <xacro:macro name="real_joint" params="name initial_position:=0.0">
+    <joint name="${name}">
+      <command_interface name="position"/>
+      <command_interface name="velocity"/>
+      <command_interface name="effort"/>
+      <command_interface name="kp"/>
+      <command_interface name="kd"/>
+      <state_interface name="position">
+        <param name="initial_value">${initial_position}</param>
+      </state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+  </xacro:macro>
+
+  <ros2_control name="UnitreeH2System" type="system">
+    <hardware>
+      <plugin>unitree_hg_ros2_control/UnitreeHgSystemInterface</plugin>
+      <param name="robot_variant">h2</param>
+      <param name="network_interface">$(arg network_interface)</param>
+      <param name="motor_temp_warn_threshold">$(arg motor_temp_warn_threshold)</param>
+    </hardware>
+
+    <!-- Left leg (motors 0-5) -->
+    <xacro:real_joint name="left_hip_pitch_joint"/>
+    <xacro:real_joint name="left_hip_roll_joint"/>
+    <xacro:real_joint name="left_hip_yaw_joint"/>
+    <xacro:real_joint name="left_knee_joint"/>
+    <xacro:real_joint name="left_ankle_roll_joint"/>
+    <xacro:real_joint name="left_ankle_pitch_joint"/>
+    <!-- Right leg (6-11) -->
+    <xacro:real_joint name="right_hip_pitch_joint"/>
+    <xacro:real_joint name="right_hip_roll_joint"/>
+    <xacro:real_joint name="right_hip_yaw_joint"/>
+    <xacro:real_joint name="right_knee_joint"/>
+    <xacro:real_joint name="right_ankle_roll_joint"/>
+    <xacro:real_joint name="right_ankle_pitch_joint"/>
+    <!-- Waist (12-14) -->
+    <xacro:real_joint name="waist_yaw_joint"/>
+    <xacro:real_joint name="waist_roll_joint"/>
+    <xacro:real_joint name="waist_pitch_joint"/>
+    <!-- Left arm (15-21) -->
+    <xacro:real_joint name="left_shoulder_pitch_joint"/>
+    <xacro:real_joint name="left_shoulder_roll_joint"/>
+    <xacro:real_joint name="left_shoulder_yaw_joint"/>
+    <xacro:real_joint name="left_elbow_joint"/>
+    <xacro:real_joint name="left_wrist_roll_joint"/>
+    <xacro:real_joint name="left_wrist_pitch_joint"/>
+    <xacro:real_joint name="left_wrist_yaw_joint"/>
+    <!-- Right arm (22-28) -->
+    <xacro:real_joint name="right_shoulder_pitch_joint"/>
+    <xacro:real_joint name="right_shoulder_roll_joint"/>
+    <xacro:real_joint name="right_shoulder_yaw_joint"/>
+    <xacro:real_joint name="right_elbow_joint"/>
+    <xacro:real_joint name="right_wrist_roll_joint"/>
+    <xacro:real_joint name="right_wrist_pitch_joint"/>
+    <xacro:real_joint name="right_wrist_yaw_joint"/>
+    <!-- Head (29-30) -->
+    <xacro:real_joint name="head_pitch_joint"/>
+    <xacro:real_joint name="head_yaw_joint"/>
+
+    <!-- The low-level IMU the hardware interface reads from LowState (imu_sensor_broadcaster
+         publishes it in imu_in_pelvis; frame to be confirmed on hardware). -->
+    <sensor name="imu">
+      <state_interface name="orientation.x"/>
+      <state_interface name="orientation.y"/>
+      <state_interface name="orientation.z"/>
+      <state_interface name="orientation.w"/>
+      <state_interface name="angular_velocity.x"/>
+      <state_interface name="angular_velocity.y"/>
+      <state_interface name="angular_velocity.z"/>
+      <state_interface name="linear_acceleration.x"/>
+      <state_interface name="linear_acceleration.y"/>
+      <state_interface name="linear_acceleration.z"/>
+    </sensor>
+  </ros2_control>
+
+</robot>

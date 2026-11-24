@@ -21,12 +21,26 @@ Every file is pinned by commit SHA **and** its SHA-256; a mismatch raises
 ``ROSConfigError`` and installs nothing (fail-closed, ``_pinned_files``). Cache:
 ``$OPENRAL_CACHE_DIR/unitree_h2/<repo>/<sha>/<path>`` (default
 ``~/.cache/openral``).
+
+The MJCF ``ensure_h2_mjcf`` returns is a derived copy beside the pinned one, with
+one correction: Unitree moved the wrist-pitch axis from 0.038 m to 0.079 m past
+the wrist roll in ``unitree_ros`` 25746e8c / 2ded279c ("fix h2 wrist_pitch_joint
+location", 2026-11-03/04, included in the pinned ``41dec58c``), but
+``unitree_mujoco`` still carries the old placement. ``_derive_mjcf`` applies the
+same edit to the MJCF: each ``*_wrist_pitch_link`` body moves to the URDF origin
+and everything inside it moves back by the same offset, so every link stays where
+it was at the zero pose and only the pitch axis moves. ``unitree_rl_mjlab``'s
+independent H2 export (0.0806 m) agrees with the fixed placement.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
+import xml.etree.ElementTree as ET
 from pathlib import Path
+
+from openral_core.exceptions import ROSConfigError
 
 from openral_hal._pinned_files import fetch_pinned_file
 
@@ -233,6 +247,43 @@ _MUJOCO_FILES: dict[str, str] = {
 }
 
 
+#: The derived MJCF is keyed on this module's source, so a changed derivation re-derives.
+_DERIVE_KEY: str = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
+#: ``*_wrist_pitch_link`` body origin: (pinned MJCF, pinned URDF ``*_wrist_pitch_joint``).
+_WRIST_PITCH_FIX: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] = {
+    "left_wrist_pitch_link": ((0.037994, 0.031144, 0.00045104), (0.079007, 0.031144, 0.00145104)),
+    "right_wrist_pitch_link": (
+        (0.037994, -0.031144, 0.00045104),
+        (0.079007, -0.031144, 0.00145104),
+    ),
+}
+
+
+def _vec(text: str | None) -> tuple[float, float, float]:
+    x, y, z = (float(v) for v in (text or "0 0 0").split())
+    return (x, y, z)
+
+
+def _derive_mjcf(xml: str) -> str:
+    """The pinned MJCF with the wrist-pitch axis at the URDF's placement (module docstring).
+
+    Raises:
+        ROSConfigError: A wrist-pitch body is missing or not at the pinned placement.
+    """
+    root = ET.fromstring(xml)
+    for name, (old, new) in _WRIST_PITCH_FIX.items():
+        body = root.find(f".//body[@name='{name}']")
+        if body is None or _vec(body.get("pos")) != old:
+            raise ROSConfigError(f"h2_mujoco.xml: {name} is not at the pinned {old}")
+        delta = [n - o for n, o in zip(new, old, strict=True)]
+        body.set("pos", " ".join(f"{v:.8g}" for v in new))
+        for child in body:
+            if child.tag in ("inertial", "geom", "site", "body", "camera"):
+                pos = _vec(child.get("pos"))
+                child.set("pos", " ".join(f"{p - d:.8g}" for p, d in zip(pos, delta, strict=True)))
+    return ET.tostring(root, encoding="unicode")
+
+
 def _cache_root() -> Path:
     return Path(os.environ.get("OPENRAL_CACHE_DIR") or Path.home() / ".cache" / "openral")
 
@@ -262,14 +313,22 @@ def ensure_h2_urdf() -> Path:
 
 
 def ensure_h2_mjcf() -> Path:
-    """Return the pinned upstream ``h2_mujoco.xml`` path (robot only, no floor).
+    """Return the H2 twin MJCF (robot only, no floor), derived from the pinned upstream.
 
-    ``scene.xml`` (floor + lights, includes ``h2_mujoco.xml``) is fetched
+    The pinned ``h2_mujoco.xml`` with the wrist-pitch fix (``_derive_mjcf``),
+    written beside it so its ``meshes/`` refs resolve unchanged. ``scene.xml``
+    (floor + lights, includes the unpatched ``h2_mujoco.xml``) is fetched
     alongside for viewers; the HAL loads the bare robot like the menagerie
     ``g1.xml`` / ``h1.xml`` twins.
 
     Raises:
-        ROSConfigError: A download fails or a file fails SHA-256 verification.
+        ROSConfigError: A download fails, a file fails SHA-256 verification, or
+            the pinned MJCF is not the one ``_derive_mjcf`` corrects.
     """
     root = _fetch_tree("unitree_mujoco", UNITREE_MUJOCO_SHA, _MUJOCO_DIR, _MUJOCO_FILES)
-    return root / "h2_mujoco.xml"
+    path = root / f"h2_mujoco.openral-{_DERIVE_KEY}.xml"
+    if not path.is_file():
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(_derive_mjcf((root / "h2_mujoco.xml").read_text(encoding="utf-8")))
+        os.replace(tmp, path)
+    return path

@@ -11,7 +11,7 @@ name: test-selective
 #
 # Job graph:
 #   select ──┬── core_full     (matrix: 4 file-shards + isolated) ──┐
-#            └── core_selected (matrix: 4 target-shards + isolated) ┴── select-and-test
+#            └── core_selected (matrix: 6 target-shards + isolated) ┴── select-and-test
 #                                                                  (required check,
 #                                                                   every push)
 #
@@ -197,9 +197,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Same split as core_full: the selected targets round-robin over 4
-        # shards by sorted position, plus one shard for `isolated_targets`.
-        shard: ["0", "1", "2", "3", "isolated"]
+        # The selected targets round-robin over 6 shards by sorted position,
+        # plus one shard for `isolated_targets`. Was 4 (as core_full): a wide
+        # selection (a diff touching mujoco_twin / openral_safety / many
+        # manifests, openral#756) put every 4-way shard at 10-15 min and one
+        # over the 15-min cap twice — a capacity overrun, not a hang. Keep the
+        # count in step with the `NR % 6` below.
+        shard: ["0", "1", "2", "3", "4", "5", "isolated"]
     steps:
       # Pick this shard's slice first, so a shard with nothing to run (a
       # narrow selection, or no isolated targets) exits in seconds instead of
@@ -233,7 +237,7 @@ jobs:
                      fi
                    done | sort -u \
                    | { grep -vxF -f <(printf '%s\n' $ISOLATED_TARGETS | grep .) || true; } \
-                   | awk -v k="${{ matrix.shard }}" 'NF && NR % 4 == k')
+                   | awk -v k="${{ matrix.shard }}" 'NF && NR % 6 == k')
           fi
           # shellcheck disable=SC2086
           mine=$(echo $mine)  # collapse newlines/whitespace; empty stays empty

@@ -3,6 +3,7 @@
 
 #include "openral_hal_unitree/guarded_safety_controller.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <sstream>
 
@@ -66,6 +67,8 @@ namespace openral_hal_unitree {
 namespace {
 constexpr char kBlendRatioParam[] = "blend_ratio";
 constexpr char kMaxBlendRatioSpeedParam[] = "max_blend_ratio_speed";
+constexpr char kLowerLimitsParam[] = "joint_position_limits.lower";
+constexpr char kUpperLimitsParam[] = "joint_position_limits.upper";
 // Upstream's reference layout per joint: position, velocity, effort, kp, kd.
 constexpr size_t kReferencesPerJoint = 5;
 }  // namespace
@@ -81,9 +84,33 @@ std::optional<std::string> blend_speed_refusal(double speed) {
   return reason.str();
 }
 
+std::optional<std::string> position_limits_refusal(size_t joints, const std::vector<double>& lower,
+                                                   const std::vector<double>& upper) {
+  if (lower.size() != joints || upper.size() != joints) {
+    std::ostringstream reason;
+    reason << "joint_position_limits needs one lower and one upper limit per joint (" << joints
+           << " joints; got " << lower.size() << " lower, " << upper.size()
+           << " upper): without them no stage of the real chain bounds an S0 target";
+    return reason.str();
+  }
+  for (size_t i = 0; i < joints; ++i) {
+    if (!std::isfinite(lower[i]) || !std::isfinite(upper[i]) || !(lower[i] < upper[i])) {
+      std::ostringstream reason;
+      reason << "joint_position_limits for joint " << i << " is [" << lower[i] << ", " << upper[i]
+             << "]; it must be finite with lower < upper";
+      return reason.str();
+    }
+  }
+  return std::nullopt;
+}
+
 std::optional<std::string> runtime_set_refusal(const std::vector<rclcpp::Parameter>& parameters,
                                                bool activating) {
   for (const auto& param : parameters) {
+    if (param.get_name() == kLowerLimitsParam || param.get_name() == kUpperLimitsParam) {
+      return param.get_name() +
+             " is fixed at configure on a real robot; edit the controller config and relaunch";
+    }
     if (param.get_name() == kMaxBlendRatioSpeedParam) {
       return std::string(kMaxBlendRatioSpeedParam) +
              " is fixed at configure on a real robot; edit the controller config and "
@@ -106,6 +133,33 @@ GuardedSafetyController::on_configure(const rclcpp_lifecycle::State& previous_st
     RCLCPP_ERROR(node->get_logger(), "Refusing to configure: %s", refusal->c_str());
     return controller_interface::CallbackReturn::ERROR;
   }
+  // Joint limits: required, validated before upstream configures anything.
+  for (const char* name : {kLowerLimitsParam, kUpperLimitsParam}) {
+    if (!node->has_parameter(name)) {
+      node->declare_parameter<std::vector<double>>(name, std::vector<double>{});
+    }
+  }
+  std::vector<double> lower;
+  std::vector<double> upper;
+  std::vector<std::string> joints;
+  try {
+    lower = node->get_parameter(kLowerLimitsParam).as_double_array();
+    upper = node->get_parameter(kUpperLimitsParam).as_double_array();
+    joints = node->get_parameter("joints").as_string_array();
+  } catch (const rclcpp::ParameterTypeException& e) {
+    RCLCPP_ERROR(node->get_logger(),
+                 "Refusing to configure: %s / %s must be double arrays and joints a string "
+                 "array: %s",
+                 kLowerLimitsParam, kUpperLimitsParam, e.what());
+    return controller_interface::CallbackReturn::ERROR;
+  }
+  if (const auto refusal = position_limits_refusal(joints.size(), lower, upper)) {
+    RCLCPP_ERROR(node->get_logger(), "Refusing to configure: %s", refusal->c_str());
+    return controller_interface::CallbackReturn::ERROR;
+  }
+  lower_ = std::move(lower);
+  upper_ = std::move(upper);
+  clamped_ticks_ = 0;
   // Drop our guard before upstream re-registers its own callback, then add it back
   // after. rclcpp runs the most recently added callback first and stops at the first
   // refusal; upstream stores the new value inside its callback, so ours must run
@@ -169,15 +223,47 @@ GuardedSafetyController::update_and_write_commands(const rclcpp::Time& time,
       break;
     }
   }
+  controller_interface::return_type result;
   if (invalid) {
-    return isaac_ros_deploy_ros2_control::controllers::SafetyControllerTestAccess::update_holding(
+    result = isaac_ros_deploy_ros2_control::controllers::SafetyControllerTestAccess::update_holding(
         *this, time, period, hold_, hold_active_);
+  } else {
+    if (hold_active_) {
+      hold_active_ = false;
+      RCLCPP_INFO(get_node()->get_logger(),
+                  "Position reference recovered; resuming normal blending");
+    }
+    result = SafetyController::update_and_write_commands(time, period);
   }
-  if (hold_active_) {
-    hold_active_ = false;
-    RCLCPP_INFO(get_node()->get_logger(), "Position reference recovered; resuming normal blending");
+  clamp_position_commands();
+  return result;
+}
+
+void GuardedSafetyController::clamp_position_commands() {
+  // Upstream's command layout per joint: position, velocity, effort, kp, kd.
+  const size_t joints = std::min(lower_.size(), command_interfaces_.size() / kReferencesPerJoint);
+  bool clamped = false;
+  for (size_t i = 0; i < joints; ++i) {
+    auto& command = command_interfaces_[i * kReferencesPerJoint];
+    const auto value = command.get_optional<double>();
+    if (!value.has_value() || std::isnan(*value)) {
+      continue;  // a non-finite command is the hardware's to reject; never invent one here
+    }
+    const double bounded = std::clamp(*value, lower_[i], upper_[i]);
+    if (bounded != *value) {
+      clamped = true;
+      if (!command.set_value(bounded)) {
+        RCLCPP_ERROR_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 1000,
+                              "Could not clamp joint %zu's position command to its limit", i);
+      }
+    }
   }
-  return SafetyController::update_and_write_commands(time, period);
+  if (clamped) {
+    ++clamped_ticks_;
+    RCLCPP_WARN_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 1000,
+                         "Clamped a position command to its joint limit (%llu ticks so far)",
+                         static_cast<unsigned long long>(clamped_ticks_));
+  }
 }
 
 }  // namespace openral_hal_unitree

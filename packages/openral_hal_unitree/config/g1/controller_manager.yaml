@@ -40,7 +40,7 @@ controller_manager:
     # out-of-domain detector both hand the joints to it.
     freeze_controller:
       type: isaac_ros_deploy_ros2_control/FreezeController
-    # Chainable: blends, rate-limits and range-checks everything the two controllers
+    # Chainable: blends, rate-limits and joint-limit-clamps everything the two controllers
     # below write into its `<joint>/<interface>_raw` reference interfaces. NVIDIA's
     # SafetyController through OpenRAL's guard (src/guarded_safety_controller.cpp,
     # issue #548): max_blend_ratio_speed is fixed at configure and capped at 1.0 /s,
@@ -199,6 +199,13 @@ safety_controller:
       - right_wrist_pitch_joint
       - left_wrist_yaw_joint
       - right_wrist_yaw_joint
+    # Position limits, one per `joints` entry above, verbatim from robots/g1/robot.yaml
+    # (tests/unit/test_unitree_real_bringup_config.py pins the parity). The guard clamps
+    # every position command to them after upstream writes it (hazard-log Entry 105 C1):
+    # nothing else on the real chain bounds an S0 target. Fixed at configure.
+    joint_position_limits:
+      lower: [-2.5307, -2.5307, -2.618, -0.5236, -2.9671, -0.52, -2.7576, -2.7576, -0.52, -0.087267, -0.087267, -3.0892, -3.0892, -0.87267, -0.87267, -1.5882, -2.2515, -0.2618, -0.2618, -2.618, -2.618, -1.0472, -1.0472, -1.97222, -1.97222, -1.61443, -1.61443, -1.61443, -1.61443]
+      upper: [2.8798, 2.8798, 2.618, 2.9671, 0.5236, 0.52, 2.7576, 2.7576, 0.52, 2.8798, 2.8798, 2.6704, 2.6704, 0.5236, 0.5236, 2.2515, 1.5882, 0.2618, 0.2618, 2.618, 2.618, 2.0944, 2.0944, 1.97222, 1.97222, 1.61443, 1.61443, 1.61443, 1.61443]
 
 # Joints come from the policy file (the leg/upper-body split is the policy's).
 upper_body_forward_joint_command_controller:

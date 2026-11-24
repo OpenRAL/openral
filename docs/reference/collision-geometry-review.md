@@ -678,6 +678,9 @@ kernel's FK. What it found:
   so the twin's meshes are not folded in and the twin test skips with the measured offset. The
   URDF enclosure test covers the geometry they were lowered from. G1's 10 mm is a kinematic
   disagreement between the sim twin and the URDF, which the kernel uses (§9).
+- **H2:** the pinned twin's wrist-pitch frame was 41 mm off the URDF, so no twin mesh was folded
+  in. `ensure_h2_mjcf` now applies Unitree's URDF wrist fix to the twin, its frames match, and its
+  meshes are folded in; the lowering also fits the 11 `<visual>`-only links from visual + twin CAD.
 - **SO-100:** the twin names no body for the manifest's links; skipped, URDF test covers it.
 - **Franka's fingers are in no primitive (pre-existing).** The manifest's `panda_finger_pair`
   is a synthetic link (a prismatic joint off the hand) with no URDF counterpart, so the URDF

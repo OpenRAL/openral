@@ -1,0 +1,53 @@
+# Unitree H2 humanoid walking bench — deploy playground (bare MuJoCo digital twin).
+#
+# Boots the manifest-driven H2 twin with NVIDIA's WBC-AGILE velocity policy as a
+# sim-only S0 controller (`s0_controller: agile_velocity`): the free base is
+# unpinned under gravity, the policy owns legs + waist roll/pitch at 50 Hz, and a
+# BODY_TWIST is its velocity command (zero twist = stand balanced). Waist yaw,
+# arms and head stay S1 joint-position targets. The ADR-0087 kinematic glide
+# (`s0_controller: none`) remains the HAL default.
+#
+# The policy is the real H2's own S0 export, downloaded (never vendored; NVIDIA
+# Open Model License) and SHA-256-checked against
+# packages/openral_hal_unitree/config/h2/policies/agile_velocity.yaml:
+#
+#   hf download nvidia/agile_wbc_unitree_h2 \
+#     --revision 222da1dfecdb708fb77a64096451ce162feec2da \
+#     --local-dir ~/.cache/openral/unitree/h2/agile_velocity
+#   openral deploy sim --config scenes/deploy/h2_walk.yaml
+#
+# Command a twist: the H2 manifest declares no planar base (`base_joints`), so the
+# HAL attaches no `/cmd_vel` bridge and publishes no `/odom` (the dashboard's 3D
+# view stays pinned to the pelvis: the robot steps in place there). A BODY_TWIST
+# reaches the HAL only through the safety kernel, as an `openral_msgs/ActionChunk`
+# on `/openral/candidate_action` with `control_mode: 7` (BODY_TWIST), `horizon: 1`,
+# `n_dof: 6`, `flat: [vx, vy, 0, 0, 0, wz]` — what a BODY_TWIST rSkill
+# (nav2-navigate-to-pose) publishes. The HAL clamps it to the manifest's 0.5 m/s /
+# 0.5 rad/s envelope; the policy was trained on |vx|,|vy| <= 0.5 m/s, |wz| <= 1 rad/s
+# and stands still for a pure-forward command <= ~0.3 m/s. The checkpoint itself
+# under-tracks pure-forward speed (~0.21 m/s at vx = 0.4); vy / wz and its training
+# command mix track within its model-card error (robots/h2/README.md).
+#
+# Every perception/nav leg is off: the bare twin declares no camera, lidar or depth.
+scene:
+  id: h2_walk_bench
+robot_id: h2
+hal:
+  defaults:
+    s0_controller: agile_velocity
+runtime:
+  enable_slam: false
+  enable_nav2: false
+  enable_octomap: false
+  enable_octomap_kernel_check: true
+  enable_object_detector: false
+  object_detector_onnx: null
+  object_detector_manifest: null
+  object_detector_query: null
+  object_detector_locators: null
+  enable_reward_monitor: false
+  reward_monitor_manifest: null
+  reward_monitor_task: null
+  enable_critic: false
+  spatial_memory_ingest: false
+  approach_skill_id: null

@@ -1,0 +1,129 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# S0 whole-body policy: NVIDIA WBC-AGILE velocity policy for the Unitree H2.
+# THE DEFAULT (and only) real-hardware S0 for the H2 (`robots/h2/robot.yaml`
+# `hal.parameters.defaults.s0_policy`).
+#
+# Layout as ../../g1/policies/agile_velocity.yaml (read by real_bringup.launch.py and
+# tests/unit/test_unitree_real_bringup_config.py, never handed to ROS as-is).
+#
+# Checkpoint: Hugging Face `nvidia/agile_wbc_unitree_h2` @ revision
+# 222da1dfecdb708fb77a64096451ce162feec2da — a LEAPP 0.5.2 export (model
+# `Velocity-H2-History-v0`: agile_velocity.yaml I/O spec + agile_velocity.onnx +
+# agile_velocity_initial_values.safetensors), the same packaging as the G1's AGILE data
+# package. Weights: NVIDIA Open Model License (commercial use permitted); fetched and
+# SHA-256-checked, never vendored. Trained on the H2 **Plus** — whether it transfers to
+# another H2 variant is unverified.
+#
+# The export (its agile_velocity.yaml) fixes what this file must say:
+#   * 50 Hz (`pipeline.configs.frequency`) → decimation 4 on the 200 Hz manager;
+#   * the action is 14 joints — 12 legs + waist roll + waist pitch (output order L/R
+#     hip_pitch, L/R hip_roll, waist_roll, L/R hip_yaw, waist_pitch, L/R knee, L/R
+#     ankle_roll, L/R ankle_pitch) with per-joint kp/kd outputs; waist yaw, both arms and
+#     the head are not in it, so they are OpenRAL's (the upper-body controller below);
+#   * inputs read all 31 joints by name (Isaac Lab breadth-first order inside the
+#     bundle; the InferenceController maps them by `element_names`), base angular
+#     velocity, base orientation and `command/body/velocity` (Twist: vx, vy, wz);
+#   * default pose hip_pitch -0.1, knee 0.3, ankle_pitch -0.2 rad.
+# tests/unit/test_unitree_real_bringup_config.py checks the split against the export when
+# it is cached, and tests/unit/test_h2_agile_velocity_rollout.py rolls the ONNX out.
+
+openral_policy:
+  name: agile_velocity
+  # ready | placeholder. The launch refuses a placeholder.
+  status: ready
+  # No ament data package: the bundle is the Hub export, downloaded on the robot host by
+  #   hf download nvidia/agile_wbc_unitree_h2 --revision <hf_revision> \
+  #       --local-dir ~/.cache/openral/unitree/h2/agile_velocity
+  # and verified against `sha256` below every time the launch resolves it.
+  data_package: null
+  bundle_dir: ~/.cache/openral/unitree/h2/agile_velocity
+  leapp_config: agile_velocity.yaml
+  hf_repo: nvidia/agile_wbc_unitree_h2
+  hf_revision: 222da1dfecdb708fb77a64096451ce162feec2da
+  sha256:
+    agile_velocity.yaml: 707e63dc7406ebb7f9a4d3c39161ea7a024f17e2f722fcadb7096b80d392ddf4
+    agile_velocity.onnx: c9f9f1d2e5460683967921ead8ed00d165bd1cde623b5efaa0b0ea4f327cfe06
+    agile_velocity_initial_values.safetensors: 1868d84bcb5d78cd0eb1456ffc7eac79c8df60d49a8ad5a6effcf2ffa51d473d
+  velocity_command_topic: /inference_controller/cmd_vel
+  velocity_command_type: geometry_msgs/msg/Twist
+  # The 14-joint action set, in manifest (SDK motor) order. OpenRAL never commands these
+  # on real hardware.
+  s0_joints:
+    - left_hip_pitch_joint
+    - left_hip_roll_joint
+    - left_hip_yaw_joint
+    - left_knee_joint
+    - left_ankle_roll_joint
+    - left_ankle_pitch_joint
+    - right_hip_pitch_joint
+    - right_hip_roll_joint
+    - right_hip_yaw_joint
+    - right_knee_joint
+    - right_ankle_roll_joint
+    - right_ankle_pitch_joint
+    - waist_roll_joint
+    - waist_pitch_joint
+
+controllers:
+  inference_controller:
+    ros__parameters:
+      # Filled in by the launch from `bundle_dir`/`leapp_config`, or the
+      # `inference_controller_config_path:=` override.
+      config_path: ""
+      decimation: 4  # 200 Hz manager / 4 = 50 Hz, the export's `frequency`
+      command_prefix: "safety_controller"
+      command_suffix: "_raw"
+      topic_input_sources:
+        - command/body/velocity
+      source_to_topic:
+        command/body/velocity: /inference_controller/cmd_vel
+      source_message_type:
+        command/body/velocity: geometry_msgs/msg/Twist
+      # OpenRAL addition, as on the G1: a stale velocity command blanks the policy output
+      # and safety_controller holds the pose captured at stale entry. Enforced by
+      # openral_hal_unitree/GuardedInferenceController.
+      topic_input_timeout_ms: 500.0
+
+  upper_body_forward_joint_command_controller:
+    ros__parameters:
+      # Everything the policy does not own: waist yaw, both 7-DoF arms, the head. Must be
+      # the complement of `s0_joints` in robots/h2/robot.yaml (test-enforced).
+      joints:
+        - waist_yaw_joint
+        - left_shoulder_pitch_joint
+        - left_shoulder_roll_joint
+        - left_shoulder_yaw_joint
+        - left_elbow_joint
+        - left_wrist_roll_joint
+        - left_wrist_pitch_joint
+        - left_wrist_yaw_joint
+        - right_shoulder_pitch_joint
+        - right_shoulder_roll_joint
+        - right_shoulder_yaw_joint
+        - right_elbow_joint
+        - right_wrist_roll_joint
+        - right_wrist_pitch_joint
+        - right_wrist_yaw_joint
+        - head_pitch_joint
+        - head_yaw_joint
+      # The gains the policy was trained with on these joints (the export's
+      # `agile.articulations.robot.default_joint_stiffness` / `_damping`), so the upper body
+      # behaves as the policy expects. Training values, NOT measured H2 motor gains —
+      # re-derive on hardware. Patterns apply in parameter-name order (std::map; later
+      # match wins): the base file's ".*" (20 / 1) sorts first, and these six are disjoint
+      # and cover every upper-body joint (test-enforced).
+      kp:
+        "waist_yaw_joint": 300.0
+        ".*_shoulder_pitch_joint": 90.0
+        ".*_(shoulder_roll|elbow)_joint": 60.0
+        ".*_shoulder_yaw_joint": 20.0
+        ".*_wrist_(roll|pitch|yaw)_joint": 4.0
+        "head_(pitch|yaw)_joint": 100.0
+      kd:
+        "waist_yaw_joint": 5.0
+        ".*_shoulder_pitch_joint": 2.0
+        ".*_(shoulder_roll|elbow)_joint": 1.0
+        ".*_shoulder_yaw_joint": 0.4
+        ".*_wrist_(roll|pitch|yaw)_joint": 0.2
+        "head_(pitch|yaw)_joint": 5.0
