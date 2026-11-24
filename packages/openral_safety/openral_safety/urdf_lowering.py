@@ -1064,11 +1064,13 @@ def _link_clouds(
             parts.append(extra[link_name])
         cloud = trimesh.util.concatenate(parts)
         if link_name in swept:
-            # The hull of the link at both ends of a straight travel is the link swept
-            # along it (K + [0, d] for convex K), so a hull-bounding fit covers it all.
+            # The hull of the link at both ends of a straight travel holds the link swept
+            # along it (K + [0, d] for convex K). Fitted as that one hull, never as the two
+            # end clouds: a fitter that splits a cloud (slabs, capsule chains) could cover
+            # each end and miss the travel between them.
             cloud = trimesh.util.concatenate(
                 [cloud, cloud.copy().apply_translation(swept[link_name])]
-            )
+            ).convex_hull
         if len(cloud.vertices) < 4:
             continue
         yield link_name, cloud
@@ -1519,13 +1521,44 @@ def _manifest_welded_joints(robot: RobotDescription, urdf_ref: str) -> frozenset
     proof must use the same kinematics, or it cannot certify a pair the kernel holds
     rigid and would trip on forever.
     """
-    model = _load_urdf(urdf_ref)
-    welded_links = {a.child_link for a in robot.fixed_attachments}
-    return frozenset(
-        str(j.name)
-        for j in model.robot.joints  # type: ignore[attr-defined]  # reason: yourdfpy URDF
-        if str(j.child) in welded_links and str(j.type) in _MOVABLE_JOINT_TYPES
-    )
+    import numpy as np
+    from openral_core.kinematics import transform_from_xyz_rpy
+
+    model: Any = _load_urdf(urdf_ref)
+    rows = {a.child_link: a for a in robot.fixed_attachments}
+    into = {str(j.child): j for j in model.robot.joints}
+
+    def zero_pose(child: str, parent: str) -> Any:
+        """``parent`` → ``child`` with every URDF joint between them at zero; None if apart."""
+        tf, link = np.eye(4), child
+        while link != parent:
+            joint = into.get(link)
+            if joint is None:
+                return None
+            tf = np.asarray(_origin_matrix(joint.origin), dtype=np.float64) @ tf
+            link = str(joint.parent)
+        return tf
+
+    welded: set[str] = set()
+    for j in model.robot.joints:
+        row = rows.get(str(j.child))
+        if row is None or str(j.type) not in _MOVABLE_JOINT_TYPES:
+            continue
+        # The proof holds the joint at its URDF zero pose; the kernel poses the link from
+        # the manifest row (which may compose fixed links in between). They must be the
+        # same transform, or a pair certified here is not the pair the kernel checks.
+        urdf_tf = zero_pose(row.child_link, row.parent_link)
+        row_tf = np.asarray(transform_from_xyz_rpy(row.origin_xyz, row.origin_rpy))
+        # 1e-4: the manifests round angles to 5 decimals (pi as 3.14159, 2.7e-6 rad).
+        if urdf_tf is None or not np.allclose(urdf_tf, row_tf, atol=1e-4):
+            raise ROSConfigError(
+                f"{robot.name}: fixed_attachments row {row.name!r} welds URDF joint "
+                f"{j.name!r} but is not the URDF's {row.parent_link!r} -> {row.child_link!r} "
+                "transform at zero; the always-colliding proof would certify pairs the "
+                "kernel does not hold."
+            )
+        welded.add(str(j.name))
+    return frozenset(welded)
 
 
 def acm_for_geometry(
@@ -2353,9 +2386,13 @@ def fit_collision_geometry_from_mjcf(
     geometry: list[LinkCollisionGeometry] = []
     # Parents too: a chain's root link (each OpenArm arm's ``link0``) is only
     # ever a parent, and a bimanual robot has one root per arm.
-    ordered_links = [ln for j in robot.joints for ln in (j.parent_link, j.child_link)] + [
-        mim.child_link for mim in robot.mimic_joints
-    ]
+    # And every fixed_attachments child the MJCF names a body for: `_static_link_meshes`
+    # covers only the ones it does not, so a mapped one would otherwise get no geometry.
+    ordered_links = (
+        [ln for j in robot.joints for ln in (j.parent_link, j.child_link)]
+        + [mim.child_link for mim in robot.mimic_joints]
+        + [a.child_link for a in robot.fixed_attachments]
+    )
     # A body a mimic row owns (the Metal's ``link8``, on the MJCF's driven
     # joint8) is fitted under the mimic's link only: the gripper joint's
     # logical child sharing it (``finger_pair``) would be slid by the [0, 1]
@@ -2725,8 +2762,24 @@ def _twin_link_meshes(
 
 
 def _link_sweeps(robot: RobotDescription) -> dict[str, tuple[float, float, float]]:
-    """Each ``fixed_attachments`` child with a declared ``sweep_xyz``: its travel."""
-    return {a.child_link: a.sweep_xyz for a in robot.fixed_attachments if a.sweep_xyz}
+    """Each ``fixed_attachments`` child with a declared ``sweep_xyz``: its travel.
+
+    Raises:
+        ROSConfigError: A swept link has a link hanging from it. That link rides the
+            travel too, but only the swept link's own geometry is fitted over it.
+    """
+    sweeps = {a.child_link: a.sweep_xyz for a in robot.fixed_attachments if a.sweep_xyz}
+    parents = (
+        {a.parent_link for a in robot.fixed_attachments}
+        | {j.parent_link for j in robot.joints}
+        | {m.parent_link for m in robot.mimic_joints}
+    )
+    if carrying := sorted(set(sweeps) & parents):
+        raise ROSConfigError(
+            f"{robot.name}: swept links {carrying} carry other links, which the sweep does "
+            "not cover; declare the travel on the link at the end of the chain."
+        )
+    return sweeps
 
 
 def modelled_links(robot: RobotDescription) -> set[str]:
