@@ -39,6 +39,7 @@ from openral_core import (
     GripperWriteMode,
     LinkCollisionGeometry,
     RobotDescription,
+    SimGripperDescription,
     SphereShape,
 )
 from openral_core.exceptions import ROSConfigError
@@ -2239,6 +2240,22 @@ def _stroke_swept_meshes(
     return parts
 
 
+def _gripper_actuator(robot: RobotDescription, grip: SimGripperDescription) -> int:
+    """The MJCF actuator the twin writes ``grip``'s command to, or -1 if none.
+
+    Mirrors ``MujocoTwinHAL``: the gripper's own ``actuator_index``, else the
+    joint's ``sim.actuator_index`` entry, else (no map at all) its position in
+    ``joints``.
+    """
+    if grip.actuator_index is not None:
+        return grip.actuator_index
+    names = [j.name for j in robot.joints]
+    by_joint = (robot.sim.actuator_index if robot.sim else None) or {
+        n: i for i, n in enumerate(names)
+    }
+    return by_joint.get(grip.joint or "", -1)
+
+
 def _manifest_to_mjcf_affine(
     robot: RobotDescription, model: object, joint: str, leader: int
 ) -> tuple[float, float]:
@@ -2248,8 +2265,9 @@ def _manifest_to_mjcf_affine(
     write mode, whose [0, 1] value the twin writes to ``ctrl`` as
     ``lo + (hi - lo) · v`` over ``ctrl_range``. That ``ctrl`` is the leader's
     qpos only through a gear-1 joint transmission on the leader itself; the
-    actuator (``actuator_index``, else the joint's position in ``joints``) is
-    checked to be one.
+    actuator, resolved as the twin resolves it (the gripper's
+    ``actuator_index``, else ``sim.actuator_index[joint]``, else the joint's
+    position in ``joints``), is checked to be one.
 
     Raises:
         ROSConfigError: The gripper's actuator does not drive ``leader`` 1:1.
@@ -2260,11 +2278,7 @@ def _manifest_to_mjcf_affine(
     grip = next((g for g in (robot.sim.grippers if robot.sim else []) if g.joint == joint), None)
     if grip is None or grip.write_mode != GripperWriteMode.NORMALISED:
         return 0.0, 1.0
-    act = (
-        grip.actuator_index
-        if grip.actuator_index is not None
-        else [j.name for j in robot.joints].index(joint)
-    )
+    act = _gripper_actuator(robot, grip)
     if not (
         0 <= act < m.nu
         and int(m.actuator_trntype[act]) == int(mujoco.mjtTrn.mjTRN_JOINT)
