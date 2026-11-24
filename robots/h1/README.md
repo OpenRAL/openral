@@ -2,9 +2,9 @@
 
 Canonical `RobotDescription` manifest for the **Unitree H1** humanoid, a
 19-DoF biped (2 × 5 legs + 1 torso + 2 × 4 arms; no end-effectors on this
-menagerie variant). One manifest covers the real H1 (over `unitree_sdk2`, M2
-milestone) and the MuJoCo digital twin (`H1MujocoHAL` on the `mujoco_menagerie`
-MJCF).
+menagerie variant). The manifest covers the MuJoCo digital twin (`H1MujocoHAL` on
+the `mujoco_menagerie` MJCF). There is no real-hardware HAL yet (`hal.real: null`);
+a real H1 HAL over `unitree_sdk2` is planned under M2.
 
 The H1 is the **predecessor** of the [`g1`](../g1/README.md): bigger, taller,
 coarser-DoF (no wrists, no waist roll/pitch, single-DoF ankles).

@@ -1,6 +1,6 @@
 # openral_compliance
 
-The compliance recorder (issue #467). `recorder_node` listens to what the graph already
+The compliance recorder. `recorder_node` (lifecycle) listens to what the graph already
 publishes and emits typed `openral_core.ComplianceRecord`s as OTLP log records through
 `openral_observability.compliance.ComplianceEmitter`:
 
@@ -20,8 +20,8 @@ already be recorded.
 /openral/safety_status ┘
 ```
 
-It publishes nothing and is not on the actuation path: a recorder crash loses records,
-never motion control. Each record carries `openral.record.kind` / `openral.schema.version`
+It is not on the actuation path: a recorder crash loses records, never motion control.
+Its only publishes are the stop below (`/openral/estop` plus a safety `FailureTrigger`). Each record carries `openral.record.kind` / `openral.schema.version`
 / `openral.record.id` / `openral.retention.class` attributes and its JSON as the body; the
 machine is named by the OTel resource (`openral.unit.serial`, `openral.org.id`,
 `openral.site.id`, stamped by the deploy launch).
@@ -30,15 +30,21 @@ With `$OPENRAL_COMPLIANCE_DIR` set (always on `deploy run`), each record is also
 the on-robot, hash-chained log as writer `recorder`, and every activation records a
 `SoftwareInventoryRecord` (`docs/reference/compliance-log.md`). Each latch clearing is recorded as an `estop_reset` intervention, attributed by an
 `OperatorAction` on `/openral/operator_action` (published by `openral estop reset` and the
-dashboard) or recorded as unattributed. When a record cannot be written to the log the
-recorder publishes `/openral/estop` (hazard-log Entry 070); on `deploy run` it is a required
-node.
+dashboard) or recorded as unattributed. When a record cannot be written to the log, or the
+disk runs low, the recorder publishes `/openral/estop` (hazard-log Entry 070); a low disk only logs a warning; on `deploy run`
+it is a required node.
+
+## Parameters
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `run_mode` | `"sim"` | `"sim"` or `"hardware"`, recorded on the `SessionRecord`. The deploy launch sets it from `hal_mode`. |
+| `stop_when_inactive` | `false` | When true, deactivating the recorder also publishes `/openral/estop`. The deploy launch sets it for `hal_mode:=real`. |
 
 ## Bringup
 
 Spawned by `packages/openral_rskill_ros/launch/deploy_e2e.launch.py` in both
-`hal_mode:=sim` and `hal_mode:=real` as `/openral_compliance_recorder`, with
-`run_mode` set from `hal_mode`, and driven to ACTIVE by `tools/lifecycle_autostart.py`.
+`hal_mode:=sim` and `hal_mode:=real` as `/openral_compliance_recorder`, and driven to ACTIVE by `tools/lifecycle_autostart.py`.
 
 ## Tests
 

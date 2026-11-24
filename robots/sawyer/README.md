@@ -61,5 +61,5 @@ Evidence: `tests/unit/test_sawyer_real.py::TestSafety`,
 
 ## See also
 
-- [`docs/reference/vla_compatibility.md`](../../docs/reference/vla_compatibility.md) §3.2 — MetaWorld VLA matrix.
+- [`docs/reference/vla_compatibility.md`](../../docs/reference/vla_compatibility.md) §3.3 — MetaWorld VLA matrix.
 - [`python/sim/src/openral_sim/backends/metaworld.py`](../../python/sim/src/openral_sim/backends/metaworld.py) — sim-side IO contract.

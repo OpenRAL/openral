@@ -1,6 +1,9 @@
 # openral-rskill
 
-OpenRAL rSkill runtime — lifecycle base class, manifest loader, ROS-action / joint-goal / pose-goal / look-at skill adapters, the shared VLA chunk core, and ONNX/PyTorch/GPU-passthrough runtimes
+OpenRAL rSkill runtime: the lifecycle base class (`rSkillBase`), the manifest
+and Hugging Face Hub loader (`rSkill`), ROS-action / joint-goal / pose-goal /
+look-at skill adapters, the shared VLA chunk core, and the ONNX, PyTorch and
+GPU-passthrough runtimes.
 
 Part of [**OpenRAL**](https://github.com/OpenRAL/openral) — the open Robot
 Abstraction Layer for vision-language-action robotics. This package is one

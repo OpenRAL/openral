@@ -1,6 +1,6 @@
 # openral_hal_openarm
 
-Real-hardware bringup (only) for the Enactic **OpenArm v2** 16-DoF bimanual arm.
+Real-hardware bringup for the Enactic **OpenArm v2** 16-DoF bimanual arm.
 The OpenArm HAL lifecycle node is the generic
 [`openral_hal_node`](../openral_hal_node/README.md) (sim: `hal.sim: null` →
 `MujocoArmHAL.from_description`; real: `openral_hal.openarm_real:OpenArmRealHAL`),
@@ -57,11 +57,19 @@ naming the two interfaces `openarm_left` / `openarm_right` via a udev `dev_id`
 rule to match the defaults above — or pass `left_can_interface:=` /
 `right_can_interface:=` overrides.
 
-Then, with people clear of the arms (activation enables the motors and returns
-them toward zero), `openral deploy run` starts this graph itself:
+> **Bringup moves both arms, unramped.** `OpenArmHW::on_activate` calls
+> `enable_all()` and then `return_to_zero()`: an unramped MIT position command to 0.0
+> on all seven joints per side, issued before the current pose is sampled, then a
+> 200 x 10 ms ramp to zero. There is no non-moving real bringup. Clear the cell, never
+> run it unattended, and keep a hand on the hardware E-stop: the deploy graph's
+> software E-stop sources do not cover bringup, so during `return_to_zero()` the
+> hardware E-stop is the only independent stop (details in
+> [`robots/openarm/README.md`](../../robots/openarm/README.md)).
+
+With the cell clear and an operator present, `openral deploy run` starts this graph itself:
 
 ```bash
-openral deploy run --config scenes/deploy/<your-cell>.yaml
+uv run openral deploy run --config scenes/deploy/<your-cell>.yaml
 ```
 
 The committed real-hardware scene is `scenes/deploy/openarm_bench.yaml`, written
@@ -77,7 +85,7 @@ block, covered by `tests/unit/test_scene_drivers.py`.
 also launch it by hand:
 a second copy puts a second `/joint_states` publisher on the graph, and
 `openral deploy run` then refuses to start at all (the shared-graph guard in
-`openral_cli._dds_scope`, #227).
+`openral_cli._dds_scope`).
 
 To bring the controllers up on their own — verifying the CAN wiring before
 involving the rest of the stack — the launch file is still directly runnable, under the

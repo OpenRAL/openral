@@ -1,6 +1,9 @@
 # openral-sensors
 
-OpenRAL sensor adapters — launch generators and calibration helpers
+OpenRAL sensor catalog and adapters: the `CATALOG` of known cameras and
+force/torque sensors (RealSense, Luxonis, Stereolabs, Arducam, generic UVC),
+with launch generators and calibration helpers. `openral sensor list` and
+`openral sensor show` read it.
 
 Part of [**OpenRAL**](https://github.com/OpenRAL/openral) — the open Robot
 Abstraction Layer for vision-language-action robotics. This package is one

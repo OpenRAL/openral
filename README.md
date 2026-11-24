@@ -58,7 +58,7 @@ OpenRAL composes ROS 2, tf2, MoveIt 2, Nav2, Isaac ROS and `ros2_control` instea
 | Perception and navigation | Open-vocabulary detectors lifted into world state, scene VLM, SLAM, Nav2, optional cuMotion planning | [Sensors](docs/reference/sensors_landscape.md) |
 | Safety | C++ kernel (limits, workspace, self/world collision), deadman watchdog, E-stop, optional SROS2 | [Overview](docs/architecture/overview.md), [ROS graph security](docs/reference/ros-graph-security.md) |
 | Observability | OpenTelemetry traces, the on-robot dashboard, a compliance log, a LeRobotDataset v3 recorder | [Dashboard](docs/quickstart/dashboard.md), [Telemetry](docs/reference/telemetry.md) |
-| CLI | `uv run openral --help`: `doctor`, `detect`, `rskill`, `sim`, `benchmark`, `deploy`, `dashboard`, `robot`, `security`, `compliance`, ... | [Toolchain](docs/contributing/toolchain.md) |
+| CLI | `uv run openral --help`: `doctor`, `detect`, `rskill`, `sim`, `benchmark`, `deploy`, `dashboard`, `robot`, `security`, `compliance`, ... | [CLI reference](docs/reference/cli.md) |
 
 ---
 

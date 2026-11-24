@@ -17,7 +17,7 @@ deadman timeout are different evidence channels, and its own process means a
 stuck UI can't wedge the brake path.
 `/openral/estop` is latching — recovery is only via `/openral/estop_reset`
 (`std_srvs/Trigger`, served by `openral_safety`'s supervisor node and by the C++
-kernel; CLAUDE.md §1.5).
+kernel; CLAUDE.md §1.1, §3).
 
 ## Bringup
 
@@ -34,8 +34,7 @@ sitting in INACTIVE).
 dashboard's stop button publishes `/openral/estop` directly, through
 `openral_observability.dashboard.estop_publisher`. This forwarder exists for
 external operator adapters — a UI, a voice channel, a chat bridge — which are
-out of tree; it runs with the graph so such an adapter can attach without a
-relaunch. Its presence is not evidence that a software stop button is wired.
+out of tree; it runs with the graph so such an adapter can attach without a relaunch. Its presence is not evidence that a software stop button is wired.
 
 ## Parameters
 
@@ -43,7 +42,7 @@ relaunch. Its presence is not evidence that a software stop button is wired.
 |---|---|---|
 | `channel_label` | `"unknown_human_channel"` | Free-text tag placed on the emitted `HumanEvidence` as its **`actor`** (e.g. `"dashboard"`, `"slack"`, `"voice"`). The deploy graph leaves it at the default, because naming a channel would assert a producer that does not exist; an adapter that owns the topic should set it. |
 
-The emitted `evidence_json` is `{"kind": "human", "actor": <channel_label>, "reason": "human_estop"}` — it validates against `openral_core.HumanEvidence`, whose `actor` is required and which forbids extra keys (an older version emitted `channel` instead of `actor`, and every human-channel event failed to parse).
+The emitted `evidence_json` is `{"kind": "human", "actor": <channel_label>, "reason": "human_estop"}` — it validates against `openral_core.HumanEvidence`, whose `actor` is required and which forbids extra keys.
 
 ## Tests
 

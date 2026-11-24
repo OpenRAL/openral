@@ -20,7 +20,7 @@ tags:
 inference: false
 openral:
   description: 'OmDet-Turbo (Swin-tiny) real-time open-vocabulary detector, run in-process
-    over a fixed curated indoor vocabulary (~230 household/kitchen/office/ manipulation
+    over a fixed curated indoor vocabulary (~266 household/kitchen/office/ manipulation
     classes). An unprompted background producer: publishes ObjectsMetadata to /openral/perception/objects
     every frame without reasoner prompting, giving the world model far more classes
     than the 80 COCO categories. Apache-2.0 weights from omlab/omdet-turbo-swin-tiny-hf.

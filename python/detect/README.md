@@ -35,8 +35,9 @@ openral detect --include usb,can,gpu,cameras_v4l2 --report detect.json --no-writ
 ```
 
 `openral detect` probes USB, SocketCAN, DDS, GPU, V4L2, RealSense, and
-network interfaces (the report has an Orbbec slot, but no probe fills it yet); resolves a canonical manifest (from DDS/CAN/USB inference
-or `--robot`) as a **template**, never as the output; and records accelerator
+network interfaces (the report has an Orbbec slot, but no probe fills it yet).
+It resolves a canonical manifest (from DDS/CAN/USB inference or `--robot`) as a
+**template**, never as the output; and records accelerator
 capabilities used by `openral rskill check`.
 
 ### How a robot is identified
@@ -62,7 +63,8 @@ guess: it leaves the robot unresolved and adds a warning listing the candidates
 (`unitree_candidates_from_topics`); pick one with `openral detect --robot g1`
 (or `h1`, …).
 
-CAN needs the udev rule because a CAN bus carries no vendor descriptor: the
+CAN needs a udev rule that pins the interface name (`openarm_left` / `openarm_right`
+for OpenArm, e.g. on a PEAK PCAN-USB Pro FD) because a CAN bus carries no vendor descriptor: the
 adapter identifies itself, the motors behind it do not. A bare `can0` is left
 unmatched on purpose; it is a kernel enumeration artefact, not a statement
 about what is plugged in.
@@ -77,7 +79,8 @@ openral detect --include can --no-write
 
 `ERROR-PASSIVE` on an otherwise healthy bus means frames leave the adapter and
 nothing acknowledges them, in practice unpowered motors. The probe warns about
-it rather than leaving you to read the `state` field.
+it rather than leaving you to read the `state` field. `BUS-OFF` is also warned
+about (check termination and bitrate).
 
 ### Cameras without `v4l-utils`
 

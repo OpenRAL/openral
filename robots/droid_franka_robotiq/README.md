@@ -138,7 +138,7 @@ ACM only. `tests/unit/test_droid_robotiq_finger_mimic.py` holds:
 - the kernel's FK to the URDF over the stroke;
 - the start pose free of trips.
 
-The ACM is `openral collision lower --acm-only`, with `assets.srdf` from
+The ACM is `openral collision lower --robot robots/droid_franka_robotiq/robot.yaml --acm-only`, with `assets.srdf` from
 `droid_franka_robotiq.srdf`:
 
 - the adjacent pairs, which includes each linkage link with its parent;

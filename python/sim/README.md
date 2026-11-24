@@ -1,6 +1,8 @@
 # openral-sim
 
-OpenRAL sim eval — robot × scene × task × VLA factory and runner for rSkill validation before hardware deployment
+OpenRAL sim eval: robot × scene × task × VLA factory and runner for rSkill
+validation before hardware deployment. Driven by `openral sim run` and
+`openral benchmark run`.
 
 Part of [**OpenRAL**](https://github.com/OpenRAL/openral) — the open Robot
 Abstraction Layer for vision-language-action robotics. This package is one

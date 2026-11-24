@@ -91,6 +91,7 @@ nav:
     - roadmap/index.md
   - Reference:
     - Glossary: reference/glossary.md
+    - CLI: reference/cli.md
     - API: reference/api.md
     - Robots and HALs:
       - Robot descriptions: reference/robots.md

@@ -85,6 +85,7 @@ No self-hosted runner is registered, so every HIL gate runs by hand on the cell
 | `test_ur5e.py`, `test_ur10e.py`, `test_franka_panda.py`, `test_sawyer.py` | Vendor ROS 2 drivers through the `_ros_control_transport.py` bridge. None has met a physical arm. |
 | `test_aloha.py` | Trossen ALOHA through `_aloha_ros_transport.py`. The bridge mirrors `AlohaHAL`'s topics, which a real ALOHA (`xs_sdk`) does not expose. |
 | `test_so101_serial_live.py` | SO-101 on USB serial, non-motion (`just hil-so101`). |
+| `test_so101_torque_watcher_live.py` | SO-101: a SIGKILLed HAL leaves every servo torque-off. Energizes the arm under `SO101_TORQUE_HIL=1`; run it attended with the 12 V switch in reach. |
 | `test_openarm_can_live.py`, `test_openarm_deploy.py` | OpenArm v2 over CAN; `test_openarm_deploy.py` attaches to a running graph (`just hil-openarm-deploy`). |
 | `test_openarm_bringup_agreement.py`, `test_openarm_ros_transport.py` | OpenArm HAL/bringup config agreement and the HIL transport, checked without the cell. |
 | `test_openarm_slot_group_motion.py` | Commands the OpenArm; behind a separate attended-bench opt-in. |

@@ -22,8 +22,7 @@ inference: false
 openral:
   description: 'ACT (~52M params, chunk=100) finetuned on the ALOHA bimanual sim-insertion
     demonstration set. Insertion is the harder ALOHA task in the original paper; the
-    0.20 success rate reflects that. See the norm-stats note above re: the legacy
-    safetensors-resident buffers.'
+    0.20 success rate reflects that.'
   model_family: act
   min_vram_gb: null
   latency_ms: 25.0

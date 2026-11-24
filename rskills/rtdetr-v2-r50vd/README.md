@@ -181,15 +181,16 @@ checkpoint (see the **Weights** section above).
 ### Activate the skill
 
 ```bash
-ral skill activate OpenRAL/rskill-rtdetr_v2_r50vd-any-coco-fp32
+openral rskill install OpenRAL/rskill-rtdetr_v2_r50vd-any-coco-fp32
 ```
 
-### Reference in robot manifest
+### Use in a deploy graph
 
-```yaml
-perception_producers:
-  - skill_id: "hf://OpenRAL/rskill-rtdetr_v2_r50vd-any-coco-fp32"
-    role: "s1"
+Pass the manifest to the deploy graph as the continuous object detector:
+
+```bash
+openral deploy sim --config scenes/deploy/<scene>.yaml \
+  --object-detector-manifest rskills/rtdetr-v2-r50vd/rskill.yaml
 ```
 
 ### Standalone inference (Python)

@@ -1,6 +1,6 @@
 # openral_hal_unitree
 
-Real-hardware bringup (only) for the **Unitree hg humanoid family** — the **G1** (29 DoF)
+Real-hardware bringup for the **Unitree hg humanoid family** — the **G1** (29 DoF)
 and the **H2** (31 DoF), both on NVIDIA's `unitree_hg_ros2_control` hardware interface
 (`robot_variant: g1` / `h2`).
 
@@ -11,6 +11,13 @@ running `openral_hal.unitree_real:UnitreeHgRealHAL` (`hal.real` in
 cannot: `launch/real_bringup.launch.py` (named by `hal.real_bringup`), the controller
 configs under `config/<model>/`, the H2's real-hardware xacro (`urdf/`; NVIDIA ships none),
 and `deps.repos`.
+
+Simulation is separate and needs none of this package: `G1MujocoHAL` and `H2MujocoHAL`
+(`openral_hal.g1` / `openral_hal.h2`) are pure Python MuJoCo twins. With
+`s0_controller` set (G1 `gr00t_wbc`; H2 `agile_velocity`) the twin runs the same S0
+policy on a gravity-on free base and a `BODY_TWIST` is its velocity command; the default
+`none` is the kinematic glide. For example `uv run openral deploy sim --config
+scenes/deploy/h2_walk.yaml` (downloads the H2 policy first; see its header).
 
 > **Status: yellow.** Configs, launch and HAL are unit-tested against the pinned upstream
 > sources and the G1 / H2 manifests; nothing here has run on a G1 or an H2 yet. Treat the
@@ -71,14 +78,15 @@ expressed over the upper-body joints.
 ```text
 config/g1/controller_manager.yaml        policy-independent graph (29 DoF, no Dex3 hands)
 config/g1/policies/gr00t_decoupled_wbc.yaml   GR00T WBC (DEFAULT): inference params + split + arm gains
-config/g1/policies/agile_velocity.yaml   WBC-AGILE: inference_controller params + joint split
+config/g1/policies/agile_velocity.yaml   G1 WBC-AGILE: inference_controller params + joint split
 config/h2/controller_manager.yaml        the same graph for the H2 (31 DoF, SDK motor order)
 config/h2/policies/agile_velocity.yaml   H2 WBC-AGILE (DEFAULT): inference params + split + gains + Hub pins
 urdf/h2_real_hardware.urdf.xacro         H2 robot_description: pinned unitree_ros H2.urdf + ros2_control block
-launch/real_bringup.launch.py            robot_model:=g1|h2 [policy:=<stem>]
+launch/real_bringup.launch.py            robot_model:=g1|h2 [policy:=<stem>] [network_interface:=<nic>]
+                                         [inference_controller_config_path:=<abs yaml>]
 ../../tools/build_gr00t_wbc_leapp.py     builds the GR00T LEAPP bundle on the robot host
-include/, src/guarded_safety_controller.cpp   GuardedSafetyController plugin (issue #548)
-test/test_guarded_safety_controller.cpp  its gtest against the real upstream controller
+include/, src/guarded_{safety,inference}_controller.cpp   the guarded controller plugins
+test/test_guarded_*_controller.cpp       their gtests against the real upstream controllers
 deps.repos                               isaac_ros_robots + isaac_ros_deploy at full SHAs
 ```
 
@@ -163,7 +171,7 @@ Host: ROS 2 **Jazzy**, a CUDA GPU (Jetson Thor/Orin or x86 + NVIDIA dGPU), and t
 `deps.repos` pins `isaac_ros_deploy` to tag **v4.6-0** (`3e84f85a`, the source of the
 release-4 `ros-jazzy-isaac-ros-deploy-*` 4.6.0 debs), not its HEAD: v5.0-0 (`f3aa6b89`)
 needs ROS 2 Lyrical (`cuda_buffer` from `rosidl_buffer_backends`, `urdf/model.hpp`) and does
-not build on Jazzy (issue #565). v4.6 lacks v5.0's stale-input watchdog; OpenRAL's guarded
+not build on Jazzy. v4.6 lacks v5.0's stale-input watchdog; OpenRAL's guarded
 controllers (below) restore it. `isaac_ros_robots` stays at `520aa94f` — release-4 has no
 `unitree_hg_ros2_control`.
 
@@ -244,7 +252,7 @@ Build-time network fetches you should know about:
    only the operator enclave may set `/safety_controller` parameters: prefix the command
    with `ROS_SECURITY_ENCLAVE_OVERRIDE=/openral/operator`.
 
-### Blend guard (`GuardedSafetyController`, issue #548)
+### Blend guard (`GuardedSafetyController`)
 
 NVIDIA's `SafetyController` (isaac_ros_deploy v4.6-0 `3e84f85a`) declares `blend_ratio` and
 `max_blend_ratio_speed` writable and applies a runtime set on the next tick, and its
@@ -263,7 +271,7 @@ reach `/safety_controller`'s parameter services can still blend the policy in, a
 same ≤ 1 /s ramp. Who can reach them is a graph-access question — host confinement today,
 SROS2 enclaves next (`docs/reference/ros-graph-security.md`).
 
-### Stale-input watchdog (`GuardedInferenceController` + hold, issue #565)
+### Stale-input watchdog (`GuardedInferenceController` + hold)
 
 isaac_ros_deploy grew a stale-input watchdog in v5.0 (`topic_input_timeout_ms`,
 `topic_input_sources`); the pinned Jazzy release, v4.6, has none, and accepts those keys
@@ -295,7 +303,7 @@ Safety-WG decision (hazard log Entry 090).
 
 | Event | What happens |
 |---|---|
-| `/openral/estop` | `UnitreeHgRealHAL.estop()` swaps `safety_controller`, `inference_controller`, `upper_body_forward_joint_command_controller` **out** and `freeze_controller` **in**, in **one** `switch_controller` request (**STRICT**, confirmed via `list_controllers`; outcome in `/diagnostics` `downstream_stop`). `freeze_controller` cannot come in *before* the chain goes out — they claim the same command interfaces and `controller_manager` refuses it. A BEST_EFFORT swap drops an activation that cannot happen (freeze not `inactive`) yet applies the deactivations — every joint at zero torque; STRICT refuses the whole request instead and the chain keeps the joints (review of #571). So the HAL first configures an `unconfigured` freeze controller (advisory pre-check, ≤ 0.2 s; a fault in it is logged and the swap goes ahead), swaps out only the chain members still active if part of the chain is already out, and, if `on_activate` fails inside the switch (no rollback in the manager), activates freeze alone at once (CRITICAL `hal.estop.freeze_retry`). The whole sequence is bounded by one `stop_timeout_s` (5 s). Recovery: `RESTART_REQUIRED`. |
+| `/openral/estop` | `UnitreeHgRealHAL.estop()` swaps `safety_controller`, `inference_controller`, `upper_body_forward_joint_command_controller` **out** and `freeze_controller` **in**, in **one** `switch_controller` request (**STRICT**, confirmed via `list_controllers`; outcome in `/diagnostics` `downstream_stop`). `freeze_controller` cannot come in *before* the chain goes out — they claim the same command interfaces and `controller_manager` refuses it. A BEST_EFFORT swap would drop an activation that cannot happen (freeze not `inactive`) yet apply the deactivations, leaving every joint at zero torque; STRICT refuses the whole request instead and the chain keeps the joints. So the HAL first configures an `unconfigured` freeze controller (advisory pre-check, ≤ 0.2 s; a fault in it is logged and the swap goes ahead), swaps out only the chain members still active if part of the chain is already out, and, if `on_activate` fails inside the switch (no rollback in the manager), activates freeze alone at once (CRITICAL `hal.estop.freeze_retry`). The whole sequence is bounded by one `stop_timeout_s` (5 s). Recovery: `RESTART_REQUIRED`. |
 | Joint velocity out of domain | NVIDIA `SafetyController` (mean > 10 rad/s or max > 35 rad/s) performs the same swap itself. |
 | OpenRAL stops publishing (crash, stall) | After 500 ms (`topic_input_timeout_ms`, enforced by `GuardedInferenceController`) the policy's output is invalidated and `safety_controller` holds every joint at the measured pose captured at that moment (also before the first velocity command after activation). |
 | Robot state stale > 500 ms | `UnitreeHgSystemInterface` read/write return ERROR → the hardware component leaves `active`. |
@@ -347,9 +355,7 @@ Same graph, HAL and e-stop as the G1, with these differences:
 * **Gains.** `freeze_controller` (10 / 1) and `safety_controller` (100 / 2) are the G1's
   values, unchanged — no H2 value has been measured. On a ~70 kg robot with 360 N·m hips
   the freeze hold is further still from balance.
-* **Hardware gates still open** (issue #513; hazard-log Entry 074 gates 1–4 and Entry 105,
-  accepted 2026-11-24 with conditions; reviews `safety/reviews/2026-11-07-unitree-g1-h2-real-hw.md`
-  and `2026-11-24-unitree-h2-real-hal.md`): the robot stays on a gantry until freeze is
+* **Hardware gates still open** (hazard-log Entry 074 gates 1–4 and Entry 105): the robot stays on a gantry until freeze is
   characterised; the IMU frame (`imu_in_pelvis`) is checked on hardware; the S0 loop runs at
   200 Hz (policy 50 Hz); H2 gains and safety fields are measured on the gantry (C2); wrist
   pitch stays at ±0.576 rad or tighter (C3); the unit's variant and mass are confirmed, since
