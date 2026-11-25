@@ -789,3 +789,32 @@ def test_one_action_is_one_control_period_on_the_twin() -> None:
         assert float(data.time) - t0 == pytest.approx(1.0, rel=1e-6)
     finally:
         hal.disconnect()
+
+
+# ── read_images ───────────────────────────────────────────────────────────────
+
+
+def test_wrist_cameras_render_when_the_scene_renamed_them() -> None:
+    """The tabletop composer renames ``camera_wrist_*`` to ``wrist_*``; the twin still renders them.
+
+    ``robots/openarm/robot.yaml`` names the upstream ``camera_wrist_*``, so a
+    composed scene used to log ``camera_absent`` and stream no wrist frames.
+    """
+    from openral_sim.backends.openarm_robosuite._assets import _rename_upstream_wrist_cameras
+
+    with open(_OPENARM_MJCF) as fh:
+        xml = _rename_upstream_wrist_cameras(fh.read())
+    assert 'name="wrist_left"' in xml  # the composer's rename still applies to this MJCF
+    # Next to the original: the MJCF's mesh paths are relative to its directory.
+    renamed = os.path.join(os.path.dirname(_OPENARM_MJCF), f"_renamed_wrist_{os.getpid()}.xml")
+    with open(renamed, "w") as fh:
+        fh.write(xml)
+    hal = OpenArmMujocoHAL(mjcf_path=renamed)
+    try:
+        hal.connect()
+        frames = hal.read_images()
+    finally:
+        hal.disconnect()
+        os.unlink(renamed)
+    assert {"wrist_left", "wrist_right"} <= set(frames)
+    assert frames["wrist_left"].shape == (480, 640, 3)
