@@ -1850,7 +1850,7 @@ def _live_camera_info_topic(spec: SensorSpec, hal_mode: str) -> str:
         >>> arm = RobotDescription.from_yaml("robots/openarm/robot.yaml")
         >>> top = next(s for s in arm.sensors if s.name == "top")
         >>> _live_camera_info_topic(top, "real")
-        '/zed/zed_node/rgb/color/raw/camera_info'
+        '/zed/zed_node/rgb/color/rect/camera_info'
         >>> _live_camera_info_topic(top, "sim")
         '/openral/cameras/top/camera_info'
     """

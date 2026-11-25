@@ -82,11 +82,11 @@ sensors:
         reliability: best_effort       # also matches a RELIABLE publisher; the reverse gets nothing
         qos_depth: 5
       max_age_ms: 500
-  - name: top                          # RGB: the wrapper's unrectified left image
+  - name: top                          # RGB: the wrapper's rectified left image (aligned with the depth)
     deploy_binding:
       backend: ros2_image
       backend_params:
-        topic: /zed/zed_node/rgb/color/raw/image
+        topic: /zed/zed_node/rgb/color/rect/image
         reliability: best_effort
         qos_depth: 5
       max_age_ms: 200

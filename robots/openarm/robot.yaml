@@ -523,8 +523,10 @@ sensors:
   # .../rgb/color/rect/camera_info) K = [1498.18, 0, 936.11; 0, 1498.18, 541.81;
   # 0, 0, 1] (2026-10-02): that focal length is 56 % longer than the nominal fx = fy = 960
   # below. (That was a 1920x1080 grab; the bench override now grabs VGA 672x376, where rect
-  # K is fx = fy = 356.3 and raw K is fx 384.9 with Brown distortion, and `top` binds the
-  # raw image, 2026-10-07.)
+  # K is fx = fy = 356.3 and raw K is fx 384.9 with Brown distortion. `top` binds the rect
+  # image: at VGA its camera_info is the depth's exactly — frame zed_left_camera_frame_optical,
+  # 672x376, fx = fy = 356.309, cx 323.536, cy 186.554, no distortion (Orin, 2026-11-25) —
+  # so a `top` pixel and the `head_zed` depth pixel at the same (u, v) are one ray.)
   # Anything that projects or back-projects pixels
   # MUST use the image header's frame_id and the driver's camera_info, never this
   # frame_id or these intrinsics (segmenter_node: `camera_infos` parameter).
@@ -596,19 +598,18 @@ sensors:
     # `observation.images.context` (`image_preprocessing.aliases: {top: "context"}`), and
     # the ros2_image reader takes the wire encoding from each message, not `encoding`.
     # It is the same device as head_zed, so it rides head_zed's (measured) mount: the Isaac
-    # scene renders both from that one pose. Bound to the ZED's UNRECTIFIED left image (VGA,
-    # zedm_openarm_override.yaml): the pick-and-place policy was trained on raw frames, and
-    # the sim's `top` renders the raw Brown model too. Do not undistort it with the driver's
-    # raw CameraInfo: its factory D (k1 -0.103) is wrong for this lens; the SDK's own
-    # raw->rect mapping fits the 2026-10-02 model (k1 -0.358), 1.6 px vs 8.9 px RMS
-    # (2026-10-07). Consumers that back-project pixels through K alone (the detector's
-    # world-state lift is pinhole) lose accuracy toward the image edges; the segmenter scenes
-    # bind rect topics instead.
+    # scene renders both from that one pose. Bound to the ZED's RECTIFIED left image (VGA,
+    # zedm_openarm_override.yaml), which the driver registers its depth to: same frame, same
+    # K, no distortion, so colour and depth are pixel-aligned and the driver's rect
+    # camera_info back-projects `top` pixels exactly (pinhole, no edge error). The
+    # pick-and-place policy was trained on the UNRECTIFIED stream (2026-10-07): its real-cell
+    # input is now the rectified view (no barrel distortion, fx 356.3 vs 384.9, about 4 deg
+    # wider), so re-check that rSkill on the cell before trusting it.
     shares_mount_with: "head_zed"
     deploy_binding:
       backend: ros2_image
       backend_params:
-        topic: /zed/zed_node/rgb/color/raw/image
+        topic: /zed/zed_node/rgb/color/rect/image
         reliability: best_effort
         qos_depth: 5
       max_age_ms: 200
