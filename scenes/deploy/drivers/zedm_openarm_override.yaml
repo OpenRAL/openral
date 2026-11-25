@@ -35,9 +35,10 @@
             # calibration is fx 388.5 (81.7 deg). VGA also cuts the hub load further.
             grab_resolution: 'VGA'
         video:
-            # Advertise rgb/color/raw/*: the units' `top` binding reads the
-            # UNRECTIFIED image, because that is what the policy was trained on.
-            publish_raw: true
+            # rgb/color/raw/* off: `top` reads the RECTIFIED image, which the
+            # depth is registered to (same frame and K, no distortion), so no
+            # consumer needs the unrectified stream and the hub sheds its load.
+            publish_raw: false
         depth:
             depth_mode: 'NEURAL_LIGHT'
             # Off so `pos_tracking_enabled: false` above actually holds. The SDK

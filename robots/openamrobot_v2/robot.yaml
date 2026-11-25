@@ -557,7 +557,8 @@ sensors:
     frame_id: "world"
     rate_hz: 10.0
     # OpenArm's `top`: the ZED-M left image at the pick-and-place rSkill's training
-    # raster (OpenArm's intrinsics), rendered from head_zed's mount.
+    # raster (OpenArm's intrinsics), rendered from head_zed's mount. Real: the RECTIFIED
+    # left image, pixel-aligned with head_zed's registered depth (see robots/openarm).
     intrinsics:
       width: 672
       height: 376
@@ -574,7 +575,7 @@ sensors:
     deploy_binding:
       backend: ros2_image
       backend_params:
-        topic: /zed/zed_node/rgb/color/raw/image
+        topic: /zed/zed_node/rgb/color/rect/image
         reliability: best_effort
         qos_depth: 5
       max_age_ms: 200

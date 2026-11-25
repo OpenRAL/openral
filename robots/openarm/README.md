@@ -190,14 +190,14 @@ The cell's cameras are bound in `robot.yaml` itself (each sensor's `deploy_bindi
 only by `deploy run`), together with the calibrated `head_zed` mount
 (`static_transform_calibrated: true`) and the wrist Arducams' calibrated intrinsics: pinhole +
 plumb_bob from the 2026-10-02 calibration at 960x600, so the wrists capture at 960x600 too.
-There is one OpenArm and one manifest; no unit to select. `top` is the ZED's UNRECTIFIED left image at VGA — what the pick-and-place
-policy was trained on (the driver override grabs VGA and advertises the raw topic) —
+There is one OpenArm and one manifest; no unit to select. `top` is the ZED's RECTIFIED left image at VGA, pixel-aligned with the
+registered depth (the driver override grabs VGA; the pick-and-place policy was trained on the unrectified stream) —
 `head_zed` its SDK depth, the two Arducams are
 `wrist_left` / `wrist_right`. Their bus topic (`/openral/cameras/wrist_*/image`) is the
 sensor leg's 320x240 thumbnail at 3 Hz; for a calibration pass that needs the 960x600 capture
 on the bus, add `topic_native: true` to the wrist binding (left off by default: each native
 publish holds the GIL ~55 ms, which the Orin's policy thread cannot spare). `top` is already
-native on the driver's own `/zed/zed_node/rgb/color/raw/image`. To record what the policy saw, use
+native on the driver's own `/zed/zed_node/rgb/color/rect/image`. To record what the policy saw, use
 `openral deploy run --dataset-out <file.mcap>`: it bags each tick's native frames straight
 from the aggregator, paired with that tick's state and action, with no bus hop. The manifest's
 `observation.images.top` key is what the skill requires: its published
