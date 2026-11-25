@@ -73,8 +73,8 @@ are no reservations, exclusion zones or pairwise target checks: robots work in p
 or sim, and a several-robot scene otherwise runs exactly like a one-robot scene (grasp and
 place exemptions included).
 
-Today (OpenRAL/openral#708) a robot sees a peer only through its own sensors, as an obstacle
-in its octomap. The design below adds the peers' own geometry. It is refusal-only: it adds
+The peer grid is built (OpenRAL/openral#725): besides seeing a peer as an obstacle in its
+octomap, each robot's kernel checks the peers' own geometry. It is refusal-only: it adds
 occupied cells, never removes one, so it stays open (CLAUDE.md §1.9).
 
 ### 4.1 Peer state across ROS domains

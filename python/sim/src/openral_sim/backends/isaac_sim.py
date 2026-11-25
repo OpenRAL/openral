@@ -431,7 +431,8 @@ class _IsaacSimSidecar(SidecarSimRollout):
         """
         if self._client.robot:
             # One robot of a shared sidecar (openral-pro#99): its `close` would end the
-            # world for every robot. `openral deploy sim` owns the sidecar and ends it.
+            # world for every robot. `openral deploy fleet` (OpenRAL Pro) owns the sidecar
+            # and ends it.
             self._client.close()
             return
         if not self.keep_alive:
@@ -3311,8 +3312,8 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:  # noqa
     if environment_usd is not None:
         launch_argv += ["--environment-usd", environment_usd]
     if shared_dir:
-        # One robot of a shared sidecar: leave this robot's entry for `openral deploy sim`,
-        # which starts the one sidecar once every robot has, and connect to it below.
+        # One robot of a shared sidecar: leave this robot's entry for `openral deploy fleet`
+        # (OpenRAL Pro), which starts the one sidecar once every robot has, and connect to it below.
         return _join_shared_sidecar(
             env_cfg,
             opts,
@@ -3402,7 +3403,7 @@ def _shared_sidecar_setup(opts: IsaacSimOptions) -> tuple[str, int, IsaacSimOpti
     if not robot or not os.environ.get(SHARED_SIDECAR_PORT_ENV):
         raise ROSConfigError(
             f"${SHARED_SIDECAR_DIR_ENV} needs ${SCENE_ROBOT_ENV} and "
-            f"${SHARED_SIDECAR_PORT_ENV}; `openral deploy sim` sets all three."
+            f"${SHARED_SIDECAR_PORT_ENV}; `openral deploy fleet` (OpenRAL Pro) sets all three."
         )
     # Each robot carries only its own tote: one prim on two robots' links would be posed by both.
     unassigned = [a.prim for a in opts.link_attachments if a.robot is None]
@@ -3433,8 +3434,8 @@ def shared_launch_id(shared_dir: Path) -> str:
     return f"shared-{shared_dir.name}"
 
 
-#: How long a robot graph waits for `openral deploy sim` to start the shared sidecar: every
-#: robot's graph must reach this point, then Kit boots.
+#: How long a robot graph waits for `openral deploy fleet` (OpenRAL Pro) to start the shared
+#: sidecar: every robot's graph must reach this point, then Kit boots.
 _SHARED_BOOT_TIMEOUT_S = 900.0
 
 

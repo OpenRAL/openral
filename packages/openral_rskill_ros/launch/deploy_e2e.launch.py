@@ -148,7 +148,7 @@ def _resolve_rskills_dir() -> str:
     """The ``rskills/`` tree the reasoner palette and the skill runner are seeded from.
 
     Honours ``$OPENRAL_REPO_ROOT`` through ``openral_rskill.loader.repo_root_override``,
-    the rule the CLI's ``_repo_root_from`` and the loader's in-tree resolution share: the
+    the rule the CLI's ``repo_root_from`` and the loader's in-tree resolution share: the
     deploy preflights (palette deps, the reward VRAM gate) read that checkout's skills,
     and a reasoner seeded from another tree could lack the skill that let the gate pass.
     Only the skill tree moves; ``_REPO_ROOT`` stays this launch's checkout (its ``.venv``

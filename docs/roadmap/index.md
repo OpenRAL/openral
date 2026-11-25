@@ -20,7 +20,7 @@ Legend: ✅ done, 🟡 in flight, 🔵 planned, 🔴 blocked.
 | rSkill manifest and loader | ✅ HF Hub packaging, license surface; sigstore provenance not implemented (unverified-provenance warning, `OPENRAL_REQUIRE_SIGNED_SKILLS` gate) |
 | Policy adapters | ✅ SmolVLA, pi0.5, xVLA, ACT, Diffusion Policy, MolmoAct2, RLDX-1, GR00T N1.7, OpenVLA, NaT VLA, Cosmos 3, LingBot-VLA 1/2 and VA, XR-1, InternVLA-N1, 3D Diffuser Actor |
 | Sim and eval harness | ✅ `openral sim run`, `benchmark run`, three-tier scene registry; [backends](../reference/sim-environments.md) |
-| Multi-robot deploy sim | ✅ several robots in one scene, each with its own domain and dashboard |
+| Multi-robot deploy sim | Moved to OpenRAL Pro (`openral deploy fleet`); open `deploy sim` starts one robot and checks it against its peers |
 | Observability | ✅ OTel spans and metrics, `openral dashboard`, compliance recorder ([Telemetry](../reference/telemetry.md)) |
 | Dashboard remote link | ✅ `openral robot link` to openral.com; console is a prebuilt bundle ([ADR-0131](../decisions.md)) |
 | ROS graph security | ✅ SROS2 enclaves via `openral security init` ([guide](../reference/ros-graph-security.md)) |
