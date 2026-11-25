@@ -523,7 +523,7 @@ def _peer_params(peers: list[ScenePeer]) -> dict[str, object]:
         # prefer; those are hand-authored to contain the links. Lower the MJCF here too if a
         # robot's manifest geometry ever under-covers its MJCF.
         try:
-            manifest = resolve_robot_manifest(peer.robot_id)
+            manifest = resolve_robot_manifest(peer.robot_id, repo_root=_REPO_ROOT)
         except Exception as exc:  # reason: any lookup failure names the peer
             raise ROSConfigError(
                 f"peer {name!r} (robot_id {peer.robot_id!r}): no robot manifest ({exc})"

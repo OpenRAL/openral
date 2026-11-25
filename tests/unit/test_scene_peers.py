@@ -87,6 +87,17 @@ def test_peer_params_keys() -> None:
     assert p["peer_b.base_frame"] == "openarm_base"
 
 
+def test_peer_params_look_up_manifests_under_the_launch_repo_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A peer's manifest comes from the launch's resolved root, not this module's checkout."""
+    mod = _launch_module()
+    monkeypatch.delenv("OPENRAL_ROBOTS_DIR", raising=False)
+    monkeypatch.setattr(mod, "_REPO_ROOT", tmp_path)  # a root with no robots/
+    with pytest.raises(ROSConfigError, match=r"peer 'b'.*openarm"):
+        mod._peer_params([ScenePeer(name="b", robot_id="openarm", domain=34)])
+
+
 def test_peer_params_unknown_robot_id() -> None:
     mod = _launch_module()
     with pytest.raises(ROSConfigError, match=r"peer 'b'.*nosuchrobot"):
@@ -165,6 +176,12 @@ def test_own_domain_must_be_an_integer() -> None:
         require_peer_domains(P, "abc")
 
 
+@pytest.mark.parametrize("own", ["-1", "233", "1000"])
+def test_own_domain_must_be_in_range(own: str) -> None:
+    with pytest.raises(ROSConfigError, match=r"ROS_DOMAIN_ID=.*outside 0-232"):
+        require_peer_domains(P, own)
+
+
 def test_duplicate_peer_name() -> None:
     twin = P[1].model_copy(update={"name": "b"})
     with pytest.raises(ROSConfigError, match="twice"):
@@ -185,7 +202,33 @@ def test_a_direct_launch_without_a_deploy_config_still_checks_its_peers(
     monkeypatch.setenv(SCENE_PEERS_ENV, format_scene_peers(P[:1]))
     monkeypatch.setenv("ROS_DOMAIN_ID", "30")
     with pytest.raises(ROSConfigError, match="no base_pose"):
-        mod._scene_peers(None)
+        mod._scene_peers(None, "sim")
     monkeypatch.delenv("ROS_DOMAIN_ID")
     with pytest.raises(ROSConfigError, match="ROS_DOMAIN_ID"):
-        mod._scene_peers(object())  # a pose is there; the missing domain is what refuses
+        mod._scene_peers(object(), "sim")  # a pose is there; the missing domain is what refuses
+
+
+def _resolve_config(config: Path) -> None:
+    resolve_launch_invocation(
+        config=config,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_mode="sim",
+    )
+
+
+def test_a_scene_error_names_the_field(tmp_path: Path) -> None:
+    import yaml
+
+    repo = Path(__file__).resolve().parents[2]
+    raw = yaml.safe_load((repo / "scenes/deploy/so101_box.yaml").read_text())
+    raw.setdefault("runtime", {})["reward_monitor_score_window_s"] = -1.0
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(yaml.safe_dump(raw))
+    with pytest.raises(ROSConfigError, match=r"runtime\.reward_monitor_score_window_s: "):
+        _resolve_config(bad)
+    robots = tmp_path / "robots.yaml"
+    robots.write_text(yaml.safe_dump({"scene": {"id": "x", "backend": "isaacsim"}, "robots": []}))
+    with pytest.raises(ROSConfigError, match="openral deploy fleet"):
+        _resolve_config(robots)

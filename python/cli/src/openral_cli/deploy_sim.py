@@ -1324,7 +1324,10 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         deploy_scene = DeployScene.from_yaml(str(config)) if config is not None else None
     except ValidationError as exc:
         # One line per problem, not pydantic's traceback (a `robots:` scene names `deploy fleet`).
-        detail = "; ".join(str(e["msg"]) for e in exc.errors())
+        detail = "; ".join(
+            (".".join(map(str, e["loc"])) + ": " if e["loc"] else "") + e["msg"]
+            for e in exc.errors()
+        )
         raise ROSConfigError(f"failed to load --config {config}: {detail}") from None
     if runtime_overrides:
         deploy_scene = _with_runtime_overrides(deploy_scene, runtime_overrides)

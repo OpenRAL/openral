@@ -37,6 +37,10 @@ SCENE_ROBOT_ENV = "OPENRAL_SCENE_ROBOT"
 SCENE_PEERS_ENV = "OPENRAL_SCENE_PEERS"
 
 
+#: The largest ROS 2 domain id on Linux (``ScenePeer.domain``'s bound too).
+_MAX_DOMAIN = 232
+
+
 class ScenePeer(BaseModel):
     """One of a scene's other robots, as ``SCENE_PEERS_ENV`` names it.
 
@@ -51,7 +55,7 @@ class ScenePeer(BaseModel):
 
     name: str = Field(pattern=r"^[a-z][a-z0-9]{0,23}$")
     robot_id: str = Field(min_length=1)
-    domain: int = Field(ge=0, le=232)
+    domain: int = Field(ge=0, le=_MAX_DOMAIN)
 
 
 _PEERS = TypeAdapter(list[ScenePeer])
@@ -96,8 +100,8 @@ def require_peer_domains(peers: list[ScenePeer], own_domain: str | None) -> None
     A hashed default, or one peer's domain, would put two robots on one DDS graph.
 
     Raises:
-        ROSConfigError: Peers are listed and ``own_domain`` is unset, empty or a peer's, or
-            two peers share a domain.
+        ROSConfigError: Peers are listed and ``own_domain`` is unset, empty, not an integer
+            in 0-232 or a peer's, or two peers share a domain.
 
     Example:
         >>> require_peer_domains([ScenePeer(name="b", robot_id="amr", domain=34)], "30")
@@ -118,6 +122,8 @@ def require_peer_domains(peers: list[ScenePeer], own_domain: str | None) -> None
         own = int(own_domain.strip())
     except ValueError as exc:
         raise ROSConfigError(f"ROS_DOMAIN_ID={own_domain!r} is not an integer.") from exc
+    if not 0 <= own <= _MAX_DOMAIN:
+        raise ROSConfigError(f"ROS_DOMAIN_ID={own} is outside 0-{_MAX_DOMAIN}.")
     owners = {own: "this robot"}
     names: set[str] = set()
     for peer in peers:
