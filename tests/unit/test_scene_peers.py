@@ -13,7 +13,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 from openral_cli.deploy_sim import resolve_launch_invocation
-from openral_core import ScenePeer
+from openral_core import DeployScene, ScenePeer, SimScene
 from openral_core.exceptions import ROSConfigError
 from openral_core.scene_paths import (
     SCENE_PEERS_ENV,
@@ -21,6 +21,7 @@ from openral_core.scene_paths import (
     parse_scene_peers,
     require_peer_domains,
 )
+from pydantic import ValidationError
 
 LAUNCH = (
     Path(__file__).resolve().parents[2] / "packages/openral_rskill_ros/launch/deploy_e2e.launch.py"
@@ -168,3 +169,9 @@ def test_duplicate_peer_name() -> None:
     twin = P[1].model_copy(update={"name": "b"})
     with pytest.raises(ROSConfigError, match="twice"):
         require_peer_domains([P[0], twin], "30")
+
+
+@pytest.mark.parametrize("model", [DeployScene, SimScene])
+def test_robots_key_points_to_deploy_fleet(model: type[DeployScene]) -> None:
+    with pytest.raises(ValidationError, match="openral deploy fleet"):
+        model.model_validate({"scene": {"id": "x", "backend": "isaacsim"}, "robots": []})

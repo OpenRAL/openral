@@ -110,8 +110,8 @@ _log = structlog.get_logger(__name__)
 
 _ISAAC_SCENE_ID = "isaac_sim"
 _AUTO_SPAWN_ENV = "OPENRAL_ISAAC_AUTO_SPAWN"
-#: Set by ``openral deploy sim`` for each robot graph of a scene with several robots
-#: (openral-pro#99): the run directory where each robot leaves its sidecar entry
+#: Set by ``openral deploy fleet`` (OpenRAL Pro) for each robot graph of a scene with several
+#: robots: the run directory where each robot leaves its sidecar entry
 #: (``<robot>.json``, ``<robot>.spec.json``), and the port of the one sidecar the parent
 #: starts from them. The robot is ``$OPENRAL_SCENE_ROBOT``. Unset: one robot, as before.
 SHARED_SIDECAR_DIR_ENV = "OPENRAL_ISAAC_SHARED_DIR"
@@ -1043,7 +1043,7 @@ class IsaacLinkAttachment(BaseModel):
     prim: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*(/[A-Za-z_][A-Za-z0-9_]*)*$")
     link: str = Field(min_length=1)
     carries: list[str] = Field(default_factory=list)
-    #: In a scene of several robots (``DeployScene.robots``), the robot that carries it
+    #: In a scene of several robots (``openral deploy fleet``), the robot that carries it
     #: (each robot its own tote): required there, as two robots cannot carry one prim.
     #: ``None``: the robot's, in a one-robot scene.
     robot: str | None = None
@@ -3422,9 +3422,9 @@ def _shared_sidecar_setup(opts: IsaacSimOptions) -> tuple[str, int, IsaacSimOpti
 def shared_launch_id(shared_dir: Path) -> str:
     """The launch id of the shared sidecar of the run whose directory is ``shared_dir``.
 
-    ``openral deploy sim`` starts the sidecar with it (``deploy_robots.shared_sidecar_argv``)
-    and each robot graph requires it in ``ping``: the run directory is unique per run, so a
-    sidecar of another run on the port is refused even when it serves the same robots.
+    ``openral deploy fleet`` (OpenRAL Pro) starts the sidecar with it, and each robot graph
+    requires it in ``ping``: the run directory is unique per run, so a sidecar of another run
+    on the port is refused even when it serves the same robots.
 
     Example:
         >>> shared_launch_id(Path("/tmp/openral-robots-aisle-x1y2"))
@@ -3458,8 +3458,8 @@ def _join_shared_sidecar(
     """Leave ``robot``'s sidecar entry in ``shared_dir`` and connect to the shared sidecar.
 
     The entry (``<robot>.json``: the launch arguments, spawn, environment and objects;
-    ``<robot>.spec.json``: its robot spec) is what ``openral deploy sim`` builds the one
-    ``--robots`` sidecar from (``openral_cli.deploy_robots``). Written atomically: the
+    ``<robot>.spec.json``: its robot spec) is what ``openral deploy fleet`` (OpenRAL Pro)
+    builds the one ``--robots`` sidecar from. Written atomically: the
     parent starts the sidecar as soon as every robot's entry is there. The client then
     waits for that sidecar and checks it serves this robot with this robot's spec.
     """

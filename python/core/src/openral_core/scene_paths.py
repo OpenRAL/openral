@@ -9,7 +9,6 @@ scene is left as written, for the existing lookups (the repo root, then the cwd)
 from __future__ import annotations
 
 import copy
-import os
 from pathlib import Path
 from typing import TypeVar, cast
 
@@ -20,7 +19,6 @@ from openral_core.exceptions import ROSConfigError
 __all__ = [
     "SCENE_PEERS_ENV",
     "SCENE_ROBOT_ENV",
-    "SCENE_ROBOT_MAP_FRAME_ENV",
     "ScenePeer",
     "anchor_scene_paths",
     "format_scene_peers",
@@ -28,14 +26,11 @@ __all__ = [
     "require_peer_domains",
 ]
 
-#: Set by ``openral deploy sim`` in each robot graph it starts for a scene with several
-#: ``robots`` (openral-pro#99): every loader then reads that robot's own one-robot scene
-#: (``geometry.raw_scene_for_robot``), so the graph needs no per-robot scene file.
+#: This robot's name in a world it shares with others, set by ``openral deploy fleet``
+#: (OpenRAL Pro) on each robot's graph, whose scene is that robot's own one-robot slice. The
+#: Isaac sidecar join and the launch's world-pose gate read it.
 SCENE_ROBOT_ENV = "OPENRAL_SCENE_ROBOT"
-#: Beside it: that robot's ``RobotDescription.map_frame``, the frame its scene's nav goals and
-#: place zones are re-expressed in (``"map"`` when unset).
-SCENE_ROBOT_MAP_FRAME_ENV = "OPENRAL_SCENE_ROBOT_MAP_FRAME"
-#: Beside them: the scene's other robots, a JSON list of ``{"name", "robot_id", "domain"}``
+#: Beside it: the scene's other robots, a JSON list of ``{"name", "robot_id", "domain"}``
 #: (``format_scene_peers``). Each robot's graph runs a peer producer on it, whose grid its
 #: safety kernel checks with no exemption (ADR-0137).
 SCENE_PEERS_ENV = "OPENRAL_SCENE_PEERS"
@@ -152,9 +147,7 @@ def _anchored(ref: object, scene_dir: Path) -> object:
 def anchor_scene_paths(raw: _T, scene_dir: Path) -> _T:
     """``raw`` with its relative file references made absolute where they sit beside the scene.
 
-    ``raw`` is a scene YAML's mapping. With ``$OPENRAL_SCENE_ROBOT`` set and ``robots`` listed,
-    the result is that robot's own one-robot scene (``SCENE_ROBOT_ENV``): every loader goes
-    through here, so this is where a robot graph of a several-robot scene picks its robot.
+    ``raw`` is a scene YAML's mapping.
 
     The references: ``scene.assets_uri``, ``scene.backend_options.objects[].usd``,
     ``runtime.static_geometry_file`` and ``runtime.vision_attachment.segmenter_manifest``.
@@ -192,13 +185,4 @@ def anchor_scene_paths(raw: _T, scene_dir: Path) -> _T:
         vision = runtime.get("vision_attachment")
         if isinstance(vision, dict) and "segmenter_manifest" in vision:
             vision["segmenter_manifest"] = _anchored(vision["segmenter_manifest"], scene_dir)
-    robot = os.environ.get(SCENE_ROBOT_ENV)
-    if robot and out.get("robots"):
-        from openral_core.geometry import (  # noqa: PLC0415  # reason: numpy only when a robot is picked
-            raw_scene_for_robot,
-        )
-
-        out = raw_scene_for_robot(
-            out, robot, map_frame=os.environ.get(SCENE_ROBOT_MAP_FRAME_ENV) or "map"
-        )
     return cast("_T", out)

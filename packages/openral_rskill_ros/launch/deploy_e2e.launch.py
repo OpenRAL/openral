@@ -1463,10 +1463,9 @@ def _optical_mounts(sensors: Sequence[SensorSpec], hal_mode: str) -> dict[str, s
 def _scene_robot_world_pose(scene: DeployScene | None) -> Pose6D | None:
     """Where this robot's map sits in its scene's shared ``world``; ``None`` for one robot.
 
-    ``openral deploy sim`` of a scene with several robots (openral-pro#99) starts each
-    robot's graph with ``$OPENRAL_SCENE_ROBOT``, so ``DeployScene.from_yaml`` reads that
-    robot's own scene (``geometry.scene_for_robot``): its ``base_pose`` is its start in
-    ``world``, where its map's origin is.
+    ``openral deploy fleet`` (OpenRAL Pro) starts each robot's graph with
+    ``$OPENRAL_SCENE_ROBOT`` on a one-robot slice it writes of the shared scene: its
+    ``base_pose`` is its start in ``world``, where its map's origin is.
     """
     from openral_core import SHARED_SCENE_FRAME
     from openral_core.scene_paths import SCENE_ROBOT_ENV
@@ -1498,7 +1497,7 @@ def _world_map_tf_node(world_pose: Pose6D, map_frame: str) -> Node:
     """Static ``world -> map_frame`` TF: the robot's map origin in the scene's shared world.
 
     tf2's parent -> child transform is the child's pose in the parent, so it is the
-    ``base_pose`` itself (``scene_for_robot`` re-expresses goals through its inverse).
+    ``base_pose`` itself (``deploy fleet``'s slice re-expresses goals through its inverse).
     """
     x, y, z = (str(v) for v in world_pose.xyz)
     qx, qy, qz, qw = (str(v) for v in world_pose.quat_xyzw)

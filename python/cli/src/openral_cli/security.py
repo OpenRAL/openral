@@ -183,10 +183,10 @@ def security_init_command(
     )
 
     from openral_cli._dds_scope import real_domain_id
-    from openral_cli.deploy_sim import _repo_root_from
+    from openral_cli.deploy_sim import repo_root_from
 
     description = RobotDescription.from_yaml(
-        str(resolve_robot_manifest(robot_id, repo_root=_repo_root_from(Path(__file__))))
+        str(resolve_robot_manifest(robot_id, repo_root=repo_root_from(Path(__file__))))
     )
     exported = os.environ.get("ROS_DOMAIN_ID", "").strip()
     domain = str(domain_id) if domain_id is not None else exported or real_domain_id(robot_id)

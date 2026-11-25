@@ -394,7 +394,7 @@ class LaunchInvocation:
     once the file exists."""
 
 
-def _repo_root_from(start: Path) -> Path:
+def repo_root_from(start: Path) -> Path:
     """Locate the repo root holding the ``robots/`` + ``rskills/`` manifest trees.
 
     Resolution order — first hit wins:
@@ -430,7 +430,7 @@ def _repo_root_from(start: Path) -> Path:
 
     Example:
         >>> from pathlib import Path
-        >>> root = _repo_root_from(Path(__file__))
+        >>> root = repo_root_from(Path(__file__))
         >>> (root / "robots").is_dir() and (root / "rskills").is_dir()
         True
     """
@@ -471,6 +471,9 @@ def _repo_root_from(start: Path) -> Path:
         "  cd openral && openral deploy sim --config <scene.yaml>\n"
         "or set OPENRAL_REPO_ROOT=/path/to/openral."
     )
+
+
+_repo_root_from = repo_root_from  # the old private name
 
 
 def _load_scene_robot_id(
@@ -1236,7 +1239,6 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     robot_override: str | None,
     dashboard_port: int,
     reset_to_pose_service: str | None,
-    dry_run: bool = False,
     approach_skill_id: str | None = None,
     dataset_out: str | None = None,
     dataset_repo_id: str | None = None,
@@ -1284,9 +1286,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     ``rskill_auto_install`` installs the robot's openral.com rSkill list right after
     the account settings apply (``openral_cli.rskill_install.auto_install_rskills``);
     ``deploy run`` / ``deploy sim`` pass it unless ``--no-rskill-install`` or
-    ``--dry-run``. ``dry_run`` matters only for a scene with several robots, which runs
-    from here (``deploy_robots.run_scene_robots``): it prints each robot's command line
-    instead of starting them.
+    ``--dry-run``. A scene with several robots is refused at load: it starts with
+    ``openral deploy fleet`` (OpenRAL Pro).
     """
     from openral_core import (  # reason: defer schema import
         ROBOT_UNIT_ENV,
@@ -1321,21 +1322,6 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     deploy_scene = DeployScene.from_yaml(str(config)) if config is not None else None
     if runtime_overrides:
         deploy_scene = _with_runtime_overrides(deploy_scene, runtime_overrides)
-    if deploy_scene is not None and deploy_scene.robots:
-        # A scene of several robots (openral-pro#99): one Isaac world, a graph per robot.
-        # Each graph's own `deploy sim` reads its robot's one-robot view of the scene
-        # ($OPENRAL_SCENE_ROBOT), so it never comes back here.
-        if hal_mode != "sim":
-            raise ROSConfigError(
-                f"{config}: lists several robots; `deploy run` drives one robot per graph "
-                "on its own host: not yet (openral-pro#99)."
-            )
-        from openral_cli.deploy_robots import (
-            run_scene_robots,  # reason: several-robot scenes only
-        )
-
-        assert config is not None  # reason: deploy_scene came from it
-        raise typer.Exit(code=run_scene_robots(deploy_scene, config, sys.argv[1:], dry_run=dry_run))
     # Before any confine_* fills a hashed domain: only an exported one is distinct from the peers'.
     from openral_core.scene_paths import (
         SCENE_PEERS_ENV,
@@ -1492,7 +1478,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
 
     from openral_sim.policies.robots import resolve_robot_manifest
 
-    repo_root = _repo_root_from(Path(__file__))
+    repo_root = repo_root_from(Path(__file__))
     # Same lookup as `sim run`: $OPENRAL_ROBOTS_DIR/<id>/robot.yaml first, then
     # <repo_root>/robots/<id>/robot.yaml. The directory name is the robot id —
     # e.g. ``--robot franka_panda`` (not ``--robot franka``).
@@ -2673,7 +2659,7 @@ def _prepare_launch_env(*, hal_mode: str = "sim", robot_id: str = "") -> dict[st
     _confine_launch_scope(env, hal_mode=hal_mode, robot_id=robot_id)
     venv_site = sysconfig.get_paths()["purelib"]
     env["OPENRAL_VENV_SITE"] = venv_site
-    env[GRAPH_ROOT_ENV] = str(_repo_root_from(Path(__file__)))
+    env[GRAPH_ROOT_ENV] = str(repo_root_from(Path(__file__)))
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{venv_site}{os.pathsep}{existing}" if existing else venv_site
     venv_bin = os.path.dirname(sys.executable)
@@ -2712,7 +2698,7 @@ def run_launch_invocation(invocation: LaunchInvocation, *, run_preflight: bool =
     """
     vram_refused: list[str] = []
     if run_preflight:
-        repo_root = _repo_root_from(Path(__file__))
+        repo_root = repo_root_from(Path(__file__))
         # Same preflight sequence, and order, as ``deploy sim``: overlay
         # check → orphan reap → palette extras → VRAM pair. Runs here too
         # (not sim-only) because a crashed ``deploy run`` leaves orphaned
@@ -2913,7 +2899,7 @@ def _reap_orphans_with_log(hal_mode: str = "sim", robot_id: str = "") -> None:
     # after this reap (#421 review).
     env = os.environ.copy()
     _confine_launch_scope(env, hal_mode=hal_mode, robot_id=robot_id)
-    env[GRAPH_ROOT_ENV] = str(_repo_root_from(Path(__file__)))
+    env[GRAPH_ROOT_ENV] = str(repo_root_from(Path(__file__)))
     killed = _kill_orphan_openral_graph_processes(env)
     if killed:
         _console.print(
@@ -3035,7 +3021,7 @@ GRAPH_ROOT_ENV: Final[str] = "OPENRAL_DEPLOY_GRAPH_ROOT"
 
 def _graph_identity(env: Mapping[str, str]) -> tuple[str, str]:
     """``(ROS_DOMAIN_ID, checkout)`` a graph launched with ``env`` runs under."""
-    root = env.get(GRAPH_ROOT_ENV) or str(_repo_root_from(Path(__file__)))
+    root = env.get(GRAPH_ROOT_ENV) or str(repo_root_from(Path(__file__)))
     return env.get("ROS_DOMAIN_ID") or "0", root
 
 
@@ -3827,7 +3813,7 @@ def _preflight_preload_rskill(
         for group in groups:
             cmd += ["--group", group]
         _console.print(f"[cyan]running:[/cyan] {shlex.join(cmd)}")
-        repo_root = _repo_root_from(Path(__file__))
+        repo_root = repo_root_from(Path(__file__))
         if subprocess.run(cmd, check=False, cwd=str(repo_root)).returncode == 0:
             importlib.invalidate_caches()
             ok, reason = can_import_policy_manifest(manifest)
@@ -4500,7 +4486,6 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
             foxglove_port=foxglove_port,
             initial_task_prompt=initial_task,
             rskill_auto_install=rskill_install and not dry_run,
-            dry_run=dry_run,
         )
     except ROSConfigError as exc:
         _console.print(f"[red]config error:[/red] {exc}")
@@ -4627,7 +4612,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
     # silently degrades to ``palette_empty`` ticks once everything is
     # up — the user gets a running but useless deploy.
     _preflight_palette_deps(
-        repo_root=_repo_root_from(Path(__file__)),
+        repo_root=repo_root_from(Path(__file__)),
         robot_yaml=Path(invocation.robot_yaml),
     )
     _preflight_preload_rskill(
@@ -4646,7 +4631,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
         from openral_core import RobotDescription
 
         vram_refused = _preflight_reward_vram_fit(
-            repo_root=_repo_root_from(Path(__file__)),
+            repo_root=repo_root_from(Path(__file__)),
             description=RobotDescription.from_yaml(str(invocation.robot_yaml)),
             reward_manifest_path=invocation.reward_monitor_manifest,
             gpu_budget_gb=_detect_gpu_free_vram_gb(),
