@@ -47,6 +47,7 @@ from typing import Final
 from openral_core.exceptions import ROSConfigError
 from openral_core.ros_graph_scope import (
     ALLOW_NETWORK_ROS_ENV,
+    RESERVED_DOMAINS,
     discovery_range_is_ros_default,
     require_host_confined_ros_scope,
 )
@@ -98,23 +99,6 @@ SIM_DOMAIN_ID: Final[str] = "77"
 #: excluded from the start; this table is kept as-is so a robot id that never
 #: landed on a reserved value keeps the domain it had.
 _HASH_DOMAINS: Final[tuple[int, ...]] = tuple(d for d in range(10, 102) if d != int(SIM_DOMAIN_ID))
-
-#: Domains something else on a robot host already uses, so a real robot is never
-#: hashed onto them (a twin, a test or a lab harness on the robot's own domain
-#: is on the robot's graph):
-#:
-#: * ``0`` — the unset default; ``42`` — ``tools/_demo_env.sh``'s default, and
-#:   never a robot's by explicit request; ``77`` — ``SIM_DOMAIN_ID``;
-#: * ``50-99`` — per-PID test domains (``50 + pid % 50`` in the safety-kernel
-#:   launch tests and ``tests/sim/safety``, ``60 + pid % 40`` in the OTel test),
-#:   which also cover the lab harnesses' fixed domains (76, 80-89, 85, 87, 88 in
-#:   ``docs/reference/dds-large-messages.md``, 90, 91, 92);
-#: * ``100-101`` — the bottom of the package test conftests' ``100 + pid % 100``.
-#:
-#: Exporting ``ROS_DOMAIN_ID`` still wins over all of this.
-RESERVED_DOMAINS: Final[frozenset[int]] = frozenset({0, 42, int(SIM_DOMAIN_ID)}) | frozenset(
-    range(50, 102)
-)
 
 #: Where a robot id whose hash lands on a reserved domain is re-hashed to.
 _FREE_DOMAINS: Final[tuple[int, ...]] = tuple(d for d in _HASH_DOMAINS if d not in RESERVED_DOMAINS)
