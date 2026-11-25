@@ -147,6 +147,13 @@ Two controls, covering different directions: confinement stops a sim reaching a 
 
 > The `ros2` CLI **daemon** is unusable for this check: it answers from the environment *it* was started with, so `ros2 node list` under `LOCALHOST` still reported the remote robot's nodes. The probe runs in a subprocess under the exact launch env and talks to `rclpy` directly.
 
+### `python/cli/src/openral_cli/_clock_sync.py`
+_Host-clock check for a real robot with peers (openral#765, HZ-0137-11): peer data is checked against a 300 ms budget, so chrony must discipline the clock._
+
+- `CLOCK_LIMIT_S` — `0.010`; the largest chrony offset a real robot with peers accepts. (L14)
+- `chrony_tracking(run=subprocess.run) -> tuple[float, str] | None` — `(offset in s, leap status)` from `chronyc -c tracking`; `None` when chronyc is missing, hangs, fails or prints something unparsable. (L18)
+- `require_synced_clock(tracking, limit_s=CLOCK_LIMIT_S) -> None` — `ROSConfigError` unless chrony answered, the leap status is `Normal` and `|offset| <= limit_s` (fails closed on NaN). (L41)
+
 ### `python/cli/src/openral_cli/_hf_publish.py`
 _Shared HF Hub publishing helpers, de-duped from `tools/rskill_publisher.py`._
 
