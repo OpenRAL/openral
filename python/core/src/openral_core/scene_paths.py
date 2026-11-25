@@ -15,6 +15,8 @@ from typing import TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
+from openral_core.exceptions import ROSConfigError
+
 __all__ = [
     "SCENE_PEERS_ENV",
     "SCENE_ROBOT_ENV",
@@ -23,6 +25,7 @@ __all__ = [
     "anchor_scene_paths",
     "format_scene_peers",
     "parse_scene_peers",
+    "require_peer_domains",
 ]
 
 #: Set by ``openral deploy sim`` in each robot graph it starts for a scene with several
@@ -89,6 +92,40 @@ def parse_scene_peers(value: str | None) -> list[ScenePeer]:
         raise ValueError(
             f"{SCENE_PEERS_ENV} is not a list of {{name, robot_id, domain}}: {value!r}"
         ) from exc
+
+
+def require_peer_domains(peers: list[ScenePeer], own_domain: str | None) -> None:
+    """A robot with peers must export its own ROS domain, distinct from every peer's.
+
+    A hashed default, or one peer's domain, would put two robots on one DDS graph.
+
+    Raises:
+        ROSConfigError: Peers are listed and ``own_domain`` is unset, empty or a peer's, or
+            two peers share a domain.
+
+    Example:
+        >>> require_peer_domains([ScenePeer(name="b", robot_id="amr", domain=34)], "30")
+        >>> require_peer_domains(
+        ...     [ScenePeer(name="b", robot_id="amr", domain=34)], "34"
+        ... )  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+        openral_core.exceptions.ROSConfigError: ROS_DOMAIN_ID=34 is shared by ...
+    """
+    if not peers:
+        return
+    if not own_domain:
+        raise ROSConfigError(
+            f"{SCENE_PEERS_ENV} lists peers, so this robot needs its own exported "
+            "ROS_DOMAIN_ID (a hashed default would not be distinct from theirs)."
+        )
+    owners = {own_domain: "this robot"}
+    for peer in peers:
+        name = repr(peer.name)
+        if (other := owners.setdefault(str(peer.domain), name)) != name:
+            raise ROSConfigError(
+                f"ROS_DOMAIN_ID={peer.domain} is shared by {other} and {name}: "
+                "export a distinct ROS_DOMAIN_ID per robot"
+            )
 
 
 _T = TypeVar("_T")

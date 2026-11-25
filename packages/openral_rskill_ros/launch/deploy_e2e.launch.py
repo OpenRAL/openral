@@ -1476,6 +1476,24 @@ def _scene_robot_world_pose(scene: DeployScene | None) -> Pose6D | None:
     return scene.base_pose if scene.base_pose.frame_id == SHARED_SCENE_FRAME else None
 
 
+def _scene_peers(world_pose: Pose6D | None) -> list[ScenePeer]:
+    """``$OPENRAL_SCENE_PEERS``; peers need this robot to have a pose in the shared ``world``.
+
+    Raises:
+        ROSConfigError: Peers are listed and the robot has no ``world`` pose.
+    """
+    from openral_core.exceptions import ROSConfigError
+    from openral_core.scene_paths import SCENE_PEERS_ENV, parse_scene_peers
+
+    peers = parse_scene_peers(os.environ.get(SCENE_PEERS_ENV))
+    if peers and world_pose is None:
+        raise ROSConfigError(
+            f"{SCENE_PEERS_ENV} lists peers, but this robot has no base_pose in the shared "
+            "world frame: a peer's goal could not be placed in its map."
+        )
+    return peers
+
+
 def _world_map_tf_node(world_pose: Pose6D, map_frame: str) -> Node:
     """Static ``world -> map_frame`` TF: the robot's map origin in the scene's shared world.
 
@@ -3541,10 +3559,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
 
         _scene = DeployScene.from_yaml(deploy_config)
         world_pose = _scene_robot_world_pose(_scene)
-        if world_pose is not None:
-            from openral_core.scene_paths import SCENE_PEERS_ENV, parse_scene_peers
-
-            scene_peers = parse_scene_peers(os.environ.get(SCENE_PEERS_ENV))
+        scene_peers = _scene_peers(world_pose)
         scene_sensors = list(_scene.sensors)
         scene_drivers = list(_scene.drivers)
         scene_unit = _scene.robot_unit

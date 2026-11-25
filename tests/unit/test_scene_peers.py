@@ -12,8 +12,15 @@ import jsonschema
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
+from openral_cli.deploy_sim import resolve_launch_invocation
 from openral_core import ScenePeer
-from openral_core.scene_paths import format_scene_peers, parse_scene_peers
+from openral_core.exceptions import ROSConfigError
+from openral_core.scene_paths import (
+    SCENE_PEERS_ENV,
+    format_scene_peers,
+    parse_scene_peers,
+    require_peer_domains,
+)
 
 LAUNCH = (
     Path(__file__).resolve().parents[2] / "packages/openral_rskill_ros/launch/deploy_e2e.launch.py"
@@ -83,3 +90,64 @@ def test_peer_params_unknown_robot_id() -> None:
     mod = _launch_module()
     with pytest.raises(Exception, match="nosuchrobot"):
         mod._peer_params([ScenePeer(name="b", robot_id="nosuchrobot", domain=34)])
+
+
+P = [
+    ScenePeer(name="b", robot_id="openarm", domain=34),
+    ScenePeer(name="c", robot_id="openarm", domain=38),
+]
+
+
+def test_no_peers_no_check() -> None:
+    require_peer_domains([], None)
+
+
+@pytest.mark.parametrize("own", [None, "", "34"])
+def test_bad_own_domain(own: str | None) -> None:
+    with pytest.raises(ROSConfigError, match="ROS_DOMAIN_ID"):
+        require_peer_domains(P, own)
+
+
+def test_peers_share_a_domain() -> None:
+    with pytest.raises(ROSConfigError, match="34"):
+        require_peer_domains([P[0], P[0].model_copy(update={"name": "d"})], "30")
+
+
+def test_ok() -> None:
+    require_peer_domains(P, "30")
+
+
+def _resolve(**kw: Any) -> Any:
+    repo = Path(__file__).resolve().parents[2]
+    return resolve_launch_invocation(
+        config=repo / "scenes/deploy/so101_box.yaml",
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        **kw,
+    )
+
+
+@pytest.mark.parametrize("hal_mode", ["sim", "real"])
+def test_resolve_refuses_peers_without_an_exported_domain(
+    monkeypatch: pytest.MonkeyPatch, hal_mode: str
+) -> None:
+    monkeypatch.setenv(SCENE_PEERS_ENV, format_scene_peers(P))
+    monkeypatch.delenv("ROS_DOMAIN_ID", raising=False)
+    with pytest.raises(ROSConfigError, match="ROS_DOMAIN_ID"):
+        _resolve(hal_mode=hal_mode)
+
+
+def test_resolve_reports_malformed_peers_as_config_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(SCENE_PEERS_ENV, "{}")
+    with pytest.raises(ROSConfigError, match=SCENE_PEERS_ENV):
+        _resolve()
+
+
+def test_launch_refuses_peers_without_a_world_pose(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = _launch_module()
+    monkeypatch.setenv(SCENE_PEERS_ENV, format_scene_peers(P))
+    with pytest.raises(ROSConfigError, match="world"):
+        mod._scene_peers(None)
+    monkeypatch.delenv(SCENE_PEERS_ENV)
+    assert mod._scene_peers(None) == []

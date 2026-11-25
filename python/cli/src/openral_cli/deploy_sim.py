@@ -1336,6 +1336,18 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
 
         assert config is not None  # reason: deploy_scene came from it
         raise typer.Exit(code=run_scene_robots(deploy_scene, config, sys.argv[1:], dry_run=dry_run))
+    # Before any confine_* fills a hashed domain: only an exported one is distinct from the peers'.
+    from openral_core.scene_paths import (
+        SCENE_PEERS_ENV,
+        parse_scene_peers,
+        require_peer_domains,
+    )
+
+    try:
+        peers = parse_scene_peers(os.environ.get(SCENE_PEERS_ENV))
+    except ValueError as exc:
+        raise ROSConfigError(str(exc)) from exc
+    require_peer_domains(peers, os.environ.get("ROS_DOMAIN_ID"))
     scene_robot_id = deploy_scene.robot_id if deploy_scene is not None else None
     robot_id = (
         _load_scene_robot_id(config, robot_override, sim=hal_mode == "sim")
