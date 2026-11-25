@@ -39,3 +39,120 @@ def test_the_adapter_resolves_a_nat_vla_module() -> None:
     assert config_cls.__name__ == "NATVLAConfig"
     assert policy_cls.__name__ == "NATVLAPolicy"
     assert callable(make_processors)
+
+
+def _norm_stats_or_skip(uri: str) -> str:
+    """The real MolmoAct2 ``norm_stats.json`` the manifest pins (HF cache, else the Hub)."""
+    pytest.importorskip("huggingface_hub")
+    from openral_sim.policies.nat_vla import _hf_file
+
+    try:
+        return _hf_file(uri)
+    except Exception as exc:  # reason: an unreachable Hub with a cold cache is the skip
+        pytest.skip(f"norm_stats.json not reachable: {exc!r}")
+
+
+def test_manifest_maps_the_new_convention_rest_pose_into_the_pretraining_one() -> None:
+    """A range-centred rest pose lands on the old-convention starts the mixture holds.
+
+    makermods/eraser_place episodes start at shoulder_lift -102.7 / elbow 95.1 (median of
+    25); old-convention episodes start at 185-198 / ~180. The manifest's joint_affine
+    must carry one onto the other, and actions must map back exactly.
+    """
+    np = pytest.importorskip("numpy")
+    from openral_sim.policies.nat_vla import joint_affine
+
+    manifest = load_rskill_manifest(str(_SKILL))
+    affine = joint_affine(manifest.policy_extras["joint_affine"], 6, 6)
+    assert affine is not None
+    scale, offset = affine
+    rest_new = np.array([-7.2, -102.7, 95.1, 56.7, 6.2, 1.9], dtype=np.float32)
+    rest_model = scale * rest_new + offset
+    assert 184.0 <= rest_model[1] <= 198.0  # shoulder_lift, sign-flipped
+    assert 178.0 <= rest_model[2] <= 183.0  # elbow_flex
+    assert np.allclose(rest_model[[0, 3, 4, 5]], rest_new[[0, 3, 4, 5]])
+    assert np.allclose((rest_model - offset) / scale, rest_new)
+
+
+def test_pooled_stats_hold_the_mapped_pose_and_not_the_raw_one() -> None:
+    """With the pooled SO-ARM stats, the mapped reaching pose normalises inside [-1, 1].
+
+    The raw range-centred values sit far outside the mixture's q01/q99 on shoulder_lift:
+    the miswiring that swung the real arm backward.
+    """
+    np = pytest.importorskip("numpy")
+    from openral_sim.policies.nat_vla import joint_affine, molmoact2_tag_stats
+
+    manifest = load_rskill_manifest(str(_SKILL))
+    extra = manifest.policy_extras
+    stats = molmoact2_tag_stats(
+        _norm_stats_or_skip(str(extra["norm_stats"])), str(extra["norm_tag"])
+    )
+    q01 = np.asarray(stats["observation.state"]["q01"])
+    q99 = np.asarray(stats["observation.state"]["q99"])
+    assert stats["action"]["min"][1] > 0 and stats["action"]["max"][1] < 200  # q01/q99, not ±270
+    affine = joint_affine(extra["joint_affine"], 6, 6)
+    assert affine is not None
+    reach_new = np.array([0.0, -37.4, 36.3, 64.0, 38.0, 5.5], dtype=np.float32)  # makermods mean
+    mapped = (2 * (affine[0] * reach_new + affine[1] - q01) / (q99 - q01)) - 1
+    raw = (2 * (reach_new - q01) / (q99 - q01)) - 1
+    assert np.all(np.abs(mapped[:3]) < 1.0), mapped
+    assert raw[1] < -1.5, raw  # shoulder_lift: far below the mixture's q01
+
+
+@pytest.mark.parametrize(
+    "value",
+    [[[1.0, 0.0]] * 5, [[0.0, 1.0]] * 6, [["a", 1.0]] * 6, [[float("nan"), 0.0]] * 6],
+)
+def test_joint_affine_refuses_malformed_pairs(value: object) -> None:
+    """One finite, non-zero-scale pair per column, or a typed config error."""
+    pytest.importorskip("numpy")
+    from openral_sim.policies.nat_vla import joint_affine
+
+    with pytest.raises(ROSConfigError, match="joint_affine"):
+        joint_affine(value, 6, 6)
+
+
+def test_molmoact2_tag_stats_refuses_an_unknown_tag() -> None:
+    """A tag the file does not hold names the tags it does."""
+    from openral_sim.policies.nat_vla import molmoact2_tag_stats
+
+    manifest = load_rskill_manifest(str(_SKILL))
+    path = _norm_stats_or_skip(str(manifest.policy_extras["norm_stats"]))
+    with pytest.raises(ROSConfigError, match="so100_so101_molmoact2"):
+        molmoact2_tag_stats(path, "libero")
+
+
+def test_norm_stats_without_a_tag_fails_before_any_weights_load(tmp_path: Path) -> None:
+    """A half-declared norm_stats/norm_tag pair is a config error raised at build time.
+
+    The check runs with the other manifest checks, before the 450M policy is constructed.
+    """
+    pytest.importorskip("lerobot.policies.pretrained")
+    pytest.importorskip("torch")
+    import shutil
+
+    import openral_sim.policies  # noqa: F401 — registers nat_vla
+    from openral_core import SceneSpec, SimEnvironment, TaskSpec, VLASpec
+    from openral_sim.registry import POLICIES
+
+    skill = tmp_path / "nat-vla-so101-pretrained-bf16"
+    shutil.copytree(_SKILL, skill)
+    manifest = skill / "rskill.yaml"
+    text = manifest.read_text(encoding="utf-8")
+    assert '  norm_tag: "so100_so101_molmoact2"\n' in text
+    manifest.write_text(text.replace('  norm_tag: "so100_so101_molmoact2"\n', ""), encoding="utf-8")
+    env_cfg = SimEnvironment(
+        robot_id="so101_follower",
+        scene=SceneSpec(id="so101_box", cameras=["camera1", "camera2"]),
+        task=TaskSpec(
+            id="so101_box/tube_insertion",
+            scene_id="so101_box",
+            instruction="insert the orange tube into the slotted block",
+            success_key="is_success",
+            max_steps=10,
+        ),
+        vla=VLASpec(id="nat_vla", weights_uri=str(skill)),
+    )
+    with pytest.raises(ROSConfigError, match="norm_tag go together"):
+        POLICIES.get("nat_vla")(env_cfg)
