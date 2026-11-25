@@ -646,6 +646,21 @@ class MujocoTwinRollout:
                 (c for c in (s.sim_camera_name, s.name) if c and c in self._mjcf_cameras),
                 s.sim_camera_name or s.name,
             )
+            # Say so once: a typo'd sim_camera_name must not silently stream another view.
+            if (
+                s.sim_camera_name
+                and cam != s.sim_camera_name
+                and cam in self._mjcf_cameras
+                and s.sim_camera_name not in self._render_missing_warned
+            ):
+                self._render_missing_warned.add(s.sim_camera_name)
+                log.warning(
+                    "hal.read_images.camera_fallback",
+                    robot=self.description.name,
+                    sensor=s.name,
+                    sim_camera_name=s.sim_camera_name,
+                    rendering=cam,
+                )
             if cam not in self._mjcf_cameras:
                 if cam not in self._render_missing_warned:
                     self._render_missing_warned.add(cam)

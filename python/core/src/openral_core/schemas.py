@@ -526,7 +526,9 @@ class SensorSpec(BaseModel):
     # Optional override carrying the MJCF/MuJoCo camera name when it differs
     # from this sensor's logical ``name`` (issue #191 Phase 3b — mirrors
     # ``JointSpec.sim_joint_name``). ``MujocoArmHAL.read_images`` renders
-    # ``sim_camera_name or name`` for each RGB sensor, keying the frame by the
+    # ``sim_camera_name`` when the MJCF has it, else ``name`` (a composed scene may
+    # have renamed the camera to the sensor's name; logged once as
+    # ``hal.read_images.camera_fallback``) for each RGB sensor, keying the frame by the
     # sensor ``name`` so ``SimSensorBridge`` finds it. ``None`` = "MJCF camera
     # name matches ``name``" (the common case). E.g. openarm's ``base`` sensor
     # renders the MJCF ``top`` camera.

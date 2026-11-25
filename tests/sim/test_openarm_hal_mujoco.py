@@ -806,15 +806,20 @@ def test_wrist_cameras_render_when_the_scene_renamed_them() -> None:
         xml = _rename_upstream_wrist_cameras(fh.read())
     assert 'name="wrist_left"' in xml  # the composer's rename still applies to this MJCF
     # Next to the original: the MJCF's mesh paths are relative to its directory.
-    renamed = os.path.join(os.path.dirname(_OPENARM_MJCF), f"_renamed_wrist_{os.getpid()}.xml")
+    mjcf_dir = os.path.dirname(_OPENARM_MJCF)
+    if not os.access(mjcf_dir, os.W_OK):
+        pytest.skip(f"the OpenArm asset cache {mjcf_dir} is read-only")
+    renamed = os.path.join(mjcf_dir, f"_renamed_wrist_{os.getpid()}.xml")
     with open(renamed, "w") as fh:
         fh.write(xml)
-    hal = OpenArmMujocoHAL(mjcf_path=renamed)
     try:
+        hal = OpenArmMujocoHAL(mjcf_path=renamed)
         hal.connect()
-        frames = hal.read_images()
+        try:
+            frames = hal.read_images()
+        finally:
+            hal.disconnect()
     finally:
-        hal.disconnect()
         os.unlink(renamed)
     assert {"wrist_left", "wrist_right"} <= set(frames)
     assert frames["wrist_left"].shape == (480, 640, 3)
