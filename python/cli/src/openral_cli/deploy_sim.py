@@ -1344,7 +1344,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         raise ROSConfigError(str(exc)) from exc
     require_peer_domains(peers, os.environ.get("ROS_DOMAIN_ID"))
     if hal_mode == "real" and peers:
-        from openral_cli._clock_sync import (  # reason: real-with-peers only
+        from openral_core.clock_sync import (  # reason: real-with-peers only
             chrony_tracking,
             require_synced_clock,
         )

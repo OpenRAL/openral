@@ -160,9 +160,9 @@ def test_launch_refuses_peers_without_a_world_pose(monkeypatch: pytest.MonkeyPat
     mod = _launch_module()
     monkeypatch.setenv(SCENE_PEERS_ENV, format_scene_peers(P))
     with pytest.raises(ROSConfigError, match="world"):
-        mod._scene_peers(None)
+        mod._scene_peers(None, "sim")
     monkeypatch.delenv(SCENE_PEERS_ENV)
-    assert mod._scene_peers(None) == []
+    assert mod._scene_peers(None, "sim") == []
 
 
 @pytest.mark.parametrize("own", ["034", " 34 "])

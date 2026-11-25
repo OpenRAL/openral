@@ -1482,12 +1482,17 @@ def _scene_robot_world_pose(scene: DeployScene | None) -> Pose6D | None:
     return scene.base_pose if scene.base_pose.frame_id == SHARED_SCENE_FRAME else None
 
 
-def _scene_peers(world_pose: Pose6D | None) -> list[ScenePeer]:
+def _scene_peers(world_pose: Pose6D | None, hal_mode: str) -> list[ScenePeer]:
     """``$OPENRAL_SCENE_PEERS``; peers need this robot to have a pose in the shared ``world``.
 
+    A real robot with peers also needs a chrony-disciplined clock (HZ-0137-11), checked here
+    as well as in ``openral deploy run`` so a direct ``ros2 launch`` is checked too.
+
     Raises:
-        ROSConfigError: Peers are listed and the robot has no ``world`` pose.
+        ROSConfigError: Peers are listed and the robot has no ``world`` pose, its domain is
+            not distinct from theirs, or (``hal_mode == "real"``) its clock is not synchronised.
     """
+    from openral_core.clock_sync import chrony_tracking, require_synced_clock
     from openral_core.exceptions import ROSConfigError
     from openral_core.scene_paths import SCENE_PEERS_ENV, parse_scene_peers, require_peer_domains
 
@@ -1498,6 +1503,8 @@ def _scene_peers(world_pose: Pose6D | None) -> list[ScenePeer]:
             "world frame: a peer's goal could not be placed in its map."
         )
     require_peer_domains(peers, os.environ.get("ROS_DOMAIN_ID"))
+    if hal_mode == "real" and peers:
+        require_synced_clock(chrony_tracking())
     return peers
 
 
@@ -3579,7 +3586,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
 
                 description = sim_scene_description(description, _scene.scene.backend_options)
     # Checked with or without a deploy_config: a direct `ros2 launch` has peers too.
-    scene_peers = _scene_peers(world_pose)
+    scene_peers = _scene_peers(world_pose, hal_mode)
     # A rate the scene set, forwarded as the runner's `rate_hz` (0 = the manifest's).
     scene_rate_hz = (
         description.control_rate_hz if description.control_rate_hz != manifest_rate_hz else None

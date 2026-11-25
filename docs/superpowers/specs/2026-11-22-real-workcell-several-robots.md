@@ -90,7 +90,9 @@ robot's graph, joins each peer's domain directly and reads:
 The peer's URDF comes from its manifest (`ScenePeer.robot_id` -> `robots/<id>/robot.yaml`),
 which every graph of the scene can resolve; no URDF crosses the wire. In sim the stamps are
 sim-clock stamps. On real hardware each host's clock must be synchronised: `deploy run` with
-peers refuses a chrony offset over 10 ms or a leap status that is not `Normal`.
+peers, and `deploy_e2e.launch.py` under `hal_mode:=real` (so a direct `ros2 launch` too),
+refuses a leap status that is not `Normal` or a worst-case clock error (chrony's offset plus
+root dispersion plus half the root delay) over 10 ms, provisional until the Safety-WG sign-off.
 
 ### 4.2 Posing a peer into this robot's frame
 
