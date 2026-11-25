@@ -1047,6 +1047,15 @@ class IsaacLinkAttachment(BaseModel):
     #: (each robot its own tote): required there, as two robots cannot carry one prim.
     #: ``None``: the robot's, in a one-robot scene.
     robot: str | None = None
+    #: The prim's collision primitives in ``link``'s frame (``LinkCollisionGeometry``
+    #: entries without ``link_name``). Set, the prim is a rigid link of the robot for the
+    #: kernel and the octomap self-filter (``openral_core.sim_scene_description``), so it
+    #: leaves no trail in the world map while it rides the robot.
+    collision: list[dict[str, Any]] = Field(default_factory=list)
+    #: Set with ``collision``: the carried objects sit in the prim's bounding box raised by
+    #: this much, and the octomap self-filter drops that box's points while the base drives
+    #: (``openral_core.link_attachment_contents``). ``None``: the contents are mapped always.
+    contents_above_m: float | None = Field(default=None, ge=0.0)
 
 
 class IsaacDomeLight(BaseModel):
@@ -2994,6 +3003,9 @@ def _environment_spec(opts: IsaacSimOptions) -> dict[str, Any]:
     )
     for attachment in spec["link_attachments"]:
         attachment.pop("robot", None)  # which robot carries it is decided here, not by the sidecar
+        # The carrier's kernel/self-filter geometry: openral_core.sim_scene_description's.
+        attachment.pop("collision", None)
+        attachment.pop("contents_above_m", None)
     return spec
 
 

@@ -2994,12 +2994,10 @@ void carry_attached_contacts(std::uint8_t* contact_mask, std::size_t cells,
   }
 }
 
-CollisionHit check_attached_self_collision(const CollisionModel& model,
-                                           const AttachedModel& attached,
-                                           const CollisionScratch& scratch, double margin,
-                                           const WorkspaceContactRegion* workspace,
-                                           const ProviderGate* gate,
-                                           const WorkspaceContactRegion* narrow_under) noexcept {
+CollisionHit check_attached_self_collision(
+    const CollisionModel& model, const AttachedModel& attached, const CollisionScratch& scratch,
+    double margin, const WorkspaceContactRegion* workspace, const ProviderGate* gate,
+    const WorkspaceContactRegion* narrow_under, const std::uint8_t* carrier_links) noexcept {
   const WorkspaceContactRegion* narrow = narrow_under != nullptr ? narrow_under : workspace;
   CollisionHit result;
   double sweep_min = std::numeric_limits<double>::infinity();
@@ -3078,7 +3076,8 @@ CollisionHit check_attached_self_collision(const CollisionModel& model,
       const Transform prim_xf = compose(obj_xf, prim.pose_in_object);
       for (std::size_t c = 0; c < n_caps; ++c) {
         const int lc = model.capsule_link[c];
-        if (attached_allows_link(attached, obj, lc)) {
+        if (attached_allows_link(attached, obj, lc) ||
+            (carrier_links != nullptr && carrier_links[static_cast<std::size_t>(lc)] != 0)) {
           continue;
         }
         const Transform cap_j =
@@ -3089,7 +3088,8 @@ CollisionHit check_attached_self_collision(const CollisionModel& model,
       }
       for (std::size_t b = 0; b < n_boxes; ++b) {
         const int lb = model.box_link[b];
-        if (attached_allows_link(attached, obj, lb)) {
+        if (attached_allows_link(attached, obj, lb) ||
+            (carrier_links != nullptr && carrier_links[static_cast<std::size_t>(lb)] != 0)) {
           continue;
         }
         const Transform box_j =
