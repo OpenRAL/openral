@@ -575,10 +575,13 @@ sensors:
     modality: "rgb"
     frame_id: "world"
     rate_hz: 10.0
-    # The ZED-M left image at the pick-and-place rSkill's training raster (672x376): the
-    # real camera's live camera_info K (fx = fy = 1498.18, cx = 936.11, cy = 541.81 at
-    # 1920x1080, 2026-10-02) scaled per axis, so a sim renders the policy's view at its
-    # field of view (65.3 deg horizontal) and aspect.
+    # The sim render of the ZED-M left image at the pick-and-place rSkill's training raster
+    # (672x376): the 1920x1080 grab's rect K (fx = fy = 1498.18, cx = 936.11, cy = 541.81,
+    # 2026-10-02) scaled per axis, 65.3 deg horizontal. NOT the real camera at VGA: the
+    # rectified VGA image `top` binds is fx = fy = 356.309 (86.6 deg horizontal, 2026-11-25)
+    # and the raw one 82.3 deg, so a sim-evaluated policy sees a narrower view than the cell.
+    # Left as is because the sim evals (pick-and-place, restock) were measured on this view;
+    # change it only together with re-running them.
     intrinsics:
       width: 672
       height: 376
@@ -593,7 +596,8 @@ sensors:
     # On the real cell `top` is the ZED-M's rectified LEFT image (the wrapper owns the
     # device; `ros2_image` subscribes). The frame and intrinsics above are the sim
     # render's stand-ins: fine for a policy view, which conditions on pixels, but NOT
-    # for anything geometric on real hardware — use `head_zed` for that. The key stays
+    # for anything geometric on real hardware — there, use the driver's rect camera_info
+    # (the launch passes it as the consumers' `camera_infos`), which projects `top` exactly. The key stays
     # `observation.images.top`: the pick-and-place π0.5 rSkill aliases it onto its checkpoint's
     # `observation.images.context` (`image_preprocessing.aliases: {top: "context"}`), and
     # the ros2_image reader takes the wire encoding from each message, not `encoding`.
