@@ -1348,6 +1348,13 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     except ValueError as exc:
         raise ROSConfigError(str(exc)) from exc
     require_peer_domains(peers, os.environ.get("ROS_DOMAIN_ID"))
+    if hal_mode == "real" and peers:
+        from openral_cli._clock_sync import (  # reason: real-with-peers only
+            chrony_tracking,
+            require_synced_clock,
+        )
+
+        require_synced_clock(chrony_tracking())
     scene_robot_id = deploy_scene.robot_id if deploy_scene is not None else None
     robot_id = (
         _load_scene_robot_id(config, robot_override, sim=hal_mode == "sim")
