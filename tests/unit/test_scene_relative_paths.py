@@ -127,3 +127,50 @@ def test_a_directory_beside_the_scene_never_shadows_the_fallback(tmp_path: Path)
     (tmp_path / "stage.usd").mkdir()
     raw = {"scene": {"assets_uri": "stage.usd"}}
     assert anchor_scene_paths(raw, tmp_path) == raw
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "object_detector_onnx",
+        "object_detector_manifest",
+        "reward_monitor_manifest",
+        "scene_vlm_manifest",
+    ],
+)
+def test_a_runtime_file_beside_the_scene_is_anchored(tmp_path: Path, field: str) -> None:
+    """The CLI resolves these against the scene's directory, so a copy of the scene written
+    elsewhere (a Pro fleet slice in /tmp) must carry them absolute."""
+    (tmp_path / "m.yaml").write_text("")
+    out = anchor_scene_paths({"runtime": {field: "m.yaml"}}, tmp_path)
+    assert out["runtime"][field] == str((tmp_path / "m.yaml").resolve())
+
+
+def test_a_calibration_dir_beside_the_scene_is_anchored(tmp_path: Path) -> None:
+    (tmp_path / "calibration").mkdir()
+    (tmp_path / "cal.json").write_text("")
+    raw = {"hal": {"defaults": {"calibration_dir": "calibration"}}}
+    out = anchor_scene_paths(raw, tmp_path)
+    assert out["hal"]["defaults"]["calibration_dir"] == str((tmp_path / "calibration").resolve())
+    # A file of that name is not a calibration directory: left as written.
+    as_file = {"hal": {"defaults": {"calibration_dir": "cal.json"}}}
+    assert anchor_scene_paths(as_file, tmp_path) == as_file
+
+
+def test_a_driver_path_arg_beside_the_scene_is_anchored(tmp_path: Path) -> None:
+    (tmp_path / "drivers").mkdir()
+    (tmp_path / "drivers" / "zed.yaml").write_text("")
+    raw = {
+        "drivers": [
+            {
+                "package": "zed_wrapper",
+                "launch_file": "zed_camera.launch.py",
+                "args": {"ros_params_override_path": "drivers/zed.yaml", "camera_model": "zedm"},
+            }
+        ]
+    }
+    args = anchor_scene_paths(raw, tmp_path)["drivers"][0]["args"]
+    assert args == {
+        "ros_params_override_path": str((tmp_path / "drivers" / "zed.yaml").resolve()),
+        "camera_model": "zedm",
+    }

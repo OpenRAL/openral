@@ -9,6 +9,7 @@ scene is left as written, for the existing lookups (the repo root, then the cwd)
 from __future__ import annotations
 
 import copy
+from collections.abc import Callable
 from pathlib import Path
 from typing import TypeVar, cast
 
@@ -134,14 +135,39 @@ def require_peer_domains(peers: list[ScenePeer], own_domain: str | None) -> None
 _T = TypeVar("_T")
 
 
-def _anchored(ref: object, scene_dir: Path) -> object:
+#: The ``runtime`` fields naming a file beside the scene (the CLI's ``_scene_path``).
+_RUNTIME_FILES = (
+    "static_geometry_file",
+    "object_detector_onnx",
+    "object_detector_manifest",
+    "reward_monitor_manifest",
+    "scene_vlm_manifest",
+)
+
+
+def _anchored(ref: object, scene_dir: Path, there: Callable[[Path], bool] = Path.is_file) -> object:
     if not isinstance(ref, str):
         return ref
     rel = ref.removeprefix("file://")  # the Isaac backend's optional local-file scheme
     if not rel or ":" in rel or Path(rel).is_absolute():
         return ref  # not a relative local path: `isaac:`, a URL, absolute
     beside = scene_dir / rel
-    return str(beside.resolve()) if beside.is_file() else ref
+    return str(beside.resolve()) if there(beside) else ref
+
+
+def _anchor_hal_and_driver_paths(out: dict[str, object], scene_dir: Path) -> None:
+    """``hal.defaults.calibration_dir`` and ``drivers[].args`` ``*_path``, in place."""
+    hal = out.get("hal")
+    defaults = hal.get("defaults") if isinstance(hal, dict) else None
+    if isinstance(defaults, dict) and "calibration_dir" in defaults:
+        defaults["calibration_dir"] = _anchored(defaults["calibration_dir"], scene_dir, Path.is_dir)
+    drivers = out.get("drivers")
+    for driver in drivers if isinstance(drivers, list) else []:
+        args = driver.get("args") if isinstance(driver, dict) else None
+        if not isinstance(args, dict):
+            continue
+        for key in [k for k in args if isinstance(k, str) and k.endswith("_path")]:
+            args[key] = _anchored(args[key], scene_dir, Path.exists)
 
 
 def anchor_scene_paths(raw: _T, scene_dir: Path) -> _T:
@@ -150,8 +176,13 @@ def anchor_scene_paths(raw: _T, scene_dir: Path) -> _T:
     ``raw`` is a scene YAML's mapping.
 
     The references: ``scene.assets_uri``, ``scene.backend_options.objects[].usd``,
-    ``runtime.static_geometry_file`` and ``runtime.vision_attachment.segmenter_manifest``.
-    ``raw`` is not modified; anything that is not a mapping is returned as is.
+    ``runtime.static_geometry_file``, ``runtime.object_detector_onnx``,
+    ``runtime.object_detector_manifest``, ``runtime.reward_monitor_manifest``,
+    ``runtime.scene_vlm_manifest`` and ``runtime.vision_attachment.segmenter_manifest`` (each
+    a file); ``hal.defaults.calibration_dir`` (a directory); and every ``drivers[].args`` key
+    ending in ``_path`` (a file or a directory). So a scene re-written elsewhere (OpenRAL
+    Pro's per-robot fleet slices) still points at them. ``raw`` is not modified; anything
+    that is not a mapping is returned as is.
 
     Example:
         >>> import tempfile
@@ -180,9 +211,11 @@ def anchor_scene_paths(raw: _T, scene_dir: Path) -> _T:
                 obj["usd"] = _anchored(obj["usd"], scene_dir)
     runtime = out.get("runtime")
     if isinstance(runtime, dict):
-        if "static_geometry_file" in runtime:
-            runtime["static_geometry_file"] = _anchored(runtime["static_geometry_file"], scene_dir)
+        for key in _RUNTIME_FILES:
+            if key in runtime:
+                runtime[key] = _anchored(runtime[key], scene_dir)
         vision = runtime.get("vision_attachment")
         if isinstance(vision, dict) and "segmenter_manifest" in vision:
             vision["segmenter_manifest"] = _anchored(vision["segmenter_manifest"], scene_dir)
+    _anchor_hal_and_driver_paths(out, scene_dir)
     return cast("_T", out)
