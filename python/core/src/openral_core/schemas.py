@@ -15117,8 +15117,9 @@ class CollisionEvidence(_FailureEvidenceBase):
 
     Attributes:
         kind: Discriminator (always ``"collision"``).
-        collision_kind: ``"self"`` (link vs link) or ``"world"`` (link vs
-            obstacle).
+        collision_kind: ``"self"`` (link vs link), ``"world"`` (link vs
+            obstacle) or ``"peer"`` (link vs another robot of the scene, its
+            ``/openral/peer_voxels`` grid, ADR-0137).
         link_a: Robot link whose collision volume tripped the check.
         link_b_or_object: The other robot link (self-collision) or the world
             object / occupancy region (world-collision).
@@ -15198,7 +15199,7 @@ class CollisionEvidence(_FailureEvidenceBase):
     REACTIVE_HORIZON_STEP: ClassVar[int] = -1
 
     kind: Literal["collision"] = "collision"
-    collision_kind: Literal["self", "world"]
+    collision_kind: Literal["self", "world", "peer"]
     link_a: str
     link_b_or_object: str
     horizon_step: int = Field(ge=REACTIVE_HORIZON_STEP)

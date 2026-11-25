@@ -179,6 +179,25 @@ def test_a_stop_against_an_unmeasured_payload_says_the_bound_may_be_the_cause() 
     assert "self-collision" not in hint and "clear the obstacle" not in hint
 
 
+def test_a_stop_against_a_peer_robot_names_the_other_robot() -> None:
+    """#767: a hit on another robot's grid (ADR-0137) is not a world obstacle to clear; the
+    hint says wait for the other robot, and still that the stop stays latched."""
+    hint = reflect_on_failure(
+        "aborted",
+        "safety_estop:...",
+        failure_kind="FAILURE_SAFETY_ESTOP",
+        evidence_json=CollisionEvidence(
+            collision_kind="peer",
+            link_a="openarm_left_ee_base_link",
+            link_b_or_object="peer_voxel_303044",
+            min_distance_m=-0.0424,
+            horizon_step=0,
+        ).model_dump_json(),
+    )
+    assert "another robot" in hint and "until an operator resets it" in hint
+    assert "clear the obstacle" not in hint and "self-collision" not in hint
+
+
 def test_a_stalled_clock_is_not_reported_as_a_stuck_skill() -> None:
     """A ``clock_stalled`` deadline miss means the stack stopped, not the skill."""
     stalled = TimeoutEvidence(

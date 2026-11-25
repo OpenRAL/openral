@@ -10669,6 +10669,9 @@ TEST_F(LifecycleKernelTest, AGraspExemptionNeverCoversAPeerCell) {
   rig.spin_for(200);  // the failure report
   EXPECT_NE(rig.collision_evidence.find("peer_voxel_0"), std::string::npos)
       << rig.collision_evidence;
+  // #767: reported as a peer stop, not a world one; the octomap phase keeps "world".
+  EXPECT_NE(rig.collision_evidence.find(R"("collision_kind":"peer")"), std::string::npos)
+      << rig.collision_evidence;
 }
 
 TEST_F(LifecycleKernelTest, APeerAgainstALinkNoChunkMovesDoesNotStopTheArm) {
@@ -10728,4 +10731,6 @@ TEST_F(LifecycleKernelTest, ACarriedPayloadInAPeerCellStops) {
   EXPECT_NE(rig.collision_evidence.find("peer_voxel_0"), std::string::npos)
       << rig.collision_evidence;
   EXPECT_NE(rig.collision_evidence.find("attached"), std::string::npos) << rig.collision_evidence;
+  EXPECT_NE(rig.collision_evidence.find(R"("collision_kind":"peer")"), std::string::npos)
+      << rig.collision_evidence;
 }
