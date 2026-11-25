@@ -151,3 +151,20 @@ def test_launch_refuses_peers_without_a_world_pose(monkeypatch: pytest.MonkeyPat
         mod._scene_peers(None)
     monkeypatch.delenv(SCENE_PEERS_ENV)
     assert mod._scene_peers(None) == []
+
+
+@pytest.mark.parametrize("own", ["034", " 34 "])
+def test_own_domain_is_compared_as_ros_reads_it(own: str) -> None:
+    with pytest.raises(ROSConfigError, match="34"):
+        require_peer_domains(P, own)
+
+
+def test_own_domain_must_be_an_integer() -> None:
+    with pytest.raises(ROSConfigError, match="ROS_DOMAIN_ID"):
+        require_peer_domains(P, "abc")
+
+
+def test_duplicate_peer_name() -> None:
+    twin = P[1].model_copy(update={"name": "b"})
+    with pytest.raises(ROSConfigError, match="twice"):
+        require_peer_domains([P[0], twin], "30")

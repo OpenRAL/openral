@@ -118,10 +118,18 @@ def require_peer_domains(peers: list[ScenePeer], own_domain: str | None) -> None
             f"{SCENE_PEERS_ENV} lists peers, so this robot needs its own exported "
             "ROS_DOMAIN_ID (a hashed default would not be distinct from theirs)."
         )
-    owners = {own_domain: "this robot"}
+    try:
+        own = int(own_domain.strip())
+    except ValueError as exc:
+        raise ROSConfigError(f"ROS_DOMAIN_ID={own_domain!r} is not an integer.") from exc
+    owners = {own: "this robot"}
+    names: set[str] = set()
     for peer in peers:
         name = repr(peer.name)
-        if (other := owners.setdefault(str(peer.domain), name)) != name:
+        if name in names:
+            raise ROSConfigError(f"{SCENE_PEERS_ENV} lists peer {name} twice.")
+        names.add(name)
+        if (other := owners.setdefault(peer.domain, name)) != name:
             raise ROSConfigError(
                 f"ROS_DOMAIN_ID={peer.domain} is shared by {other} and {name}: "
                 "export a distinct ROS_DOMAIN_ID per robot"
