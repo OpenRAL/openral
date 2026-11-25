@@ -21,6 +21,7 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+from openral_core import ScenePeer
 
 _ROBOTS = Path(__file__).resolve().parents[3] / "robots"
 
@@ -116,7 +117,7 @@ def test_a_fixed_arm_self_filter_is_posed_in_base_frame() -> None:
     assert params["base_frame"] == desc.base_frame == "base_link"
     assert "collision_base_dofs" not in params
     # A peer is posed the same way (peer_voxels looks up world -> its base_frame).
-    peer = mod._peer_params([("b", 34, str(_ROBOTS / "widowx" / "robot.yaml"))])
+    peer = mod._peer_params([ScenePeer(name="b", robot_id="widowx", domain=34)])
     assert peer["peer_b.base_frame"] == "base_link"
     # The camera the twin publishes hangs off that frame, so TF joins cloud and model.
     (top,) = desc.sensors

@@ -9,15 +9,17 @@ scene is left as written, for the existing lookups (the repo root, then the cwd)
 from __future__ import annotations
 
 import copy
-import json
 import os
 from pathlib import Path
 from typing import TypeVar, cast
+
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 __all__ = [
     "SCENE_PEERS_ENV",
     "SCENE_ROBOT_ENV",
     "SCENE_ROBOT_MAP_FRAME_ENV",
+    "ScenePeer",
     "anchor_scene_paths",
     "format_scene_peers",
     "parse_scene_peers",
@@ -30,52 +32,63 @@ SCENE_ROBOT_ENV = "OPENRAL_SCENE_ROBOT"
 #: Beside it: that robot's ``RobotDescription.map_frame``, the frame its scene's nav goals and
 #: place zones are re-expressed in (``"map"`` when unset).
 SCENE_ROBOT_MAP_FRAME_ENV = "OPENRAL_SCENE_ROBOT_MAP_FRAME"
-#: Beside them: the scene's other robots, a JSON list of ``[name, domain, manifest]``
+#: Beside them: the scene's other robots, a JSON list of ``{"name", "robot_id", "domain"}``
 #: (``format_scene_peers``). Each robot's graph runs a peer producer on it, whose grid its
 #: safety kernel checks with no exemption (ADR-0137).
 SCENE_PEERS_ENV = "OPENRAL_SCENE_PEERS"
-_PEER_FIELDS = 3  # name, ROS domain, manifest path
 
 
-def format_scene_peers(peers: list[tuple[str, int, str]]) -> str:
-    """``(name, ROS domain, manifest path)`` per peer, as ``SCENE_PEERS_ENV`` carries them (JSON).
+class ScenePeer(BaseModel):
+    """One of a scene's other robots, as ``SCENE_PEERS_ENV`` names it.
+
+    The manifest is looked up from ``robot_id`` where the graph runs, never carried as a path.
 
     Example:
-        >>> format_scene_peers([("b", 34, "/r/amr/robot.yaml")])
-        '[["b", 34, "/r/amr/robot.yaml"]]'
+        >>> ScenePeer(name="b", robot_id="openarm", domain=34).domain
+        34
     """
-    return json.dumps([[n, d, m] for n, d, m in peers])
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(pattern=r"^[a-z][a-z0-9]{0,23}$")
+    robot_id: str = Field(min_length=1)
+    domain: int = Field(ge=0, le=232)
 
 
-def parse_scene_peers(value: str | None) -> list[tuple[str, int, str]]:
+_PEERS = TypeAdapter(list[ScenePeer])
+
+
+def format_scene_peers(peers: list[ScenePeer]) -> str:
+    """The peers as ``SCENE_PEERS_ENV`` carries them (a JSON list of objects).
+
+    Example:
+        >>> format_scene_peers([ScenePeer(name="b", robot_id="amr", domain=34)])
+        '[{"name":"b","robot_id":"amr","domain":34}]'
+    """
+    return _PEERS.dump_json(peers).decode()
+
+
+def parse_scene_peers(value: str | None) -> list[ScenePeer]:
     """The inverse of ``format_scene_peers``; empty for ``None`` or ``""``.
 
     Raises:
-        ValueError: The value is not a JSON list of ``[name, domain, manifest]``.
+        ValueError: The value is not a JSON list of valid ``ScenePeer`` objects.
 
     Example:
-        >>> parse_scene_peers(format_scene_peers([("b", 34, "/srv/openral;lab/robot.yaml")]))
-        [('b', 34, '/srv/openral;lab/robot.yaml')]
+        >>> parse_scene_peers(format_scene_peers([ScenePeer(name="b", robot_id="amr", domain=34)]))
+        [ScenePeer(name='b', robot_id='amr', domain=34)]
         >>> parse_scene_peers("{}")
         Traceback (most recent call last):
-        ValueError: OPENRAL_SCENE_PEERS is not a list of [name, domain, manifest]: '{}'
+        ValueError: OPENRAL_SCENE_PEERS is not a list of {name, robot_id, domain}: '{}'
     """
     if not value:
         return []
-    bad = ValueError(f"{SCENE_PEERS_ENV} is not a list of [name, domain, manifest]: {value!r}")
     try:
-        raw = json.loads(value)
-    except ValueError as exc:
-        raise bad from exc
-    entries = raw if isinstance(raw, list) else None
-    if entries is None or not all(isinstance(e, list) and len(e) == _PEER_FIELDS for e in entries):
-        raise bad
-    out: list[tuple[str, int, str]] = []
-    for name, domain, manifest in entries:
-        if not (isinstance(name, str) and isinstance(domain, int) and isinstance(manifest, str)):
-            raise bad
-        out.append((name, domain, manifest))
-    return out
+        return _PEERS.validate_json(value)
+    except ValueError as exc:  # pydantic's ValidationError is a ValueError
+        raise ValueError(
+            f"{SCENE_PEERS_ENV} is not a list of {{name, robot_id, domain}}: {value!r}"
+        ) from exc
 
 
 _T = TypeVar("_T")

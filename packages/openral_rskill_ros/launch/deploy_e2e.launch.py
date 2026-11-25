@@ -87,6 +87,7 @@ from openral_core import (
     DeployRuntime,
     DeployScene,
     Pose6D,
+    ScenePeer,
     UnitIdentity,
     apply_sensor_overlays,
     camera_topic,
@@ -493,31 +494,34 @@ def _octomap_frames(description: RobotDescription) -> tuple[str, str]:
 _PEER_BOUND_S = 0.3
 
 
-def _peer_params(peers: list[tuple[str, int, str]]) -> dict[str, object]:
+def _peer_params(peers: list[ScenePeer]) -> dict[str, object]:
     """``peer_voxels``' per-peer parameters (ADR-0137), under ``peer_<name>.``.
 
-    Each peer's collision model, lowered from its own manifest as its kernel's is.
+    Each peer's collision model, lowered from its own manifest (looked up from its ``robot_id``)
+    as its kernel's is.
 
     Each is posed in its manifest ``base_frame``; a mobile base with its planar base dofs held
     at zero, as its own kernel holds them.
 
     Example:
-        >>> p = _peer_params([("b", 34, "robots/openarm/robot.yaml")])
+        >>> p = _peer_params([ScenePeer(name="b", robot_id="openarm", domain=34)])
         >>> p["peer_names"], p["peer_domains"], p["peer_b.base_frame"]
         (['b'], [34], 'openarm_base')
     """
     from openral_core import RobotDescription
     from openral_safety.envelope_loader import collision_params_from_description
+    from openral_sim.policies.robots import resolve_robot_manifest
 
     out: dict[str, object] = {
-        "peer_names": [n for n, _, _ in peers],
-        "peer_domains": [d for _, d, _ in peers],
+        "peer_names": [p.name for p in peers],
+        "peer_domains": [p.domain for p in peers],
     }
-    for name, _, manifest in peers:
+    for peer in peers:
+        name = peer.name
         # ponytail: the manifest's capsules, never the MJCF lowering the peer's own kernel may
         # prefer; those are hand-authored to contain the links. Lower the MJCF here too if a
         # robot's manifest geometry ever under-covers its MJCF.
-        description = RobotDescription.from_yaml(manifest)
+        description = RobotDescription.from_yaml(str(resolve_robot_manifest(peer.robot_id)))
         collision = collision_params_from_description(description)
         params = _posed_model_params(
             description, collision, _collision_base_dofs(description, collision)
@@ -3530,8 +3534,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     scene_unit: str | None = None
     scene_backend: str | None = None
     world_pose: Pose6D | None = None
-    # The scene's other robots (ADR-0137): name, ROS domain, manifest.
-    scene_peers: list[tuple[str, int, str]] = []
+    # The scene's other robots (ADR-0137).
+    scene_peers: list[ScenePeer] = []
     if deploy_config:
         from openral_core import DeployScene
 
@@ -4031,7 +4035,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
 
         raise ROSConfigError(
             "this robot shares its scene with other robots "
-            f"({', '.join(n for n, _, _ in scene_peers)}) but its kernel has no world-voxel "
+            f"({', '.join(p.name for p in scene_peers)}) but its kernel has no world-voxel "
             "check, so it could not check its moves against them (ADR-0137). Enable the octomap "
             "leg and its kernel check for every robot of a several-robot scene."
         )

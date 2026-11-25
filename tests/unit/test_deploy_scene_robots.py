@@ -336,7 +336,8 @@ def test_a_dry_run_prints_each_robots_command_and_starts_nothing(
     out = capsys.readouterr().out
     assert "OPENRAL_SCENE_ROBOT=south" in out and "OPENRAL_SCENE_ROBOT=north" in out
     assert "OPENRAL_SCENE_ROBOT_MAP_FRAME=map" in out
-    assert '"north", 34' in out and '"south", 30' in out  # each robot's peers
+    assert '"name":"north"' in out and '"domain":34' in out  # each robot's peers
+    assert '"name":"south"' in out and '"domain":30' in out
     assert str(tmp_path / "north") in out
     assert list(tmp_path.iterdir()) == []  # nothing written, nothing started
 
@@ -352,9 +353,9 @@ def test_each_robot_is_told_every_other_robot_and_never_itself() -> None:
     ]
     scene = DeployScene.model_validate({**_aisle(), "robots": robots})
     peers = {n: parse_scene_peers(v) for n, v in scene_peers(scene, robot_slots(scene)).items()}
-    assert [(n, d) for n, d, _ in peers["a"]] == [("b", 34), ("c", 38)]
-    assert [(n, d) for n, d, _ in peers["c"]] == [("a", 30), ("b", 34)]
-    assert all(Path(m).name == "robot.yaml" and Path(m).is_file() for _, _, m in peers["b"])
+    assert [(p.name, p.domain) for p in peers["a"]] == [("b", 34), ("c", 38)]
+    assert [(p.name, p.domain) for p in peers["c"]] == [("a", 30), ("b", 34)]
+    assert all(p.robot_id == "openamrobot_v2" for p in peers["b"])
 
 
 def test_a_shared_scene_attachment_names_its_robot(monkeypatch: pytest.MonkeyPatch) -> None:

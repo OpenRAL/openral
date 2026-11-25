@@ -30,6 +30,7 @@ from openral_core.scene_paths import (
     SCENE_PEERS_ENV,
     SCENE_ROBOT_ENV,
     SCENE_ROBOT_MAP_FRAME_ENV,
+    ScenePeer,
     format_scene_peers,
 )
 from openral_observability.dashboard.remote_auth import load_enrolment
@@ -372,15 +373,13 @@ def robot_memory_dirs(root: str | None, names: list[str]) -> dict[str, Path]:
 
 
 def scene_peers(scene: DeployScene, slots: list[dict[str, int | str]]) -> dict[str, str]:
-    """Per robot, ``SCENE_PEERS_ENV``: every other robot's name, domain and manifest path."""
-    root = _repo_root_from(Path(__file__))
-    manifests = {
-        r.name: str(resolve_robot_manifest(r.robot_id, repo_root=root)) for r in scene.robots
-    }
-    entries = [(str(s["name"]), int(s["domain"]), manifests[str(s["name"])]) for s in slots]
-    return {
-        name: format_scene_peers([e for e in entries if e[0] != name]) for name, _, _ in entries
-    }
+    """Per robot, ``SCENE_PEERS_ENV``: every other robot's name, robot id and domain."""
+    ids = {r.name: r.robot_id for r in scene.robots}
+    entries = [
+        ScenePeer(name=str(s["name"]), robot_id=ids[str(s["name"])], domain=int(s["domain"]))
+        for s in slots
+    ]
+    return {e.name: format_scene_peers([p for p in entries if p.name != e.name]) for e in entries}
 
 
 def _map_frames(scene: DeployScene) -> dict[str, str]:
