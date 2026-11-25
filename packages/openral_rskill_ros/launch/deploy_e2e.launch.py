@@ -509,6 +509,7 @@ def _peer_params(peers: list[ScenePeer]) -> dict[str, object]:
         (['b'], [34], 'openarm_base')
     """
     from openral_core import RobotDescription
+    from openral_core.exceptions import ROSConfigError
     from openral_safety.envelope_loader import collision_params_from_description
     from openral_sim.policies.robots import resolve_robot_manifest
 
@@ -521,7 +522,13 @@ def _peer_params(peers: list[ScenePeer]) -> dict[str, object]:
         # ponytail: the manifest's capsules, never the MJCF lowering the peer's own kernel may
         # prefer; those are hand-authored to contain the links. Lower the MJCF here too if a
         # robot's manifest geometry ever under-covers its MJCF.
-        description = RobotDescription.from_yaml(str(resolve_robot_manifest(peer.robot_id)))
+        try:
+            manifest = resolve_robot_manifest(peer.robot_id)
+        except Exception as exc:  # reason: any lookup failure names the peer
+            raise ROSConfigError(
+                f"peer {name!r} (robot_id {peer.robot_id!r}): no robot manifest ({exc})"
+            ) from exc
+        description = RobotDescription.from_yaml(str(manifest))
         collision = collision_params_from_description(description)
         params = _posed_model_params(
             description, collision, _collision_base_dofs(description, collision)
@@ -1482,7 +1489,7 @@ def _scene_peers(world_pose: Pose6D | None) -> list[ScenePeer]:
         ROSConfigError: Peers are listed and the robot has no ``world`` pose.
     """
     from openral_core.exceptions import ROSConfigError
-    from openral_core.scene_paths import SCENE_PEERS_ENV, parse_scene_peers
+    from openral_core.scene_paths import SCENE_PEERS_ENV, parse_scene_peers, require_peer_domains
 
     peers = parse_scene_peers(os.environ.get(SCENE_PEERS_ENV))
     if peers and world_pose is None:
@@ -1490,6 +1497,7 @@ def _scene_peers(world_pose: Pose6D | None) -> list[ScenePeer]:
             f"{SCENE_PEERS_ENV} lists peers, but this robot has no base_pose in the shared "
             "world frame: a peer's goal could not be placed in its map."
         )
+    require_peer_domains(peers, os.environ.get("ROS_DOMAIN_ID"))
     return peers
 
 
@@ -3551,14 +3559,11 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     scene_unit: str | None = None
     scene_backend: str | None = None
     world_pose: Pose6D | None = None
-    # The scene's other robots (ADR-0137).
-    scene_peers: list[ScenePeer] = []
     if deploy_config:
         from openral_core import DeployScene
 
         _scene = DeployScene.from_yaml(deploy_config)
         world_pose = _scene_robot_world_pose(_scene)
-        scene_peers = _scene_peers(world_pose)
         scene_sensors = list(_scene.sensors)
         scene_drivers = list(_scene.drivers)
         scene_unit = _scene.robot_unit
@@ -3573,6 +3578,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 from openral_core import sim_scene_description
 
                 description = sim_scene_description(description, _scene.scene.backend_options)
+    # Checked with or without a deploy_config: a direct `ros2 launch` has peers too.
+    scene_peers = _scene_peers(world_pose)
     # A rate the scene set, forwarded as the runner's `rate_hz` (0 = the manifest's).
     scene_rate_hz = (
         description.control_rate_hz if description.control_rate_hz != manifest_rate_hz else None

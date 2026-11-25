@@ -58,6 +58,7 @@ import yaml
 from openral_core import POLICY_KINDS, ROS_WRAPPER_KINDS, EmbodimentKind
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from openral_core.gpu import detect_gpu_vram_gb
+from pydantic import ValidationError
 from rich.console import Console
 
 if TYPE_CHECKING:
@@ -1319,7 +1320,12 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             "parallel `openral deploy sim` harnesses only."
         )
 
-    deploy_scene = DeployScene.from_yaml(str(config)) if config is not None else None
+    try:
+        deploy_scene = DeployScene.from_yaml(str(config)) if config is not None else None
+    except ValidationError as exc:
+        # One line per problem, not pydantic's traceback (a `robots:` scene names `deploy fleet`).
+        detail = "; ".join(str(e["msg"]) for e in exc.errors())
+        raise ROSConfigError(f"failed to load --config {config}: {detail}") from None
     if runtime_overrides:
         deploy_scene = _with_runtime_overrides(deploy_scene, runtime_overrides)
     # Before any confine_* fills a hashed domain: only an exported one is distinct from the peers'.

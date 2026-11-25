@@ -89,7 +89,7 @@ def test_peer_params_keys() -> None:
 
 def test_peer_params_unknown_robot_id() -> None:
     mod = _launch_module()
-    with pytest.raises(Exception, match="nosuchrobot"):
+    with pytest.raises(ROSConfigError, match=r"peer 'b'.*nosuchrobot"):
         mod._peer_params([ScenePeer(name="b", robot_id="nosuchrobot", domain=34)])
 
 
@@ -175,3 +175,17 @@ def test_duplicate_peer_name() -> None:
 def test_robots_key_points_to_deploy_fleet(model: type[DeployScene]) -> None:
     with pytest.raises(ValidationError, match="openral deploy fleet"):
         model.model_validate({"scene": {"id": "x", "backend": "isaacsim"}, "robots": []})
+
+
+def test_a_direct_launch_without_a_deploy_config_still_checks_its_peers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Peers set, no ``deploy_config`` (so no world pose, ``_scene_peers(None)``): refuse."""
+    mod = _launch_module()
+    monkeypatch.setenv(SCENE_PEERS_ENV, format_scene_peers(P[:1]))
+    monkeypatch.setenv("ROS_DOMAIN_ID", "30")
+    with pytest.raises(ROSConfigError, match="no base_pose"):
+        mod._scene_peers(None)
+    monkeypatch.delenv("ROS_DOMAIN_ID")
+    with pytest.raises(ROSConfigError, match="ROS_DOMAIN_ID"):
+        mod._scene_peers(object())  # a pose is there; the missing domain is what refuses
