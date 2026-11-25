@@ -50,7 +50,7 @@ def require_synced_clock(
     offset, leap = tracking
     if leap != "Normal":
         raise ROSConfigError(f"the host clock is not synchronised by chrony (leap status: {leap}).")
-    if abs(offset) > limit_s:
+    if not abs(offset) <= limit_s:  # fails closed on nan; inf is > limit
         raise ROSConfigError(
             f"the host clock is {offset * 1000:.1f} ms off chrony's reference; "
             f"peers need within {limit_s * 1000:.0f} ms."
