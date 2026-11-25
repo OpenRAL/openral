@@ -5,6 +5,10 @@
 # `ros_params_override_path` here (see the ZED recipe in
 # docs/tutorials/deploy/deploy-run-and-dashboard.md).
 #
+# It does NOT advertise `rgb/color/raw/*` (`video.publish_raw: false`): bind colour to
+# `/zed/zed_node/rgb/color/rect/image`, which the depth is registered to. A manifest still
+# bound to the raw topic gets no frames with this file.
+#
 # Referenced from `scenes/deploy/openarm_bench.yaml`'s `drivers:` entry
 # as a scene-relative path, so the setting travels with the scene instead of
 # living in an operator's home directory.
