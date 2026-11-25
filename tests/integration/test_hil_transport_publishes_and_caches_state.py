@@ -8,8 +8,11 @@ and asserts:
    reflects the latest message.
 2. The same bridge publishes ``trajectory_msgs/JointTrajectory`` on the command topic when
    ``publish()`` is called.
-3. ``AlohaHILTransport`` dispatches arm and gripper publishes to the matching topic with the
-   right joint layout.
+3. The production ``InterbotixXSTransport`` (what the lifecycle node attaches to a real
+   ``AlohaHAL``, and what the ALOHA HIL test drives) turns ``AlohaHAL``'s ``{name, cmd}``
+   payloads into ``interbotix_xs_msgs`` ``JointGroupCommand`` / ``JointSingleCommand``
+   messages, and merges the two per-namespace ``xs_sdk`` joint-state streams into manifest
+   order (skips without ``interbotix_xs_msgs``).
 
 These guard against regressions in the bridge wiring itself; per-robot HIL tests assume the
 bridge already works. Skips if ``ROS_DISTRO`` is not set (matches
@@ -136,106 +139,160 @@ def test_ros_control_bridge_publishes_joint_trajectory() -> None:
             node.destroy_node()
 
 
-def test_aloha_bridge_dispatches_arm_and_gripper() -> None:
-    """``AlohaHILTransport.publish`` must route by topic to the right publisher."""
-    from trajectory_msgs.msg import JointTrajectory
+_needs_interbotix = pytest.mark.skipif(
+    importlib.util.find_spec("interbotix_xs_msgs") is None,
+    reason="interbotix_xs_msgs not installed — the ALOHA transport speaks the xs_sdk messages.",
+)
 
-    from tests.hil._aloha_ros_transport import AlohaHILTransport
+_ALOHA_JOINTS = [
+    f"{side}_{j}"
+    for side in ("left", "right")
+    for j in (
+        "waist",
+        "shoulder",
+        "elbow",
+        "forearm_roll",
+        "wrist_angle",
+        "wrist_rotate",
+        "gripper",
+    )
+]
+
+
+@_needs_interbotix
+def test_aloha_bridge_publishes_xs_sdk_messages_and_merges_state() -> None:
+    """Arm -> ``JointGroupCommand``, gripper -> ``JointSingleCommand``; state merged by side."""
+    from interbotix_xs_msgs.msg import JointGroupCommand, JointSingleCommand
+    from openral_hal.interbotix_transport import InterbotixXSTransport
+    from rclpy.qos import QoSProfile, QoSReliabilityPolicy
+    from sensor_msgs.msg import JointState as RosJointState
 
     with _rclpy_session() as rclpy:
         node = rclpy.create_node("openral_hil_aloha_bridge_test")
         helper = rclpy.create_node("openral_hil_aloha_bridge_test_helper")
         try:
-            joint_names = [
-                "left_waist",
-                "left_shoulder",
-                "left_elbow",
-                "left_forearm_roll",
-                "left_wrist_angle",
-                "left_wrist_rotate",
-                "left_gripper",
-                "right_waist",
-                "right_shoulder",
-                "right_elbow",
-                "right_forearm_roll",
-                "right_wrist_angle",
-                "right_wrist_rotate",
-                "right_gripper",
-            ]
-            transport = AlohaHILTransport(
+            transport = InterbotixXSTransport(
                 node,
-                joint_names=joint_names,
-                left_arm_command_topic="/test/left_arm/joint_trajectory",
-                right_arm_command_topic="/test/right_arm/joint_trajectory",
-                left_gripper_command_topic="/test/left_gripper/command",
-                right_gripper_command_topic="/test/right_gripper/command",
-                joint_state_topic="/test/aloha_states",
+                arm_namespaces=("t_left", "t_right"),
+                joint_names=_ALOHA_JOINTS,
+                gripper_name="gripper",
+                gripper_position_range=(1.0, 2.0),
             )
-            from rclpy.qos import QoSProfile, QoSReliabilityPolicy
-
             qos = QoSProfile(reliability=QoSReliabilityPolicy.RELIABLE, depth=10)
-            arm_msgs: list[Any] = []
-            gripper_msgs: list[Any] = []
+            groups: list[Any] = []
+            singles: list[Any] = []
             helper.create_subscription(
-                JointTrajectory,
-                "/test/left_arm/joint_trajectory",
-                arm_msgs.append,
-                qos,
+                JointGroupCommand, "/t_left/commands/joint_group", groups.append, qos
             )
             helper.create_subscription(
-                JointTrajectory,
-                "/test/left_gripper/command",
-                gripper_msgs.append,
-                qos,
+                JointSingleCommand, "/t_left/commands/joint_single", singles.append, qos
             )
-
-            arm_chunk = [[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]]
+            state_pubs = {
+                ns: helper.create_publisher(RosJointState, f"/{ns}/joint_states", qos)
+                for ns in ("t_left", "t_right")
+            }
+            arm = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
             deadline = time.monotonic() + 2.0
-            while time.monotonic() < deadline and (not arm_msgs or not gripper_msgs):
-                transport.publish(
-                    "/test/left_arm/joint_trajectory",
-                    {"joint_targets": arm_chunk},
-                )
-                transport.publish(
-                    "/test/left_gripper/command",
-                    {"position": 0.025, "stamp_ns": time.time_ns()},
-                )
+            while time.monotonic() < deadline and not (
+                groups and singles and {"left_gripper", "right_gripper"} <= transport._latest.keys()
+            ):
+                transport.publish("/t_left/commands/joint_group", {"name": "arm", "cmd": arm})
+                transport.publish("/t_left/commands/joint_single", {"name": "gripper", "cmd": 1.5})
+                for offset, pub in enumerate(state_pubs.values()):
+                    msg = RosJointState()
+                    msg.name = ["waist", "gripper", "left_finger"]
+                    msg.position = [float(offset), 9.0, 1.25 + offset * 0.5]
+                    msg.effort = [0.0, 40.0 + offset, 0.0]
+                    pub.publish(msg)
                 rclpy.spin_once(helper, timeout_sec=0.05)
-                transport.spin_once(timeout_sec=0.05)
+                rclpy.spin_once(node, timeout_sec=0.05)
+                rclpy.spin_once(node, timeout_sec=0.05)
 
-            assert arm_msgs, "left-arm JointTrajectory never received"
-            assert gripper_msgs, "left-gripper JointTrajectory never received"
+            assert groups and singles, "xs_sdk command messages never received"
+            assert groups[-1].name == "arm"
+            assert list(groups[-1].cmd) == pytest.approx(arm)
+            assert singles[-1].name == "gripper"
+            assert singles[-1].cmd == pytest.approx(1.5)
 
-            arm_traj = arm_msgs[-1]
-            assert list(arm_traj.joint_names) == joint_names[0:6]
-            assert list(arm_traj.points[0].positions) == arm_chunk[0]
-
-            grip_traj = gripper_msgs[-1]
-            assert list(grip_traj.joint_names) == [joint_names[6]]
-            assert list(grip_traj.points[0].positions) == [0.025]
+            position = transport.state()["position"]
+            assert isinstance(position, list)
+            by_name = dict(zip(_ALOHA_JOINTS, position, strict=True))
+            assert by_name["right_waist"] == pytest.approx(1.0)
+            # The gripper is the finger position (as upstream get_qpos), not the
+            # motor angle (9.0); its effort is the gripper motor's.
+            assert by_name["left_gripper"] == pytest.approx(0.25)  # (1.25 - 1) / (2 - 1)
+            assert by_name["right_gripper"] == pytest.approx(0.75)
+            effort = dict(zip(_ALOHA_JOINTS, transport.state()["effort"], strict=True))  # type: ignore[call-overload]  # reason: raw dict value
+            assert effort["right_gripper"] == pytest.approx(41.0)
+            # Only waist + gripper arrived per side: still infinitely stale.
+            assert transport.last_arrival() == 0.0
         finally:
             helper.destroy_node()
             node.destroy_node()
 
 
+@_needs_interbotix
+def test_aloha_bridge_one_silent_arm_is_stale_and_missing() -> None:
+    """Only the left ``xs_sdk`` streams: no freshness stamp, right joints listed missing.
+
+    ``state`` zero-fills the right arm, so a hold built now would command it to
+    the zero pose; ``last_arrival`` stays ``0.0`` (``AlohaHAL`` reads that as
+    infinitely stale) and ``missing_joints`` names the silent arm. The gripper
+    velocity is scaled onto the normalised range like its position.
+    """
+    from openral_hal.interbotix_transport import InterbotixXSTransport
+    from rclpy.qos import QoSProfile, QoSReliabilityPolicy
+    from sensor_msgs.msg import JointState as RosJointState
+
+    with _rclpy_session() as rclpy:
+        node = rclpy.create_node("openral_hil_aloha_bridge_silent_arm")
+        helper = rclpy.create_node("openral_hil_aloha_bridge_silent_arm_helper")
+        try:
+            transport = InterbotixXSTransport(
+                node,
+                arm_namespaces=("s_left", "s_right"),
+                joint_names=_ALOHA_JOINTS,
+                gripper_name="gripper",
+                gripper_position_range=(1.0, 3.0),
+            )
+            qos = QoSProfile(reliability=QoSReliabilityPolicy.RELIABLE, depth=10)
+            left = helper.create_publisher(RosJointState, "/s_left/joint_states", qos)
+            msg = RosJointState()
+            msg.name = [n.removeprefix("left_") for n in _ALOHA_JOINTS[:7]] + ["left_finger"]
+            msg.position = [0.0] * 7 + [2.0]
+            msg.velocity = [0.0] * 7 + [1.0]
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline and "left_gripper" not in transport._latest:
+                left.publish(msg)
+                rclpy.spin_once(node, timeout_sec=0.05)
+
+            assert transport.missing_joints() == _ALOHA_JOINTS[7:]
+            assert transport.last_arrival() == 0.0
+            velocity = transport.state()["velocity"]
+            assert isinstance(velocity, list)
+            assert velocity[6] == pytest.approx(0.5)  # 1 m/s over a 2 m finger span
+        finally:
+            helper.destroy_node()
+            node.destroy_node()
+
+
+@_needs_interbotix
 def test_aloha_bridge_rejects_unknown_topic() -> None:
-    """An unknown topic must raise ``ValueError`` so HAL drift fails loudly."""
-    from tests.hil._aloha_ros_transport import AlohaHILTransport
+    """An unknown topic must raise ``ROSConfigError`` so HAL drift fails loudly."""
+    from openral_core.exceptions import ROSConfigError
+    from openral_hal.interbotix_transport import InterbotixXSTransport
 
     with _rclpy_session() as rclpy:
         node = rclpy.create_node("openral_hil_aloha_bridge_unknown_topic")
         try:
-            joint_names = [f"j{i}" for i in range(14)]
-            transport = AlohaHILTransport(
+            transport = InterbotixXSTransport(
                 node,
-                joint_names=joint_names,
-                left_arm_command_topic="/test/left_arm/joint_trajectory",
-                right_arm_command_topic="/test/right_arm/joint_trajectory",
-                left_gripper_command_topic="/test/left_gripper/command",
-                right_gripper_command_topic="/test/right_gripper/command",
-                joint_state_topic="/test/aloha_states",
+                arm_namespaces=("t_left", "t_right"),
+                joint_names=_ALOHA_JOINTS,
+                gripper_name="gripper",
+                gripper_position_range=(1.0, 2.0),
             )
-            with pytest.raises(ValueError, match="unknown topic"):
-                transport.publish("/test/bogus", {"joint_targets": [[0.0] * 6]})
+            with pytest.raises(ROSConfigError, match="no command publisher"):
+                transport.publish("/t_left/commands/joint_trajectory", {"name": "arm", "cmd": []})
         finally:
             node.destroy_node()

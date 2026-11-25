@@ -4,8 +4,9 @@ Canonical `RobotDescription` manifest for the **Trossen ALOHA** bimanual
 teleop platform: two 6-DoF arms with parallel grippers (14-DoF action space)
 and one top-down RGB camera. Two execution paths share it: `AlohaHAL` for the
 real Interbotix XS hardware (via `interbotix_xs_sdk`, not
-`ros2_control`/`controller_manager`; hardware transport not yet wired in
-`connect()`) and the MuJoCo digital twin on the
+`ros2_control`/`controller_manager`; under `hal_mode:=real` the lifecycle node
+attaches the production `InterbotixXSTransport` before `connect()` — never run
+against a rig, #250) and the MuJoCo digital twin on the
 [`gym-aloha`](https://github.com/huggingface/gym-aloha) bimanual MJCF
 (`hal.sim: null`, so `build_hal` derives `MujocoArmHAL.from_description` from
 the `sim:` block; `AlohaMujocoHAL` is the class form).
@@ -75,9 +76,9 @@ The outcome is on `/diagnostics` (`downstream_stop=acknowledged|unacknowledged`,
 per-arm `torque_off` / `torque_unknown`) and in the lifecycle log.
 
 **Recovery is `RESTART_REQUIRED`.** Re-torque and re-home both arms with the
-Interbotix tooling, then relaunch the HAL lifecycle node. The command / state
-wiring of this HAL is still the #250 on-rig work; the e-stop path is
-independent of it.
+Interbotix tooling, then relaunch the HAL lifecycle node. The same
+`InterbotixXSTransport` carries the commands and joint states; confirming
+them on a real cell is still the #250 on-rig work.
 
 Evidence: `tests/unit/test_aloha.py::TestSafety` (in-memory torque seam) and
 the attended `tests/hil/test_aloha.py::TestAlohaDownstreamEStop`.

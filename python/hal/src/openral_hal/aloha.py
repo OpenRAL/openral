@@ -17,20 +17,35 @@ Dynamixel/U2D2 driver — per arm. There is **no** ``controller_manager``
 and no ``JointTrajectoryController`` anywhere in it; a ros2_control
 bridge exists upstream (``interbotix_xs_ros_control``) but bring-up does
 not start it. The real node subscribes on
-``/<robot_name>/commands/joint_group`` (``interbotix_xs_msgs``) and
-publishes ``/<robot_name>/joint_states`` under its own namespace, with
-default namespaces ``follower_left`` / ``follower_right``.
+``/<robot_name>/commands/joint_group`` and ``/<robot_name>/commands/joint_single``
+(``interbotix_xs_msgs``) and publishes ``/<robot_name>/joint_states`` under
+its own namespace, with default namespaces ``follower_left`` /
+``follower_right``.
+
+``AlohaHAL`` emits that contract (#250): each arm's 6 joints as a
+``JointGroupCommand`` for the ``arm`` group, each gripper as a
+``JointSingleCommand`` for the ``gripper`` motor (stock Interbotix ALOHA has
+no ``gripper`` *group* — upstream ``follower_modes_*.yaml`` lists it under
+``singles:``). ``AlohaHAL`` stays on ``HALBase`` — it is a vendor-driver robot
+like ``SO100FollowerHAL``, not a ``RosControlHAL``.
 
 .. warning::
-   The topics this module publishes to below are the ros2_control
-   reading, and no real ALOHA exposes them (issue #250). Publishing to a
-   topic with no subscriber is not an error in ROS 2, so every
-   ``send_action`` reports success and the arm never moves. The defaults
-   are left as-is deliberately: #250 asks for the cell's namespaces and
-   ``motor_config`` groups to be read off the rig before the on-wire
-   contract is changed, because guessing it is what produced this state.
-   ``AlohaHAL`` stays on ``HALBase`` — it is a vendor-driver robot like
-   ``SO100FollowerHAL``, not a ``RosControlHAL``.
+   Never run against a rig. Under ``hal_mode:=real`` the lifecycle node
+   attaches the production ``InterbotixXSTransport`` (commands, merged
+   per-namespace joint states, torque stop) before ``connect()``; built any
+   other way, ``connect()`` refuses (``ROSConfigError``) until a transport is
+   attached. The defaults are stock-Interbotix values, **not** read off a
+   cell: #250 still needs the rig's namespaces, ``motor_config`` and the
+   gripper command range confirmed before first motion. The operating modes
+   are checked in code: ``connect()`` reads them back and refuses unless the
+   gripper is in ``current_based_position``.
+
+   Like ``SO100FollowerHAL`` this is a vendor-driver robot, outside
+   CLAUDE.md §1.5's ``ros2_control`` bridge: Python publishes straight to
+   ``xs_sdk``, and there is no command-age watchdog. If Python stalls, each
+   Dynamixel holds its last position target; a torque-cutting watchdog
+   would drop both unbraked arms instead, so none is added. Recorded as a
+   known deviation under #250 (hazard-log entry pending).
 
 ALOHA bring-up launches two robot namespaces; we expose a single 14-DoF
 action by interleaving left arm + left gripper, then right arm + right
@@ -59,6 +74,7 @@ Example:
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable, Sequence
 from typing import Protocol, runtime_checkable
@@ -81,6 +97,7 @@ from openral_core.schemas import (
     GripperReadMode,
     GripperWriteMode,
     HalEntrypoints,
+    HalParameters,
     Hand,
     JointSpec,
     JointState,
@@ -108,6 +125,49 @@ __all__ = [
 ]
 
 log = structlog.get_logger(__name__)
+
+# xs_sdk command contract (#250). Stock Interbotix ALOHA
+# (Interbotix/aloha config/follower_modes_*.yaml) defines one motor group,
+# ``arm`` (6 joints) -> interbotix_xs_msgs/JointGroupCommand on
+# /<ns>/commands/joint_group, and the gripper as a *single* motor ``gripper``
+# -> interbotix_xs_msgs/JointSingleCommand on /<ns>/commands/joint_single.
+# A real ALOHA is bimanual: exactly two follower arms, each its own xs_sdk
+# namespace. Defaults are stock values, not read off a cell (#250).
+_ALOHA_ARM_COUNT: int = 2
+_DEFAULT_ARM_GROUP: str = "arm"
+_DEFAULT_GRIPPER_NAME: str = "gripper"
+_DEFAULT_ALOHA_ARM_NAMESPACES: tuple[str, str] = ("follower_left", "follower_right")
+
+# Gripper command range (closed, open) the normalised [0, 1] action maps onto.
+# Calibration, so a constructor parameter. Default = upstream Interbotix
+# aloha/constants.py FOLLOWER_GRIPPER_JOINT_{CLOSE,OPEN}: what upstream
+# real_env.set_gripper_pose publishes on JointSingleCommand after
+# setup_follower_bot switches the gripper to ``current_based_position``
+# (radians). Under the bring-up yaml's ``linear_position`` mode xs_sdk reads
+# ``cmd`` as finger separation in metres, which is why the HAL refuses any
+# gripper mode but ``current_based_position`` (below). Confirm on the cell (#250).
+_DEFAULT_GRIPPER_CMD_RANGE: tuple[float, float] = (0.6197, 1.6214)
+
+# Gripper read-back range (closed, open), metres of the ``left_finger`` joint.
+# Upstream reads the gripper as the finger *position*, not the motor angle:
+# real_env.get_qpos normalises qpos_raw[7] (left_finger) with
+# FOLLOWER_GRIPPER_POSITION_{CLOSE,OPEN}, and the sim twin's channel is a
+# normalised finger position too. Command and read-back therefore use
+# different ranges, as upstream does (the linkage is nonlinear), so a policy
+# trained on upstream data sees the observation it was trained on.
+_DEFAULT_GRIPPER_POSITION_RANGE: tuple[float, float] = (0.0440, 0.0579)
+
+# Operating modes the commands above are only valid in. The arm takes joint
+# radians in ``position``; ``gripper_cmd_range`` is radians, which xs_sdk
+# reads as such only in ``current_based_position``. The stock bring-up yaml
+# (follower_modes_*.yaml) starts the gripper in ``linear_position`` — there
+# ``cmd`` is finger separation in metres, and 0.62 to 1.62 "m" puts xs_driver's
+# convert_linear_position_to_radian outside acos's domain, so a NaN reaches
+# goalPosition. Upstream real_env switches the mode in setup_follower_bot;
+# this HAL never changes a mode itself (§1.4): it reads it back over
+# ``get_robot_info`` in ``connect()`` and refuses on a mismatch.
+_ARM_OPERATING_MODE: str = "position"
+_GRIPPER_OPERATING_MODE: str = "current_based_position"
 
 # ── Joint inventory ──────────────────────────────────────────────────────────
 # Order matches the gym-aloha 14-D action vector and the YAML manifest:
@@ -275,7 +335,23 @@ ALOHA_DESCRIPTION = RobotDescription(
         representation=ActionRepresentation.JOINT_POSITIONS,
         control_freq_hz=50.0,
     ),
-    hal=HalEntrypoints(sim=None, real="openral_hal.aloha:AlohaHAL"),
+    hal=HalEntrypoints(
+        sim=None,
+        real="openral_hal.aloha:AlohaHAL",
+        # xs_sdk wire contract (#250) — mirrors hal.parameters.defaults in
+        # robots/aloha_bimanual/robot.yaml (test_robot_manifests_match_hal_
+        # constants keeps the two in lockstep) and is built from the module
+        # constants, so the code holds one copy.
+        parameters=HalParameters(
+            defaults={
+                "arm_namespaces": list(_DEFAULT_ALOHA_ARM_NAMESPACES),
+                "arm_group": _DEFAULT_ARM_GROUP,
+                "gripper_name": _DEFAULT_GRIPPER_NAME,
+                "gripper_cmd_range": list(_DEFAULT_GRIPPER_CMD_RANGE),
+                "gripper_position_range": list(_DEFAULT_GRIPPER_POSITION_RANGE),
+            }
+        ),
+    ),
     # MuJoCo wiring for the gym-aloha sim twin.  Two normalised grippers
     # with mirror_actuator_index (positive finger + mirror to negative
     # finger).  keyframe_index=0 seeds the fingers inside their
@@ -356,17 +432,9 @@ ALOHA_REAL_DESCRIPTION = make_real_description(
 
 # ── HAL ──────────────────────────────────────────────────────────────────────
 
-# Controller names this HAL was written against. They are NOT what a real
-# ALOHA exposes — `aloha_bringup.launch.py` starts `xs_sdk`, which has no
-# controller_manager at all (issue #250). Unchanged pending the on-rig
-# check that issue asks for.
-_DEFAULT_LEFT_ARM_CONTROLLER: str = "left_arm/arm_controller"
-_DEFAULT_RIGHT_ARM_CONTROLLER: str = "right_arm/arm_controller"
-_DEFAULT_LEFT_GRIPPER_CONTROLLER: str = "left_arm/gripper_controller"
-_DEFAULT_RIGHT_GRIPPER_CONTROLLER: str = "right_arm/gripper_controller"
-
-# Default joint state topic — Interbotix XS aggregates each arm's joint
-# states under its own namespace, then a top-level remap gathers them.
+# Joint-state source the lifecycle node is told about. xs_sdk publishes
+# /<ns>/joint_states per arm with unprefixed joint names and NO aggregated
+# topic; ``InterbotixXSTransport`` merges them into the 14-DoF manifest order.
 _DEFAULT_ALOHA_JOINT_STATE_TOPIC: str = "/joint_states"
 
 # Interbotix XS exposes one ``torque_enable`` service per arm
@@ -375,8 +443,26 @@ _DEFAULT_ALOHA_JOINT_STATE_TOPIC: str = "/joint_states"
 # motor of that arm). That is the downstream stop: with torque off the
 # ``xs_sdk`` node cannot move the arm, whatever trajectory it still holds.
 # The two follower arms of a real ALOHA run under these namespaces (#250).
-_DEFAULT_ALOHA_ARM_NAMESPACES: tuple[str, str] = ("follower_left", "follower_right")
 _TORQUE_GROUP_ALL = "all"
+
+
+def _closed_open(name: str, value: Sequence[float]) -> tuple[float, float]:
+    """Validate a ``(closed, open)`` calibration pair: two distinct finite values.
+
+    Raises:
+        ROSConfigError: Otherwise.
+    """
+    if (
+        isinstance(value, str)
+        or len(value) != 2  # noqa: PLR2004
+        or not all(math.isfinite(float(v)) for v in value)
+        or float(value[0]) == float(value[1])
+    ):
+        raise ROSConfigError(
+            f"AlohaHAL {name} must be two distinct finite values (closed, open); got {value!r}."
+        )
+    return (float(value[0]), float(value[1]))
+
 
 _PublishFn = Callable[[str, dict[str, object]], None]
 _StateFn = Callable[[], dict[str, object]]
@@ -384,11 +470,12 @@ _StateFn = Callable[[], dict[str, object]]
 
 @runtime_checkable
 class InterbotixStopSeam(Protocol):
-    """What a transport must expose for ``AlohaHAL`` to cut torque on its arms.
+    """What a transport must expose for ``AlohaHAL`` to cut torque and check modes.
 
     The production implementation is ``InterbotixXSTransport`` (real
-    ``interbotix_xs_msgs/srv/TorqueEnable`` clients on a live graph); unit
-    tests use ``SimTorqueSeam`` from ``openral_hal.sim_transport``.
+    ``interbotix_xs_msgs/srv/TorqueEnable`` and ``RobotInfo`` clients on a
+    live graph); unit tests use ``SimTorqueSeam`` from
+    ``openral_hal.sim_transport``.
     """
 
     def torque_enable(
@@ -397,13 +484,54 @@ class InterbotixStopSeam(Protocol):
         """Call ``/<robot_name>/torque_enable`` for one joint group; report the ack."""
         ...
 
+    def operating_mode(self, robot_name: str, *, cmd_type: str, name: str, timeout_s: float) -> str:
+        """Read one group's / single motor's mode off ``/<robot_name>/get_robot_info``.
+
+        Read-only. Raises ``ROSRuntimeError`` if the service is absent or
+        does not answer within ``timeout_s``.
+        """
+        ...
+
 
 @runtime_checkable
 class InterbotixStoppable(Protocol):
-    """HALs the lifecycle node hands an ``InterbotixStopSeam`` under ``hal_mode:=real``."""
+    """HALs the lifecycle node wires to an ``InterbotixXSTransport`` under ``hal_mode:=real``.
+
+    The transport is both the drive (``attach_transport``) and the
+    ``InterbotixStopSeam`` (``attach_torque_stop``); both are attached before
+    ``connect()``.
+    """
+
+    @property
+    def gripper_name(self) -> str:
+        """The ``xs_sdk`` single motor the gripper is commanded through."""
+        ...
+
+    @property
+    def gripper_cmd_range(self) -> tuple[float, float]:
+        """``(closed, open)`` the normalised gripper is mapped onto."""
+        ...
+
+    @property
+    def gripper_position_range(self) -> tuple[float, float]:
+        """``(closed, open)`` finger position the gripper read-back is normalised with."""
+        ...
 
     def arm_namespaces(self) -> list[str]:
         """Every ``xs_sdk`` robot namespace whose torque the stop cuts."""
+        ...
+
+    def joint_names(self) -> list[str]:
+        """The HAL's joint names in manifest order."""
+        ...
+
+    def attach_transport(
+        self,
+        publish_fn: _PublishFn,
+        state_fn: _StateFn,
+        stamp_fn: Callable[[], float] | None = None,
+    ) -> None:
+        """Bind the live command/state transport after construction."""
         ...
 
     def attach_torque_stop(self, seam: InterbotixStopSeam) -> None:
@@ -416,37 +544,65 @@ class AlohaHAL(HALBase):
 
     The 14-DoF action vector is split internally:
 
-    * indices ``0:6``  → left arm joint trajectory  (left_arm controller)
-    * index   ``6``    → left gripper position       (left gripper controller)
-    * indices ``7:13`` → right arm joint trajectory  (right_arm controller)
-    * index   ``13``   → right gripper position      (right gripper controller)
+    * indices ``0:6``  → ``JointGroupCommand{arm}``  on ``/<left_ns>/commands/joint_group``
+    * index   ``6``    → ``JointSingleCommand{gripper}`` on ``/<left_ns>/commands/joint_single``
+    * indices ``7:13`` → ``JointGroupCommand{arm}``  on ``/<right_ns>/commands/joint_group``
+    * index   ``13``   → ``JointSingleCommand{gripper}`` on ``/<right_ns>/commands/joint_single``
 
-    The split keeps each side addressable independently while openral
-    upstream layers see one unified 14-DoF action. It does not currently
-    reach a real ALOHA: see the module docstring and issue #250.
+    Both messages hold one target, so only the chunk's first step (the next
+    target) is sent. ``connect()`` reads each arm's ``arm`` group and
+    ``gripper`` motor mode back over the attached ``InterbotixStopSeam``
+    (``get_robot_info``) and refuses unless they are ``position`` /
+    ``current_based_position`` — the only modes ``gripper_cmd_range``
+    (radians) is valid in. Under the lifecycle node that runs at configure,
+    off the control loop. It never sets a mode itself; the stock bring-up
+    yaml's ``linear_position`` gripper must be switched by the operator
+    (upstream ``setup_follower_bot``). If the joint-state stream goes stale
+    after it was fresh (an ``xs_sdk`` relaunch comes back in the bring-up
+    modes), the check is void: ``send_action`` refuses, without service
+    calls, until the HAL reconnects (lifecycle cleanup + configure).
+
+    The split keeps each side addressable independently while upstream
+    layers see one unified 14-DoF action. Under ``hal_mode:=real`` the
+    lifecycle node attaches the production ``InterbotixXSTransport``; never
+    run against a rig (#250).
 
     Args:
-        left_arm_controller: Topic prefix for the left ViperX. Defaults to
-            ``"left_arm/arm_controller"`` — a ros2_control name no real
-            ALOHA exposes (#250).
-        right_arm_controller: same for the right arm.
-        left_gripper_controller: Topic prefix for the left gripper.
-            Defaults to ``"left_arm/gripper_controller"``, which matches no
-            ros2_control convention either (#250).
-        right_gripper_controller: same for the right gripper.
-        joint_state_topic: ROS 2 topic publishing aggregated joint state.
-            No real ALOHA publishes one — each arm publishes under its own
-            namespace (#250).
-        arm_namespaces: The ``xs_sdk`` robot namespaces of the two follower
-            arms; ``estop()`` calls ``/<namespace>/torque_enable`` on each.
+        arm_group: ``xs_sdk`` motor group receiving each arm's 6 joints
+            (``JointGroupCommand.name``). Defaults to ``"arm"`` (stock
+            Interbotix ``motor_config``; not confirmed on a cell, #250).
+        gripper_name: ``xs_sdk`` single motor receiving the gripper
+            (``JointSingleCommand.name``). Defaults to ``"gripper"``.
+        gripper_cmd_range: ``(closed, open)`` gripper motor angles in radians
+            the normalised ``[0, 1]`` gripper action maps onto affinely —
+            radians because ``connect()`` refuses any gripper mode but
+            ``current_based_position``. Calibration; defaults to upstream
+            ALOHA's ``FOLLOWER_GRIPPER_JOINT_{CLOSE,OPEN}``.
+        gripper_position_range: ``(closed, open)`` ``left_finger`` position in
+            metres the gripper read-back is normalised with (upstream
+            ``FOLLOWER_GRIPPER_POSITION_{CLOSE,OPEN}``, the observation
+            convention upstream data was recorded in). Calibration.
+        joint_state_topic: Reported to the lifecycle node only. No real ALOHA
+            publishes an aggregated topic — each arm publishes
+            ``/<ns>/joint_states`` — and ``InterbotixXSTransport`` merges them.
+        arm_namespaces: The two distinct ``xs_sdk`` robot namespaces of the
+            follower arms (left, right); commands go to
+            ``/<namespace>/commands/joint_{group,single}`` and ``estop()``
+            calls ``/<namespace>/torque_enable`` on each.
             Defaults to ``("follower_left", "follower_right")``.
-        stop_timeout_s: How long ``estop`` waits for each torque-off call.
-        publish_fn: Callable forwarding messages to ROS 2 topics.
-            Production use injects the lifecycle node's publisher; tests
-            inject ``SimTransport.publish``.
+        stop_timeout_s: How long ``estop`` waits for each torque-off call, and
+            ``connect()`` for each ``get_robot_info`` mode read.
+        publish_fn: Callable forwarding messages to ROS 2 topics. Required
+            before ``connect()``; tests inject ``SimTransport.publish``.
         state_fn: Callable returning the latest raw joint state as a dict.
-            Production use injects the lifecycle node's subscriber
-            callback; tests inject ``SimTransport.state``.
+            Required before ``connect()``; tests inject ``SimTransport.state``.
+        stamp_fn: Returns the ``time.monotonic()`` arrival time of the newest
+            joint state that covers *both* arms (the older side's stamp, so
+            one silent arm reads stale); ``0.0`` before both have reported,
+            which reads as infinitely stale. A real-rig transport must supply
+            it. ``None`` falls back to the ``connect()`` time — a liveness
+            floor, not a freshness check (same contract as
+            ``RosControlHAL.attach_transport``).
         staleness_limit_s: Maximum age of a ``read_state()`` reading
             before ``ROSPerceptionStale`` is raised. ``None`` (default) reads the manifest's
             ``safety.joint_state_staleness_limit_s``.
@@ -466,12 +622,13 @@ class AlohaHAL(HALBase):
 
     Example:
         >>> from openral_hal.aloha import AlohaHAL
-        >>> from openral_hal.sim_transport import SimTransport
+        >>> from openral_hal.sim_transport import SimTorqueSeam, SimTransport
         >>> transport = SimTransport(n_joints=14)
         >>> hal = AlohaHAL(
         ...     publish_fn=transport.publish,
         ...     state_fn=transport.state,
         ... )
+        >>> hal.attach_torque_stop(SimTorqueSeam(arms=hal.arm_namespaces()))
         >>> hal.connect()
         >>> hal.description.name
         'aloha_bimanual'
@@ -487,34 +644,63 @@ class AlohaHAL(HALBase):
     def __init__(
         self,
         *,
-        left_arm_controller: str = _DEFAULT_LEFT_ARM_CONTROLLER,
-        right_arm_controller: str = _DEFAULT_RIGHT_ARM_CONTROLLER,
-        left_gripper_controller: str = _DEFAULT_LEFT_GRIPPER_CONTROLLER,
-        right_gripper_controller: str = _DEFAULT_RIGHT_GRIPPER_CONTROLLER,
+        arm_group: str = _DEFAULT_ARM_GROUP,
+        gripper_name: str = _DEFAULT_GRIPPER_NAME,
+        gripper_cmd_range: Sequence[float] = _DEFAULT_GRIPPER_CMD_RANGE,
+        gripper_position_range: Sequence[float] = _DEFAULT_GRIPPER_POSITION_RANGE,
         joint_state_topic: str = _DEFAULT_ALOHA_JOINT_STATE_TOPIC,
         arm_namespaces: Sequence[str] = _DEFAULT_ALOHA_ARM_NAMESPACES,
         publish_fn: _PublishFn | None = None,
         state_fn: _StateFn | None = None,
+        stamp_fn: Callable[[], float] | None = None,
         staleness_limit_s: float | None = None,
         stop_timeout_s: float = 5.0,
         description: RobotDescription | None = None,
     ) -> None:
         """Initialise the adapter; no transport is opened until ``connect()``."""
-        if not arm_namespaces:
-            raise ROSConfigError("AlohaHAL needs at least one arm namespace to stop.")
+        # Bimanual contract (#250): the two follower arms must be distinct
+        # xs_sdk namespaces — with one namespace both arms would publish
+        # different targets to the same /<ns>/commands/joint_group topic and
+        # the later publish would silently replace the earlier.
+        # A bare str is a Sequence[str] too: "lr" would pass as two namespaces.
+        # Stored stripped: "/follower_left" and "follower_left" are one
+        # namespace, and a slash left on would build "//ns/..." topic names.
+        namespaces = (
+            [] if isinstance(arm_namespaces, str) else [str(ns).strip("/") for ns in arm_namespaces]
+        )
+        if (
+            isinstance(arm_namespaces, str)
+            or len(namespaces) != _ALOHA_ARM_COUNT
+            or len(set(namespaces)) != _ALOHA_ARM_COUNT
+            or not all(namespaces)
+        ):
+            raise ROSConfigError(
+                "AlohaHAL needs exactly two distinct arm namespaces "
+                f"(follower_left/follower_right); got {list(arm_namespaces)!r}."
+            )
         self.description: RobotDescription = description or ALOHA_REAL_DESCRIPTION
-        self._left_arm_controller = left_arm_controller
-        self._right_arm_controller = right_arm_controller
-        self._left_gripper_controller = left_gripper_controller
-        self._right_gripper_controller = right_gripper_controller
+        self._gripper_closed, self._gripper_open = _closed_open(
+            "gripper_cmd_range", gripper_cmd_range
+        )
+        self._gripper_position_range = _closed_open(
+            "gripper_position_range", gripper_position_range
+        )
+        self._arm_group = arm_group
+        self._gripper_name = gripper_name
         self._joint_state_topic = joint_state_topic
-        self._arm_namespaces = [str(ns) for ns in arm_namespaces]
-        self._publish_fn: _PublishFn = publish_fn or _default_publish
+        self._arm_namespaces = namespaces
+        self._publish_fn: _PublishFn | None = publish_fn
         self._state_fn: _StateFn | None = state_fn
+        self._stamp_fn = stamp_fn
         self._staleness_limit_s = resolve_staleness_limit_s(self.description, staleness_limit_s)
         self._stop_timeout_s = stop_timeout_s
         self._torque_seam: InterbotixStopSeam | None = None
         self._last_stop_report: DownstreamStopReport | None = None
+        # Set by connect() once get_robot_info confirmed both arms' modes;
+        # voided when the stream goes stale after being fresh (an xs_sdk
+        # relaunch comes back in the bring-up modes).
+        self._modes_verified: bool = False
+        self._stream_was_fresh: bool = False
 
         self._connected: bool = False
         self._last_state_time: float = 0.0
@@ -522,9 +708,59 @@ class AlohaHAL(HALBase):
 
     # ── Lifecycle e-stop wiring ───────────────────────────────────────────
 
+    @property
+    def gripper_name(self) -> str:
+        """The ``xs_sdk`` single motor the gripper is commanded through."""
+        return self._gripper_name
+
+    @property
+    def gripper_cmd_range(self) -> tuple[float, float]:
+        """``(closed, open)`` gripper motor radians the normalised command maps onto."""
+        return (self._gripper_closed, self._gripper_open)
+
+    @property
+    def gripper_position_range(self) -> tuple[float, float]:
+        """``(closed, open)`` ``left_finger`` metres the read-back is normalised with."""
+        return self._gripper_position_range
+
     def arm_namespaces(self) -> list[str]:
         """The ``xs_sdk`` namespaces ``estop`` cuts torque on."""
         return list(self._arm_namespaces)
+
+    def joint_names(self) -> list[str]:
+        """The 14 joint names in manifest order (``left_waist`` … ``right_gripper``)."""
+        return list(self._joint_names)
+
+    def attach_transport(
+        self,
+        publish_fn: _PublishFn,
+        state_fn: _StateFn,
+        stamp_fn: Callable[[], float] | None = None,
+    ) -> None:
+        """Bind the live ``xs_sdk`` transport (the lifecycle node, before ``connect()``).
+
+        ``build_hal`` constructs the HAL before any ROS node exists, so a real
+        deployment cannot pass the callables to ``__init__``; same contract as
+        ``RosControlHAL.attach_transport``.
+
+        Raises:
+            ROSRuntimeError: If already connected — swapping the transport
+                under a live HAL would skip the operating-mode check.
+            ROSConfigError: If any argument is not callable.
+        """
+        if self._connected:
+            raise ROSRuntimeError("AlohaHAL.attach_transport() must run before connect().")
+        for name, fn in (("publish_fn", publish_fn), ("state_fn", state_fn)):
+            if not callable(fn):
+                raise ROSConfigError(f"attach_transport({name}=...) needs a callable.")
+        if stamp_fn is not None and not callable(stamp_fn):
+            raise ROSConfigError(
+                "attach_transport(stamp_fn=...) needs a callable returning the newest "
+                "sample's time.monotonic() timestamp, e.g. `transport.last_arrival`."
+            )
+        self._publish_fn = publish_fn
+        self._state_fn = state_fn
+        self._stamp_fn = stamp_fn
 
     def attach_torque_stop(self, seam: InterbotixStopSeam) -> None:
         """Bind the live torque seam (the lifecycle node under ``hal_mode:=real``).
@@ -534,7 +770,8 @@ class AlohaHAL(HALBase):
         """
         if not isinstance(seam, InterbotixStopSeam):
             raise ROSConfigError(
-                f"attach_torque_stop() needs an InterbotixStopSeam (torque_enable); "
+                f"attach_torque_stop() needs an InterbotixStopSeam (torque_enable + "
+                f"operating_mode); "
                 f"got {type(seam).__name__}."
             )
         self._torque_seam = seam
@@ -547,20 +784,46 @@ class AlohaHAL(HALBase):
     # ── HAL Protocol ──────────────────────────────────────────────────────
 
     def connect(self) -> None:
-        """Open the transport to the four configured command topics (#250).
+        """Confirm both arms' operating modes, then mark the HAL live.
+
+        The mode check runs here — at configure under the lifecycle node, off
+        the control loop — so a mismatch or an unreachable ``xs_sdk`` fails
+        the configure instead of blocking command ticks.
 
         Raises:
-            ROSRuntimeError: If already connected.
+            ROSRuntimeError: If already connected, or ``get_robot_info`` is
+                absent or does not answer.
+            ROSConfigError: If ``publish_fn`` or ``state_fn`` was neither
+                injected nor attached (``attach_transport``) — commands would
+                never leave the process and state would read zeros — if no
+                ``InterbotixStopSeam`` is attached, or an arm's modes are not
+                ``position`` / ``current_based_position``.
         """
         if self._connected:
             raise ROSRuntimeError("AlohaHAL is already connected.")
+        if self._publish_fn is None or self._state_fn is None:
+            missing = [
+                name
+                for name, fn in (("publish_fn", self._publish_fn), ("state_fn", self._state_fn))
+                if fn is None
+            ]
+            raise ROSConfigError(
+                f"AlohaHAL has no {' / '.join(missing)}: commands would go nowhere and state "
+                "would read zeros. Inject both, or attach_transport() an "
+                "InterbotixXSTransport (the lifecycle node does under hal_mode:=real), "
+                "before connect()."
+            )
+        self._modes_verified = False
+        self._verify_operating_modes()
         log.info(
             "hal.connect",
             robot=self.description.name,
-            left_arm=self._left_arm_controller,
-            right_arm=self._right_arm_controller,
+            arm_namespaces=list(self._arm_namespaces),
+            arm_group=self._arm_group,
+            gripper_name=self._gripper_name,
         )
         self._connected = True
+        self._stream_was_fresh = False
         self._last_state_time = time.monotonic()
 
     def read_state(self) -> JointState:
@@ -572,33 +835,43 @@ class AlohaHAL(HALBase):
                 ``staleness_limit_s``.
         """
         self._require_connected("read_state")
-        age = time.monotonic() - self._last_state_time
+        age = self._stream_age()
+        sample_age_s = age if self._stamp_fn is not None else 0.0
         if age > self._staleness_limit_s:
             raise ROSPerceptionStale(
                 f"Joint state is {age:.3f} s old (limit {self._staleness_limit_s} s)."
             )
 
         n = len(self._joint_names)
-        raw: dict[str, object] = {} if self._state_fn is None else self._state_fn()
+        assert self._state_fn is not None  # connect() refuses without one
+        raw: dict[str, object] = self._state_fn()
 
         return JointState(
             name=list(self._joint_names),
             position=_raw_floats(raw, "position", n),
             velocity=_raw_floats(raw, "velocity", n),
             effort=_raw_floats(raw, "effort", n),
-            stamp_ns=int(time.time_ns()),
+            # When the sample arrived, not when it was read (as RosControlHAL).
+            stamp_ns=int(time.time_ns()) - int(max(sample_age_s, 0.0) * 1e9),
         )
 
     def send_action(self, action: Action) -> None:
-        """Forward an action chunk to the four Interbotix controllers.
+        """Send the chunk's next target to both arms and both grippers over xs_sdk.
 
-        The 14-D action is split four ways: each arm gets a 6-D joint
-        trajectory and each gripper gets a 1-D position command.
+        ``JointGroupCommand`` / ``JointSingleCommand`` hold one target, so
+        only ``joint_targets[0]`` is sent — jumping to a later step would cut
+        through the path the policy planned between. Each arm's 6 joints go
+        to ``/<ns>/commands/joint_group`` (group ``arm_group``); each gripper,
+        mapped from ``[0, 1]`` onto ``gripper_cmd_range``, to
+        ``/<ns>/commands/joint_single`` (motor ``gripper_name``).
 
         Raises:
-            ROSRuntimeError: If not connected.
+            ROSRuntimeError: If not connected, or the joint-state stream went
+                stale since ``connect()`` (the mode check ``connect()`` made
+                no longer holds; reconnect). No service call is made here.
             ROSConfigError: If ``action.control_mode`` is not
-                ``JOINT_POSITION`` or the joint count is wrong.
+                ``JOINT_POSITION``, the joint count is wrong, or the sent
+                step is not finite. The gripper value is clamped to ``[0, 1]``.
         """
         self._require_connected("send_action")
         if action.control_mode != ControlMode.JOINT_POSITION:
@@ -616,42 +889,107 @@ class AlohaHAL(HALBase):
                 )
 
         # Index layout — see class docstring.
-        left_arm_chunk = [step[0:6] for step in action.joint_targets]
-        right_arm_chunk = [step[7:13] for step in action.joint_targets]
-        left_gripper_targets = [step[6] for step in action.joint_targets]
-        right_gripper_targets = [step[13] for step in action.joint_targets]
-
-        self._publish_fn(
-            f"/{self._left_arm_controller}/joint_trajectory",
-            {
-                "control_mode": action.control_mode,
-                "horizon": action.horizon,
-                "joint_targets": left_arm_chunk,
-                "stamp_ns": action.stamp_ns,
-            },
-        )
-        self._publish_fn(
-            f"/{self._right_arm_controller}/joint_trajectory",
-            {
-                "control_mode": action.control_mode,
-                "horizon": action.horizon,
-                "joint_targets": right_arm_chunk,
-                "stamp_ns": action.stamp_ns,
-            },
-        )
-        self._publish_fn(
-            f"/{self._left_gripper_controller}/command",
-            {"position": left_gripper_targets[-1], "stamp_ns": action.stamp_ns},
-        )
-        self._publish_fn(
-            f"/{self._right_gripper_controller}/command",
-            {"position": right_gripper_targets[-1], "stamp_ns": action.stamp_ns},
-        )
+        step = action.joint_targets[0]
+        if not all(math.isfinite(v) for v in step):
+            raise ROSConfigError(f"AlohaHAL.send_action got a non-finite target: {list(step)!r}.")
+        self._stream_age()  # voids the mode check if the stream went stale
+        if not self._modes_verified:
+            raise ROSRuntimeError(
+                "AlohaHAL refuses to command: the xs_sdk joint-state stream went stale "
+                "since connect(), and a relaunched xs_sdk comes back in the bring-up "
+                "operating modes. Reconnect (lifecycle cleanup + configure) to re-read them."
+            )
+        span = self._gripper_open - self._gripper_closed
+        publish = self._publish_fn
+        assert publish is not None  # connect() refuses without one
+        left_ns, right_ns = self._arm_namespaces  # validated distinct pair
+        for ns, arm, grip in ((left_ns, step[0:6], step[6]), (right_ns, step[7:13], step[13])):
+            publish(f"/{ns}/commands/joint_group", {"name": self._arm_group, "cmd": list(arm)})
+            publish(
+                f"/{ns}/commands/joint_single",
+                # Clamped: an overshoot past [0, 1] must not drive past the calibrated stops.
+                {
+                    "name": self._gripper_name,
+                    "cmd": self._gripper_closed + min(max(grip, 0.0), 1.0) * span,
+                },
+            )
         log.debug(
             "hal.send_action",
             robot=self.description.name,
             horizon=action.horizon,
         )
+
+    def _stream_age(self) -> float:
+        """Age of the newest sample covering both arms; latch a stale-after-fresh stream.
+
+        Nothing received yet (``stamp_fn`` → 0.0) is infinitely stale, never
+        "fresh at connect()". Once a ``stamp_fn`` stream has been fresh, going
+        stale voids the operating-mode check (the lifecycle node polls
+        ``read_state`` on its joint-state timer, so a relaunch is seen).
+        """
+        if self._stamp_fn is not None:
+            last = self._stamp_fn()
+            age = float("inf") if last <= 0.0 else time.monotonic() - last
+        else:
+            age = time.monotonic() - self._last_state_time
+        if age <= self._staleness_limit_s:
+            self._stream_was_fresh = True
+        elif self._stamp_fn is not None and self._stream_was_fresh and self._modes_verified:
+            self._modes_verified = False
+            log.warning(
+                "hal.aloha.modes_unverified",
+                robot=self.description.name,
+                age_s=age,
+                reason="joint-state stream went stale; commands refused until reconnect",
+            )
+        return age
+
+    def _verify_operating_modes(self) -> None:
+        """Refuse to command unless every arm runs the modes the payloads assume.
+
+        Read-only (``get_robot_info``); a mode is never set from here. Runs in
+        ``connect()``.
+
+        Raises:
+            ROSConfigError: No seam attached, or a mode mismatch.
+            ROSRuntimeError: The service is absent or does not answer.
+        """
+        seam = self._torque_seam
+        if seam is None:
+            raise ROSConfigError(
+                "AlohaHAL cannot confirm the arm/gripper operating modes: no "
+                "InterbotixStopSeam is attached (attach_torque_stop). Refusing to command — "
+                "gripper_cmd_range is radians and is only valid in current_based_position."
+            )
+        expected = (
+            ("group", self._arm_group, _ARM_OPERATING_MODE),
+            ("single", self._gripper_name, _GRIPPER_OPERATING_MODE),
+        )
+        wrong: list[str] = []
+        for ns in self._arm_namespaces:
+            for cmd_type, name, want in expected:
+                got = seam.operating_mode(
+                    ns, cmd_type=cmd_type, name=name, timeout_s=self._stop_timeout_s
+                )
+                if got != want:
+                    wrong.append(f"/{ns} {cmd_type} {name!r} is {got!r}, needs {want!r}")
+        if wrong:
+            raise ROSConfigError(
+                "AlohaHAL refuses to command: "
+                + "; ".join(wrong)
+                + ". Switch it on the rig (upstream setup_follower_bot, or "
+                "`ros2 service call /<ns>/set_operating_modes "
+                "interbotix_xs_msgs/srv/OperatingModes "
+                '"{cmd_type: single, name: gripper, mode: current_based_position}"`).'
+            )
+        log.info(
+            "hal.aloha.operating_modes_verified",
+            robot=self.description.name,
+            arm_namespaces=list(self._arm_namespaces),
+            arm_mode=_ARM_OPERATING_MODE,
+            gripper_mode=_GRIPPER_OPERATING_MODE,
+        )
+        self._modes_verified = True
 
     def estop(self) -> None:
         """Trigger an emergency stop: drop the connection, cut torque on every arm, raise.
@@ -718,11 +1056,6 @@ class AlohaHAL(HALBase):
             **report.fields(),
         )
         return report
-
-
-def _default_publish(topic: str, msg: dict[str, object]) -> None:  # pragma: no cover
-    """No-op publish used when no real ROS 2 node is wired in."""
-    log.debug("hal.publish", topic=topic, fields=list(msg.keys()))
 
 
 # ── MuJoCo HAL (digital twin) ────────────────────────────────────────────────

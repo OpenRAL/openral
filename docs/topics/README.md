@@ -83,7 +83,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `~/joint_states` | `sensor_msgs/JointState` | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate) | — |
 | `~/urdf_joint_states` | `msg_type` | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase._open_urdf_joint_state_pub) | — |
 
-## Per-instance topics (11)
+## Per-instance topics (13)
 
 | Name | Type | Publishers | Subscribers |
 |---|---|---|---|
@@ -97,6 +97,8 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/perception/{detector.kind}` | `openral_msgs/PromptStamped` | python/runner/src/openral_runner/backends/gstreamer/perception_tee.py (PerceptionEventPublisher.start) | — |
 | `/openral/perception/{kind}` | `openral_msgs/PromptStamped` | — | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) |
 | `/openral/prompt_in/{source}` | `openral_msgs/PromptStamped` | — | packages/openral_prompt_router/openral_prompt_router/prompt_router_node.py (PromptRouterNode.on_configure) |
+| `/{ns}/commands/{suffix}` | `msg_type` | python/hal/src/openral_hal/interbotix_transport.py (InterbotixXSTransport.__init__) | — |
+| `/{ns}/joint_states` | `sensor_msgs/JointState` | — | python/hal/src/openral_hal/interbotix_transport.py (InterbotixXSTransport.__init__) |
 | `/{which}_costmap/costmap_raw` | `nav2_msgs/Costmap` | — | tools/_nav2_costmap_silhouette_probe.py (SilhouetteProbe.__init__) |
 
 ## Services (11)
@@ -115,7 +117,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral_safety_kernel/change_state` | `lifecycle_msgs/ChangeState` | — | tools/kernel_replay_diff.py (_Side.activate) |
 | `/openral_safety_kernel/get_state` | `lifecycle_msgs/GetState` | — | tools/kernel_replay_diff.py (_Side.activate) |
 
-## Per-instance services (12)
+## Per-instance services (13)
 
 | Name | Type | Servers | Clients |
 |---|---|---|---|
@@ -123,6 +125,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/{robot}/reset_to_pose` | `openral_msgs/ResetToPose` | python/hal/src/openral_hal/lifecycle.py (ManifestHALLifecycleNode.on_configure_post_hal) | — |
 | `/{node}/change_state` | `lifecycle_msgs/ChangeState` | — | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode._station_transition) |
 | `/{node}/get_state` | `lifecycle_msgs/GetState` | — | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode._station_transition) |
+| `/{ns}/get_robot_info` | `interbotix_xs_msgs/RobotInfo` | — | python/hal/src/openral_hal/interbotix_transport.py (InterbotixXSTransport.__init__) |
 | `/{ns}/torque_enable` | `interbotix_xs_msgs/TorqueEnable` | — | python/hal/src/openral_hal/interbotix_transport.py (InterbotixXSTransport.__init__) |
 | `/{target}/set_parameters_atomically` | `rcl_interfaces/SetParametersAtomically` | — | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase._begin_self_filter_period_handoff) |
 | `{lifecycle_node_name}/get_state` | `lifecycle_msgs/GetState` | — | tools/wait_for_action_and_signal_palette.py (_lifecycle_active) |

@@ -978,6 +978,14 @@ if _ROS2_AVAILABLE:
                 {"robot": robot_name, "estopped": "false", **extras},
             )
 
+        def on_configure_pre_connect(self) -> None:
+            """Subclass extension point between building the HAL and ``connect()``.
+
+            For wiring a HAL refuses to connect without (the manifest node's
+            real Interbotix transport). May raise ``ROSConfigError`` /
+            ``ROSRuntimeError``, which fail the configure. Default: no-op.
+            """
+
         def on_configure_post_hal(self) -> TransitionCallbackReturn:
             """Subclass extension point after the base wires HAL + heartbeat.
 
@@ -1132,6 +1140,30 @@ if _ROS2_AVAILABLE:
         @log_lifecycle_errors
         def on_configure(self, state: object) -> TransitionCallbackReturn:
             """Construct + connect the HAL, wire the heartbeat, then run post-hook."""
+            result = TransitionCallbackReturn.FAILURE
+            try:
+                result = self._configure_hal()
+                return result
+            finally:
+                # A failed configure gets no on_cleanup, and log_lifecycle_errors
+                # turns an untyped raise into FAILURE too: whichever way it
+                # failed, release the Interbotix transport (and the HAL it
+                # drives) so a retry does not stack a second one on the graph.
+                if result != TransitionCallbackReturn.SUCCESS:
+                    self._release_interbotix_transport()
+
+        def _release_interbotix_transport(self) -> None:
+            """Close the Interbotix transport and disconnect the HAL it was attached to."""
+            transport = self._interbotix_transport
+            if transport is None:
+                return
+            self._interbotix_transport = None
+            if self._hal is not None:
+                self._hal.disconnect()
+            transport.close()
+
+        def _configure_hal(self) -> TransitionCallbackReturn:
+            """``on_configure``'s body; split out so every failure path releases the transport."""
             from openral_core.exceptions import ROSConfigError, ROSRuntimeError
             from openral_observability import DiagnosticsHeartbeat
 
@@ -1143,6 +1175,7 @@ if _ROS2_AVAILABLE:
                 attach_ros_node = getattr(self._hal, "attach_ros_node", None)
                 if callable(attach_ros_node):
                     attach_ros_node(self)
+                self.on_configure_pre_connect()
                 self._hal.connect()
             except (ROSConfigError, ROSRuntimeError) as exc:
                 self.get_logger().error(f"HAL connect failed: {exc}")
@@ -2702,6 +2735,10 @@ if _ROS2_AVAILABLE:
             robot_yaml = self.get_parameter("robot_yaml").get_parameter_value().string_value
             return {"mode": hal_mode, "robot_yaml": robot_yaml}
 
+        def on_configure_pre_connect(self) -> None:
+            """Wire a real Interbotix HAL's ``xs_sdk`` transport (its ``connect()`` needs it)."""
+            self._attach_interbotix_transport()
+
         def on_configure_post_hal(self) -> TransitionCallbackReturn:
             """Open ``/openral/<robot>/reset_to_pose`` iff the HAL supports it.
 
@@ -2714,7 +2751,6 @@ if _ROS2_AVAILABLE:
             """
             assert self._hal is not None
             self._attach_ros_control_transport()
-            self._attach_interbotix_transport()
             self._open_reset_episode_service()
             self._subscribe_active_task()
             if not callable(getattr(self._hal, "reset_to_pose", None)):
@@ -2951,13 +2987,15 @@ if _ROS2_AVAILABLE:
             )
 
         def _attach_interbotix_transport(self) -> None:
-            """Give a real Interbotix-XS HAL (ALOHA) its torque-off stop seam.
+            """Wire a real Interbotix-XS HAL (ALOHA) to its ``xs_sdk`` transport.
 
             The ALOHA's real HAL is not ros2_control (issue #250), so the
-            transport above never touches it; what a real ALOHA does expose is
-            ``xs_sdk``'s per-arm ``torque_enable`` service, and cutting torque is
-            its downstream stop. Wired under ``hal_mode:=real`` for any HAL that
-            is structurally ``InterbotixStoppable``.
+            ros2_control transport never touches it. ``InterbotixXSTransport``
+            carries the whole ``xs_sdk`` contract: command payloads, the merged
+            per-namespace joint states, and the per-arm ``torque_enable``
+            stop. Wired under ``hal_mode:=real`` for any HAL that is
+            structurally ``InterbotixStoppable``, before ``connect()``, which
+            refuses without it.
             """
             from openral_hal.aloha import InterbotixStoppable
 
@@ -2971,11 +3009,20 @@ if _ROS2_AVAILABLE:
             from openral_hal.interbotix_transport import InterbotixXSTransport
 
             arms = hal.arm_namespaces()
-            transport = InterbotixXSTransport(self, arm_namespaces=arms)
+            transport = InterbotixXSTransport(
+                self,
+                arm_namespaces=arms,
+                joint_names=hal.joint_names(),
+                gripper_name=hal.gripper_name,
+                gripper_position_range=hal.gripper_position_range,
+            )
+            hal.attach_transport(transport.publish, transport.state, transport.last_arrival)
             hal.attach_torque_stop(transport)
             self._interbotix_transport = transport
             self.get_logger().info(
-                f"Interbotix torque-stop attached: /openral/estop cuts torque on {arms} "
+                f"Interbotix xs_sdk transport attached: commands on "
+                f"/<ns>/commands/joint_group|joint_single, state from /<ns>/joint_states, "
+                f"/openral/estop cuts torque — for {arms} "
                 f"(recovery: {getattr(hal, 'estop_recovery', 'undeclared')})."
             )
 
