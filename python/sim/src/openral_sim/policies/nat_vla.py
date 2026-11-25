@@ -214,6 +214,13 @@ def _build_nat_vla(env_cfg: Any) -> _NATVLAAdapter:
     if state_dim is None or action_dim is None:
         raise ROSConfigError("nat_vla needs state_contract.dim and action_contract.dim.")
     norm_stats, norm_tag = extra.get("norm_stats"), extra.get("norm_tag")
+    if (norm_stats is None) != (norm_tag is None) or not all(
+        isinstance(v, str) for v in (norm_stats, norm_tag) if v is not None
+    ):
+        raise ROSConfigError(
+            "nat_vla: policy_extras.norm_stats (hf://<repo>@<rev>/norm_stats.json) and "
+            "norm_tag go together, both strings."
+        )
     if norm_stats is None and manifest.dataset_uri is None:
         raise ROSConfigError(
             "nat_vla's pretrained checkpoint carries no normalisation stats: declare "
@@ -263,13 +270,9 @@ def _build_nat_vla(env_cfg: Any) -> _NATVLAAdapter:
     # (strict: anything but the frozen tokenizer copy missing or extra raises).
     policy = policy_cls(config).to(device).eval()
 
+    raw_stats: dict[str, dict[str, Any]]
     if norm_stats is not None:
-        if not isinstance(norm_stats, str) or not isinstance(norm_tag, str):
-            raise ROSConfigError(
-                "nat_vla: policy_extras.norm_stats (hf://<repo>@<rev>/norm_stats.json) and "
-                "norm_tag must both be strings."
-            )
-        raw_stats = molmoact2_tag_stats(_hf_file(norm_stats), norm_tag)
+        raw_stats = dict(molmoact2_tag_stats(_hf_file(str(norm_stats)), str(norm_tag)))
     else:
         from openral_sim.policies.smolvla import _load_lerobot_dataset_stats
 
@@ -342,7 +345,7 @@ def joint_affine(
     return pairs[:, 0].copy(), pairs[:, 1].copy()
 
 
-def molmoact2_tag_stats(path: str, norm_tag: str) -> dict[str, dict[str, Any]]:
+def molmoact2_tag_stats(path: str, norm_tag: str) -> dict[str, dict[str, list[float]]]:
     """The NaT processors' stats from one tag of a MolmoAct2 ``norm_stats.json``.
 
     MolmoAct2's data pipeline (``norm_mode: q01_q99``) maps state and action alike from
@@ -364,7 +367,7 @@ def molmoact2_tag_stats(path: str, norm_tag: str) -> dict[str, dict[str, Any]]:
         ROSConfigError: The file is not MolmoAct2's ``q01_q99`` format or lacks the tag.
 
     Example:
-        >>> import json, tempfile
+        >>> import json, os, tempfile
         >>> doc = {
         ...     "norm_mode": "q01_q99",
         ...     "metadata_by_tag": {
@@ -378,6 +381,7 @@ def molmoact2_tag_stats(path: str, norm_tag: str) -> dict[str, dict[str, Any]]:
         ...     json.dump(doc, fh)
         >>> molmoact2_tag_stats(fh.name, "t")["action"]
         {'min': [-2.0], 'max': [2.0]}
+        >>> os.unlink(fh.name)
     """
     import json
 
@@ -395,15 +399,24 @@ def molmoact2_tag_stats(path: str, norm_tag: str) -> dict[str, dict[str, Any]]:
     try:
         state, action = meta["state_stats"], meta["action_stats"]
         return {
-            "observation.state": {"q01": list(state["q01"]), "q99": list(state["q99"])},
-            "action": {"min": list(action["q01"]), "max": list(action["q99"])},
+            "observation.state": {
+                "q01": [float(v) for v in state["q01"]],
+                "q99": [float(v) for v in state["q99"]],
+            },
+            "action": {
+                "min": [float(v) for v in action["q01"]],
+                "max": [float(v) for v in action["q99"]],
+            },
         }
     except KeyError as exc:
         raise ROSConfigError(f"nat_vla norm_stats {path} tag {norm_tag!r} lacks {exc}.") from exc
 
 
 def _hf_file(uri: str) -> str:
-    """Local path of ``hf://<owner>/<repo>[@<rev>]/<file>`` (model repo), cache first."""
+    """Local path of ``hf://<owner>/<repo>[@<rev>]/<file>`` (model repo), cache first.
+
+    ``<rev>`` must not contain ``/`` (a commit SHA or a plain branch/tag name).
+    """
     if not uri.startswith("hf://"):
         raise ROSConfigError(f"nat_vla norm_stats must be an hf:// file URI, got {uri!r}.")
     parts = uri[len("hf://") :].split("/")

@@ -121,3 +121,38 @@ def test_molmoact2_tag_stats_refuses_an_unknown_tag() -> None:
     path = _norm_stats_or_skip(str(manifest.policy_extras["norm_stats"]))
     with pytest.raises(ROSConfigError, match="so100_so101_molmoact2"):
         molmoact2_tag_stats(path, "libero")
+
+
+def test_norm_stats_without_a_tag_fails_before_any_weights_load(tmp_path: Path) -> None:
+    """A half-declared norm_stats/norm_tag pair is a config error raised at build time.
+
+    The check runs with the other manifest checks, before the 450M policy is constructed.
+    """
+    pytest.importorskip("lerobot.policies.pretrained")
+    pytest.importorskip("torch")
+    import shutil
+
+    import openral_sim.policies  # noqa: F401 — registers nat_vla
+    from openral_core import SceneSpec, SimEnvironment, TaskSpec, VLASpec
+    from openral_sim.registry import POLICIES
+
+    skill = tmp_path / "nat-vla-so101-pretrained-bf16"
+    shutil.copytree(_SKILL, skill)
+    manifest = skill / "rskill.yaml"
+    text = manifest.read_text(encoding="utf-8")
+    assert '  norm_tag: "so100_so101_molmoact2"\n' in text
+    manifest.write_text(text.replace('  norm_tag: "so100_so101_molmoact2"\n', ""), encoding="utf-8")
+    env_cfg = SimEnvironment(
+        robot_id="so101_follower",
+        scene=SceneSpec(id="so101_box", cameras=["camera1", "camera2"]),
+        task=TaskSpec(
+            id="so101_box/tube_insertion",
+            scene_id="so101_box",
+            instruction="insert the orange tube into the slotted block",
+            success_key="is_success",
+            max_steps=10,
+        ),
+        vla=VLASpec(id="nat_vla", weights_uri=str(skill)),
+    )
+    with pytest.raises(ROSConfigError, match="norm_tag go together"):
+        POLICIES.get("nat_vla")(env_cfg)

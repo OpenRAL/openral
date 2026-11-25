@@ -1,12 +1,12 @@
 """Sim test: NaT VLA (pretrained, zero-shot) runs in-process on the SO-101 MuJoCo box scene.
 
 Drives ``POLICIES['nat_vla']`` with the in-tree ``rskills/nat-vla-so101-pretrained-bf16``
-manifest: the real 450M checkpoint (``ahad-j/nat-vla-450m``), the real NAT tokenizer and an
-SO-101 dataset's normalisation stats. One step on a two-camera 640x480 observation returns a
-finite 6-D joint action in LeRobot servo degrees; the 16-step replay holds the rest of the
-streamed chunk in the policy's queue.
+manifest: the real 450M checkpoint (``ahad-j/nat-vla-450m``), the real NAT tokenizer and the
+pretraining's pooled SO-ARM normalisation stats (MolmoAct2 ``norm_stats.json``). One step on
+a two-camera 640x480 observation returns a finite 6-D joint action in LeRobot servo degrees;
+the 16-step replay holds the rest of the streamed chunk in the policy's queue.
 
-Skips unless the checkpoint, tokenizer and dataset stats are in the local HF cache (a Hub
+Skips unless the checkpoint, tokenizer and norm stats are in the local HF cache (a Hub
 download is not a skip-free path) and lerobot >= 0.7 is installed.
 """
 
@@ -43,13 +43,13 @@ def _unavailable() -> str:
             local_files_only=True,
         )
         hf_hub_download(
-            "makermods/eraser_place_unblurry_real",
-            "meta/stats.json",
-            repo_type="dataset",
+            "allenai/MolmoAct2-SO100_101",
+            "norm_stats.json",
+            revision="152569fe57914d97be91055800035f54e250d009",
             local_files_only=True,
         )
     except Exception:  # reason: any cache miss is the skip, not a failure
-        return "nat-vla-450m, its NAT tokenizer or SO-101 stats are not in the HF cache"
+        return "nat-vla-450m, its NAT tokenizer or the MolmoAct2 norm stats are not in the HF cache"
     return ""
 
 
