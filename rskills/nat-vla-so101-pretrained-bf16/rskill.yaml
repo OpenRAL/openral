@@ -15,8 +15,10 @@
 #
 # The pretrained config carries no features and no normalisation stats, so this
 # manifest supplies them: 2 cameras (fixed overview + wrist), the 6-D SO-ARM
-# state/action in LeRobot servo degrees (gripper 0-100), and the stats of an
-# SO-101 LeRobot dataset (q01/q99 state, min/max action).
+# state/action in LeRobot servo degrees (gripper 0-100), the pretraining's pooled
+# SO-ARM stats (MolmoAct2 norm tag so100_so101_molmoact2, q01/q99) and the joint
+# mapping from this robot's calibration convention to the mixture's
+# (policy_extras below).
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
@@ -56,9 +58,6 @@ quantization:
 min_vram_gb:
   bf16: 1.5
 weights_uri: "hf://ahad-j/nat-vla-450m@a5c2e13d45832050e364265962f6ad536460e955"
-# Normalisation stats (q01/q99 state, min/max action) of a real SO-101 teleop
-# dataset in LeRobot servo degrees.
-dataset_uri: "hf://makermods/eraser_place_unblurry_real"
 
 # ── Preprocessing ──────────────────────────────────────────────────────────
 # Slots camera1 (fixed overview) / camera2 (wrist) -> checkpoint image keys; the
@@ -75,6 +74,35 @@ policy_extras:
   # The setup / control-mode strings NaT's pretraining used for the SO-ARM.
   setup: "single so100/so101 robotic arm in molmoact2"
   control_mode: "absolute joint pose"
+  # The stats the pretrained checkpoint saw. NaT VLA was pretrained with MolmoAct2's
+  # data pipeline (NAT paper, arXiv 2611.28873, App. F), which normalises the SO-ARM
+  # mixture's state and action by the pooled q01/q99 of this tag; the tag's setup_type
+  # is the setup string above. (A single dataset's stats, e.g. makermods/eraser_place,
+  # map the normalised poses onto the wrong joint angles: the backward swing and
+  # shoulder_lift tracking-fault stops on the real arm, 2026-11-24.)
+  norm_stats: "hf://allenai/MolmoAct2-SO100_101@152569fe57914d97be91055800035f54e250d009/norm_stats.json"
+  norm_tag: "so100_so101_molmoact2"
+  # Joint convention: model = scale * robot + offset, per state/action column
+  # (shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper).
+  # The mixture is mostly lerobot's OLD calibration convention: episodes start at
+  # shoulder_lift 185-198 and elbow ~180 (Tank-123/so101_test, Yan1205/so100_test,
+  # MolmoAct2's own sample state 189/181), pooled medians 123/124. This robot's
+  # range-centred convention starts at -103/95 (makermods/eraser_place starts,
+  # median over 25 episodes) and reaching RAISES shoulder_lift where the old
+  # convention lowers it: shoulder_lift is sign-flipped. Offsets fitted on the
+  # start poses and cross-checked on the medians (-37.4 -> 124.4, 36.3 -> 122.3);
+  # URDF forward kinematics agrees on the signs. Estimates, about +/-5 deg.
+  # Pan keeps its sign: +pan is clockwise seen from above in both (URDF axis points
+  # down; Tank-123 overhead and Beegbrain/pick_lemon_and_drop_in_bowl top footage).
+  # wrist_flex keeps its sign: d(wrist) ~ +d(lift) - d(elbow) in both conventions'
+  # reaches once lift/elbow are mapped. wrist_roll's sign is unverified; gripper agrees.
+  joint_affine:
+    - [1.0, 0.0]
+    - [-1.0, 87.0]
+    - [1.0, 86.0]
+    - [1.0, 0.0]
+    - [1.0, 0.0]
+    - [1.0, 0.0]
 
 # ── Execution semantics ────────────────────────────────────────────────────
 # 32-step chunks; 16 replayed (the tokenizer decodes the first 16 after 7 tokens).

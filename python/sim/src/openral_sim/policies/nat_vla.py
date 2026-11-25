@@ -13,8 +13,24 @@ manifest supplies them:
 
 - ``state_contract.dim`` / ``action_contract.dim`` — the state and action widths;
 - ``image_preprocessing`` — the camera slots and their checkpoint keys;
-- ``dataset_uri`` — a LeRobot dataset whose ``meta/stats.json`` holds ``q01``/``q99``
-  for the state (quantile normalisation) and ``min``/``max`` for the action;
+- the normalisation stats, from one of:
+
+  - ``policy_extras.norm_stats`` + ``policy_extras.norm_tag`` — a MolmoAct2
+    ``norm_stats.json`` (``hf://<repo>@<rev>/norm_stats.json``) and the tag of the
+    embodiment's pooled stats. NaT VLA was pretrained with MolmoAct2's data pipeline,
+    which normalises state and action alike by each tag's ``q01``/``q99``, so these
+    are the stats the pretrained checkpoint saw (``so100_so101_molmoact2`` for the
+    SO-ARM, whose ``setup_type`` is the prompt's setup string);
+  - ``dataset_uri`` — a LeRobot dataset whose ``meta/stats.json`` holds ``q01``/``q99``
+    for the state (quantile normalisation) and ``min``/``max`` for the action: what a
+    fine-tune on that dataset normalised with;
+
+- ``policy_extras.joint_affine`` (optional) — one ``[scale, offset]`` per state/action
+  column mapping this robot's joint convention to the one the stats describe
+  (``model = scale * robot + offset``; actions map back by the inverse). The SO-ARM
+  pretraining data is mostly in lerobot's old calibration convention (rest pose
+  shoulder_lift ≈ 190°, elbow ≈ 180°), the opposite direction on shoulder_lift from
+  the current range-centred one (rest ≈ -103° / 95°);
 - ``policy_extras.setup`` / ``policy_extras.control_mode`` — the prompt's robot setup
   and control mode (pretraining used ``single so100/so101 robotic arm in molmoact2``
   / ``absolute joint pose`` for the SO-ARM).
@@ -61,6 +77,9 @@ if TYPE_CHECKING:
 
 _log = structlog.get_logger(__name__)
 
+#: ``owner``, ``repo[@rev]`` and at least one path segment of an ``hf://`` file URI.
+_HF_FILE_MIN_PARTS = 3
+
 
 def _nat_vla_module() -> tuple[Any, Any, Any, str]:
     """``(NATVLAConfig, NATVLAPolicy, make_nat_vla_pre_post_processors, source)``.
@@ -103,6 +122,9 @@ class _NATVLAAdapter:
     _state_dim: int
     _flip_180: bool = False
     _last_input_frame: NDArray[np.uint8] | None = None
+    # ``joint_affine`` columns: model = scale * robot + offset (identity when undeclared).
+    _affine_scale: NDArray[np.float32] | None = None
+    _affine_offset: NDArray[np.float32] | None = None
 
     def last_input_frame(self) -> NDArray[np.uint8] | None:
         return self._last_input_frame
@@ -127,14 +149,21 @@ class _NATVLAAdapter:
         state = observation.get("state")
         if state is None:
             raise ROSConfigError("nat_vla requires a proprio `state` observation.")
-        state_arr = np.asarray(state, dtype=np.float32).reshape(-1)
+        state_arr: NDArray[np.float32] = np.asarray(state, dtype=np.float32).reshape(-1)
         if state_arr.shape[0] != self._state_dim:
             raise ROSConfigError(
                 f"nat_vla expects a {self._state_dim}-D state, got {state_arr.shape[0]}-D."
             )
+        if self._affine_scale is not None and self._affine_offset is not None:
+            state_arr = np.asarray(
+                self._affine_scale * state_arr + self._affine_offset, dtype=np.float32
+            )
         batch["observation.state"] = torch.from_numpy(state_arr).to(self.device)
         prepared = cast("dict[str, Any]", self._preprocessor(batch))
-        return to_numpy_action(self._postprocessor(run_inference(self._policy, prepared)))
+        action = to_numpy_action(self._postprocessor(run_inference(self._policy, prepared)))
+        if self._affine_scale is not None and self._affine_offset is not None:
+            return np.asarray((action - self._affine_offset) / self._affine_scale, dtype=np.float32)
+        return action
 
     def close(self) -> None:
         # The streamed chunk keeps generating in a background thread after
@@ -184,10 +213,13 @@ def _build_nat_vla(env_cfg: Any) -> _NATVLAAdapter:
     action_dim = manifest.action_contract.dim if manifest.action_contract else None
     if state_dim is None or action_dim is None:
         raise ROSConfigError("nat_vla needs state_contract.dim and action_contract.dim.")
-    if manifest.dataset_uri is None:
+    norm_stats, norm_tag = extra.get("norm_stats"), extra.get("norm_tag")
+    if norm_stats is None and manifest.dataset_uri is None:
         raise ROSConfigError(
-            "nat_vla's pretrained checkpoint carries no normalisation stats: declare dataset_uri."
+            "nat_vla's pretrained checkpoint carries no normalisation stats: declare "
+            "policy_extras.norm_stats + norm_tag, or dataset_uri."
         )
+    affine = joint_affine(extra.get("joint_affine"), state_dim, action_dim)
     setup, control_mode = extra.get("setup"), extra.get("control_mode")
     if not isinstance(setup, str) or not isinstance(control_mode, str):
         raise ROSConfigError(
@@ -224,15 +256,24 @@ def _build_nat_vla(env_cfg: Any) -> _NATVLAAdapter:
         revision=revision,
         dtype=plan.dtype,
         n_action_steps=n_action_steps,
-        dataset=manifest.dataset_uri,
+        stats=f"{norm_stats}#{norm_tag}" if norm_stats is not None else manifest.dataset_uri,
+        joint_affine=None if affine is None else np.stack(affine, axis=1).tolist(),
     )
     # Constructing a fresh policy whose `vlm` is the pretrained repo loads its weights
     # (strict: anything but the frozen tokenizer copy missing or extra raises).
     policy = policy_cls(config).to(device).eval()
 
-    from openral_sim.policies.smolvla import _load_lerobot_dataset_stats
+    if norm_stats is not None:
+        if not isinstance(norm_stats, str) or not isinstance(norm_tag, str):
+            raise ROSConfigError(
+                "nat_vla: policy_extras.norm_stats (hf://<repo>@<rev>/norm_stats.json) and "
+                "norm_tag must both be strings."
+            )
+        raw_stats = molmoact2_tag_stats(_hf_file(norm_stats), norm_tag)
+    else:
+        from openral_sim.policies.smolvla import _load_lerobot_dataset_stats
 
-    raw_stats = _load_lerobot_dataset_stats(manifest.dataset_uri)
+        raw_stats = _load_lerobot_dataset_stats(cast("str", manifest.dataset_uri))
     stats = {
         key: {name: torch.as_tensor(np.asarray(value)) for name, value in raw_stats[key].items()}
         for key in ("observation.state", "action")
@@ -249,4 +290,132 @@ def _build_nat_vla(env_cfg: Any) -> _NATVLAAdapter:
         _image_keys=image_keys,
         _state_dim=state_dim,
         _flip_180=image_prep.flip_180,
+        _affine_scale=None if affine is None else affine[0],
+        _affine_offset=None if affine is None else affine[1],
+    )
+
+
+def joint_affine(
+    value: object, state_dim: int, action_dim: int
+) -> tuple[NDArray[np.float32], NDArray[np.float32]] | None:
+    """``(scale, offset)`` arrays from ``policy_extras.joint_affine``, or ``None`` when unset.
+
+    One ``[scale, offset]`` pair per column maps the robot's joint convention to the one
+    the normalisation stats describe (``model = scale * robot + offset``); actions map
+    back by the inverse, so the state and action columns must be the same joints.
+
+    Args:
+        value: The manifest value: ``None`` or a list of ``[scale, offset]`` pairs.
+        state_dim: ``state_contract.dim``.
+        action_dim: ``action_contract.dim``.
+
+    Returns:
+        ``(scale, offset)`` float32 arrays of length ``state_dim``, or ``None``.
+
+    Raises:
+        ROSConfigError: The value is not one non-zero-scale pair per column, or the state
+            and action widths differ.
+
+    Example:
+        >>> scale, offset = joint_affine([[1, 0], [-1, 87.0]], 2, 2)
+        >>> (scale * np.array([0.0, -103.0]) + offset).tolist()
+        [0.0, 190.0]
+    """
+    if value is None:
+        return None
+    if state_dim != action_dim:
+        raise ROSConfigError(
+            f"nat_vla joint_affine maps state and action alike: their widths differ "
+            f"({state_dim} vs {action_dim})."
+        )
+    try:
+        pairs = np.asarray(value, dtype=np.float32)
+    except (TypeError, ValueError) as exc:
+        raise ROSConfigError(f"nat_vla joint_affine must be [scale, offset] pairs: {exc}") from exc
+    if pairs.shape != (state_dim, 2):
+        raise ROSConfigError(
+            f"nat_vla joint_affine needs {state_dim} [scale, offset] pairs, got shape "
+            f"{pairs.shape}."
+        )
+    if not np.isfinite(pairs).all() or (pairs[:, 0] == 0).any():
+        raise ROSConfigError("nat_vla joint_affine scales must be finite and non-zero.")
+    return pairs[:, 0].copy(), pairs[:, 1].copy()
+
+
+def molmoact2_tag_stats(path: str, norm_tag: str) -> dict[str, dict[str, Any]]:
+    """The NaT processors' stats from one tag of a MolmoAct2 ``norm_stats.json``.
+
+    MolmoAct2's data pipeline (``norm_mode: q01_q99``) maps state and action alike from
+    each tag's 1st/99th percentiles to [-1, 1]. NaT's processors normalise the state by
+    quantiles (``q01``/``q99``) and the action by ``min``/``max``, so the action's
+    ``q01``/``q99`` are passed as its ``min``/``max``: the pooled ``min``/``max`` span
+    every calibration convention in the mixture (the SO-ARM tag's reach ±270°) and would
+    squash the actions the checkpoint learned.
+
+    Args:
+        path: Local path of the ``norm_stats.json``.
+        norm_tag: The tag under ``metadata_by_tag``.
+
+    Returns:
+        ``{"observation.state": {...}, "action": {...}}`` with ``q01``/``q99`` (state)
+        and ``min``/``max`` (action) lists.
+
+    Raises:
+        ROSConfigError: The file is not MolmoAct2's ``q01_q99`` format or lacks the tag.
+
+    Example:
+        >>> import json, tempfile
+        >>> doc = {
+        ...     "norm_mode": "q01_q99",
+        ...     "metadata_by_tag": {
+        ...         "t": {
+        ...             "state_stats": {"q01": [-1.0], "q99": [1.0]},
+        ...             "action_stats": {"q01": [-2.0], "q99": [2.0]},
+        ...         }
+        ...     },
+        ... }
+        >>> with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+        ...     json.dump(doc, fh)
+        >>> molmoact2_tag_stats(fh.name, "t")["action"]
+        {'min': [-2.0], 'max': [2.0]}
+    """
+    import json
+
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    if doc.get("norm_mode") != "q01_q99":
+        raise ROSConfigError(
+            f"nat_vla norm_stats {path}: expected MolmoAct2 norm_mode 'q01_q99', got "
+            f"{doc.get('norm_mode')!r}."
+        )
+    meta = doc.get("metadata_by_tag", {}).get(norm_tag)
+    if meta is None:
+        known = sorted(doc.get("metadata_by_tag", {}))
+        raise ROSConfigError(f"nat_vla norm_stats {path}: no tag {norm_tag!r} (has {known}).")
+    try:
+        state, action = meta["state_stats"], meta["action_stats"]
+        return {
+            "observation.state": {"q01": list(state["q01"]), "q99": list(state["q99"])},
+            "action": {"min": list(action["q01"]), "max": list(action["q99"])},
+        }
+    except KeyError as exc:
+        raise ROSConfigError(f"nat_vla norm_stats {path} tag {norm_tag!r} lacks {exc}.") from exc
+
+
+def _hf_file(uri: str) -> str:
+    """Local path of ``hf://<owner>/<repo>[@<rev>]/<file>`` (model repo), cache first."""
+    if not uri.startswith("hf://"):
+        raise ROSConfigError(f"nat_vla norm_stats must be an hf:// file URI, got {uri!r}.")
+    parts = uri[len("hf://") :].split("/")
+    if len(parts) < _HF_FILE_MIN_PARTS:
+        raise ROSConfigError(f"nat_vla norm_stats {uri!r}: expected hf://<owner>/<repo>/<file>.")
+    repo, filename = "/".join(parts[:2]), "/".join(parts[2:])
+    repo, _, revision = repo.partition("@")
+    from huggingface_hub import hf_hub_download
+
+    from openral_sim.policies.molmoact2 import _hf_cached_first
+
+    return _hf_cached_first(
+        lambda: str(hf_hub_download(repo, filename, revision=revision or None)),
+        repo_id=repo,
     )

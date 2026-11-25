@@ -102,6 +102,7 @@ _SIM_STEMS: list[str] = [
     "robocasa_panda_mobile_kitchen",
     "robocasa_pnp",
     "so101_tube_insertion",
+    "so101_tube_insertion_lerobot",
     "tabletop_cube_push",
     "widowx_carrot_on_plate",
     "xr1_robocasa365_close_blender_lid",
