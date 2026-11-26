@@ -130,10 +130,11 @@ def release_track(
     if track is None or track.status is not TrackStatus.BOUND:
         return None
     t = homogeneous_from_quat_xyz(object_pose.xyz, object_pose.quat_xyzw)
-    box = _gravity_box(track.box.frame_id, t, np.asarray(track.box.half_extents))
+    half = np.asarray(track.box.half_extents)
     base = {"bound_hand": None, "attach_link": None, "pose_in_link": None, "tight": ()}
-    try:
-        released = TrackedObject.model_validate(
+
+    def _released(box: PlaceRegion) -> TrackedObject:
+        return TrackedObject.model_validate(
             {
                 **track.model_dump(),
                 **base,
@@ -145,9 +146,29 @@ def release_track(
                 "last_fit_stamp_ns": max(track.last_fit_stamp_ns, stamp_ns),
             }
         )
-    except ValueError as exc:  # the tilted body's yaw box breaks the caps
-        log.warning("object_tracker.release_unrepresentable", object_id=object_id, error=str(exc))
-        released = track.model_copy(update={**base, "status": TrackStatus.LOST})
+
+    try:
+        released = _released(_gravity_box(track.box.frame_id, t, half))
+    except ValueError as tilted_exc:
+        # The tilted body's yaw box breaks the caps (t22, 2026-11-26: a 0.15 m carton let go
+        # at a tilt enclosed to 0.18 x 0.16 x 0.21 m half-extents). It settles upright under
+        # gravity, so keep the object's own (capped) box, yaw-aligned at the release pose,
+        # instead of losing the track and with it the place evidence.
+        yaw = math.atan2(float(t[1, 0]), float(t[0, 0]))
+        upright = t.copy()
+        upright[:3, :3] = [
+            [math.cos(yaw), -math.sin(yaw), 0.0],
+            [math.sin(yaw), math.cos(yaw), 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+        try:
+            released = _released(_gravity_box(track.box.frame_id, upright, half))
+            log.info("object_tracker.release_upright", object_id=object_id, tilted=str(tilted_exc))
+        except ValueError as exc:
+            log.warning(
+                "object_tracker.release_unrepresentable", object_id=object_id, error=str(exc)
+            )
+            released = track.model_copy(update={**base, "status": TrackStatus.LOST})
     store.replace(released)
     log.info("object_tracker.released", object_id=object_id, status=released.status.value)
     return released if released.status is TrackStatus.RELEASED else None

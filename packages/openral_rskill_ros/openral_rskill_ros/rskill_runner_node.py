@@ -1028,6 +1028,24 @@ if _ROS2_AVAILABLE:
                 _Trigger, "/openral/rskill/complete", self._on_complete,
                 callback_group=self._action_cb_group,
             )  # fmt: skip
+            # The scene's own success condition for a goal's prompt, where the scene has one
+            # (deploy sim's ``placement_success`` rubric, graded by the HAL): it decides the
+            # goal's task outcome and ends the goal once met (`_scene_grade_met`).
+            from rclpy.qos import QoSDurabilityPolicy as _Durability
+            from rclpy.qos import QoSProfile as _QoSProfile
+            from rclpy.qos import QoSReliabilityPolicy as _Reliability
+            from std_msgs.msg import String as _String
+
+            self._goal_prompt = ""
+            self._goal_scene_grade: dict[str, Any] | None = None
+            self._scene_grade_sub = self.create_subscription(
+                _String, "/openral/sim/placement_grade", self._on_scene_grade,
+                _QoSProfile(
+                    reliability=_Reliability.RELIABLE, durability=_Durability.TRANSIENT_LOCAL,
+                    depth=1,
+                ),
+                callback_group=self._action_cb_group,
+            )  # fmt: skip
 
             # /openral/estop defense in depth (CLAUDE.md §1.1). Subscribe
             # so the runner aborts even if safety_node already brakes the
@@ -1706,6 +1724,8 @@ if _ROS2_AVAILABLE:
                 self._goal_success_judge = None
                 self._goal_task_outcome = None
                 self._goal_completed_by = ""
+                self._goal_prompt = str(req.prompt)
+                self._goal_scene_grade = None
                 self._grasp_hand_note = ""
                 self._goal_started_monotonic = time.monotonic()
             # Reward-gate signal: this instruction is now executing.
@@ -2384,7 +2404,8 @@ if _ROS2_AVAILABLE:
                 snapshot = self._aggregator.snapshot()
                 # Issue #635: once the goal's `end_on_success` condition has settled the
                 # policy is done, so the goal ends here instead of on its budget.
-                if self._success_condition_met(snapshot.tracked_objects):
+                # Likewise once the scene's own success condition grades the goal complete.
+                if self._success_condition_met(snapshot.tracked_objects) or self._scene_grade_met():
                     return "completed"
                 # Wrap inference so the Inference card and the rskill.id /
                 # rskill.role identity latches both populate. The store's
@@ -3433,6 +3454,28 @@ if _ROS2_AVAILABLE:
             )
             return True
 
+        def _on_scene_grade(self, msg: Any) -> None:
+            """Keep the latest scene grade of the running goal's own prompt."""
+            try:
+                grade = json.loads(msg.data)
+            except ValueError:
+                self.get_logger().warning(f"rskill_runner.scene_grade_unreadable: {msg.data!r}")
+                return
+            if isinstance(grade, dict) and grade.get("prompt") == self._goal_prompt:
+                self._goal_scene_grade = grade
+
+        def _scene_grade_met(self) -> bool:
+            """True once the scene grades the running goal ``complete`` (latched for the Result)."""
+            outcome = scene_grade_outcome(self._goal_scene_grade)
+            if outcome is None or outcome.verdict is not TaskVerdict.SUCCEEDED:
+                return False
+            self._goal_task_outcome = outcome
+            self._goal_completed_by = "scene"
+            self.get_logger().info(
+                f"rskill_runner.scene_success_met rskill={self._active_skill_id}: {outcome.reason}"
+            )
+            return True
+
         @contextlib.contextmanager
         def _task_outcome_stamped(self, span_cm: Any, result: Any) -> Any:
             """Enter ``span_cm`` and, as the goal's body leaves it, stamp ``result``'s task outcome.
@@ -3458,6 +3501,8 @@ if _ROS2_AVAILABLE:
 
             outcome = self._goal_task_outcome
             judge = self._goal_success_judge
+            if outcome is None:
+                outcome = scene_grade_outcome(self._goal_scene_grade)
             if outcome is None and judge is not None and self._aggregator is not None:
                 # A run that ended on its budget, a stop or a cancel is judged on what the
                 # tracker holds now. The goal is already finalized: a judge that cannot
@@ -5403,6 +5448,34 @@ def _collect_image_handles(
             continue
         handles[sensor_to_slot.get(name, name)] = descriptor
     return handles
+
+
+def scene_grade_outcome(grade: dict[str, Any] | None) -> TaskOutcome | None:
+    """The ``TaskOutcome`` a scene's own success condition gives a goal, or ``None`` (no grade).
+
+    ``grade`` is the HAL's ``/openral/sim/placement_grade`` for the goal's prompt: ``complete``
+    succeeds, any other grade (``fail``, ``partial``) fails. A scene that grades the prompt
+    decides the goal; the tracker's judgement is only for scenes without one.
+
+    Example:
+        >>> scene_grade_outcome({"prompt": "p", "grade": "complete", "score": 1.0}).verdict.value
+        'succeeded'
+        >>> scene_grade_outcome({"prompt": "p", "grade": "partial", "score": 0.5}).verdict.value
+        'failed'
+        >>> scene_grade_outcome(None) is None
+        True
+    """
+    if grade is None:
+        return None
+    name = str(grade.get("grade", ""))
+    verdict = TaskVerdict.SUCCEEDED if name == "complete" else TaskVerdict.FAILED
+    return TaskOutcome(
+        verdict=verdict,
+        source="scene",
+        reason=f"the scene graded the placement {name!r} (score {grade.get('score')})"[
+            : TaskOutcome.MAX_REASON_CHARS
+        ],
+    )
 
 
 def _effective_goal_prompt(manifest: RSkillManifest, prompt: str) -> str:

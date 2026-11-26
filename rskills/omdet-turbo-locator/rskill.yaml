@@ -68,7 +68,7 @@ detector:
     - "fork"
     - "knife"
   input_size: [640, 640]
-  score_threshold: 0.3
+  score_threshold: 0.5
 
 paper_url: "https://arxiv.org/abs/2403.06892"
 source_repo: "hf://omlab/omdet-turbo-swin-tiny-hf"

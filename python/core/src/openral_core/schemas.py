@@ -6450,7 +6450,9 @@ class TaskOutcome(BaseModel):
         source: What decided it: ``success_condition`` (a declared ``SuccessCondition``
             over the tracked objects), ``skill`` (the skill's own completion signal, e.g.
             a wrapped action's terminal status), ``checker`` (an external completion
-            check ended the goal through ``/openral/rskill/complete``), or ``none``.
+            check ended the goal through ``/openral/rskill/complete``), ``scene`` (the
+            scene's own success condition for the prompt, e.g. deploy sim's
+            ``placement_success`` grade, which wins over the tracker's), or ``none``.
         reason: One line saying why, for a person and for the reasoner.
         object_ids: The tracked objects the verdict was read from: those resting in the
             region, else the one seen held or elsewhere. Empty when none.
@@ -6470,7 +6472,7 @@ class TaskOutcome(BaseModel):
     MAX_REASON_CHARS: ClassVar[int] = 240
 
     verdict: TaskVerdict
-    source: Literal["success_condition", "skill", "checker", "none"] = "none"
+    source: Literal["success_condition", "scene", "skill", "checker", "none"] = "none"
     reason: str = Field(max_length=MAX_REASON_CHARS)
     object_ids: tuple[str, ...] = ()
     resting: int = Field(default=0, ge=0)

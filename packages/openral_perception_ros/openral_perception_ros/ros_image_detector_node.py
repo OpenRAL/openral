@@ -286,6 +286,30 @@ def stamp_camera_geometry(md: Any, geometry: tuple[str, Any] | None) -> Any:
     )
 
 
+def floor_detections(md: Any, floor: float) -> Any:
+    """``md`` without the detections scoring under ``floor``; ``md`` itself when none do.
+
+    The node's confidence floor (``score_threshold``) for every detector tier: a zero-shot
+    model's own default is lower (OmDet passed 0.31 "box" hits on the AMR aisle).
+
+    Example:
+        >>> from openral_core import ObjectDetection2D, ObjectsMetadata
+        >>> d = lambda c: ObjectDetection2D(label="box", confidence=c, bbox_xyxy=(0, 0, 1, 1))
+        >>> md = ObjectsMetadata(
+        ...     sensor_id="cam",
+        ...     detections=[d(0.31), d(0.72)],
+        ...     model_id="omdet",
+        ...     frame_width=640,
+        ...     frame_height=480,
+        ... )
+        >>> [x.confidence for x in floor_detections(md, 0.5).detections]
+        [0.72]
+    """
+    if md is None or floor <= 0.0 or all(d.confidence >= floor for d in md.detections):
+        return md
+    return md.model_copy(update={"detections": [d for d in md.detections if d.confidence >= floor]})
+
+
 def _takes_score_threshold(detector: Any) -> bool:
     """Whether ``detector.detect_with_query`` accepts a per-call ``score_threshold``."""
     import inspect
@@ -420,6 +444,7 @@ def main(args: Any = None) -> None:
             self._camera_geometry: dict[str, tuple[str, Any]] = {}
             self._primary_id = ""
             self._sensor_id = ""
+            self._floor = 0.5
             self._min_period_ns = int(1e9 / 5.0)
             self._subs: list[Any] = []
             self._query_sub: Any = None
@@ -435,6 +460,8 @@ def main(args: Any = None) -> None:
             self._apply_env_log_level()
             gp = self.get_parameter
             self._sensor_id = gp("sensor_id").get_parameter_value().string_value
+            # Every detection under it is discarded, whatever the detector tier.
+            self._floor = gp("score_threshold").get_parameter_value().double_value
             self._min_period_ns = int(
                 1e9 / max(gp("max_rate_hz").get_parameter_value().double_value, 0.1)
             )
@@ -778,7 +805,9 @@ def main(args: Any = None) -> None:
             # the leg is observable without changing what lands on the bus (issue
             # #12 / CLAUDE.md §1.4).
             try:
-                md = self._detector.detect(bgr, w, h, self._sensor_id)
+                md = floor_detections(
+                    self._detector.detect(bgr, w, h, self._sensor_id), self._floor
+                )
             except Exception as exc:  # surfaced at WARNING below, never swallowed
                 level, message = classify_continuous_tick(error=exc, detection_count=None)
                 self._log_throttled(level, message)
@@ -851,6 +880,7 @@ def main(args: Any = None) -> None:
                     )
                 else:
                     md = self._detector.detect(src, sw, sh, self._sensor_id)
+                md = floor_detections(md, max(floor, self._floor))
                 if md is not None and crop is not None:
                     md = uncrop_metadata(md, ox, oy, w, h)
             except Exception as exc:  # best-effort; never crash the service

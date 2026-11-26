@@ -705,6 +705,8 @@ class SimAttachedHAL:
         self._active_task: str = ""
         self._placement_prompt: str = ""
         self._placement_scores: dict[str, float] | None = None
+        # Called with each grade of the graded goal (``add_placement_grade_listener``).
+        self._placement_grade_listeners: list[Callable[[dict[str, object]], None]] = []
         self._placement_grade: str = "fail"
         self._placement_best: str = "fail"
         self._set_task_failed: bool = False
@@ -1726,6 +1728,7 @@ class SimAttachedHAL:
         self._placement_grade = grade
         if scores.get(grade, 0.0) > scores.get(self._placement_best, 0.0):
             self._placement_best = grade
+        self._notify_placement_grade()
         sim_time_ns = self.sim_time_ns()
         self._emit_task_success(
             _EVENT_PLACEMENT_GRADE,
@@ -1738,6 +1741,33 @@ class SimAttachedHAL:
             sim_time_s=None if sim_time_ns is None else round(sim_time_ns / 1e9, 3),
             step=self._step_count,
         )
+
+    def add_placement_grade_listener(self, listener: Callable[[dict[str, object]], None]) -> None:
+        """Call ``listener`` with ``{prompt, grade, score}`` on each grade of the graded goal.
+
+        The scene's success condition for the goal's prompt (its ``placement_success``
+        rubric): the HAL node publishes it so the rSkill runner reports it as the goal's
+        task outcome. Called on the stepping thread; a raising listener is logged, never
+        allowed to break the step.
+        """
+        self._placement_grade_listeners.append(listener)
+
+    def _notify_placement_grade(self) -> None:
+        scores = self._placement_scores or {}
+        grade = {
+            "prompt": self._placement_prompt,
+            "grade": self._placement_grade,
+            "score": scores.get(self._placement_grade, 0.0),
+        }
+        for listener in self._placement_grade_listeners:
+            try:
+                listener(grade)
+            except Exception as exc:  # reason: an observability hook must never break actuation
+                _task_success_logger().warning(
+                    "sim.placement_grade_listener_failed",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
 
     def _emit_placement_grade_final(self) -> None:
         """Log the ending goal's ``sim.placement_grade_final`` (no-op when it is ungraded)."""
@@ -2977,6 +3007,9 @@ class SimAttachedHAL:
         self._placement_scores = (
             {str(k): float(v) for k, v in scores.items()} if reply.get("graded") else None
         )
+        if self._placement_scores is not None:
+            # The starting grade, so a goal that never improves reads `fail`.
+            self._notify_placement_grade()
         if self._placement_scores is None and reply.get("prompts"):
             self._emit_task_success(
                 _EVENT_PLACEMENT_GRADE_UNAVAILABLE,

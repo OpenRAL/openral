@@ -751,3 +751,40 @@ def test_an_occluded_track_needs_a_margin_to_be_confirmed_again() -> None:
     assert _get(tr, "trk:1").status is TrackStatus.CONFIRMED
     tr._visibility(near)  # CONFIRMED leaves only below theta_vis
     assert _get(tr, "trk:1").status is TrackStatus.CONFIRMED
+
+
+def test_a_carton_let_go_at_a_tilt_is_released_upright_not_lost() -> None:
+    """t22 (2026-11-26, AMR aisle): a 0.15 m carton let go tilted enclosed to a yaw box over
+    the 0.2 m cap, so the track went LOST and the place evidence with it (the sim graded the
+    placement complete). Gravity settles it upright: it is RELEASED with its own box."""
+    oranges = _oranges(0.09)
+    tr, _ = _grounded(oranges)
+    two = _get(tr, "trk:2")
+    carton = two.box.model_copy(update={"half_extents": (0.15, 0.12, 0.15)})
+    tr.store.replace(
+        TrackedObject.model_validate(
+            {
+                **two.model_dump(),
+                "box": carton,
+                "status": TrackStatus.BOUND,
+                "bound_hand": "gripper",
+                "attach_link": "jaw",
+                "pose_in_link": Pose6D(xyz=(0, 0, 0), quat_xyzw=(0, 0, 0, 1), frame_id="jaw"),
+            }
+        )
+    )
+    x, y, z = two.box.pose.xyz
+    s = math.sin(math.pi / 8)  # 45 deg about y: the yaw box would be 0.21 m half-wide
+    released = release_track(
+        tr.store,
+        "trk:2",
+        object_pose=Pose6D(
+            xyz=(x, y, z + 0.10), quat_xyzw=(0, s, 0, math.cos(math.pi / 8)), frame_id=_RIG.frame
+        ),
+        support_z=_RIG.support_z,
+        cell_m=RES,
+        stamp_ns=50_000_000,
+    )
+    assert released is not None and released.status is TrackStatus.RELEASED
+    np.testing.assert_allclose(released.box.half_extents, (0.15, 0.12, 0.15), atol=1e-9)
+    np.testing.assert_allclose(released.box.pose.xyz, (x, y, z + 0.10), atol=1e-9)

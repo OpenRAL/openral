@@ -119,6 +119,10 @@ class _AtomicParameterUpdateFuture(Protocol):
     ) -> None: ...
 
 
+#: Each grade of the graded goal: ``std_msgs/String`` JSON ``{"prompt", "grade", "score"}``.
+PLACEMENT_GRADE_TOPIC = "/openral/sim/placement_grade"
+
+
 def joint_state_republish_stamp_ns(
     node_now_ns: int,
     sample_stamp_ns: int,
@@ -2802,6 +2806,23 @@ if _ROS2_AVAILABLE:
                     depth=1,
                 ),
             )
+            # The graded goal's grade (the scene's success condition for its prompt), for
+            # the rSkill runner to report as the goal's task outcome. RELIABLE /
+            # TRANSIENT_LOCAL / KEEP_LAST 1: a late runner still reads the current grade.
+            add_listener = getattr(self._hal, "add_placement_grade_listener", None)
+            if callable(add_listener):
+                import json
+
+                grade_pub = self.create_publisher(
+                    String,
+                    PLACEMENT_GRADE_TOPIC,
+                    QoSProfile(
+                        reliability=QoSReliabilityPolicy.RELIABLE,
+                        durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                        depth=1,
+                    ),
+                )
+                add_listener(lambda grade: grade_pub.publish(String(data=json.dumps(grade))))
 
         def _handle_reset_episode(self, request: object, response: object) -> object:
             """Start a fresh sim episode on the live env; reply with the seed it used.
