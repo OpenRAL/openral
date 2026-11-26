@@ -2,7 +2,8 @@
 
 Upstream (``openAMRobot/openamr-upperbody-sw``) ships one combined URDF, plus
 MoveIt and Gazebo configs, and no MJCF. ``robots/openamrobot_v2/openamrobot_v2.urdf``
-is that URDF with xacro already expanded. This module turns it into an MJCF
+is upstream's own expansion of it with OpenRAL's camera overlay
+(``tools/openamrobot_v2_urdf.py``). This module turns it into an MJCF
 once per URDF revision and caches the result under
 ``$OPENRAL_CACHE_DIR/openamrobot_v2/<sha>/``. Steps:
 
@@ -76,48 +77,6 @@ _BASE_OMEGA_RAD_S = math.sqrt(500.0)
 _LIFT_KP, _LIFT_KV, _LIFT_FORCE = 1.0e5, 4000.0, 3000.0
 
 
-def _srgb(hex_rgb: str) -> list[float]:
-    return [int(hex_rgb[i : i + 2], 16) / 255.0 for i in (1, 3, 5)] + [1.0]
-
-
-# Visual finishes (presentation only: no geometry, mass or contact change). Upstream's
-# URDF draws the whole upper body in one placeholder colour; these are the colours its
-# own roadmap model renders (openAMRobot/openamrobot-docs, docs/assets/roadmap/model:
-# finish.json RAL references, else model.js materials alu #C9CDD2, anod #D7DBDE, steel
-# #4A4F55, black #15181C). Links the roadmap model draws only as placeholder envelopes
-# (Getac, head light, second E-stop) keep upstream's placeholder colour.
-_LINK_FINISH: dict[str, list[float]] = {
-    "lift_column_base_link": _srgb("#D7DBDE"),  # anodised column body (model.js anod)
-    "lift_carriage_link": _srgb("#C9CDD2"),  # lift stage (model.js alu)
-    "adapter_plate_link": _srgb("#0A0A0A"),  # RAL 9005, satin (finish.json)
-    "arm_profile_link": _srgb("#383E42"),  # RAL 7016, satin (finish.json)
-    "head_camera_link": _srgb("#15181C"),  # ZED Mini body at the head_zed lens (model.js black)
-    "head_camera_bracket_link": _srgb("#C9CDD2"),
-    "lift_flag_rod_link": _srgb("#C9CDD2"),
-    "lift_flag_link": _srgb("#4A4F55"),
-    "lift_stop_sensor_l1000_link": _srgb("#4A4F55"),
-    "lift_stop_sensor_l1175_link": _srgb("#4A4F55"),
-    "lift_stop_sensor_l1350_link": _srgb("#4A4F55"),
-}
-# base_link carries three visual meshes: the steel shell (side, front and rear panels,
-# RAL 7035) and the top cover (RAL 7016), as finish.json; the equipment keeps its own.
-_BASE_MESH_FINISH: dict[str, list[float]] = {
-    "base_chassis": _srgb("#CBD0CC"),
-    "base_covers": _srgb("#383E42"),
-}
-
-
-def _apply_finish(geom: object) -> None:
-    """Colour one visual geom from ``_LINK_FINISH`` / ``_BASE_MESH_FINISH`` (else unchanged)."""
-    body = geom.parent.name  # type: ignore[attr-defined]  # reason: mujoco MjsGeom
-    if body in _LINK_FINISH:
-        geom.rgba = _LINK_FINISH[body]  # type: ignore[attr-defined]  # reason: mujoco MjsGeom
-    elif body == "base_link":
-        for stem, rgba in _BASE_MESH_FINISH.items():
-            if geom.meshname.startswith(f"{stem}_"):  # type: ignore[attr-defined]  # reason: mujoco MjsGeom
-                geom.rgba = rgba  # type: ignore[attr-defined]  # reason: mujoco MjsGeom
-
-
 def _actuated_joints() -> list[tuple[str, tuple[float, float]]]:
     """The MJCF joint each actuator drives, in ``robots/openamrobot_v2/robot.yaml`` order."""
     out: list[tuple[str, tuple[float, float]]] = []
@@ -181,8 +140,6 @@ def _build(urdf_xml: str, alias_dir: Path) -> str:
             # (the chassis box hid the base meshes). Contacts and mj_ray (lidar,
             # depth ray-cast) ignore groups unless asked, so they still hit these.
             geom.group = 3
-        else:
-            _apply_finish(geom)
 
     base = spec.body("base_footprint")
     slide, hinge = mujoco.mjtJoint.mjJNT_SLIDE, mujoco.mjtJoint.mjJNT_HINGE

@@ -33,6 +33,19 @@ _Overlays a robot's kernel collision primitives — the shapes the C++ safety ke
 - `--viewer` — interactive MuJoCo window; `--screenshot PATH` writes an offscreen PNG; `--rviz` publishes the primitives as markers in RViz. `--robot <id>` (default `so101_follower`) and `--deg <j...>` set the pose in degrees.
 - `main(argv=None) -> int` (L334) — CLI entry; builds the robot's kernel collision primitives and dispatches to the viewer/screenshot/RViz renderer named above.
 
+### `tools/openamrobot_v2_urdf.py`
+_Builds `robots/openamrobot_v2/openamrobot_v2.urdf` from upstream's vendored expansion (`robots/openamrobot_v2/upstream/combined_robot.urdf`) plus OpenRAL's camera overlay (OpenArm's wrist mount, the head ZED lens pose) with the `<gazebo>` / `<ros2_control>` / `<transmission>` blocks dropped. `--check` fails on a stale file (`tests/unit/test_openamrobot_v2_urdf_overlay.py`); `--expand UPPERBODY PLATFORM OPENARM_DESC` re-vendors the upstream file from three checkouts with ROS 2 `xacro`._
+
+- `UPSTREAM_URDF: Path` (L37) — the vendored upstream expansion.
+- `OVERLAID_URDF: Path` (L38) — the overlaid file the manifest loads.
+- `XACRO_ARGS: tuple[str, ...]` (L41) — the only non-default xacro argument, `sim_dynamics:=on`.
+- `CAMERA_MOUNTS: dict[str, tuple[str | None, str, str]]` (L46) — joint → (new parent or `None`, xyz, rpy) for the four camera joints the overlay moves.
+- `NON_DESCRIPTION_TAGS: tuple[str, ...]` (L61) — top-level tags dropped.
+- `MARKERLESS_LINKS: tuple[str, ...]` (L63) — links whose placeholder boxes are dropped.
+- `overlay(upstream_xml) -> str` (L66) — the overlaid URDF text (comments dropped, `ET.indent`).
+- `expand(upperbody, platform, openarm_description) -> str` (L97) — runs upstream's `combined_robot.xacro` from a scratch ament prefix (path-independent header).
+- `main(argv=None) -> int` (L127) — CLI entry: rewrite (default), `--check`, `--expand`.
+
 ### `tools/derive_scene_inputs.py`
 
 Derive a deploy scene's safety inputs from the simulator instead of by hand (#349): the declared static geometry and the grasp declaration's `search_box` / `workspace_box`. Backend-neutral (Isaac sidecar or MuJoCo); explicit scene values win unless `--replace`, and both are printed for comparison.
