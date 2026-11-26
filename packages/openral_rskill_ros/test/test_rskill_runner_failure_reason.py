@@ -57,6 +57,13 @@ def test_label_runtime_failure_cuda_oom() -> None:
     assert RskillRunnerNode._label_runtime_failure(OutOfMemoryError("boom")).startswith(
         "ROSGPUMemoryError:"
     )
+    for msg in (
+        "CUDA error: CUBLAS_STATUS_ALLOC_FAILED when calling `cublasCreate(handle)`",
+        "CUDA error: out of memory Search for `cudaErrorMemoryAllocation'",
+    ):
+        assert RskillRunnerNode._label_runtime_failure(RuntimeError(msg)).startswith(
+            "ROSGPUMemoryError:"
+        ), msg
 
 
 def test_label_runtime_failure_dtype() -> None:
