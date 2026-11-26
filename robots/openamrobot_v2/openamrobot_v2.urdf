@@ -268,7 +268,7 @@
     <collision>
       <origin rpy="1.5707963 0 0" xyz="0 0 0" />
       <geometry>
-        <cylinder length="0.046" radius="0.100" />
+        <cylinder length="0.046" radius="0.098" />
       </geometry>
     </collision>
   </link>
@@ -293,7 +293,7 @@
     <collision>
       <origin rpy="1.5707963 0 0" xyz="0 0 0" />
       <geometry>
-        <cylinder length="0.046" radius="0.100" />
+        <cylinder length="0.046" radius="0.098" />
       </geometry>
     </collision>
   </link>
@@ -449,7 +449,7 @@
     </visual>
   </link>
   <joint name="tof_front_joint" type="fixed">
-    <origin rpy="0 0.3491 0" xyz="0.399 0 -0.0066" />
+    <origin rpy="0 0.174533 0" xyz="0.399 0 -0.0066" />
     <parent link="base_link" />
     <child link="tof_front" />
   </joint>
@@ -463,7 +463,7 @@
     </visual>
   </link>
   <joint name="tof_rear_joint" type="fixed">
-    <origin rpy="0 0.3491 3.141592653589793" xyz="-0.399 0 -0.0066" />
+    <origin rpy="0 0.174533 3.141592653589793" xyz="-0.399 0 -0.0066" />
     <parent link="base_link" />
     <child link="tof_rear" />
   </joint>
@@ -964,6 +964,7 @@
     <child link="openarm_left_link1" />
     <axis xyz="0 1 0" />
     <limit effort="40" lower="-3.4907" upper="1.3963" velocity="16.755" />
+    <dynamics damping="1.0" friction="0.2" />
   </joint>
   <link name="openarm_left_link2">
     <visual name="openarm_left_link2_visual">
@@ -990,6 +991,7 @@
     <child link="openarm_left_link2" />
     <axis xyz="-1 0 0" />
     <limit effort="40" lower="-3.3161" upper="0.17453" velocity="16.755" />
+    <dynamics damping="1.0" friction="0.2" />
   </joint>
   <link name="openarm_left_link3">
     <visual name="openarm_left_link3_visual">
@@ -1016,6 +1018,7 @@
     <child link="openarm_left_link3" />
     <axis xyz="0 0 -1" />
     <limit effort="27" lower="-1.5708" upper="1.5708" velocity="5.4454" />
+    <dynamics damping="0.9" friction="0.1" />
   </joint>
   <link name="openarm_left_link4">
     <visual name="openarm_left_link4_visual">
@@ -1042,6 +1045,7 @@
     <child link="openarm_left_link4" />
     <axis xyz="0 -1 0" />
     <limit effort="27" lower="0" upper="2.4435" velocity="5.4454" />
+    <dynamics damping="0.9" friction="0.1" />
   </joint>
   <link name="openarm_left_link5">
     <visual name="openarm_left_link5_visual">
@@ -1068,6 +1072,7 @@
     <child link="openarm_left_link5" />
     <axis xyz="0 0 -1" />
     <limit effort="7" lower="-1.5708" upper="1.5708" velocity="20.944" />
+    <dynamics damping="0.9" friction="0.04" />
   </joint>
   <link name="openarm_left_link6">
     <visual name="openarm_left_link6_visual">
@@ -1094,6 +1099,7 @@
     <child link="openarm_left_link6" />
     <axis xyz="0 -1 0" />
     <limit effort="7" lower="-0.7854" upper="0.7854" velocity="20.944" />
+    <dynamics damping="0.9" friction="0.04" />
   </joint>
   <joint name="openarm_left_joint7" type="revolute">
     <origin rpy="0 0 0" xyz="0 0 0" />
@@ -1101,6 +1107,7 @@
     <child link="openarm_left_ee_base_link" />
     <axis xyz="1 0 0" />
     <limit effort="7" lower="-1.5708" upper="1.5708" velocity="20.944" />
+    <dynamics damping="0.9" friction="0.04" />
   </joint>
   <link name="openarm_left_ee_base_link">
     <visual name="openarm_left_ee_base_link_visual">
@@ -1165,6 +1172,7 @@
     <child link="openarm_left_ee_link1" />
     <axis xyz="-1 0 0" />
     <limit effort="7" lower="0" upper="0.7854" velocity="5" />
+    <dynamics damping="0.6" friction="0.0" />
   </joint>
   <joint name="openarm_left_finger_joint2" type="revolute">
     <origin rpy="0.0 -0.0 0.0" xyz="-0.0014300000000005003 0.0180000000000012 -0.0680000000000215" />
@@ -1172,6 +1180,7 @@
     <child link="openarm_left_ee_link2" />
     <axis xyz="1 0 0" />
     <limit effort="7" lower="0" upper="0.7854" velocity="5" />
+    <dynamics damping="0.6" friction="0.0" />
     <mimic joint="openarm_left_finger_joint1" multiplier="1" offset="0" />
   </joint>
   <link name="openarm_left_grasp_frame" />
@@ -1229,6 +1238,7 @@
     <child link="openarm_right_link1" />
     <axis xyz="0 -1 0" />
     <limit effort="40" lower="-1.3963" upper="3.4907" velocity="16.755" />
+    <dynamics damping="1.0" friction="0.2" />
   </joint>
   <link name="openarm_right_link2">
     <visual name="openarm_right_link2_visual">
@@ -1255,6 +1265,7 @@
     <child link="openarm_right_link2" />
     <axis xyz="-1 0 0" />
     <limit effort="40" lower="-0.17453" upper="3.3161" velocity="16.755" />
+    <dynamics damping="1.0" friction="0.2" />
   </joint>
   <link name="openarm_right_link3">
     <visual name="openarm_right_link3_visual">
@@ -1281,6 +1292,7 @@
     <child link="openarm_right_link3" />
     <axis xyz="0 0 -1" />
     <limit effort="27" lower="-1.5708" upper="1.5708" velocity="5.4454" />
+    <dynamics damping="0.9" friction="0.1" />
   </joint>
   <link name="openarm_right_link4">
     <visual name="openarm_right_link4_visual">
@@ -1307,6 +1319,7 @@
     <child link="openarm_right_link4" />
     <axis xyz="0 -1 0" />
     <limit effort="27" lower="0" upper="2.4435" velocity="5.4454" />
+    <dynamics damping="0.9" friction="0.1" />
   </joint>
   <link name="openarm_right_link5">
     <visual name="openarm_right_link5_visual">
@@ -1333,6 +1346,7 @@
     <child link="openarm_right_link5" />
     <axis xyz="0 0 -1" />
     <limit effort="7" lower="-1.5708" upper="1.5708" velocity="20.944" />
+    <dynamics damping="0.9" friction="0.04" />
   </joint>
   <link name="openarm_right_link6">
     <visual name="openarm_right_link6_visual">
@@ -1359,6 +1373,7 @@
     <child link="openarm_right_link6" />
     <axis xyz="0 1 0" />
     <limit effort="7" lower="-0.7854" upper="0.7854" velocity="20.944" />
+    <dynamics damping="0.9" friction="0.04" />
   </joint>
   <joint name="openarm_right_joint7" type="revolute">
     <origin rpy="0 0 0" xyz="0 0 0" />
@@ -1366,6 +1381,7 @@
     <child link="openarm_right_ee_base_link" />
     <axis xyz="1 0 0" />
     <limit effort="7" lower="-1.5708" upper="1.5708" velocity="20.944" />
+    <dynamics damping="0.9" friction="0.04" />
   </joint>
   <link name="openarm_right_ee_base_link">
     <visual name="openarm_right_ee_base_link_visual">
@@ -1430,6 +1446,7 @@
     <child link="openarm_right_ee_link1" />
     <axis xyz="-1 0 0" />
     <limit effort="7" lower="-0.7854" upper="0" velocity="5" />
+    <dynamics damping="0.6" friction="0.0" />
   </joint>
   <joint name="openarm_right_finger_joint2" type="revolute">
     <origin rpy="0.0 -0.0 0.0" xyz="-0.0014300000000005003 -0.0180000000000012 -0.0680000000000215" />
@@ -1437,6 +1454,7 @@
     <child link="openarm_right_ee_link2" />
     <axis xyz="1 0 0" />
     <limit effort="7" lower="-0.7854" upper="0" velocity="5" />
+    <dynamics damping="0.6" friction="0.0" />
     <mimic joint="openarm_right_finger_joint1" multiplier="1" offset="0" />
   </joint>
   <link name="openarm_right_grasp_frame" />

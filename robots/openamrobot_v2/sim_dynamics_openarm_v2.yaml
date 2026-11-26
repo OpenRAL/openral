@@ -1,0 +1,393 @@
+# SPDX-License-Identifier: MIT
+# Simulator dynamics profile for the OpenArm 2.0 arms and pinch grippers of the combined model.
+#
+# Separate from the canonical kinematics. The joint origins, axes, position limits, masses and inertias stay where they are
+# (openarm_description at the pin of config/upstream_pins.yaml). This file holds only what a physics simulator needs on top:
+# joint damping, joint friction, reflected rotor inertia (armature), and a copy of the effort and velocity limits for reference.
+#
+# Read by urdf/sim_dynamics.xacro. Applied to the Gazebo output (hardware_profile:=gazebo) and to a MuJoCo-facing URDF
+# (sim_dynamics:=on). Never applied to hardware_profile:=real: the expansion refuses that combination.
+#
+# Every quantity is {value, unit, status, source, locator, method?, note?}.
+#   status  upstream_sim_asset  the value is written in an upstream simulator asset (source and locator say where)
+#           upstream_urdf       the value is the URDF limit of the pinned upstream description; the test compares it with the expansion
+#           datasheet           the value is a motor datasheet figure, read through the upstream docs or the actuator ledger
+#           upstream_driver     the value is a default written in an upstream driver (not a simulator asset)
+#           upstream_config     the value is written in an upstream controller configuration at the pin
+#           estimated           derived here; `method` is required and says how
+#   source  a key of `sources` below. locator says where in that source.
+# No value is invented: a quantity without source and locator fails the schema, and `estimated` without `method` fails the test.
+#
+# These are simulator values. None is a measurement of a delivered arm. Upstream says of its own values that the armatures are
+# approximations and that gearbox contributions are unconfirmed. Identification on the purchased arms replaces them.
+# Schema: sim_dynamics.schema.json. Tests: test/test_sd01_sim_dynamics_profile.py, test/test_sd02_sim_dynamics_urdf.py.
+schema_version: 1
+profile: openarm_v2
+description: Simulator joint dynamics for OpenArm 2.0 with the pinch gripper (two arms, two grippers)
+read_on: "2026-11-14"
+applies_to:
+  hardware_profiles: [gazebo]
+  explicit_outputs: [mujoco_urdf]
+  never: [real]
+
+sources:
+  openarm_mujoco:
+    repository: https://github.com/enactic/openarm_mujoco
+    commit: "1daab06716b779376dbe7f01fb0548f8b539bb35"
+    file: v2/openarm_bimanual.xml
+    licence: Apache-2.0
+    note: >-
+      Upstream MuJoCo model of OpenArm 2.0. The motor dynamics were set in ee1110561fa64efe041b90c7b274b93825c9bd82 (#82) and the
+      finger values in 38a34650774abceadfb8b790e3a0fa00262c4f8a (#75). The file was last changed in
+      97cfed2cff58b1251a081c7ac81835cc6243cdf9. Values are copied as numbers; no file content is copied.
+  openarm_description_pin:
+    repository: https://github.com/enactic/openarm_description
+    commit: "14ff67b638ff1c738a1b9a6be8aaa5ce5ed2c831"
+    licence: Apache-2.0
+    note: >-
+      The pin of config/upstream_pins.yaml. assets/robot/openarm_v2.0/config/arm/control/friction.yaml is empty (0 bytes) at this
+      commit, so it gives no value. control_gains.yaml gives the MIT gains only.
+  openarm_description_main:
+    repository: https://github.com/enactic/openarm_description
+    commit: "38c64af1dd6f3bc246883754875cbb4259dce0fc"
+    licence: Apache-2.0
+    note: >-
+      main on 14 Nov 2026. friction.yaml moved to assets/arm/openarm_v2.0/config/control/friction.yaml and is still empty (0 bytes).
+      No <dynamics> element and no damping, friction or armature value anywhere in the repository.
+  openarm_ros2_pin:
+    repository: https://github.com/enactic/openarm_ros2
+    commit: "4e837e1d0dae692ff67b560b69d8d281d7a8d4ed"
+    licence: Apache-2.0
+    note: The pin of config/upstream_pins.yaml. main on 14 Nov 2026 is 8f23aeabb372c256f7807b9a74d48e035fc68386 and gives the same rates.
+  openarm_docs:
+    repository: https://github.com/enactic/openarm
+    commit: "e15e09e056098348d6f437389bbf48179caa82b6"
+    licence: see the repository
+    note: website/docs/hardware/openarm-2.0/motor.mdx is the motor table (the datasheet figures as upstream publishes them).
+  openarm_can:
+    repository: https://github.com/enactic/openarm_can
+    commit: "26b266ae90c36ead9f84dcba2d747c4762a94c18"
+    licence: Apache-2.0
+    note: main on 14 Nov 2026. The gripper defaults quoted below are the same at tag 1.4.1 (bfd4e52).
+  actuator_ledger:
+    repository: https://github.com/openAMRobot/openamr-upperbody-sw
+    commit: "8c4c548fa20bf91a5b42b223657ddc792e690713"
+    file: ros2/src/openamrobot_upperbody_description/config/actuator_ledger.yaml
+    licence: MIT
+    note: >-
+      Draft pull request 65, not on main yet. The motor data (gear ratio, rated and peak torque, rated and peak current) lives
+      there, one entry per joint with its own source. This profile names the ledger entry and field and does not carry a second
+      copy of the motor table. The few figures used in a method below are quoted with the ledger field they come from, and the
+      test compares them with the ledger once it is on main.
+  combined_model:
+    repository: https://github.com/openAMRobot/openamr-upperbody-sw
+    commit: "895ce34a35d93f5a1dc540f9887ccee79107afe6"
+    licence: MIT
+    note: main, the base of this change. Used for one geometric estimate (the finger lever arm) from the expanded URDF.
+
+# Sources that were read and give nothing usable for OpenArm 2.0 joint dynamics.
+sources_without_values:
+  - repository: https://github.com/enactic/openarm_isaac_lab
+    commit: "cb7ff7547bdb81f290591edb9302b4845b1d49a7"
+    finding: >-
+      The asset is the 1.0 hand (prismatic fingers, 0.044 m). It sets actuator stiffness and damping gains for the Isaac implicit
+      actuator and no joint friction or armature. Not used.
+  - repository: https://github.com/enactic/openarm_simulation
+    commit: "c3f4eeb9283c869ac34fe923e174e59fc93e6707"
+    finding: Last changed in July 2025, before OpenArm 2.0. Not used.
+  - repository: https://github.com/enactic/openarm_description
+    commit: "14ff67b638ff1c738a1b9a6be8aaa5ce5ed2c831"
+    finding: friction.yaml is empty at the pin and at main. See sources above.
+
+# What each simulator does with the values.
+simulators:
+  gazebo_harmonic:
+    damping: applied. URDF <dynamics damping> becomes the SDF joint damping.
+    friction: applied. URDF <dynamics friction> becomes the SDF joint friction, a constant torque that opposes motion.
+    armature: not applied. URDF has no element for rotor inertia and this change adds none to the links. The value is carried for MuJoCo.
+    limit: >-
+      Position-servo joints only (gz_ros2_control position interface, as openamrobot_upperbody_gazebo runs them). For effort-driven
+      joints on 1 ms steps the damping is stepped explicitly and is unstable without the rotor inertia: damping times the step over
+      the link inertia about the joint is up to 6.6, and the limit is 2. The software-in-the-loop launch
+      (openamrobot_openarm_emulator) therefore expands the model with sim_dynamics off.
+  mujoco:
+    damping: applied. The MuJoCo URDF importer reads <dynamics damping>.
+    friction: applied. The MuJoCo URDF importer reads <dynamics friction> as frictionloss.
+    armature: not in URDF. A MuJoCo model built from the URDF must set joint armature from this file. No exporter is in this repository yet.
+
+# One block per motor class, as the upstream MuJoCo model groups them (default classes motor_DM8009, motor_DM4340, motor_DM4310,
+# motor_finger). The per-joint entries below alias these, so each value is written once.
+motor_classes:
+  DM8009:
+    motor: DAMIAO DM-J8009P-2EC
+    ledger_example_entry: openarm_left_joint1
+    damping: &dm8009_damping
+      value: 1.0
+      unit: N*m*s/rad
+      status: upstream_sim_asset
+      source: openarm_mujoco
+      locator: default class motor_DM8009, joint attribute damping
+      note: >-
+        The applied upstream value. Upstream also quotes a reference figure from the motor's own readout, about 0.13 N*m*s/rad,
+        and says the applied damping is unchanged. The applied value is used here.
+    friction: &dm8009_friction
+      value: 0.2
+      unit: N*m
+      status: upstream_sim_asset
+      source: openarm_mujoco
+      locator: default class motor_DM8009, joint attribute frictionloss
+    armature: &dm8009_armature
+      value: 0.016
+      unit: kg*m^2
+      status: upstream_sim_asset
+      source: openarm_mujoco
+      locator: default class motor_DM8009, joint attribute armature
+      note: Upstream method, in its own words, is motor rotor readout times gear ratio squared, gearbox contribution unconfirmed.
+    rotor_inertia_implied:
+      value: 1.975e-4
+      unit: kg*m^2
+      status: estimated
+      source: openarm_mujoco
+      locator: default class motor_DM8009, joint attribute armature
+      method: armature divided by gear ratio squared, 0.016 / 9^2. Gear ratio 9 from the actuator ledger, entry openarm_left_joint1, field gear_ratio.
+      note: A cross-check only. Not applied anywhere.
+  DM4340:
+    motor: DAMIAO DM4340 series (DM-J4340P-2EC)
+    ledger_example_entry: openarm_left_joint3
+    damping: &dm4340_damping
+      value: 0.9
+      unit: N*m*s/rad
+      status: upstream_sim_asset
+      source: openarm_mujoco
+      locator: default class motor_DM4340, joint attribute damping
+      note: The applied upstream value. Upstream's reference figure from the motor readout is about 0.33 N*m*s/rad.
+    friction: &dm4340_friction
+      value: 0.1
+      unit: N*m
+      status: upstream_sim_asset
+      source: openarm_mujoco
+      locator: default class motor_DM4340, joint attribute frictionloss
+    armature: &dm4340_armature
+      value: 0.030
+      unit: kg*m^2
+      status: upstream_sim_asset
+      source: openarm_mujoco
+      locator: default class motor_DM4340, joint attribute armature
+      note: Upstream method, in its own words, is motor rotor readout times gear ratio squared, gearbox contribution unconfirmed.
+    rotor_inertia_implied:
+      value: 1.875e-5
+      unit: kg*m^2
+      status: estimated
+      source: openarm_mujoco
+      locator: default class motor_DM4340, joint attribute armature
+      method: armature divided by gear ratio squared, 0.030 / 40^2. Gear ratio 40 from the actuator ledger, entry openarm_left_joint3, field gear_ratio.
+      note: A cross-check only. Close to the DM4310 figure, as expected for the same motor frame with a different gearbox.
+  DM4310:
+    motor: DAMIAO DM-J4310-2EC V1.1
+    ledger_example_entry: openarm_left_joint5
+    damping: &dm4310_damping
+      value: 0.9
+      unit: N*m*s/rad
+      status: upstream_sim_asset
+      source: openarm_mujoco
+      locator: default class motor_DM4310, joint attribute damping
+      note: The applied upstream value. Upstream's reference figure from the motor readout is about 0.03 N*m*s/rad.
+    friction: &dm4310_friction
+      value: 0.04
+      unit: N*m
+      status: upstream_sim_asset
+      source: openarm_mujoco
+      locator: default class motor_DM4310, joint attribute frictionloss
+    armature: &dm4310_armature
+      value: 0.002
+      unit: kg*m^2
+      status: upstream_sim_asset
+      source: openarm_mujoco
+      locator: default class motor_DM4310, joint attribute armature
+      note: Upstream method, in its own words, is motor rotor readout times gear ratio squared, gearbox contribution unconfirmed.
+    rotor_inertia_implied:
+      value: 2.0e-5
+      unit: kg*m^2
+      status: estimated
+      source: openarm_mujoco
+      locator: default class motor_DM4310, joint attribute armature
+      method: armature divided by gear ratio squared, 0.002 / 10^2. Gear ratio 10 from the actuator ledger, entry openarm_left_joint5, field gear_ratio.
+      note: A cross-check only. Not applied anywhere.
+  finger:
+    motor: DAMIAO DM-J4310-2EC V1.1 (one per hand, drives finger_joint1; finger_joint2 follows through the mimic)
+    ledger_example_entry: openarm_left_finger_joint1
+    damping: &finger_damping
+      value: 0.6
+      unit: N*m*s/rad
+      status: upstream_sim_asset
+      source: openarm_mujoco
+      locator: default class motor_finger, joint attribute damping
+      note: Upstream calls the gripper linkage parameters estimates.
+    friction: &finger_friction
+      value: 0.0
+      unit: N*m
+      status: upstream_sim_asset
+      source: openarm_mujoco
+      locator: default class motor_finger, joint attribute frictionloss
+      note: Upstream sets zero finger friction on purpose (#75).
+    armature: &finger_armature
+      value: 0.002
+      unit: kg*m^2
+      status: upstream_sim_asset
+      source: openarm_mujoco
+      locator: default class motor_finger, which inherits armature from class motor_DM4310
+      note: Upstream gives both finger joints of a hand this value.
+
+# Effort and velocity limits. Copies of the URDF limits, for one place to read them. They are not applied by this profile: the
+# URDF keeps its own. The test fails if a copy differs from the expansion. They are motor peak torque and no-load speed at 24 V.
+limits:
+  arm_j1_j2:
+    effort: &effort_j12
+      value: 40.0
+      unit: N*m
+      status: upstream_urdf
+      source: openarm_description_pin
+      locator: assets/robot/openarm_v2.0/config/arm/joint/joint_limits.yaml, joint1 and joint2, effort
+      note: Motor peak torque. Rated torque is 20 N*m (actuator ledger, field rated_torque).
+    velocity: &velocity_j12
+      value: 16.755
+      unit: rad/s
+      status: upstream_urdf
+      source: openarm_description_pin
+      locator: assets/robot/openarm_v2.0/config/arm/joint/joint_limits.yaml, joint1 and joint2, velocity
+      note: No-load speed at 24 V.
+  arm_j3_j4:
+    effort: &effort_j34
+      value: 27.0
+      unit: N*m
+      status: upstream_urdf
+      source: openarm_description_pin
+      locator: assets/robot/openarm_v2.0/config/arm/joint/joint_limits.yaml, joint3 and joint4, effort
+      note: Motor peak torque. Rated torque is 9 N*m (actuator ledger, field rated_torque).
+    velocity: &velocity_j34
+      value: 5.4454
+      unit: rad/s
+      status: upstream_urdf
+      source: openarm_description_pin
+      locator: assets/robot/openarm_v2.0/config/arm/joint/joint_limits.yaml, joint3 and joint4, velocity
+      note: No-load speed at 24 V.
+  arm_j5_j7:
+    effort: &effort_j57
+      value: 7.0
+      unit: N*m
+      status: upstream_urdf
+      source: openarm_description_pin
+      locator: assets/robot/openarm_v2.0/config/arm/joint/joint_limits.yaml, joint5 to joint7, effort
+      note: Motor peak torque. Rated torque is 3 N*m (actuator ledger, field rated_torque).
+    velocity: &velocity_j57
+      value: 20.944
+      unit: rad/s
+      status: upstream_urdf
+      source: openarm_description_pin
+      locator: assets/robot/openarm_v2.0/config/arm/joint/joint_limits.yaml, joint5 to joint7, velocity
+      note: No-load speed at 24 V.
+  finger:
+    effort: &effort_finger
+      value: 7.0
+      unit: N*m
+      status: upstream_urdf
+      source: openarm_description_pin
+      locator: assets/end_effector/pinch_gripper/config/joint/joint_limits.yaml, effort
+      note: Motor peak torque, not a grip force. See gripper.grip_limit below.
+    velocity: &velocity_finger
+      value: 5.0
+      unit: rad/s
+      status: upstream_urdf
+      source: openarm_description_pin
+      locator: assets/end_effector/pinch_gripper/config/joint/joint_limits.yaml, velocity
+
+# Every OpenArm joint of the combined model that moves: sixteen controlled joints and the two mimic followers.
+joints:
+  openarm_left_joint1: &j1 {motor_class: DM8009, controlled: true, damping: *dm8009_damping, friction: *dm8009_friction, armature: *dm8009_armature, effort_limit: *effort_j12, velocity_limit: *velocity_j12}
+  openarm_left_joint2: *j1
+  openarm_left_joint3: &j3 {motor_class: DM4340, controlled: true, damping: *dm4340_damping, friction: *dm4340_friction, armature: *dm4340_armature, effort_limit: *effort_j34, velocity_limit: *velocity_j34}
+  openarm_left_joint4: *j3
+  openarm_left_joint5: &j5 {motor_class: DM4310, controlled: true, damping: *dm4310_damping, friction: *dm4310_friction, armature: *dm4310_armature, effort_limit: *effort_j57, velocity_limit: *velocity_j57}
+  openarm_left_joint6: *j5
+  openarm_left_joint7: *j5
+  openarm_left_finger_joint1: &f1 {motor_class: finger, controlled: true, damping: *finger_damping, friction: *finger_friction, armature: *finger_armature, effort_limit: *effort_finger, velocity_limit: *velocity_finger}
+  openarm_left_finger_joint2: &f2 {motor_class: finger, controlled: false, damping: *finger_damping, friction: *finger_friction, armature: *finger_armature, effort_limit: *effort_finger, velocity_limit: *velocity_finger}
+  openarm_right_joint1: *j1
+  openarm_right_joint2: *j1
+  openarm_right_joint3: *j3
+  openarm_right_joint4: *j3
+  openarm_right_joint5: *j5
+  openarm_right_joint6: *j5
+  openarm_right_joint7: *j5
+  openarm_right_finger_joint1: *f1
+  openarm_right_finger_joint2: *f2
+
+# The gripper. One motor per hand on finger_joint1; the joint to motor map is the identity for the pinch gripper.
+gripper:
+  joints: [openarm_left_finger_joint1, openarm_right_finger_joint1]
+  zero_is: closed
+  zero_is_evidence: >-
+    openarm docs website/docs/setup/openarm-setup/4-motor-config.mdx says the closed position is used as zero by default.
+    openarm_can gripper_component.hpp says position 0 is closed and 1 is open. openarm_mujoco web/ik.js commandGripper says ratio 0
+    is closed (ctrl 0) and 1 is fully open (the range end away from 0). In the expanded URDF the fingertip collision meshes are
+    0.1 mm apart at 0 and 139 mm apart at the far limit.
+  grip_limit:
+    torque:
+      value: 3.0
+      unit: N*m
+      status: datasheet
+      source: openarm_docs
+      locator: website/docs/hardware/openarm-2.0/motor.mdx, DM-J4310-2EC V1.1, Rated Torque. Actuator ledger entry openarm_left_finger_joint1, field rated_torque.
+      note: >-
+        The rated (continuous) torque of the gripper motor at the finger joint. Chosen as the grip limit because holding an object is a
+        sustained stall load, and the URDF effort of 7 N*m is the short-term peak. The choice of the rated figure is a proposal for the
+        arm owner, the figure itself is the datasheet's.
+    current:
+      value: 2.5
+      unit: A
+      status: datasheet
+      source: openarm_docs
+      locator: website/docs/hardware/openarm-2.0/motor.mdx, DM-J4310-2EC V1.1, Rated Current. Actuator ledger entry openarm_left_finger_joint1, field rated_current.
+      note: Motor phase current, not bus current. The current that goes with the rated torque.
+    fingertip_force:
+      value: 31.5
+      unit: N
+      status: estimated
+      source: combined_model
+      locator: expanded URDF, openarm_left_finger_joint1 origin and the collision mesh of openarm_left_ee_link1
+      method: >-
+        Rated torque divided by the lever arm, 3.0 N*m / 0.0953 m. The lever arm is the distance from the finger joint axis to the
+        centroid of the distal 30 percent of the finger collision mesh at joint position 0. Static, one finger, no linkage friction.
+      note: An order of magnitude for one finger. Not a measured grip force. A bench test of grip force against current replaces it.
+    upstream_default_reference:
+      value: 0.5
+      unit: "1"
+      status: upstream_driver
+      source: openarm_can
+      locator: include/openarm/can/socket/gripper_component.hpp, limit_torque_pu_ (default of GripperComponent::set_limit, with limit_speed_rad_s_ 5.0)
+      note: >-
+        A per-unit current limit for the motor's position-force mode, a driver default. The pinned driver (openarm_ros2) does not use
+        this mode, and the base of the per-unit scale is not documented, so no torque is derived from it. Reference only.
+  applied_as:
+    gazebo: >-
+      max_effort of left_gripper_controller and right_gripper_controller in openamrobot_upperbody_control config/sim_overlay.yaml.
+      It rides the GripperCommand path. The position command interface does not enforce it, and the URDF effort limit is unchanged,
+      so the physics still allows the 7 N*m peak. Recorded, not enforced.
+    real: not applied. The real profile is unchanged.
+
+# The controller manager rate of the simulation profile.
+controller:
+  update_rate:
+    value: 750
+    unit: Hz
+    status: upstream_config
+    source: openarm_ros2_pin
+    locator: openarm_bringup/config/controllers/openarm_bimanual_controllers.yaml, controller_manager update_rate
+    note: >-
+      Upstream's rate for the real arm driver.
+      Upstream's MoveIt demo files (openarm_bimanual_moveit_config ros2_controllers.yaml) say 100 Hz, which is where the combined
+      model's 100 Hz came from.
+  applied_as:
+    gazebo: controller_manager update_rate in openamrobot_upperbody_control config/sim_overlay.yaml, handed to gz_ros2_control after arm_controllers.yaml.
+    mock: not applied. The mock profile has no physics, so the rate changes no result there. It stays at 100 Hz.
+    real: not applied. arm_controllers.yaml is unchanged at 100 Hz. Changing the real rate is an owner decision.
