@@ -574,6 +574,13 @@ private:
     primitives_.clear();
     primitive_hulls_.clear();
     place_self_primitives(model_, link_world_, cloud_from_root, primitives_, &primitive_hulls_);
+    // A parked carrier stays in the map: the tracker measures what it carries standing on its
+    // floor (dropped, every carton's support fell through it and its box grew 6 cm too tall,
+    // AMR aisle t32). Only a moving one is cut, with its contents, so it leaves no trail.
+    carrier_moving_ = !contents_links_.empty() && base_moving(stamp);
+    if (!contents_links_.empty() && !carrier_moving_) {
+      drop_carrier_primitives();
+    }
     add_payload_primitives(stamp, cloud_from_root);                 // appended past the hulls: none
     add_carrier_contents(stamp, cloud_from_root);                   // likewise
     mask_.set(primitives_, padding_m_, primitive_hulls_, motion_);  // payloads: base padding
@@ -605,8 +612,8 @@ private:
     out->is_dense = true;
     if (msg->fields.size() > 3 || msg->point_step != 12) {
       if (viewer_pub_->get_subscription_count() > 0) {
-        if (contents_links_.empty()) {
-          viewer_pub_->publish(*out);  // the whole records, colour and all
+        if (contents_links_.empty() || !carrier_moving_) {
+          viewer_pub_->publish(*out);  // the whole records, colour and all (carrier kept)
         } else {
           publish_viewer_with_carriers(*msg, n_points, xo, yo, zo);
         }
@@ -784,9 +791,33 @@ private:
     viewer_pub_->publish(view);
   }
 
+  /// Remove the carrier links' own primitives (and their hull / motion entries) from
+  /// `primitives_`; called before any payload or contents primitive is appended.
+  void drop_carrier_primitives() {
+    std::size_t kept = 0;
+    for (std::size_t k = 0; k < primitives_.size(); ++k) {
+      if (std::find(contents_links_.begin(), contents_links_.end(), model_.primitive_link[k]) !=
+          contents_links_.end()) {
+        continue;
+      }
+      primitives_[kept] = primitives_[k];
+      primitive_hulls_[kept] = primitive_hulls_[k];
+      if (k < motion_.size()) {
+        motion_[kept] = motion_[k];
+      }
+      ++kept;
+    }
+    primitives_.resize(kept);
+    primitive_hulls_.resize(kept);
+    if (motion_.size() > kept) {
+      motion_.resize(kept);
+    }
+  }
+
   void add_carrier_contents(const rclcpp::Time& stamp, const tf2::Transform& cloud_from_root) {
+    (void)stamp;
     viewer_contents_added_ = 0;
-    if (contents_prims_.empty() || !base_moving(stamp)) {
+    if (contents_prims_.empty() || !carrier_moving_) {
       return;
     }
     for (std::size_t i = 0; i < contents_prims_.size(); ++i) {
@@ -988,8 +1019,30 @@ private:
     out->height = img.height;
     out->encoding = "mono8";
     out->step = img.width;
-    render_robot_mask(mask_primitives_, mask_hulls_, mask_margin_, depth_m_.data(), pinhole,
-                      mask_uncertain_px_, mask_scratch_, out->data);
+    // A carrier (the tote) is no occluder of what it carries: masked, it touches every carton
+    // in it and the tracker's A4 rule keeps each one's fit PROVISIONAL, so a grasp never binds
+    // the tracked carton (AMR aisle t30). It stays robot geometry for the octree and kernel.
+    if (!contents_links_.empty()) {
+      std::size_t kept = 0;
+      mask_margin_view_.assign(mask_margin_.begin(), mask_margin_.end());
+      for (std::size_t k = 0; k < mask_primitives_.size(); ++k) {
+        const int link = model_.primitive_link[k];
+        if (std::find(contents_links_.begin(), contents_links_.end(), link) !=
+            contents_links_.end()) {
+          continue;
+        }
+        mask_primitives_[kept] = mask_primitives_[k];
+        mask_hulls_[kept] = mask_hulls_[k];
+        mask_margin_view_[kept] = mask_margin_[k];
+        ++kept;
+      }
+      mask_primitives_.resize(kept);
+      mask_hulls_.resize(kept);
+      mask_margin_view_.resize(kept);
+    }
+    render_robot_mask(mask_primitives_, mask_hulls_,
+                      contents_links_.empty() ? mask_margin_ : mask_margin_view_, depth_m_.data(),
+                      pinhole, mask_uncertain_px_, mask_scratch_, out->data);
     cam.pub->publish(std::move(out));
     ++totals_.masks_published;
     return true;
@@ -1051,6 +1104,7 @@ private:
   double history_s_{2.0};
   std::vector<int> contents_links_;
   std::vector<PayloadPrimitive> contents_prims_;  ///< in their carrier link's frame
+  bool carrier_moving_{false};  ///< this cloud: the base moved (`base_moving`), carrier cut
   std::size_t viewer_contents_added_{0};  ///< contents boxes at the end of `primitives_` this cloud
   SelfMask viewer_mask_;                  ///< `mask_` without the carriers (`cloud_out_rgb`)
   std::vector<PayloadPrimitive> viewer_primitives_;
@@ -1082,7 +1136,8 @@ private:
   std::deque<PendingCloud> pending_clouds_;
   // Robot mask (`robot_mask_enabled`).
   std::vector<MaskCamera> mask_cameras_;
-  std::vector<double> mask_margin_;  ///< per robot primitive: its backstop margin
+  std::vector<double> mask_margin_;       ///< per robot primitive: its backstop margin
+  std::vector<double> mask_margin_view_;  ///< `mask_margin_` without the carrier links
   int mask_uncertain_px_{3};
   std::vector<tf2::Transform> mask_link_world_;
   std::vector<PayloadPrimitive> mask_primitives_;
