@@ -357,7 +357,7 @@ detector:
   input_size: [640, 640]
   # OmDet-Turbo emits per-box confidences; this is the keep threshold applied in
   # the post-processor + ObjectsMetadata build.
-  score_threshold: 0.3
+  score_threshold: 0.5
 
 # ── Provenance ──────────────────────────────────────────────────────────────
 paper_url: "https://arxiv.org/abs/2403.06892"
