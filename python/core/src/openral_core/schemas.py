@@ -7562,8 +7562,10 @@ class RSkillLatencyBudget(BaseModel):
             sentinel) would otherwise run forever. The skill_runner resolves
             ``deadline_s<=0`` to this value (or a global default) and aborts the
             goal when it lapses so the reasoner re-evaluates the outcome —
-            CLAUDE.md §3 "Deadline fallback mandatory". ``None`` = fall back to
-            the runner's global default.
+            CLAUDE.md §3 "Deadline fallback mandatory". It is also a ceiling: a
+            goal's own ``deadline_s`` above it is capped to it, and the lapsed goal
+            ends ``success=False`` (``FAILURE_DEADLINE_MISSED``). ``None`` = fall
+            back to the runner's global default, with no ceiling.
     """
 
     per_chunk_ms: float = Field(gt=0)

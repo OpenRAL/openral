@@ -200,20 +200,29 @@ _DEFAULT_EXECUTION_DEADLINE_S = 45.0
 def _resolved_deadline_s(deadline_s: float, *manifests: object) -> tuple[float, bool]:
     """A goal's execution budget and whether a manifest supplied it.
 
-    ``deadline_s > 0`` is the goal's own; ``<= 0`` (the "use the manifest default" sentinel)
-    resolves to the first of ``manifests`` with a ``latency_budget.max_execution_s``, else
-    ``_DEFAULT_EXECUTION_DEADLINE_S``.
+    The first of ``manifests`` with a ``latency_budget.max_execution_s`` is the skill author's
+    ceiling: ``deadline_s > 0`` (the goal's own) is capped to it, and ``<= 0`` (the "use the
+    manifest default" sentinel) resolves to it, else to ``_DEFAULT_EXECUTION_DEADLINE_S``. A
+    goal may ask for less time than the manifest allows, never more.
 
     Example:
         >>> _resolved_deadline_s(12.0), _resolved_deadline_s(0.0, None)
         ((12.0, False), (45.0, False))
     """
+    budget = next(
+        (
+            float(b)
+            for m in manifests
+            if (b := getattr(getattr(m, "latency_budget", None), "max_execution_s", None))
+        ),
+        None,
+    )
     if deadline_s > 0.0:
+        if budget is not None and deadline_s > budget:
+            return budget, True
         return deadline_s, False
-    for manifest in manifests:
-        budget = getattr(getattr(manifest, "latency_budget", None), "max_execution_s", None)
-        if budget:
-            return float(budget), True
+    if budget is not None:
+        return budget, True
     return _DEFAULT_EXECUTION_DEADLINE_S, False
 
 
@@ -1840,14 +1849,16 @@ if _ROS2_AVAILABLE:
                 # max_execution_s`` (else a global default) so a VLA goal — which
                 # never self-terminates — is bounded and the reasoner can
                 # re-evaluate the attempt instead of hanging forever.
-                if deadline_s <= 0.0:
-                    deadline_s, _from_manifest = _resolved_deadline_s(
-                        deadline_s,
-                        getattr(skill, "manifest", None),
-                        getattr(self, "manifest", None),
-                    )
+                # A goal's own ``deadline_s`` is capped to the manifest's ``max_execution_s``.
+                requested_s = deadline_s
+                deadline_s, _from_manifest = _resolved_deadline_s(
+                    deadline_s,
+                    getattr(skill, "manifest", None),
+                    getattr(self, "manifest", None),
+                )
+                if deadline_s != requested_s:
                     self.get_logger().info(
-                        f"deadline_s=0 → resolved to {deadline_s:.0f}s "
+                        f"deadline_s={requested_s:g} → resolved to {deadline_s:.0f}s "
                         f"({'manifest max_execution_s' if _from_manifest else 'global default'}); "
                         "a VLA never self-terminates (CLAUDE.md §3)",
                     )
