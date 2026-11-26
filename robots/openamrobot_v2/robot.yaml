@@ -2,15 +2,12 @@
 # lift + two Enactic OpenArm v2.0 arms with pinch grippers). Sim-only for now.
 #
 # Source: openAMRobot/openamr-upperbody-sw @ 6687f65 (v2.0.0-rc.1 candidate 2, 2026-11-26, MIT;
-# CAD-derived geometry CERN-OHL-P-2.0). `openamrobot_v2.urdf` is its
-# `combined_robot.xacro` expanded with the defaults (column=dold_v4_350, roadmap_masses=true,
-# base_plate=bp000, head_pitch=hp30, base_tilt=bt10, arm_package=openarm,
-# hardware_profile=mock) plus sim_dynamics:=on (upstream's OpenArm simulator damping and
-# friction in <dynamics>; armature from the vendored sim_dynamics_openarm_v2.yaml), then normalised: the <gazebo>/<ros2_control> blocks and
-# comments dropped, the two drive wheels made fixed (the base is driven as a
-# planar body, not wheel by wheel), and the root base_footprint given a 0.1 kg
-# inertial (Isaac's converter drops a massless root and splits the robot into two
-# articulations). The xacro pins openarm_description@14ff67b and
+# CAD-derived geometry CERN-OHL-P-2.0). upstream/combined_robot.urdf is its own
+# `combined_robot.xacro` expansion (defaults + sim_dynamics:=on), vendored byte-for-byte;
+# `openamrobot_v2.urdf` is that file with OpenRAL's camera overlay
+# (tools/openamrobot_v2_urdf.py: OpenArm's wrist mount, the head ZED lens pose) and its
+# <gazebo>/<ros2_control>/<transmission> blocks dropped. Nothing else differs (wheels
+# stay continuous, the root stays massless). The xacro pins openarm_description@14ff67b and
 # openamr-platform-sw@2ac4070 (#126 masses); the meshes resolve through the pinned clones in
 # openral_hal.ros_package_overlay (OpenArm meshes are byte-identical at our
 # c103041 pin). Regenerate: robots/openamrobot_v2/README.md.
@@ -636,37 +633,39 @@ sensors:
 # side's passive follower finger (qpos 12 / 21) tracks through an MJCF joint
 # equality and is skipped.
 sim:
+  # qpos 3/4 are upstream's drive-wheel hinges (continuous, unactuated: the base is
+  # driven as a planar body), between the planar base and the lift.
   joint_qpos_addr:
     base_x: 0
     base_y: 1
     base_yaw: 2
-    lift_joint: 3
-    left_joint1: 4
-    left_joint2: 5
-    left_joint3: 6
-    left_joint4: 7
-    left_joint5: 8
-    left_joint6: 9
-    left_joint7: 10
-    left_gripper: 11
-    right_joint1: 13
-    right_joint2: 14
-    right_joint3: 15
-    right_joint4: 16
-    right_joint5: 17
-    right_joint6: 18
-    right_joint7: 19
-    right_gripper: 20
+    lift_joint: 5
+    left_joint1: 6
+    left_joint2: 7
+    left_joint3: 8
+    left_joint4: 9
+    left_joint5: 10
+    left_joint6: 11
+    left_joint7: 12
+    left_gripper: 13
+    right_joint1: 15
+    right_joint2: 16
+    right_joint3: 17
+    right_joint4: 18
+    right_joint5: 19
+    right_joint6: 20
+    right_joint7: 21
+    right_gripper: 22
   grippers:
     - joint: "left_gripper"
       ctrl_range: [0.0, 0.7854]
-      qpos_addrs: [11]
+      qpos_addrs: [13]
       qpos_scale: 0.7854
       read_mode: "passthrough"
       write_mode: "passthrough"
     - joint: "right_gripper"
       ctrl_range: [-0.7854, 0.0]
-      qpos_addrs: [20]
+      qpos_addrs: [22]
       qpos_scale: 0.7854
       read_mode: "passthrough"
       write_mode: "passthrough"

@@ -20,7 +20,7 @@ from openral_hal._openamrobot_v2_assets import (  # noqa: E402
 
 
 def test_urdf_carries_upstreams_whole_robot_mass() -> None:
-    """openamr-platform-sw #126: base_link 49.948 kg, whole robot 87.11 kg (+0.1 kg root)."""
+    """openamr-platform-sw #126: base_link 49.948 kg, whole robot 87.11 kg (massless root)."""
     links = ET.parse(OPENAMROBOT_V2_URDF).getroot().findall("link")
     mass = {
         link.get("name"): float(m.attrib["value"])
@@ -28,7 +28,7 @@ def test_urdf_carries_upstreams_whole_robot_mass() -> None:
         if (m := link.find("inertial/mass")) is not None
     }
     assert mass["base_link"] == pytest.approx(49.948)
-    assert sum(mass.values()) == pytest.approx(87.11 + 0.1, abs=0.15)
+    assert sum(mass.values()) == pytest.approx(87.11, abs=0.05)
 
 
 @pytest.fixture(scope="module")
@@ -51,4 +51,5 @@ def test_base_is_critically_damped_at_the_compiled_mass(model: object) -> None:
     kp = float(model.actuator_gainprm[act, 0])  # type: ignore[attr-defined]  # reason: MjModel
     kv = -float(model.actuator_biasprm[act, 2])  # type: ignore[attr-defined]  # reason: MjModel
     assert kp == pytest.approx(mass * _BASE_OMEGA_RAD_S**2)
-    assert kv / (2.0 * math.sqrt(kp * mass)) == pytest.approx(1.0)
+    # 1e-5: the saved MJCF reloads 4e-5 kg heavier than the spec the gains were set from.
+    assert kv / (2.0 * math.sqrt(kp * mass)) == pytest.approx(1.0, rel=1e-5)

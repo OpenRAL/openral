@@ -20,53 +20,62 @@ licences.
 
 ## Regenerating `openamrobot_v2.urdf`
 
-The file is `combined_robot.xacro`, expanded with its defaults
-(`column=dold_v4_350 roadmap_masses=true base_plate=bp000 head_pitch=hp30 base_tilt=bt10
-arm_package=openarm hardware_profile=mock enable_planar_base=false`) plus `sim_dynamics:=on`
-(upstream's MuJoCo-facing output: each OpenArm joint gets the `<dynamics damping friction>` of
-its simulator profile, `config/sim_dynamics/openarm_v2.yaml`) and then normalised. The
-profile is vendored unchanged as `sim_dynamics_openarm_v2.yaml`; the MuJoCo twin reads the
-joint armature from it, since URDF has no armature element:
+`upstream/combined_robot.urdf` is upstream's own expansion of `combined_robot.xacro`,
+vendored byte-for-byte: every argument at its default (`column=dold_v4_350
+roadmap_masses=true base_plate=bp000 head_pitch=hp30 base_tilt=bt10 arm_package=openarm
+hardware_profile=mock enable_planar_base=false`) plus `sim_dynamics:=on`, upstream's
+MuJoCo-facing output, in which each OpenArm joint carries the `<dynamics damping friction>`
+of upstream's simulator profile. That profile is vendored unchanged as
+`sim_dynamics_openarm_v2.yaml`; the MuJoCo twin reads the joint armature from it, since
+URDF has no armature element.
 
-1. Clone the three repos at the pinned commits: upperbody at the commit in the
-   provenance table, and the two it pins in its `config/upstream_pins.yaml`
-   (`openarm_description` `14ff67b`, `openamr-platform-sw` `2ac4070`).
-2. Build a scratch ament prefix with `share/<pkg>` links and
-   `share/ament_index/resource_index/packages/<pkg>` markers for
-   `openarm_description`, `openamrobot_description`,
-   `openamrobot_upperbody_description` and `openamrobot_upperbody_control`.
-   Prepend it to `AMENT_PREFIX_PATH`. A ROS Jazzy `xacro` is enough; no colcon build.
-3. `xacro .../combined_robot.xacro > combined.urdf`.
-4. Parse it, drop every `<gazebo>`, `<ros2_control>` and `<transmission>`
-   element and all comments, and turn the two `continuous` drive-wheel joints
-   into `fixed` joints. The base is driven as a planar body (`base_joints`), not
-   wheel by wheel.
-5. Give the root `base_footprint` a 0.1 kg inertial (`ixx = iyy = izz = 0.001`).
-   Upstream's root is massless and empty, and Isaac's URDF converter drops such a
-   link. Its two children (`base_link`, `lift_column_base_link`) then become two
-   articulations fixed to the world, and the lift and arms fall outside the one the
-   scene drives.
-6. Replace upstream's placeholder wrist cameras with OpenArm's: drop the 4 cm marker
-   boxes on `left/right_wrist_camera_link`, and set `left/right_wrist_camera_joint`
-   to the OpenArm twin's `camera_wrist_left/right` mount on `openarm_*_ee_base_link`
-   (`openarm_v20_bimanual.xml`: xyz `0.023 ±0.0182 -0.10236`, rpy
-   `-2.100862 1.142449 -2.143093` left and `2.10087 1.142449 2.143093` right, so that
-   the optical frame below is that camera). Upstream's poses looked along the hand's
-   +x and never saw the fingers (`tests/unit/test_openamrobot_v2_wrist_cameras.py`).
-7. Move upstream's head-camera assembly onto the head ZED's lens (see "Head camera"):
-   `head_camera_mount_joint` xyz `0.258568 0.027277 0.267553`, rpy
-   `-0.028403 0.621812 -0.00224` (the lens pose, 2.5 mm back along the view, then
-   upstream's 30° pitch undone, so `head_camera_pitch_joint` and the bracket keep their
-   upstream origins), and `head_camera_optical_joint` xyz `0.0025 0 0`. Mirror the mount
-   joint in `robot.yaml` and re-run `openral collision lower --robot robots/openamrobot_v2/robot.yaml --acm-only`.
-   Write the result with `ET.indent`.
+`openamrobot_v2.urdf` is that file with OpenRAL's overlay, `tools/openamrobot_v2_urdf.py`,
+which changes only the cameras and drops the Gazebo / ros2_control blocks:
+
+- **Wrist cameras.** Upstream's are placeholders: 4 cm marker boxes beside the hand,
+  looking along its +x, that never see the fingers
+  (`tests/unit/test_openamrobot_v2_wrist_cameras.py`). The overlay drops the boxes and
+  puts `left/right_wrist_camera_joint` on the OpenArm twin's `camera_wrist_left/right`
+  mount on `openarm_*_ee_base_link` (`openarm_v20_bimanual.xml`: xyz
+  `0.023 ±0.0182 -0.10236`, rpy `-2.100862 1.142449 -2.143093` left and
+  `2.10087 1.142449 2.143093` right), the view the OpenArm rSkills were trained on.
+- **Head camera.** Upstream's ZED assembly moves rigidly onto the head ZED's lens (see
+  "Head camera"): `head_camera_mount_joint` xyz `0.258568 0.027277 0.267553`, rpy
+  `-0.028403 0.621812 -0.00224` (the lens pose, 2.5 mm back along the view, then
+  upstream's 30° pitch undone, so `head_camera_pitch_joint` and the bracket keep their
+  upstream origins), and `head_camera_optical_joint` xyz `0.0025 0 0`.
+- **`<gazebo>`, `<ros2_control>`, `<transmission>`.** Gazebo and controller_manager
+  configuration that OpenRAL never reads; their `<joint>` entries would otherwise look
+  like URDF joints to a parser walking the whole tree.
+
+Everything else is upstream's, including the two `continuous` drive-wheel joints (free,
+unactuated hinges in the twin: the base is driven as a planar body, `base_joints`) and the
+massless root `base_footprint` (the Isaac scene gives a massless branching root a 1 g
+inertial at import, `strip_urdf_mimics` in `tools/isaac_manifest_scene.py`).
+`tests/unit/test_openamrobot_v2_urdf_overlay.py` checks that the committed file is the
+overlay of the vendored one and that nothing else differs.
+
+To re-sync, clone the three repos at the pinned commits (upperbody at the commit in the
+provenance table, and the `openarm_description` / `openamr-platform-sw` commits it pins in
+its `config/upstream_pins.yaml`), then, with ROS 2 Jazzy sourced (only `xacro` is used, no
+colcon build):
+
+```bash
+python tools/openamrobot_v2_urdf.py --expand UPPERBODY PLATFORM OPENARM_DESCRIPTION
+```
+
+Copy `config/sim_dynamics/openarm_v2.yaml` over `sim_dynamics_openarm_v2.yaml`, bump
+`_PINNED_SHA` in `openral_hal._openamrobot_platform_assets`, and re-run
+`openral collision lower --robot robots/openamrobot_v2/robot.yaml --acm-only`. Upstream's
+own model, unmodified, opens in RViz with its `openamrobot_upperbody_bringup`
+`view.launch.py`.
 
 ## Mass
 
 The masses are upstream's: the base from its reviewed mass export (BOM 7.15,
 `openamr-platform-sw` #126: `base_link` 49.948 kg, complete base 58.163 kg) and every
 upper-body link from the roadmap mass export (`roadmap_masses=true`). The whole robot
-is 87.11 kg, plus the 0.1 kg root of step 5. Before 2026-11-11 the vendored URDF
+is 87.11 kg. Before 2026-11-11 the vendored URDF
 carried 31.5 kg (a 4.2 kg `base_link`). The MuJoCo twin derives its base gains from
 the compiled mass (`openral_hal._openamrobot_v2_assets`, a critically damped tracker at
 a fixed natural frequency), so the base tracks a twist identically at either mass
@@ -82,10 +91,8 @@ new carriage masses.
   `wz` only. Run `openral deploy sim --config scenes/deploy/openamrobot_v2_empty.yaml`.
   Cameras and viewers draw the visual meshes: the collision geoms sit in group 3,
   which MuJoCo does not render by default (contacts and the lidar ray-cast still hit
-  them). The upper body, still upstream's placeholder boxes, takes the colours of
-  upstream's roadmap model (`openamrobot-docs` `finish.json` / `model.js`), and the
-  base shell and cover theirs (RAL 7035 / RAL 7016); the Getac, head light and second
-  E-stop keep upstream's placeholder colour.
+  them). Colours are upstream's URDF materials; the upper body is still upstream's
+  placeholder boxes.
 - **MuJoCo, walled room:** `scenes/deploy/openamrobot_v2_walls.yaml` puts the twin in a
   20 m room with three pillars at known poses and runs SLAM and Nav2. The base is
   kinematic, so odometry is exact and any map→odom drift is SLAM's error. A 4 m
@@ -117,7 +124,7 @@ pixel from the lens into the robot's collision boxes, entered that box at depth 
 every pixel, so the whole head_zed image read as robot. It now clears every box by 1 mm.
 Upstream's own ZED assembly (`head_camera_link` body box and `head_camera_bracket_link`,
 on the carriage pitched 30° down, a view that saw only the shelf with the tote below the
-image) is moved rigidly onto this lens (regeneration step 7): the body box sits 2.5 mm
+image) is moved rigidly onto this lens (the overlay, "Regenerating"): the body box sits 2.5 mm
 behind the lens and `head_camera_optical_frame` is the lens. At this design pose the ZED
 body reaches through the Getac placeholder into the arm profile (both are ACM rows with
 `head_camera_link`): on the real robot, check how the camera and tablet actually mount.
@@ -312,7 +319,7 @@ Open before the first real run (agreed with the OpenAMRobot project in openral#4
   Owed: a Safety-WG review of each and a private hazard-log entry before any of them
   informs a real deployment.
 - **Upstream placeholders.** Upstream marks these as placeholders: the wrist
-  camera poses (replaced here by OpenArm's mount, step 6 above), the 0.400 m wheel track, the lift speed and effort (DOLD
+  camera poses (replaced here by OpenArm's mount, see "Regenerating"), the 0.400 m wheel track, the lift speed and effort (DOLD
   catalogue, "provisional") and every acceleration limit. Upstream has also not
   accepted any hardware physically yet. Re-sync at v2.0.0 (2026-12-18).
 - **Placeholder sensors.** Camera intrinsics here are nominal. The base speed caps
