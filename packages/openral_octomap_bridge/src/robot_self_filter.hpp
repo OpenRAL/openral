@@ -605,7 +605,11 @@ private:
     out->is_dense = true;
     if (msg->fields.size() > 3 || msg->point_step != 12) {
       if (viewer_pub_->get_subscription_count() > 0) {
-        viewer_pub_->publish(*out);  // the whole records, colour and all
+        if (contents_links_.empty()) {
+          viewer_pub_->publish(*out);  // the whole records, colour and all
+        } else {
+          publish_viewer_with_carriers(*msg, n_points, xo, yo, zo);
+        }
       }
       out->data = xyz_records(out->data, out->point_step, xo, yo, zo);
       out->fields = xyz_fields();
@@ -747,7 +751,41 @@ private:
     }
   }
 
+  /// The viewer cloud keeps what a carrier carries: the tote and its cartons are robot geometry
+  /// to the octree (no map trail, no kernel voxels) but stay visible to a person. Same mask as
+  /// `cloud_out`, without the carrier links' own primitives and the carrier contents.
+  void publish_viewer_with_carriers(const sensor_msgs::msg::PointCloud2& msg, std::size_t n_points,
+                                    std::size_t xo, std::size_t yo, std::size_t zo) {
+    viewer_primitives_.clear();
+    viewer_hulls_.clear();
+    viewer_motion_.clear();
+    const std::size_t n_robot = model_.primitives.size();
+    for (std::size_t i = 0; i < primitives_.size() - viewer_contents_added_; ++i) {
+      if (i < n_robot && std::find(contents_links_.begin(), contents_links_.end(),
+                                   model_.primitive_link[i]) != contents_links_.end()) {
+        continue;  // the carrier itself
+      }
+      viewer_primitives_.push_back(primitives_[i]);
+      viewer_hulls_.push_back(i < primitive_hulls_.size() ? primitive_hulls_[i] : nullptr);
+      viewer_motion_.push_back(i < motion_.size() ? motion_[i] : 0.0);
+    }
+    viewer_mask_.set(viewer_primitives_, padding_m_, viewer_hulls_, viewer_motion_);
+    sensor_msgs::msg::PointCloud2 view;
+    view.header = msg.header;
+    view.fields = msg.fields;
+    view.is_bigendian = msg.is_bigendian;
+    view.point_step = msg.point_step;
+    const auto stats = filter_xyz_points(msg.data.data(), n_points, msg.point_step, xo, yo, zo,
+                                         viewer_mask_, view.data);
+    view.height = 1;
+    view.width = static_cast<std::uint32_t>(stats.kept);
+    view.row_step = view.point_step * view.width;
+    view.is_dense = true;
+    viewer_pub_->publish(view);
+  }
+
   void add_carrier_contents(const rclcpp::Time& stamp, const tf2::Transform& cloud_from_root) {
+    viewer_contents_added_ = 0;
     if (contents_prims_.empty() || !base_moving(stamp)) {
       return;
     }
@@ -757,6 +795,7 @@ private:
           cloud_from_root * link_world_[static_cast<std::size_t>(contents_links_[i])] * prim.pose;
       primitives_.push_back(prim);
     }
+    viewer_contents_added_ = contents_prims_.size();  // appended last: the viewer drops them
     ++totals_.contents_filtered;
   }
 
@@ -1012,6 +1051,11 @@ private:
   double history_s_{2.0};
   std::vector<int> contents_links_;
   std::vector<PayloadPrimitive> contents_prims_;  ///< in their carrier link's frame
+  std::size_t viewer_contents_added_{0};  ///< contents boxes at the end of `primitives_` this cloud
+  SelfMask viewer_mask_;                  ///< `mask_` without the carriers (`cloud_out_rgb`)
+  std::vector<PayloadPrimitive> viewer_primitives_;
+  std::vector<const SelfHull*> viewer_hulls_;
+  std::vector<double> viewer_motion_;
   std::string contents_frame_{"odom"};
   double contents_window_s_{0.25};
   double contents_moving_m_{0.01};
