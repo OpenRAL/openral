@@ -603,6 +603,16 @@ class _IsaacSimSidecar(SidecarSimRollout):
         """
         return self._client.call("static_colliders")
 
+    def hold_present_pose(self) -> None:
+        """Hold the arms where they are and stop a wheel-driven base at once.
+
+        The sidecar ``hold_present_pose`` endpoint
+        (``IsaacManifestScene.hold_present_pose``): ``SimAttachedHAL.stop_stale_motion``
+        calls it at an e-stop latch and its clear, as it does a MuJoCo twin's, so a target
+        in flight is not reached after the clear and a rolling base does not coast on.
+        """
+        self._client.call("hold_present_pose")
+
     def scene_mesh(self, limit_bytes: int) -> dict[str, Any]:
         """The stage's static part as a GLB the console's Sim scene layer draws (platform#133).
 

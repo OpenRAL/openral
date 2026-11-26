@@ -18,6 +18,7 @@ import ``map_dof_to_manifest`` directly by putting ``tools/`` on ``sys.path``.
 
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -1425,6 +1426,8 @@ def test_openamrobot_lidar_fan_is_cast_from_its_mount_not_the_base(
             _root_to_lidar=root_to_lidar,
             _scan_z=0.30,
             _robot_prim="/openamrobot",
+            # A kinematic base at its spawn (IsaacManifestScene._planar_world's own case).
+            _planar_world=lambda: mod.compose_planar((0.0, 0.0, 0.0, 0.0), [0.0, 0.0, 0.0]),
         )
         return mod.IsaacManifestScene._scan_ranges(scene)
 
@@ -1629,3 +1632,52 @@ def test_only_the_world_owner_jitters_the_shared_objects(_manifest_scene_mod: ob
     rider._share_world(owner)
     assert rider._objects is owner._objects and rider._object_prims is owner._object_prims
     rider._jitter_objects(np.random.default_rng(0))  # no-op: would need the owner's prims
+
+
+# ── wheel-driven differential base (upstream's DiffDrive) ────────────────────
+
+
+def test_the_openamrobot_urdf_declares_its_diff_drive(_manifest_scene_mod: object) -> None:
+    """The scene drives the OpenAMRobot through upstream's own DiffDrive declaration."""
+    mod: Any = _manifest_scene_mod
+    urdf = (_repo_root() / "robots/openamrobot_v2/openamrobot_v2.urdf").read_text()
+    drive = mod.urdf_diff_drive(urdf)
+    assert drive == {
+        "left": "left_wheel_joint",
+        "right": "right_wheel_joint",
+        "separation": 0.4,
+        "radius": 0.098,
+        "accel": (0.5, 1.0),
+    }
+    casters = mod.urdf_caster_links(urdf, ("left_wheel_joint", "right_wheel_joint"))
+    assert casters == ["bl_wheel_link", "br_wheel_link", "fl_wheel_link", "fr_wheel_link"]
+
+
+def test_a_urdf_without_a_diff_drive_declares_none(_manifest_scene_mod: object) -> None:
+    """Every other vendored robot URDF declares no DiffDrive: those bases stay as they are."""
+    mod: Any = _manifest_scene_mod
+    others = [
+        p for p in (_repo_root() / "robots").glob("*/*.urdf") if p.parent.name != "openamrobot_v2"
+    ]
+    assert others
+    for path in others:
+        assert mod.urdf_diff_drive(path.read_text()) is None, path.name
+
+
+def test_wheel_odometry_follows_an_arc(_manifest_scene_mod: object) -> None:
+    """Many small wheel increments of a constant turn integrate to the exact arc."""
+    mod: Any = _manifest_scene_mod
+    r, sep, v, w, dt = 0.098, 0.4, 0.2, 0.5, 0.01
+    d_left, d_right = (v - w * sep / 2) * dt / r, (v + w * sep / 2) * dt / r
+    pose = [0.0, 0.0, 0.0]
+    for _ in range(200):  # 2 s
+        pose = mod.wheel_odometry_step(pose, d_left, d_right, r, sep)
+    assert pose[2] == pytest.approx(w * 2.0, abs=1e-9)
+    assert pose[0] == pytest.approx(v / w * math.sin(w * 2.0), abs=1e-6)
+    assert pose[1] == pytest.approx(v / w * (1 - math.cos(w * 2.0)), abs=1e-6)
+
+
+def test_a_wrapped_wheel_angle_reads_as_the_short_turn(_manifest_scene_mod: object) -> None:
+    mod: Any = _manifest_scene_mod
+    assert mod._wrapped_delta(-math.pi + 0.01, math.pi - 0.01) == pytest.approx(0.02)
+    assert mod._wrapped_delta(0.3, 0.1) == pytest.approx(0.2)

@@ -6,8 +6,9 @@
 # `combined_robot.xacro` expansion (defaults + sim_dynamics:=on), vendored byte-for-byte;
 # `openamrobot_v2.urdf` is that file with OpenRAL's camera overlay
 # (tools/openamrobot_v2_urdf.py: OpenArm's wrist mount, the head ZED lens pose) and its
-# <gazebo>/<ros2_control>/<transmission> blocks dropped. Nothing else differs (wheels
-# stay continuous, the root stays massless). The xacro pins openarm_description@14ff67b and
+# <ros2_control>/<transmission> blocks dropped (the <gazebo> DiffDrive block stays: the
+# Isaac scene drives the base through it). Nothing else differs (wheels stay
+# continuous, the root stays massless). The xacro pins openarm_description@14ff67b and
 # openamr-platform-sw@2ac4070 (#126 masses); the meshes resolve through the pinned clones in
 # openral_hal.ros_package_overlay (OpenArm meshes are byte-identical at our
 # c103041 pin). Regenerate: robots/openamrobot_v2/README.md.

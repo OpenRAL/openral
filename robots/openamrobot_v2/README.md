@@ -30,7 +30,7 @@ of upstream's simulator profile. That profile is vendored unchanged as
 URDF has no armature element.
 
 `openamrobot_v2.urdf` is that file with OpenRAL's overlay, `tools/openamrobot_v2_urdf.py`,
-which changes only the cameras and drops the Gazebo / ros2_control blocks:
+which changes only the cameras and drops the ros2_control blocks:
 
 - **Wrist cameras.** Upstream's are placeholders: 4 cm marker boxes beside the hand,
   looking along its +x, that never see the fingers
@@ -44,12 +44,14 @@ which changes only the cameras and drops the Gazebo / ros2_control blocks:
   `-0.028403 0.621812 -0.00224` (the lens pose, 2.5 mm back along the view, then
   upstream's 30° pitch undone, so `head_camera_pitch_joint` and the bracket keep their
   upstream origins), and `head_camera_optical_joint` xyz `0.0025 0 0`.
-- **`<gazebo>`, `<ros2_control>`, `<transmission>`.** Gazebo and controller_manager
-  configuration that OpenRAL never reads; their `<joint>` entries would otherwise look
-  like URDF joints to a parser walking the whole tree.
+- **`<ros2_control>`, `<transmission>`.** controller_manager configuration that OpenRAL
+  never reads; their `<joint>` entries would otherwise look like URDF joints to a parser
+  walking the whole tree. The `<gazebo>` blocks stay: their `DiffDrive` plugin is
+  upstream's declaration of the drive wheels, track, radius and acceleration limits, which
+  the Isaac scene reads (`isaac_manifest_scene.urdf_diff_drive`).
 
-Everything else is upstream's, including the two `continuous` drive-wheel joints (the MuJoCo
-twin drives the base through them, see "Simulation") and the
+Everything else is upstream's, including the two `continuous` drive-wheel joints (both
+simulators drive the base through them, see "Simulation") and the
 massless root `base_footprint` (the Isaac scene gives a massless branching root a 1 g
 inertial at import, `strip_urdf_mimics` in `tools/isaac_manifest_scene.py`).
 `tests/unit/test_openamrobot_v2_urdf_overlay.py` checks that the committed file is the
@@ -119,7 +121,12 @@ new carriage masses.
   `/scan` published missed beams as `+inf`, the map under-counted travel by ~14 %
   (3.72 m mapped, 4.31 m driven) and Nav2 overshot, as it did in the Isaac aisle.
 - **Isaac Sim:** run `scenes/deploy/isaac_openamrobot_v2_warehouse.yaml`, which
-  places the robot in the shelf aisle of `warehouse_multiple_shelves.usd`. The scene
+  places the robot in the shelf aisle of `warehouse_multiple_shelves.usd`. The base
+  rolls on its wheels here too: the scene reads upstream's Gazebo `DiffDrive` block
+  from the URDF, imports the robot as a floating articulation, drives the wheels with
+  velocity drives ramped by that block's limits, makes the casters frictionless and
+  integrates wheel odometry; the arms and lift keep their position drives. An e-stop
+  (`hold_present_pose`) holds the arms where they are and stops the wheels at once. The
   runs with the voxel map on: octomap maps the head ZED's depth into the safety
   kernel's voxel check and the robot console's 3D view. The camera looks 65.6° down
   from 1.45 m (lift 0.35 m), so its view meets the floor no farther than 2.4 m ahead and
@@ -346,10 +353,7 @@ Open before the first real run (agreed with the OpenAMRobot project in openral#4
   own Nav2 values (`openamrobot_nav2/config/nav2_params.yaml` @ `2ac4070`, unchanged since `713574f`); its
   acceleration limits (1.0 / −2.5 m/s², 3.0 rad/s²) are not carried over, since the
   manifest has no field for them and OpenRAL's Nav2 profile keeps its own.
-- **Isaac base is kinematic.** The Isaac base integrates any planar twist, so the
-  HAL refuses `vy` before it reaches the sidecar (`SimAttachedHAL`, on the manifest's
-  `base_kinematics: differential`), as the MuJoCo twin and `PlatformBaseHAL` do. The
-  MuJoCo twin rolls on the wheels; the Isaac scene does not yet. It also position-holds
-  every articulation DOF, so upstream's free wheel joints spin past 2π and PhysX
-  refuses their drive targets (3,727 errors in one warehouse run, and an arm swung to
-  its joint limit). Driving the Isaac base through its wheels is the next change.
+- **Wheel parameters are upstream's placeholders.** Both simulators use the 0.400 m
+  track; upstream's Gate A unit measured 0.46 m. The wheel servo gains (MuJoCo
+  `_WHEEL_KP`/`_WHEEL_KV`, Isaac `_WHEEL_DAMPING`) are tuning values, not ZLAC8015D
+  motor data.

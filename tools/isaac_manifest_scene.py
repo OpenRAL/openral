@@ -12,7 +12,9 @@ Control is by ABSOLUTE targets, the same meaning ``SimAttachedHAL`` sends: one
 slot per non-base manifest joint in manifest order (arm in rad, grippers in their
 end effector's ``command_convention``, mapped onto the URDF finger by
 ``manifest_to_urdf_gripper``;
-NaN = hold), then the base twist (vx, vy, wz) for a planar base. The openral
+NaN = hold), then the base twist (vx, vy, wz) for a planar base: integrated and
+teleported (a kinematic base), or, for a differential base whose URDF declares a Gazebo
+``DiffDrive``, ramped into speeds of those wheels on a floating articulation. The openral
 side packs typed actions into it by name
 (``openral_sim.backends.isaac_sim.pack_isaac_action``).
 
@@ -1279,6 +1281,157 @@ def urdf_unset_velocity_joints(urdf_text: str) -> set[str]:
     return out
 
 
+# Wheel velocity-drive damping, N*m*s/rad: a tuning value (the twin's servo), not motor data.
+_WHEEL_DAMPING = 1000.0
+
+
+def urdf_diff_drive(urdf_text: str) -> dict[str, Any] | None:
+    """The URDF's own Gazebo ``DiffDrive`` declaration: its wheels, track, radius and ramp.
+
+    Upstream robots declare their differential drive as a ``gz-sim-diff-drive-system``
+    plugin in a ``<gazebo>`` block; the scene drives a ``base_kinematics: differential``
+    base through those wheels when the URDF declares one. ``None`` without one.
+
+    Example:
+        >>> urdf = (
+        ...     '<robot name="r"><gazebo><plugin name="gz::sim::systems::DiffDrive">'
+        ...     "<left_joint>l</left_joint><right_joint>r</right_joint>"
+        ...     "<wheel_separation>0.4</wheel_separation><wheel_radius>0.098</wheel_radius>"
+        ...     "<max_linear_acceleration>0.5</max_linear_acceleration>"
+        ...     "<max_angular_acceleration>1.0</max_angular_acceleration>"
+        ...     "</plugin></gazebo></robot>"
+        ... )
+        >>> urdf_diff_drive(urdf)
+        {'left': 'l', 'right': 'r', 'separation': 0.4, 'radius': 0.098, 'accel': (0.5, 1.0)}
+        >>> urdf_diff_drive('<robot name="r"/>') is None
+        True
+    """
+    import xml.etree.ElementTree as ET
+
+    for plugin in ET.fromstring(urdf_text).iter("plugin"):
+        if not str(plugin.attrib.get("name", "")).endswith("DiffDrive"):
+            continue
+
+        def num(tag: str, plugin: Any = plugin) -> float:
+            text = plugin.findtext(tag)
+            if text is None:
+                raise ValueError(f"DiffDrive plugin has no <{tag}>")
+            return float(text)
+
+        return {
+            "left": str(plugin.findtext("left_joint")),
+            "right": str(plugin.findtext("right_joint")),
+            "separation": num("wheel_separation"),
+            "radius": num("wheel_radius"),
+            "accel": (num("max_linear_acceleration"), num("max_angular_acceleration")),
+        }
+    return None
+
+
+def urdf_caster_links(urdf_text: str, wheels: Iterable[str]) -> list[str]:
+    """Links carrying a sphere collider on a fixed joint: the casters of a wheeled base.
+
+    A swivel caster resists no direction; PhysX has no caster, so the scene gives these
+    a frictionless material. ``wheels`` (the drive wheels' joint names) are excluded.
+
+    Example:
+        >>> urdf = (
+        ...     '<robot name="r"><link name="b"/>'
+        ...     '<link name="c"><collision><geometry><sphere radius="0.02"/></geometry>'
+        ...     "</collision></link>"
+        ...     '<link name="w"><collision><geometry><cylinder radius="0.1" length="0.05"/>'
+        ...     "</geometry></collision></link>"
+        ...     '<joint name="jc" type="fixed"><parent link="b"/><child link="c"/></joint>'
+        ...     '<joint name="jw" type="continuous"><parent link="b"/><child link="w"/></joint>'
+        ...     "</robot>"
+        ... )
+        >>> urdf_caster_links(urdf, ["jw"])
+        ['c']
+    """
+    import xml.etree.ElementTree as ET
+
+    root = ET.fromstring(urdf_text)
+    spheres = {
+        str(link.attrib.get("name"))
+        for link in root.findall("link")
+        if link.find("collision/geometry/sphere") is not None
+    }
+    skip = set(wheels)
+    out = []
+    for joint in root.findall("joint"):
+        child = joint.find("child")
+        if child is None or joint.attrib.get("name") in skip:
+            continue
+        name = str(child.attrib.get("link"))
+        if joint.attrib.get("type") == "fixed" and name in spheres:
+            out.append(name)
+    return sorted(out)
+
+
+def wheel_odometry_step(
+    pose: Sequence[float], d_left: float, d_right: float, radius: float, separation: float
+) -> list[float]:
+    """Advance a planar odometry ``(x, y, yaw)`` by two wheel-angle increments (rad).
+
+    The midpoint-heading arc of a differential drive, as ``diff_drive_controller`` does.
+
+    Example:
+        >>> wheel_odometry_step([0.0, 0.0, 0.0], 1.0, 1.0, 0.1, 0.4)
+        [0.1, 0.0, 0.0]
+        >>> [round(v, 4) for v in wheel_odometry_step([0.0, 0.0, 0.0], -1.0, 1.0, 0.1, 0.4)]
+        [0.0, 0.0, 0.5]
+    """
+    ds_l, ds_r = d_left * radius, d_right * radius
+    ds, dyaw = (ds_l + ds_r) / 2.0, (ds_r - ds_l) / separation
+    x, y, yaw = (float(v) for v in pose)
+    mid = yaw + dyaw / 2.0
+    return [x + ds * math.cos(mid), y + ds * math.sin(mid), yaw + dyaw]
+
+
+def _wrapped_delta(new: float, old: float) -> float:
+    """``new - old`` wrapped to ``(-pi, pi]``: a PhysX revolute joint reads its angle wrapped."""
+    return (new - old + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def _toward(value: float, target: float, step: float) -> float:
+    """``value`` moved towards ``target`` by at most ``step``."""
+    return value + max(-step, min(step, target - value))
+
+
+def bind_frictionless(stage: Any, robot_prim: str, link_names: Iterable[str]) -> list[str]:
+    """Bind a zero-friction physics material (``min`` combine) to the named links' colliders.
+
+    Returns the bound prim paths. Like ``apply_finger_friction``: de-instanced first, and
+    bound ``strongerThanDescendants`` for the ``physics`` purpose.
+    """
+    from pxr import Usd, UsdPhysics, UsdShade
+
+    names = set(link_names)
+    links = [p for p in Usd.PrimRange(stage.GetPrimAtPath(robot_prim)) if p.GetName() in names]
+    if not links:
+        return []
+    material = UsdShade.Material.Define(stage, "/World/Physics_Materials/caster")
+    physics = UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+    physics.CreateStaticFrictionAttr(0.0)
+    physics.CreateDynamicFrictionAttr(0.0)
+    physics.CreateRestitutionAttr(0.0)
+    try:
+        from pxr import PhysxSchema
+    except ImportError:
+        pass
+    else:
+        PhysxSchema.PhysxMaterialAPI.Apply(material.GetPrim()).CreateFrictionCombineModeAttr("min")
+    bound = []
+    for link in links:
+        _deinstance(link)
+        for prim in [link, *(p for p in Usd.PrimRange(link) if p.IsInstance())]:
+            UsdShade.MaterialBindingAPI.Apply(prim).Bind(
+                material, UsdShade.Tokens.strongerThanDescendants, "physics"
+            )
+            bound.append(str(prim.GetPath()))
+    return bound
+
+
 def _deinstance(root: Any) -> None:
     """Make every instance under ``root`` editable (instance proxies cannot be edited).
 
@@ -2079,6 +2232,23 @@ class IsaacManifestScene(IsaacSceneBase):
         # control period per env.step (one step = one /cmd_vel command), the
         # same interval the physics substeps span.
         self._base_pose = [0.0, 0.0, 0.0]  # odom x, y, yaw (relative to the spawn)
+        # A differential base whose URDF declares its drive (upstream's Gazebo DiffDrive)
+        # rolls on those wheels instead: a floating articulation, the twist ramped by the
+        # plugin's acceleration limits into wheel speeds, odometry from the wheel angles.
+        drive = None
+        urdf_path = str(robot_spec.get("urdf_path") or "")
+        if self._has_base and robot_spec.get("base_kinematics") == "differential" and urdf_path:
+            with open(urdf_path, encoding="utf-8") as f:
+                urdf_text = f.read()
+            drive = urdf_diff_drive(urdf_text)
+            if drive is not None:
+                drive["casters"] = urdf_caster_links(urdf_text, (drive["left"], drive["right"]))
+        self._diff_drive: dict[str, Any] | None = drive
+        self._fix_base = bool(robot_spec.get("fix_base", True)) and drive is None
+        self._wheel_idx: list[int] = []
+        self._non_wheel_idx: NDArray[np.int64] = np.zeros(0, dtype=np.int64)
+        self._wheel_angles: tuple[float, float] | None = None
+        self._wheel_twist = (0.0, 0.0)  # (vx, wz) on the wheels, ramped towards the command
         self._mount_z = float(robot_spec.get("mount_z", 0.0))
         # base_frame link pose in the root frame, resolved at build (see _depth_clouds).
         self._root_to_base: NDArray[np.float64] = np.eye(4)
@@ -2390,6 +2560,15 @@ class IsaacManifestScene(IsaacSceneBase):
                 f"[isaac_manifest_scene] robot material colours {colors}: "
                 f"{len(changed)} material(s) recoloured {sorted(changed)}"
                 + ("" if changed else " — WARNING: no robot material matched"),
+                flush=True,
+            )
+        if self._diff_drive is not None:
+            casters = bind_frictionless(get_current_stage(), prim_path, self._diff_drive["casters"])
+            print(
+                f"[isaac_manifest_scene] wheel-driven base: {self._diff_drive['left']} / "
+                f"{self._diff_drive['right']} (track {self._diff_drive['separation']} m, radius "
+                f"{self._diff_drive['radius']} m, ramp {self._diff_drive['accel']}); "
+                f"frictionless casters on {len(casters)} prim(s)",
                 flush=True,
             )
         result = apply_finger_friction(get_current_stage(), prim_path, finger_joints)
@@ -2931,7 +3110,7 @@ class IsaacManifestScene(IsaacSceneBase):
         n = int(self._lidar.get("n_channels") or 360)
         rmin = float(self._lidar.get("range_min_m") or 0.0)
         rmax = float(self._lidar.get("range_max_m") or 12.0)
-        base = compose_planar(self._spawn, self._base_pose)
+        base = self._planar_world()
         if self._root_to_lidar is not None:
             bx, by, z, byaw = lidar_world_pose(base, self._root_to_lidar)
         else:
@@ -3054,7 +3233,7 @@ class IsaacManifestScene(IsaacSceneBase):
         viewpoints follow. base frame is planar (x, y, yaw), so the offset position
         rotates by yaw about z and the camera's euler yaw adds the base yaw.
         """
-        bx, by, bz, byaw = compose_planar(self._spawn, self._base_pose)
+        bx, by, bz, byaw = self._planar_world()
         cos_y, sin_y = float(np.cos(byaw)), float(np.sin(byaw))
         byaw_deg = float(np.degrees(byaw))
         for meta in self._cam_meta:
@@ -3095,7 +3274,7 @@ class IsaacManifestScene(IsaacSceneBase):
             # Keep the kinematic tree faithful to the manifest: DOFs map by URDF
             # joint name.
             merge_fixed_joints=False,
-            fix_base=bool(self._spec.get("fix_base", True)),
+            fix_base=self._fix_base,
             joint_target_type="position",
             override_joint_stiffness=stiffness,
             override_joint_damping=damping,
@@ -3113,7 +3292,7 @@ class IsaacManifestScene(IsaacSceneBase):
         import re
 
         from isaacsim.core.utils.stage import add_reference_to_stage, get_current_stage
-        from pxr import PhysxSchema, Usd, UsdPhysics
+        from pxr import PhysxSchema, Sdf, Usd, UsdPhysics
 
         stage = get_current_stage()
         if self.name:
@@ -3139,7 +3318,13 @@ class IsaacManifestScene(IsaacSceneBase):
             ),
             None,
         )
-        if self._anchor_joint is not None and self._spec.get("fix_base", True):
+        if self._anchor_joint is not None and not self._fix_base:
+            # A wheel-driven base floats: no world joint may pin its root.
+            self._anchor_joint.GetPrim().CreateAttribute(
+                "physics:jointEnabled", Sdf.ValueTypeNames.Bool
+            ).Set(False)
+            self._anchor_joint = None
+        if self._anchor_joint is not None and self._fix_base:
             # The converter puts the root API on a body, creating a floating
             # articulation restrained by a solver joint. Mark the world joint
             # instead so PhysX creates a genuinely fixed-base articulation.
@@ -3408,7 +3593,7 @@ class IsaacManifestScene(IsaacSceneBase):
         # Keep the kinematic tree faithful to the manifest: do NOT merge fixed
         # joints (we map DOFs by URDF joint name), import as position-drive.
         import_config.merge_fixed_joints = False
-        import_config.fix_base = bool(self._spec.get("fix_base", True))
+        import_config.fix_base = self._fix_base
         import_config.make_default_prim = False
         # World() already owns the PhysX scene + ground plane.
         import_config.create_physics_scene = False
@@ -3458,6 +3643,24 @@ class IsaacManifestScene(IsaacSceneBase):
                 f"{'floating' if self._gravity_col_offset else 'fixed'} base",
                 flush=True,
             )
+        if self._diff_drive is not None:
+            wheels = [str(self._diff_drive["left"]), str(self._diff_drive["right"])]
+            absent = [w for w in wheels if w not in self._dof_index]
+            if absent:
+                raise RuntimeError(f"DiffDrive wheel joints {absent} are not DOFs of the robot.")
+            self._wheel_idx = [self._dof_index[w] for w in wheels]
+            self._non_wheel_idx = np.array(
+                [i for i in range(len(dof_names)) if i not in self._wheel_idx], dtype=np.int64
+            )
+            # Velocity drive on the wheels: no stiffness (a position target on a continuous
+            # joint wraps past PhysX's +/-2 pi drive range), a stiff damping that tracks the
+            # speed and, at a zero speed, brakes.
+            controller = self._robot.get_articulation_controller()
+            kps, kds = (np.asarray(g, dtype=np.float32).copy() for g in controller.get_gains())
+            kps[self._wheel_idx] = 0.0
+            kds[self._wheel_idx] = _WHEEL_DAMPING
+            controller.set_gains(kps=kps, kds=kds)
+            self._wheel_angles = None
 
     # ── IsaacSceneBase template methods ──────────────────────────────────────
 
@@ -3507,14 +3710,16 @@ class IsaacManifestScene(IsaacSceneBase):
                 float(margin),
                 qd=np.asarray(self._robot.get_joint_velocities(), dtype=np.float32),
             )
-        self._robot.get_articulation_controller().apply_action(
-            self._ArticulationAction(joint_positions=target)
-        )
+        self._drive_joint_positions(target)
         if self._has_base:
             base_i = len(self._slot_plan)
             if action.shape[0] >= base_i + 3:
                 vx, vy, wz = (float(action[base_i + i]) for i in range(3))
-                self._integrate_base(*(0.0 if np.isnan(v) else v for v in (vx, vy, wz)))
+                vx, vy, wz = (0.0 if np.isnan(v) else v for v in (vx, vy, wz))
+                if self._diff_drive is not None:
+                    self._drive_wheels(vx, wz)  # vy: refused upstream on a differential base
+                else:
+                    self._integrate_base(vx, vy, wz)
 
     def _before_render(self) -> None:
         # Reset warmup steps physics through this hook only.
@@ -3563,9 +3768,107 @@ class IsaacManifestScene(IsaacSceneBase):
             return
         q = np.asarray(self._robot.get_joint_positions(), dtype=np.float32)
         target = mimic_follower_targets(self._target, q, self._grippers, self._dof_index)
-        self._robot.get_articulation_controller().apply_action(
-            self._ArticulationAction(joint_positions=target)
+        self._drive_joint_positions(target)
+
+    def _drive_joint_positions(self, target: NDArray[np.float32]) -> None:
+        """Position-drive every DOF to ``target``; a wheel-driven base's wheels are left out.
+
+        The wheels run on velocity targets (``_drive_wheels``); a position target on a
+        continuous wheel would wrap past PhysX's [-2 pi, 2 pi] drive range.
+        """
+        controller = self._robot.get_articulation_controller()
+        if not self._wheel_idx:
+            controller.apply_action(self._ArticulationAction(joint_positions=target))
+            return
+        idx = self._non_wheel_idx
+        controller.apply_action(
+            self._ArticulationAction(joint_positions=np.asarray(target)[idx], joint_indices=idx)
         )
+
+    def _set_wheel_speeds(self, left: float, right: float) -> None:
+        self._robot.get_articulation_controller().apply_action(
+            self._ArticulationAction(
+                joint_velocities=np.array([left, right], dtype=np.float32),
+                joint_indices=np.asarray(self._wheel_idx, dtype=np.int64),
+            )
+        )
+
+    def _update_wheel_odometry(self) -> None:
+        """Advance ``_base_pose`` (the odometry) by the wheels' turn since the last read."""
+        if not self._wheel_idx:
+            return
+        q = np.asarray(self._robot.get_joint_positions(), dtype=np.float64)
+        left, right = float(q[self._wheel_idx[0]]), float(q[self._wheel_idx[1]])
+        if self._wheel_angles is not None:
+            drive = self._diff_drive
+            assert drive is not None
+            self._base_pose = wheel_odometry_step(
+                self._base_pose,
+                _wrapped_delta(left, self._wheel_angles[0]),
+                _wrapped_delta(right, self._wheel_angles[1]),
+                float(drive["radius"]),
+                float(drive["separation"]),
+            )
+        self._wheel_angles = (left, right)
+
+    def _drive_wheels(self, vx: float, wz: float) -> None:
+        """One control period of a differential base: ramp ``(vx, wz)``, set the wheel speeds.
+
+        The ramp is the URDF DiffDrive's acceleration limits (as the robot's own drive
+        controller ramps); a NaN / zero twist ramps to a stop, an e-stop stops at once
+        (``hold_present_pose``).
+        """
+        drive = self._diff_drive
+        assert drive is not None
+        self._update_wheel_odometry()
+        a_lin, a_ang = drive["accel"]
+        v, w = self._wheel_twist
+        v = _toward(v, vx, float(a_lin) * self._base_dt)
+        w = _toward(w, wz, float(a_ang) * self._base_dt)
+        self._wheel_twist = (v, w)
+        half, radius = float(drive["separation"]) / 2.0, float(drive["radius"])
+        self._set_wheel_speeds((v - w * half) / radius, (v + w * half) / radius)
+        self._update_camera_poses()
+
+    def hold_present_pose(self) -> None:
+        """Hold the arms where they are and stop a wheel-driven base at once (an e-stop).
+
+        ``SimAttachedHAL.stop_stale_motion`` calls it at the e-stop latch and its clear, so
+        a target still in flight is not reached after the clear. Gripper DOFs keep their
+        targets (a held object stays held).
+        """
+        if self._robot is None or self._target is None:
+            return
+        q = np.asarray(self._robot.get_joint_positions(), dtype=np.float32)
+        self._target[self._arm_dof_idx] = q[self._arm_dof_idx]
+        self._drive_joint_positions(self._target)
+        if self._wheel_idx:
+            self._wheel_twist = (0.0, 0.0)
+            self._set_wheel_speeds(0.0, 0.0)
+
+    def _planar_world(self) -> tuple[float, float, float, float]:
+        """World ``(x, y, z, yaw)`` of the base without the mount height.
+
+        A kinematic base is where its odometry put it (spawn ∘ odom); a wheel-driven one
+        is wherever PhysX holds its root.
+        """
+        if self._diff_drive is not None and self._robot is not None:
+            pos, quat = self._robot.get_world_pose()
+            w, x, y, z = (float(v) for v in quat)
+            yaw = math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+            return float(pos[0]), float(pos[1]), float(pos[2]) - self._mount_z, yaw
+        return compose_planar(self._spawn, self._base_pose)
+
+    def _base_truth(self) -> list[float]:
+        """The base's ``(x, y, yaw)`` relative to the spawn, as the simulation holds it."""
+        if self._diff_drive is None:
+            return list(self._base_pose)
+        wx, wy, _wz, wyaw = self._planar_world()
+        sx, sy, _sz, syaw = self._spawn
+        c, s = math.cos(syaw), math.sin(syaw)
+        dx, dy = wx - sx, wy - sy
+        yaw = (wyaw - syaw + math.pi) % (2.0 * math.pi) - math.pi
+        return [c * dx + s * dy, -s * dx + c * dy, yaw]
 
     def _integrate_base(self, vx: float, vy: float, wyaw: float) -> None:
         """Advance the kinematic base by a base-frame twist and teleport the root.
@@ -3586,8 +3889,8 @@ class IsaacManifestScene(IsaacSceneBase):
         self._place_robot()
 
     def _world_pose(self) -> tuple[float, float, float, float]:
-        """World ``(x, y, z, yaw)`` of the robot root: spawn ∘ odom, plus the mount height."""
-        wx, wy, wz, wyaw = compose_planar(self._spawn, self._base_pose)
+        """World ``(x, y, z, yaw)`` of the robot root (``_planar_world``), plus the mount height."""
+        wx, wy, wz, wyaw = self._planar_world()
         return wx, wy, wz + self._mount_z, wyaw
 
     def _place_robot(self) -> None:
@@ -3596,7 +3899,9 @@ class IsaacManifestScene(IsaacSceneBase):
         Moves the base anchor and teleports the root together, so the pinning
         joint is satisfied at the new pose instead of yanking the robot back.
         """
-        wx, wy, wz, wyaw = self._world_pose()
+        # Spawn ∘ odom, not the measured pose: a wheel-driven base is only placed at reset.
+        wx, wy, wz, wyaw = compose_planar(self._spawn, self._base_pose)
+        wz += self._mount_z
         self._set_anchor(wx, wy, wz, wyaw)
         self._robot.set_world_pose(np.array([wx, wy, wz]), _yaw_quat(wyaw))
         self._update_camera_poses()
@@ -3608,6 +3913,8 @@ class IsaacManifestScene(IsaacSceneBase):
     def _on_reset(self, rng: np.random.Generator) -> None:
         # Odometry restarts at the spawn each episode.
         self._base_pose = [0.0, 0.0, 0.0]
+        self._wheel_angles = None
+        self._wheel_twist = (0.0, 0.0)
         self._activate_placement_success(self._boot_placement_success)
         # world.reset() returns every object, dynamic, to its declared pose.
         self._release_carried()
@@ -3683,9 +3990,7 @@ class IsaacManifestScene(IsaacSceneBase):
             self._robot.set_joints_default_state(
                 positions=self._target.copy(), velocities=np.zeros_like(self._target)
             )
-        self._robot.get_articulation_controller().apply_action(
-            self._ArticulationAction(joint_positions=self._target)
-        )
+        self._drive_joint_positions(self._target)
 
     # Hold-correction passes after the warmup and physics steps per pass: the softest
     # real OpenArm joint (kp 10, kd 0.7) settles within ~0.5 s.
@@ -3711,9 +4016,7 @@ class IsaacManifestScene(IsaacSceneBase):
             if float(np.abs(err).max()) < 1e-4:
                 break
             self._target += err
-            self._robot.get_articulation_controller().apply_action(
-                self._ArticulationAction(joint_positions=self._target)
-            )
+            self._drive_joint_positions(self._target)
             for _ in range(self._HOLD_SETTLE_STEPS):
                 for robot in self._robots():  # the world steps for every robot sharing it
                     robot._compensate_gravity()
@@ -3728,6 +4031,7 @@ class IsaacManifestScene(IsaacSceneBase):
     def _observe(self, *, with_frames: bool = True) -> dict[str, Any]:
         obs = super()._observe(with_frames=with_frames)
         if self._has_base:
+            self._update_wheel_odometry()  # a wheel-driven base: odometry up to this step
             obs["base_pose"] = np.asarray(self._base_pose, dtype=np.float32)  # [x, y, yaw]
         if with_frames:
             # The HAL derives each depth camera's cloud from these frames
@@ -4492,7 +4796,7 @@ class IsaacManifestScene(IsaacSceneBase):
             dof_index=self._dof_index,
             manifest_joints=self._manifest_joints,
             grippers=self._grippers,
-            base_values=list(self._base_pose),  # base joints = kinematic (x, y, yaw)
+            base_values=self._base_truth(),  # base joints = where the base is (x, y, yaw)
             base_joints=self._base_joints,
         )
 

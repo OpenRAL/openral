@@ -48,6 +48,7 @@ class _NoKitScene:
         # spec carries no rate) and restarts at reset.
         self._tick_ns = int((sim_dt_per_tick_s or 1.0 / 30.0) * 1e9)
         self._sim_time_ns = 0
+        self.holds = 0
 
     def _obs(self) -> dict[str, Any]:
         return {"images": {}, "state": np.zeros(0, dtype=np.float32), "task": ""}
@@ -79,6 +80,10 @@ class _NoKitScene:
 
     def sim_time_ns(self) -> int:
         return self._sim_time_ns
+
+    def hold_present_pose(self) -> None:
+        """The e-stop hold (``IsaacManifestScene.hold_present_pose``): counted, no robot here."""
+        self.holds += 1
 
     def robot(self, name: str) -> _NoKitScene:
         """The scene's one robot, ``""`` (``IsaacSceneBase.robot``)."""
