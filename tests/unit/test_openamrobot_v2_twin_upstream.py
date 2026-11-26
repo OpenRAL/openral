@@ -5,16 +5,18 @@ Real vendored URDF and the real MJCF builder (``openral_hal._openamrobot_v2_asse
 
 from __future__ import annotations
 
-import math
 import xml.etree.ElementTree as ET
+from typing import Any
 
 import pytest
 
 mujoco = pytest.importorskip("mujoco", reason="needs mujoco (sim group) for the twin")
 
 from openral_hal._openamrobot_v2_assets import (  # noqa: E402
-    _BASE_OMEGA_RAD_S,
+    BASE_Z_JOINT,
     OPENAMROBOT_V2_URDF,
+    WHEEL_JOINTS,
+    diff_drive_accel_limits,
     ensure_openamrobot_v2_mjcf,
 )
 
@@ -37,19 +39,46 @@ def model() -> object:
 
 
 def test_collision_shells_are_not_rendered(model: object) -> None:
-    """Default-visible groups (0-2) hold only visual geoms; collision lives in group 3."""
+    """Default-visible groups (0-2) hold only the robot's visual geoms; its collision is group 3.
+
+    World geoms (the floor the wheels roll on) are drawn and collide.
+    """
     for g in range(model.ngeom):  # type: ignore[attr-defined]  # reason: MjModel
+        if int(model.geom_bodyid[g]) == 0:  # type: ignore[attr-defined]  # reason: MjModel
+            continue
         collides = model.geom_contype[g] or model.geom_conaffinity[g]  # type: ignore[attr-defined]  # reason: MjModel
         if collides:
             assert int(model.geom_group[g]) == 3  # type: ignore[attr-defined]  # reason: MjModel
 
 
-def test_base_is_critically_damped_at_the_compiled_mass(model: object) -> None:
-    base = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base_footprint")
-    mass = float(model.body_subtreemass[base])  # type: ignore[attr-defined]  # reason: MjModel
-    act = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "base_x_ctrl")
-    kp = float(model.actuator_gainprm[act, 0])  # type: ignore[attr-defined]  # reason: MjModel
-    kv = -float(model.actuator_biasprm[act, 2])  # type: ignore[attr-defined]  # reason: MjModel
-    assert kp == pytest.approx(mass * _BASE_OMEGA_RAD_S**2)
-    # 1e-5: the saved MJCF reloads 4e-5 kg heavier than the spec the gains were set from.
-    assert kv / (2.0 * math.sqrt(kp * mass)) == pytest.approx(1.0, rel=1e-5)
+def test_the_base_rolls_on_upstreams_wheels(model: object) -> None:
+    """No base joint is actuated; the two drive wheels are, on an integrated-velocity servo.
+
+    The floor collides with the robot, the casters are frictionless, and everything on
+    the lift carriage is gravity-compensated (the wheels carry the base and column).
+    """
+    m: Any = model
+    targets = {m.joint(int(m.actuator_trnid[a, 0])).name for a in range(m.nu)}
+    assert not targets & {"base_x", "base_y", "base_yaw", BASE_Z_JOINT}
+    for wheel in WHEEL_JOINTS:
+        act = m.actuator(f"{wheel}_vel")
+        assert int(m.actuator_dyntype[act.id]) == mujoco.mjtDyn.mjDYN_INTEGRATOR
+    floor = m.geom("floor")
+    chassis = [g for g in range(m.ngeom) if m.body(int(m.geom_bodyid[g])).name == "left_wheel_link"]
+    assert any(
+        (m.geom_contype[g] & floor.conaffinity) or (floor.contype & m.geom_conaffinity[g])
+        for g in chassis
+    )
+    caster = [
+        g
+        for g in range(m.ngeom)
+        if m.body(int(m.geom_bodyid[g])).name == "fl_wheel_link" and m.geom_contype[g]
+    ]
+    assert caster and all(float(m.geom_friction[g][0]) == 0.0 for g in caster)
+    assert float(m.body_gravcomp[m.body("lift_carriage_link").id]) == 1.0
+    assert float(m.body_gravcomp[m.body("base_link").id]) == 0.0
+
+
+def test_the_wheel_ramp_is_upstreams_diff_drive() -> None:
+    """The twin ramps by the DiffDrive limits in upstream's own (unmodified) URDF."""
+    assert diff_drive_accel_limits() == (0.5, 1.0)

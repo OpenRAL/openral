@@ -478,14 +478,15 @@ def test_an_ungrouped_command_is_its_own_record(openamr: OpenAMRobotV2MujocoHAL)
 
 
 def test_mobile_twin_base_pose_follows_a_body_twist(openamr: OpenAMRobotV2MujocoHAL) -> None:
+    """The wheels ramp to a twist (upstream's 1 rad/s^2) and wheel odometry turns with them."""
     before = openamr.base_pose
-    openamr.send_action(_twist(0.2, wz=0.5))
-    after = openamr.base_pose
-    assert after != pytest.approx(before, abs=1e-4)
     period = openamr.sim_dt_per_tick_s
     assert period is not None
-    # One command integrates one control period: the commanded rate on the sim clock.
-    assert after[2] - before[2] == pytest.approx(0.5 * period, abs=1e-6)
+    for _ in range(round(1.0 / period)):
+        openamr.send_action(_twist(0.2, wz=0.5))
+    after = openamr.base_pose
+    assert after[2] - before[2] > 0.2  # 0.5 rad/s, reached after 0.5 s
+    assert openamr.base_twist[5] == pytest.approx(0.5, rel=0.05)
 
 
 def test_mobile_twin_reads_its_base_pose_only_while_connected(
@@ -856,8 +857,8 @@ def test_mobile_twin_arm_and_twist_tick_is_one_control_period(
     tick_s = openamr.sim_dt_per_tick_s
     assert tick_s is not None
     assert openamr.sim_time_ns() == pytest.approx(t0 + tick_s * 1e9, abs=10)
-    # The base moves at the commanded speed: one period of 0.2 m/s.
-    assert openamr.base_pose[0] - x0 == pytest.approx(0.2 * tick_s, abs=1e-3)
+    # The wheels start towards 0.2 m/s inside that same period (upstream's 0.5 m/s^2 ramp).
+    assert openamr.base_pose[0] > x0
     handles = openamr.mujoco_handles()
     assert handles is not None
     _model, data = handles
@@ -1179,8 +1180,11 @@ def test_the_walking_twin_refuses_a_timestep_off_the_policy_cadence(
     expect_refusal(hal.connect, "trained at 20 ms", "g1 walking twin")
 
 
-def test_a_mixed_amr_tick_records_the_base_it_moved(connect_twin: ConnectTwin) -> None:
-    """The applied record carries the base targets the twist wrote, not the pre-twist ones."""
+def test_a_mixed_amr_tick_records_the_base_where_it_was(connect_twin: ConnectTwin) -> None:
+    """The base has no position target: the record holds it where it was measured.
+
+    The twist slot sets the wheel speeds; it writes no base joint target.
+    """
     hal = connect_twin("openamrobot_v2")
     names = [j.name for j in hal.description.joints]
     arms = [j.name for j in hal.description.joints if j.role not in ("base", "torso")]
@@ -1200,8 +1204,8 @@ def test_a_mixed_amr_tick_records_the_base_it_moved(connect_twin: ConnectTwin) -
     assert applied is not None and applied.joint_targets is not None
     record = dict(zip(applied.joint_names or names, applied.joint_targets[-1], strict=True))
     base_x = hal.description.base_joints[0]
-    assert record[base_x] == pytest.approx(hal.base_pose[0], abs=1e-9)
-    assert record[base_x] > 0.0
+    assert record[base_x] == pytest.approx(position[base_x], abs=1e-9)
+    assert hal.base_twist[0] > 0.0  # the wheels are rolling
 
 
 def test_reset_episode_needs_a_connection(robot_description: Describe) -> None:
