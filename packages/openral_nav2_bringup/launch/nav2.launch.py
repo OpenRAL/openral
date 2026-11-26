@@ -11,7 +11,9 @@ costmap ``inflation_radius`` (circumscribed footprint + clearance) and MPPI ``mo
 mobile base. Base ships panda_mobile's values (``robot_radius: 0.35``, ``inflation_radius: 0.48``,
 ``motion_model: Omni``, ``vy_min: -0.5``) — a no-op rewrite for panda. Velocity limits stay Nav2
 tuning in the base file, but are clamped to the manifest's kernel ``BODY_TWIST`` bounds
-(``_cap_speeds``) so Nav2 never commands a twist the safety kernel would E-stop.
+(``_cap_speeds``) so Nav2 never commands a twist the safety kernel would E-stop. A
+``base_kinematics: differential`` base also gets ``_dock_differential`` (rotation shim around MPPI,
+tight goal checker) so it ends on the goal pose.
 
 Unlike slam_toolbox (idles until the Reasoner activates it), Nav2 is always-on: each sub-node is a
 ``LifecycleNode`` driven by ``lifecycle_manager_navigation`` (``autostart=true``). The Reasoner
@@ -289,22 +291,87 @@ def _cap_speeds(
     smoother["max_velocity"], smoother["min_velocity"] = hi, lo
 
 
+#: Differential-base docking (``_dock_differential``). Measured on the two-robot AMR restock aisle
+#: (q5090, true pose vs goal, 8 docks): MPPI alone with the base file's 0.25 m / 0.05 rad tolerance
+#: stopped 7-13 cm along the aisle and 2.4-2.6 deg off; with these, 2-10 cm (the rest is SLAM
+#: map-vs-truth) and <= 1.3 deg.
+DIFF_DOCK_XY_TOLERANCE_M = 0.03
+DIFF_DOCK_YAW_TOLERANCE_RAD = 0.02
+
+
+def _dock_differential(params: dict[str, Any]) -> None:
+    """Make a differential base finish on the goal pose (in place), not merely near it.
+
+    A differential base cannot strafe the last centimetres, and MPPI's ``GoalAngleCritic`` starts
+    turning it to the goal heading 0.5 m out, so it stalls short and the loose goal checker accepts
+    that. Instead: MPPI drives to the goal position with the goal-angle critic off, and
+    ``RotationShimController`` (wrapping MPPI, same ``FollowPath`` params) turns in place to the
+    goal heading at the end (``rotate_to_goal_heading``) and onto the path at the start. The goal
+    checker tightens to ``DIFF_DOCK_*``; the progress checker allows the slow final approach.
+
+    Raises:
+        ROSConfigError: ``params`` lacks the MPPI ``FollowPath`` / goal / progress checkers.
+    """
+    from openral_core.exceptions import ROSConfigError  # reason: launch-time only
+
+    try:
+        server = params["controller_server"]["ros__parameters"]
+        follow_path = server["FollowPath"]
+        goal = server["general_goal_checker"]
+        progress = server["progress_checker"]
+        goal_angle = follow_path["GoalAngleCritic"]
+    except (KeyError, TypeError) as exc:
+        raise ROSConfigError(
+            "nav2.launch: cannot set differential-base docking; the params file needs "
+            "controller_server FollowPath (MPPI, with GoalAngleCritic), general_goal_checker and "
+            f"progress_checker (missing: {exc})"
+        ) from exc
+    if follow_path.get("plugin") != "nav2_mppi_controller::MPPIController":
+        raise ROSConfigError(
+            "nav2.launch: differential-base docking wraps MPPI in RotationShimController; "
+            f"FollowPath.plugin is {follow_path.get('plugin')!r}"
+        )
+    follow_path.update(
+        plugin="nav2_rotation_shim_controller::RotationShimController",
+        primary_controller="nav2_mppi_controller::MPPIController",
+        angular_dist_threshold=0.785,
+        forward_sampling_distance=0.5,
+        rotate_to_heading_angular_vel=0.4,
+        max_angular_accel=1.0,
+        simulate_ahead_time=1.0,
+        rotate_to_goal_heading=True,
+    )
+    goal_angle["enabled"] = False
+    goal["xy_goal_tolerance"] = DIFF_DOCK_XY_TOLERANCE_M
+    goal["yaw_goal_tolerance"] = DIFF_DOCK_YAW_TOLERANCE_RAD
+    progress["required_movement_radius"] = 0.05
+    progress["movement_time_allowance"] = 20.0
+
+
 def _speed_capped_params_file(
-    params_file: str, max_linear_m_s: float | None, max_angular_rad_s: float | None
+    params_file: str,
+    max_linear_m_s: float | None,
+    max_angular_rad_s: float | None,
+    *,
+    differential: bool = False,
 ) -> str:
-    """Return ``params_file``, or a temp copy with ``_cap_speeds`` applied when a bound is set.
+    """Return ``params_file``, or a temp copy with ``_cap_speeds`` / ``_dock_differential`` applied.
 
     A copy, not ``RewrittenYaml`` keys: Jazzy's ``RewrittenYaml`` cannot set a list element
-    (``velocity_smoother.max_velocity``) and stringifies a whole-list value.
+    (``velocity_smoother.max_velocity``) and stringifies a whole-list value; nor can it tell
+    ``FollowPath.plugin`` from every other ``plugin`` key.
     """
-    if max_linear_m_s is None and max_angular_rad_s is None:
+    if max_linear_m_s is None and max_angular_rad_s is None and not differential:
         return params_file
     import tempfile  # reason: launch-time only
 
     import yaml  # reason: launch-time only
 
     params = yaml.safe_load(Path(params_file).read_text())
-    _cap_speeds(params, max_linear_m_s, max_angular_rad_s)
+    if max_linear_m_s is not None or max_angular_rad_s is not None:
+        _cap_speeds(params, max_linear_m_s, max_angular_rad_s)
+    if differential:
+        _dock_differential(params)
     with tempfile.NamedTemporaryFile(
         "w", prefix="nav2_speed_capped_", suffix=".yaml", delete=False
     ) as out:
@@ -349,6 +416,7 @@ def _nav2_include_with_robot_overrides(context: object) -> list[object]:
             params_file,
             description.safety.max_base_linear_speed_m_s,
             description.safety.max_base_angular_speed_rad_s,
+            differential=description.base_kinematics == "differential",
         )
 
     resolved_params = RewrittenYaml(
