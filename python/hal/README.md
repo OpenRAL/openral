@@ -51,12 +51,12 @@ One line per module; per-robot detail lives in `robots/<id>/README.md` and
 | `ros_control.py` | `RosControlHAL` and `GroupedRosControlHAL` (several controllers, one robot; config-only via `groups` in the manifest). |
 | `ros_control_transport.py` | `RosControlTransport`, the production `rclpy` transport, and the `ControllerStopSeam` it stops through. |
 | `sim_transport.py` | `SimTransport` (in-memory transport and stop seam) and `SimTorqueSeam` for unit tests. |
-| `interbotix_transport.py` | `InterbotixXSTransport`: torque-off stop seam for the Interbotix XS arms (stop only). |
+| `interbotix_transport.py` | `InterbotixXSTransport`: the production `xs_sdk` transport for the Interbotix XS arms (commands, merged per-namespace joint states, torque-off stop); attached by the lifecycle node under `hal_mode:=real`, never run on a rig (#250). |
 | `ur_real.py`, `franka_panda_real.py`, `sawyer_real.py` | `UR5eRealHAL` / `UR10eRealHAL`, `FrankaPandaRealHAL`, `SawyerRealHAL`. |
 | `openarm_real.py` | `OpenArmRealHAL`: OpenArm v2 over `openarm_bringup`'s `ros2_control` stack (CAN stays in C++). |
 | `unitree_real.py`, `unitree_s0_policy.py` | `UnitreeHgRealHAL` (G1, H2 over NVIDIA's Isaac ROS stack; S0 stays NVIDIA's C++ controller) and the typed reader of its S0 policy files. |
 | `galaxea_a1.py` | `GalaxeaA1HAL` over a loopback JSON-lines transport to an isolated sidecar (no vendor code bundled). |
-| `aloha.py` | `AlohaHAL` (Interbotix XS, not `ros2_control`; `connect()` does not yet wire a real transport) and `AlohaMujocoHAL`. |
+| `aloha.py` | `AlohaHAL` (Interbotix XS, not `ros2_control`; driven through `InterbotixXSTransport`; `connect()` checks both arms' operating modes) and `AlohaMujocoHAL`. |
 | `so100_follower.py`, `feetech_torque_watcher.py` | `SO100FollowerHAL` over the `lerobot` SDK, and the separate process that cuts servo torque if the HAL dies. |
 | `composed.py`, `platform_base.py` | `ComposedHAL` (one robot from part HALs that own disjoint joints) and `PlatformBaseHAL` (a base driven by its own stack via odometry and a twist topic); used by `openamrobot_v2`. |
 
@@ -102,7 +102,7 @@ in-code `*_DESCRIPTION` mirrors, kept for direct construction in tests.
 | `franka_panda` | MuJoCo twin | `FrankaPandaRealHAL` (`franka_ros2` / FCI) |
 | `ur5e`, `ur10e` | MuJoCo twin | `UR5eRealHAL`, `UR10eRealHAL` (`ur_robot_driver`) |
 | `sawyer` | MetaWorld scene adapter, no twin | `SawyerRealHAL` |
-| `aloha_bimanual` | `AlohaMujocoHAL` (gym-aloha MJCF) | `AlohaHAL` (transport not wired) |
+| `aloha_bimanual` | `AlohaMujocoHAL` (gym-aloha MJCF) | `AlohaHAL` (never run on a rig) |
 | `aloha_agilex` | RoboTwin SAPIEN sidecar; manifest-driven twin | none |
 | `galaxea_a1` | manifest-driven twin | `GalaxeaA1HAL` (sidecar) |
 | `openarm`, `anvil_openarm_v2` | manifest-driven twin | `OpenArmRealHAL` (`openarm`; Anvil has none) |
@@ -276,11 +276,10 @@ parameters and topic names.
   sim suites with the ROS pytest-plugin workaround set.
 - HIL: `tests/hil/test_<robot>.py`, run by hand on the cell and skipped off-rig
   ([development](../../docs/contributing/development.md#hardware-in-the-loop)).
-  The bridges `tests/hil/_ros_control_transport.py` and
-  `tests/hil/_aloha_ros_transport.py` raise at import without `rclpy`, so HIL
-  tests guard with `importlib.util.find_spec("rclpy")`. The ALOHA bridge mirrors
-  `AlohaHAL`'s topic contract, which a real `interbotix_xs_sdk` rig does not
-  expose; it is not evidence of what the rig accepts.
+  The bridge `tests/hil/_ros_control_transport.py` raises at import without
+  `rclpy`, so HIL tests guard with `importlib.util.find_spec("rclpy")`. The
+  ALOHA HIL test needs no bridge: it drives the production
+  `InterbotixXSTransport`.
 - Doctests: `just test-doctest` runs `--doctest-modules` over a curated package
   list that includes `python/hal/src/openral_hal` (the list is `DOCTEST_TARGETS`
   in `tests/unit/test_doctest_runner.py`).

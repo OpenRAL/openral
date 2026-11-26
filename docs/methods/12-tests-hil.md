@@ -92,9 +92,9 @@ since it energizes the arm; attended only.
 ### `tests/hil/_ros_control_transport.py`
 _Single-controller bridge. Used by UR5e, UR10e, Franka Panda, Sawyer._
 
-- `_make_trajectory_publisher(node, command_topic) -> Publisher` — Module-private helper that creates a `trajectory_msgs/JointTrajectory` publisher with the shared HIL QoS profile. Reused by `_aloha_ros_transport.py`. (L52)
-- `RosControlHILTransport(node, joint_names, *, command_topic, joint_state_topic)` — Subscribes to `joint_state_topic`, exposes `publish(_topic, msg)` for the HAL's outgoing trajectories and `state()` for the cached joint state. Helpers: `spin_once`, `wait_for_first_state`, `last_stamp`. (L130)
-- `make_hil_transport(node_name, joint_names, *, command_topic, joint_state_topic) -> tuple[Node, RosControlHILTransport, Callable[[], None]]` — Factory that initialises rclpy, creates the node, and returns a teardown callable. (L201)
+- `_make_trajectory_publisher(node, command_topic) -> Publisher` — Module-private helper that creates a `trajectory_msgs/JointTrajectory` publisher with the shared HIL QoS profile. (L52)
+- `RosControlHILTransport(node, joint_names, *, command_topic, joint_state_topic)` — Subscribes to `joint_state_topic`, exposes `publish(_topic, msg)` for the HAL's outgoing trajectories and `state()` for the cached joint state. Helpers: `spin_once`, `wait_for_first_state`, `missing_joints`, `last_stamp`. (L133)
+- `make_hil_transport(node_name, joint_names, *, command_topic, joint_state_topic) -> tuple[Node, RosControlHILTransport, Callable[[], None]]` — Factory that initialises rclpy, creates the node, and returns a teardown callable. (L204)
 
 ### `tests/hil/_openarm_ros_transport.py`
 _4-way fan-out bridge for the bimanual OpenArm v2 HAL — the only thing between `OpenArmRealHAL` and a physical arm._
@@ -120,17 +120,12 @@ _The one test in the tree that commands a real OpenArm to move._
 - Why a small number is not by itself a small motion: the wire format is an **absolute** position with a deadline, so travel is `(target - measured) / time_from_start` — set by how wrong the command is, which is the quantity under test. The bounds that do work are the measured-pose baseline, the 0.8 s window, and the refusal to start until all 16 joints have appeared on `/joint_states` (a partial state zero-fills into a plausible pose, and "measured + delta" on top of that is a command to slew the cell home).
 - Cases run gripper-first (1-DoF, lowest inertia, and the actuator ADR-0102 exists for) then the most distal arm joint, and each restores the measured pose before returning, so the suite is idempotent.
 
-### `tests/hil/_aloha_ros_transport.py`
-_4-way fan-out bridge for the bimanual ALOHA HAL._
-
-- `AlohaHILTransport(node, joint_names, *, left_arm_command_topic, right_arm_command_topic, left_gripper_command_topic, right_gripper_command_topic, joint_state_topic)` — Owns four `JointTrajectory` publishers (two arms 6-DOF + two grippers 1-DOF) and one aggregated `JointState` subscriber. Mirrors `AlohaHAL`'s current wire contract, which issue #250 established is not the rig's: `xs_sdk` takes `interbotix_xs_msgs/JointGroupCommand` on `/<ns>/commands/joint_group` and publishes per-namespace joint states, with no aggregated topic. Retargeted with the HAL. `publish(topic, msg)` dispatches by topic match; unknown topics raise `ValueError`. (L62)
-- `make_aloha_hil_transport(node_name, *, left/right arm + gripper command topics, joint_state_topic) -> tuple[Node, AlohaHILTransport, Callable[[], None]]` — Factory; derives the canonical 14 joint names from the public `ALOHA_REAL_DESCRIPTION.joints` so the bridge stays in lock-step with the HAL manifest. (L186)
-
 ### Downstream e-stop gates (issue #295)
 _One attended test per real HAL, last in its file (`test_zz_estop_*`): it stops the vendor controller and leaves the robot needing an operator restart._
 
 - `tests/hil/test_ur5e.py::TestUR5eDownstreamEStop` / `tests/hil/test_ur10e.py::TestUR10eDownstreamEStop` — Attach the **production** `RosControlTransport` as the stop seam (`_production_stop_seam`), `estop()`, then assert the actual downstream state, not only `ROSEStopRequested`: `controller_manager` lists `scaled_joint_trajectory_controller` `inactive`, the report's `vendor_stop` is `/dashboard_client/stop`, and — when `ur_dashboard_msgs` is installed — `/dashboard_client/program_running` answers `program_running=false`.
 - `tests/hil/test_franka_panda.py::TestFrankaDownstreamEStop` — Same seam; asserts `franka_arm_controller` `inactive` (the deactivation that makes `franka_hardware` call `stopRobot()`) and `vendor_stop == ""`.
 - `tests/hil/test_sawyer.py::TestSawyerDownstreamEStop` — Same seam; asserts `sawyer_arm_controller` `inactive`, `vendor_stop == /robot/set_super_stop`, and — when `intera_core_msgs` is installed — `/robot/state.stopped` turns true.
-- `tests/hil/test_aloha.py::TestAlohaDownstreamEStop` — Attaches the production `InterbotixXSTransport`; asserts every arm's `torque_enable(false)` was acknowledged (`controller_states` all `torque_off`). Both ViperX arms go limp, so the bench must be clear.
+- `tests/hil/test_aloha.py` fixture `aloha_rig` — wires the production `InterbotixXSTransport` exactly as the lifecycle node does (`attach_transport` + `attach_torque_stop`, then `connect`, which reads both arms' modes over it) and refuses to yield until `missing_joints()` is empty: the cache zero-fills a silent arm, and a hold built from those zeros would slew it to the zero pose at the stock unlimited `profile_velocity`. The hold test pumps callbacks with `spin_for` rather than sleeping, so the after-state is real, and checks the arms only (the gripper is read as finger position but commanded as motor angle, upstream's convention). Teardown e-stops (torque off) when the test failed, so a failure mid-motion does not leave the arms driving; a passing test keeps torque, since torque off drops the unbraked arms.
+- `tests/hil/test_aloha.py::TestAlohaDownstreamEStop` — Stops through the fixture's production `InterbotixXSTransport`; asserts every arm's `torque_enable(false)` was acknowledged (`controller_states` all `torque_off`). Both ViperX arms go limp, so the bench must be clear.
 - The SO-101 (`tests/hil/test_so101_serial_live.py::test_estop_disconnects_the_live_motor_bus`) and Galaxea A1 (`tests/hil/test_galaxea_a1*.py`) gates already end by driving their own downstream stop; the OpenArm's is proven off-rig in `tests/integration/test_real_hal_estop_ros2_control_live.py` (its CAN gate does not command motion).

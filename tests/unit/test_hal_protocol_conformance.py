@@ -169,12 +169,15 @@ def _sawyer_real_builder() -> tuple[HAL, Callable[[], None]]:
 def _aloha_builder() -> tuple[HAL, Callable[[], None]]:
     """Build an ``AlohaHAL`` against an in-memory transport."""
     from openral_hal.aloha import ALOHA_DESCRIPTION, AlohaHAL
+    from openral_hal.sim_transport import SimTorqueSeam
 
     transport = SimTransport(n_joints=len(ALOHA_DESCRIPTION.joints))
     hal = AlohaHAL(
         publish_fn=transport.publish,
         state_fn=transport.state,
     )
+    # connect() reads both arms' operating modes over the torque/mode seam.
+    hal.attach_torque_stop(SimTorqueSeam(arms=hal.arm_namespaces()))
     return hal, lambda: None
 
 

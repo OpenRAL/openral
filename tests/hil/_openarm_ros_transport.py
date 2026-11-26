@@ -3,10 +3,10 @@
 
 ``openral_hal.openarm_real.OpenArmRealHAL`` fans one 16-DoF ``openral_core.Action`` across
 four ``ros2_control`` controllers — left arm, left gripper, right arm, right gripper
-(``openarm_bringup``'s bimanual configuration). HIL counterpart of
-``tests.hil._aloha_ros_transport`` for that fan-out.
+(``openarm_bringup``'s bimanual configuration). The ALOHA fan-out needs no HIL bridge:
+its HIL test drives the production ``openral_hal.interbotix_transport.InterbotixXSTransport``.
 
-Simpler than the ALOHA bridge: the OpenArm HAL puts ``joint_names`` in the message it
+Simpler than that transport: the OpenArm HAL puts ``joint_names`` in the message it
 publishes (ADR-0102), so the transport just forwards it rather than carrying its own slice
 table — no second copy of the mapping to drift.
 
@@ -169,10 +169,6 @@ class OpenArmHILTransport(_JointStateCache):
     def seen_joints(self) -> set[str]:
         """Joint names that have actually appeared on ``/joint_states``."""
         return set(self._latest)
-
-    def missing_joints(self) -> list[str]:
-        """Expected joints that ``/joint_states`` has never reported."""
-        return [n for n in self._joint_names if n not in self._latest]
 
     def close(self) -> None:
         """Release the executor. The node and context belong to the caller."""

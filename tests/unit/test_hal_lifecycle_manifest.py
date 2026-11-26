@@ -196,3 +196,47 @@ def test_the_node_rechecks_a_composer_that_skipped_validation(
             node._compose_scene_mjcf(description, hostile)
     finally:
         node.destroy_node()
+
+
+@pytest.mark.usefixtures("_rclpy_ctx")
+def test_real_aloha_gets_its_xs_sdk_transport_before_connect() -> None:
+    """``hal_mode:=real`` ALOHA: the transport is wired inside ``on_configure``, before ``connect``.
+
+    Without ``interbotix_xs_msgs`` the wiring itself refuses (and configure fails
+    on that, not on ``connect()``'s missing-transport error); with it, the HAL
+    connects over the production ``InterbotixXSTransport``.
+    """
+    import importlib.util
+
+    from lifecycle_msgs.msg import State
+    from openral_hal.aloha import AlohaHAL
+    from rclpy.lifecycle import LifecycleState, TransitionCallbackReturn
+
+    node = _ManifestHALLifecycleNode(
+        "t_aloha_real_transport",
+        parameter_overrides=[
+            Parameter("robot_yaml", value=str(REPO_ROOT / "robots/aloha_bimanual/robot.yaml")),
+            Parameter("hal_mode", value="real"),
+        ],
+    )
+    try:
+        if importlib.util.find_spec("interbotix_xs_msgs") is None:
+            node._hal = node._create_hal()
+            with pytest.raises(ROSConfigError, match="interbotix_xs_msgs is not installed"):
+                node._attach_interbotix_transport()
+            node._hal = None
+            unconfigured = LifecycleState(
+                label="unconfigured", state_id=State.PRIMARY_STATE_UNCONFIGURED
+            )
+            assert node.on_configure(unconfigured) == TransitionCallbackReturn.FAILURE
+            assert node._interbotix_transport is None
+        else:
+            node._hal = node._create_hal()
+            assert isinstance(node._hal, AlohaHAL)
+            node._attach_interbotix_transport()
+            node._hal.connect()  # refuses without the attached transport
+            assert node._interbotix_transport is not None
+            node._hal.disconnect()
+            node._interbotix_transport.close()
+    finally:
+        node.destroy_node()
