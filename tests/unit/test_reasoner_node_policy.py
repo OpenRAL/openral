@@ -384,3 +384,17 @@ def test_a_reply_to_the_reasoners_question_keeps_an_unstarted_mission() -> None:
     done.complete_active("ok")
     assert should_rebuild_mission("dashboard", "", done, answers_question=True)  # finished
     assert not should_rebuild_mission("detector", "", None, answers_question=True)  # cascade
+
+
+def test_a_judged_success_completes_the_task_without_a_reward_monitor() -> None:
+    """t25 (2026-11-26, AMR aisle): the scene graded the restock complete and the runner
+    reported it, but with no reward monitor and no ``completes_task_on_success`` the task
+    stayed active. A judged success on the final step completes it; on a step, it does not."""
+    kw = {"succeeded": True, "completes_task_on_success": False, "reward_available": False}
+    done = task_step_without_verifier(**kw, attempts=1, failures=0, judged_success=True)
+    assert done is not None and done[0] == "complete"
+    step = task_step_without_verifier(
+        **kw, attempts=1, failures=0, judged_success=True, final_step=False
+    )
+    assert step is None
+    assert task_step_without_verifier(**kw, attempts=1, failures=0) is None

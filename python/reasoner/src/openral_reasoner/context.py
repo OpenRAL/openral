@@ -41,6 +41,7 @@ from openral_core import (
     SceneGraph,
     SpatialNodeKind,
     TaskOutcome,
+    TaskVerdict,
     TimeoutEvidence,
     WorldState,
     belief_state,
@@ -69,6 +70,7 @@ __all__ = [
     "reflect_on_retry_cap",
     "render_playbooks_block",
     "render_robot_self_model",
+    "task_outcome_judged_success",
     "task_outcome_text",
 ]
 
@@ -489,6 +491,33 @@ def reflect_on_failure(
         "the skill failed — don't repeat the same call; try a different skill "
         "or replan the subgoal."
     )
+
+
+def task_outcome_judged_success(task_outcome_json: str) -> bool:
+    """True when the run's ``TaskOutcome`` is a *judged* success.
+
+    Judged by the scene's own success condition (``scene``) or a declared
+    ``SuccessCondition`` (``success_condition``). A skill's or a completion check's
+    own "done" is not a judgement of the task, and an unreadable payload never reads
+    as a success.
+
+    Example:
+        >>> from openral_core import TaskOutcome, TaskVerdict
+        >>> ok = TaskOutcome(verdict=TaskVerdict.SUCCEEDED, source="scene", reason="graded")
+        >>> task_outcome_judged_success(ok.model_dump_json())
+        True
+        >>> said = TaskOutcome(verdict=TaskVerdict.SUCCEEDED, source="skill", reason="done")
+        >>> task_outcome_judged_success(said.model_dump_json()), task_outcome_judged_success("{")
+        (False, False)
+    """
+    try:
+        outcome = TaskOutcome.model_validate_json(task_outcome_json or "")
+    except ValidationError:
+        return False
+    return outcome.verdict is TaskVerdict.SUCCEEDED and outcome.source in {
+        "scene",
+        "success_condition",
+    }
 
 
 def task_outcome_text(task_outcome_json: str) -> str:

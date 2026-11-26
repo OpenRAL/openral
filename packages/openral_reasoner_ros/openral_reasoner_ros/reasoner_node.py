@@ -134,6 +134,7 @@ from openral_reasoner.context import (
     reflect_on_reward_plateau,
     render_playbooks_block,
     render_robot_self_model,
+    task_outcome_judged_success,
     task_outcome_text,
 )
 from openral_reasoner.core import (
@@ -4738,6 +4739,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         dispatch_task_id: str | None = None,
         dispatch_mission_generation: int | None = None,
         dispatch_completes_task: bool | None = None,
+        judged_success: bool = False,
     ) -> None:
         """Verify the active mission task against the reward signal after a skill returns.
 
@@ -4796,6 +4798,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             attempts=active.attempts,
             failures=active.failures,
             final_step=call.final_step,
+            judged_success=judged_success,
         )
         if step is not None:
             action, verdict = step
@@ -6753,6 +6756,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 dispatch_task_id=dispatch_task_id,
                 dispatch_mission_generation=dispatch_mission_generation,
                 dispatch_completes_task=dispatch_completes_task,
+                judged_success=task_outcome_judged_success(
+                    str(getattr(result, "task_outcome_json", "") or "")
+                ),
             )
             return
         # VLM-adjudicated completion §2 — a reasoner-driven cancel (status 5, reason "reward" from

@@ -204,12 +204,15 @@ def task_step_without_verifier(
     attempts: int,
     failures: int,
     final_step: bool = True,
+    judged_success: bool = False,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     max_dispatches: int = DEFAULT_MAX_TASK_DISPATCHES,
 ) -> tuple[Literal["complete", "step", "abandon"], str] | None:
     """Settle the active task after a dispatch returns, where no reward verdict decides it.
 
-    * ``complete`` — the skill succeeded, its manifest opts in
+    * ``complete`` — the run's task outcome is a judged success (``judged_success``: the
+      scene's own success condition, or a declared ``SuccessCondition``) on the task's
+      ``final_step``; or the skill succeeded, its manifest opts in
       (``RosIntegration.completes_task_on_success``) and the goal was the task's
       ``final_step``: the action's own success is the task's success, reward
       monitor or not.
@@ -268,6 +271,8 @@ def task_step_without_verifier(
         ... )[0]
         'abandon'
     """
+    if succeeded and judged_success and final_step:
+        return "complete", "the run's success condition judged the task done"
     if succeeded and completes_task_on_success and final_step:
         return "complete", "the skill's own success completes the task (completes_task_on_success)"
     is_step = succeeded and completes_task_on_success
