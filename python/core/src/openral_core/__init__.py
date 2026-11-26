@@ -54,6 +54,7 @@ from openral_core.robot_ui import (
     rskill_listed,
     rskill_matches_robot,
 )
+from openral_core.scene_paths import ScenePeer
 from openral_core.schemas import (
     ACTOR_KEY_ENV,
     ANTHROPIC_BASE_URL,
@@ -260,7 +261,6 @@ from openral_core.schemas import (
     SceneComposition,
     SceneDefaults,
     SceneGraph,
-    SceneRobot,
     SceneSpec,
     SceneTaskSpace,
     SecurityIncidentRecord,
@@ -622,7 +622,7 @@ __all__ = [
     "SceneComposition",
     "SceneDefaults",
     "SceneGraph",
-    "SceneRobot",
+    "ScenePeer",
     "SceneSpec",
     "SceneTaskSpace",
     "SecurityIncidentRecord",

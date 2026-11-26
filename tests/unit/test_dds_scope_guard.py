@@ -578,3 +578,10 @@ class TestScanGraphReadsTheProbeThroughDdsLogs:
         """The fail-closed outcome stays: no tagged result, no graph read."""
         assert self._scan(monkeypatch, f"{self._SHM}\n") is None
         assert self._scan(monkeypatch, '{"joint_state_publishers": [], "nodes": []}') is None
+
+
+def test_reserved_domains_are_public_in_core_and_cover_the_sim() -> None:
+    from openral_core.ros_graph_scope import RESERVED_DOMAINS
+
+    assert _dds_scope.RESERVED_DOMAINS is RESERVED_DOMAINS
+    assert int(_dds_scope.SIM_DOMAIN_ID) in RESERVED_DOMAINS

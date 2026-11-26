@@ -32,7 +32,7 @@ The safety kernel is a separate, deny-by-default C++ process with an independent
 
 ## Multi-robot deploy sims
 
-A deploy-sim scene can hold several robots. Each gets its own `ROS_DOMAIN_ID` and dashboard (see [Dashboard](../quickstart/dashboard.md)). Each robot's safety kernel also checks its moves against the other robots, published on `/openral/peer_voxels`, with no exemption (ADR-0137); a robot that shares a scene but has no world-voxel check refuses to launch. Scenes: [Sim environments](../reference/sim-environments.md).
+Several robots in one scene start with `openral deploy fleet`, part of OpenRAL Pro. `deploy sim` and `deploy run` start one robot: a scene that lists `robots:` refuses and names `deploy fleet`. Each robot's graph gets its own `ROS_DOMAIN_ID` and dashboard (see [Dashboard](../quickstart/dashboard.md)). Each robot's safety kernel also checks its moves against the other robots, published on `/openral/peer_voxels`, with no exemption (ADR-0137); a robot that shares a scene but has no world-voxel check refuses to launch. Scenes: [Sim environments](../reference/sim-environments.md).
 
 ## Open and Pro seams
 

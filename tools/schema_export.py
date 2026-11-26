@@ -29,7 +29,8 @@ from typing import Any
 # ── Ensure the workspace packages are importable when run from repo root ──────
 sys.path.insert(0, str(Path(__file__).parent.parent / "python" / "core" / "src"))
 
-from openral_core.schemas import (  # reason: path manipulation above
+from openral_core.scene_paths import ScenePeer  # reason: path manipulation above
+from openral_core.schemas import (
     Action,
     ActionRepresentation,
     ActionSpec,
@@ -160,6 +161,7 @@ _ENUM_TYPES: list[type] = [
 ]
 
 _MODEL_TYPES: list[type] = [
+    ScenePeer,
     IntrinsicsPinhole,
     CameraSimPlacement,
     SensorSpec,

@@ -87,6 +87,7 @@ from openral_core import (
     DeployRuntime,
     DeployScene,
     Pose6D,
+    ScenePeer,
     UnitIdentity,
     apply_sensor_overlays,
     camera_topic,
@@ -147,7 +148,7 @@ def _resolve_rskills_dir() -> str:
     """The ``rskills/`` tree the reasoner palette and the skill runner are seeded from.
 
     Honours ``$OPENRAL_REPO_ROOT`` through ``openral_rskill.loader.repo_root_override``,
-    the rule the CLI's ``_repo_root_from`` and the loader's in-tree resolution share: the
+    the rule the CLI's ``repo_root_from`` and the loader's in-tree resolution share: the
     deploy preflights (palette deps, the reward VRAM gate) read that checkout's skills,
     and a reasoner seeded from another tree could lack the skill that let the gate pass.
     Only the skill tree moves; ``_REPO_ROOT`` stays this launch's checkout (its ``.venv``
@@ -493,31 +494,41 @@ def _octomap_frames(description: RobotDescription) -> tuple[str, str]:
 _PEER_BOUND_S = 0.3
 
 
-def _peer_params(peers: list[tuple[str, int, str]]) -> dict[str, object]:
+def _peer_params(peers: list[ScenePeer]) -> dict[str, object]:
     """``peer_voxels``' per-peer parameters (ADR-0137), under ``peer_<name>.``.
 
-    Each peer's collision model, lowered from its own manifest as its kernel's is.
+    Each peer's collision model, lowered from its own manifest (looked up from its ``robot_id``)
+    as its kernel's is.
 
     Each is posed in its manifest ``base_frame``; a mobile base with its planar base dofs held
     at zero, as its own kernel holds them.
 
     Example:
-        >>> p = _peer_params([("b", 34, "robots/openarm/robot.yaml")])
+        >>> p = _peer_params([ScenePeer(name="b", robot_id="openarm", domain=34)])
         >>> p["peer_names"], p["peer_domains"], p["peer_b.base_frame"]
         (['b'], [34], 'openarm_base')
     """
     from openral_core import RobotDescription
+    from openral_core.exceptions import ROSConfigError
     from openral_safety.envelope_loader import collision_params_from_description
+    from openral_sim.policies.robots import resolve_robot_manifest
 
     out: dict[str, object] = {
-        "peer_names": [n for n, _, _ in peers],
-        "peer_domains": [d for _, d, _ in peers],
+        "peer_names": [p.name for p in peers],
+        "peer_domains": [p.domain for p in peers],
     }
-    for name, _, manifest in peers:
+    for peer in peers:
+        name = peer.name
         # ponytail: the manifest's capsules, never the MJCF lowering the peer's own kernel may
         # prefer; those are hand-authored to contain the links. Lower the MJCF here too if a
         # robot's manifest geometry ever under-covers its MJCF.
-        description = RobotDescription.from_yaml(manifest)
+        try:
+            manifest = resolve_robot_manifest(peer.robot_id, repo_root=_REPO_ROOT)
+        except Exception as exc:  # reason: any lookup failure names the peer
+            raise ROSConfigError(
+                f"peer {name!r} (robot_id {peer.robot_id!r}): no robot manifest ({exc})"
+            ) from exc
+        description = RobotDescription.from_yaml(str(manifest))
         collision = collision_params_from_description(description)
         params = _posed_model_params(
             description, collision, _collision_base_dofs(description, collision)
@@ -1459,10 +1470,9 @@ def _optical_mounts(sensors: Sequence[SensorSpec], hal_mode: str) -> dict[str, s
 def _scene_robot_world_pose(scene: DeployScene | None) -> Pose6D | None:
     """Where this robot's map sits in its scene's shared ``world``; ``None`` for one robot.
 
-    ``openral deploy sim`` of a scene with several robots (openral-pro#99) starts each
-    robot's graph with ``$OPENRAL_SCENE_ROBOT``, so ``DeployScene.from_yaml`` reads that
-    robot's own scene (``geometry.scene_for_robot``): its ``base_pose`` is its start in
-    ``world``, where its map's origin is.
+    ``openral deploy fleet`` (OpenRAL Pro) starts each robot's graph with
+    ``$OPENRAL_SCENE_ROBOT`` on a one-robot slice it writes of the shared scene: its
+    ``base_pose`` is its start in ``world``, where its map's origin is.
     """
     from openral_core import SHARED_SCENE_FRAME
     from openral_core.scene_paths import SCENE_ROBOT_ENV
@@ -1472,11 +1482,37 @@ def _scene_robot_world_pose(scene: DeployScene | None) -> Pose6D | None:
     return scene.base_pose if scene.base_pose.frame_id == SHARED_SCENE_FRAME else None
 
 
+def _scene_peers(world_pose: Pose6D | None, hal_mode: str) -> list[ScenePeer]:
+    """``$OPENRAL_SCENE_PEERS``; peers need this robot to have a pose in the shared ``world``.
+
+    A real robot with peers also needs a chrony-disciplined clock (HZ-0137-11), checked here
+    as well as in ``openral deploy run`` so a direct ``ros2 launch`` is checked too.
+
+    Raises:
+        ROSConfigError: Peers are listed and the robot has no ``world`` pose, its domain is
+            not distinct from theirs, or (``hal_mode == "real"``) its clock is not synchronised.
+    """
+    from openral_core.clock_sync import chrony_tracking, require_synced_clock
+    from openral_core.exceptions import ROSConfigError
+    from openral_core.scene_paths import SCENE_PEERS_ENV, parse_scene_peers, require_peer_domains
+
+    peers = parse_scene_peers(os.environ.get(SCENE_PEERS_ENV))
+    if peers and world_pose is None:
+        raise ROSConfigError(
+            f"{SCENE_PEERS_ENV} lists peers, but this robot has no base_pose in the shared "
+            "world frame: a peer's goal could not be placed in its map."
+        )
+    require_peer_domains(peers, os.environ.get("ROS_DOMAIN_ID"))
+    if hal_mode == "real" and peers:
+        require_synced_clock(chrony_tracking())
+    return peers
+
+
 def _world_map_tf_node(world_pose: Pose6D, map_frame: str) -> Node:
     """Static ``world -> map_frame`` TF: the robot's map origin in the scene's shared world.
 
     tf2's parent -> child transform is the child's pose in the parent, so it is the
-    ``base_pose`` itself (``scene_for_robot`` re-expresses goals through its inverse).
+    ``base_pose`` itself (``deploy fleet``'s slice re-expresses goals through its inverse).
     """
     x, y, z = (str(v) for v in world_pose.xyz)
     qx, qy, qz, qw = (str(v) for v in world_pose.quat_xyzw)
@@ -3530,17 +3566,11 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     scene_unit: str | None = None
     scene_backend: str | None = None
     world_pose: Pose6D | None = None
-    # The scene's other robots (ADR-0137): name, ROS domain, manifest.
-    scene_peers: list[tuple[str, int, str]] = []
     if deploy_config:
         from openral_core import DeployScene
 
         _scene = DeployScene.from_yaml(deploy_config)
         world_pose = _scene_robot_world_pose(_scene)
-        if world_pose is not None:
-            from openral_core.scene_paths import SCENE_PEERS_ENV, parse_scene_peers
-
-            scene_peers = parse_scene_peers(os.environ.get(SCENE_PEERS_ENV))
         scene_sensors = list(_scene.sensors)
         scene_drivers = list(_scene.drivers)
         scene_unit = _scene.robot_unit
@@ -3555,6 +3585,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 from openral_core import sim_scene_description
 
                 description = sim_scene_description(description, _scene.scene.backend_options)
+    # Checked with or without a deploy_config: a direct `ros2 launch` has peers too.
+    scene_peers = _scene_peers(world_pose, hal_mode)
     # A rate the scene set, forwarded as the runner's `rate_hz` (0 = the manifest's).
     scene_rate_hz = (
         description.control_rate_hz if description.control_rate_hz != manifest_rate_hz else None
@@ -4031,7 +4063,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
 
         raise ROSConfigError(
             "this robot shares its scene with other robots "
-            f"({', '.join(n for n, _, _ in scene_peers)}) but its kernel has no world-voxel "
+            f"({', '.join(p.name for p in scene_peers)}) but its kernel has no world-voxel "
             "check, so it could not check its moves against them (ADR-0137). Enable the octomap "
             "leg and its kernel check for every robot of a several-robot scene."
         )

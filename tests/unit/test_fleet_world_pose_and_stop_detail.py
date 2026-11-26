@@ -2,7 +2,8 @@
 
 openral-pro#99: a fleet console draws every robot of a scene with several robots in one
 ``world`` frame (``world_pose``, and a static ``world -> map`` TF per robot graph), and an
-operator judges a reset from the stop's detail (``latch_detail``).
+operator judges a reset from the stop's detail (``latch_detail``). Each robot's graph reads
+its one-robot slice of the shared scene, written by ``openral deploy fleet`` (OpenRAL Pro).
 """
 
 from __future__ import annotations
@@ -17,14 +18,16 @@ from pathlib import Path
 import numpy as np
 import pytest
 import yaml
-from openral_core import DeployScene
-from openral_core.geometry import homogeneous_from_quat_xyz, quat_xyzw_to_yaw
+from openral_core import DeployScene, Pose6D
+from openral_core.geometry import (
+    homogeneous_from_quat_xyz,
+    quat_xyzw_to_yaw,
+    yaw_to_quat_xyzw,
+)
 from openral_core.scene_paths import SCENE_ROBOT_ENV
 from openral_observability.dashboard import TelemetryStore
 from openral_observability.dashboard.app import mission_view
 from openral_observability.dashboard.store import _within_latch_window
-
-from tests.unit.test_deploy_scene_robots import _aisle
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LAUNCH = REPO_ROOT / "packages/openral_rskill_ros/launch/deploy_e2e.launch.py"
@@ -62,8 +65,25 @@ def launch_module() -> object:
     return module
 
 
+def _at(x: float, y: float, yaw: float, frame: str) -> dict[str, object]:
+    return {"xyz": [x, y, 0.0], "quat_xyzw": list(yaw_to_quat_xyzw(yaw)), "frame_id": frame}
+
+
+#: North's slice of an aisle it shares with another AMR: it starts at (-0.4, 2.4) in ``world``
+#: facing south (-y), so the aisle's world goal (0.4, 1.1, yaw 0) is 1.3 m ahead and 0.8 m to
+#: its left in its map, turned +90 degrees.
+_NORTH_START = Pose6D(
+    xyz=(-0.4, 2.4, 0.0), quat_xyzw=yaw_to_quat_xyzw(-math.pi / 2), frame_id="world"
+)
+
+
 def _aisle_file(tmp_path: Path) -> Path:
-    raw = DeployScene.model_validate(_aisle()).model_dump(mode="json", exclude_defaults=True)
+    raw = {
+        "scene": {"id": "aisle", "backend": "isaacsim"},
+        "robot_id": "openamrobot_v2",
+        "base_pose": _NORTH_START.model_dump(mode="json"),
+        "nav_goals": [{"name": "s5", "pose": _at(1.3, 0.8, math.pi / 2, "map")}],
+    }
     path = tmp_path / "aisle.yaml"
     path.write_text(yaml.safe_dump(raw), encoding="utf-8")
     return path
@@ -77,7 +97,7 @@ def test_a_robot_graph_places_its_map_in_the_shared_world(
     monkeypatch.setenv(SCENE_ROBOT_ENV, "north")
     north = DeployScene.from_yaml(str(path))
     pose = launch_module._scene_robot_world_pose(north)  # type: ignore[attr-defined]  # reason: module loaded by path
-    assert pose == DeployScene.model_validate(_aisle()).robots[1].base_pose
+    assert pose == _NORTH_START
     # The goal north reads in its map, through world <- map, is the scene's world goal.
     world_from_map = homogeneous_from_quat_xyz(pose.xyz, pose.quat_xyzw)
     goal = north.nav_goals[0].pose
@@ -98,7 +118,7 @@ def test_a_robot_graph_places_its_map_in_the_shared_world(
 def test_a_one_robot_graph_has_no_world_pose(
     launch_module: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No ``$OPENRAL_SCENE_ROBOT``: the parent scene, or a one-robot scene, has none."""
+    """No ``$OPENRAL_SCENE_ROBOT``: a slice, or any one-robot scene, has none."""
     monkeypatch.delenv(SCENE_ROBOT_ENV, raising=False)
     world_pose = launch_module._scene_robot_world_pose  # type: ignore[attr-defined]  # reason: module loaded by path
     assert world_pose(DeployScene.from_yaml(str(_aisle_file(tmp_path)))) is None

@@ -761,7 +761,7 @@ class TelemetryStore:
     def set_world_pose(self, x: float, y: float, yaw: float) -> None:
         """Record where this robot's map sits in its scene's shared ``world`` (openral-pro#99).
 
-        Set once at start for a robot of a scene with several robots (``DeployScene.robots``):
+        Set once at start for a robot of a scene with several robots (``openral deploy fleet``):
         its map starts at its ``base_pose``. Lands in ``topics.world_pose`` and in
         ``/api/mission`` as ``world_pose``; a one-robot deploy never sets it.
 

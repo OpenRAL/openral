@@ -1278,7 +1278,7 @@ REPO_ROOT_ENV = "OPENRAL_REPO_ROOT"
 def repo_root_override() -> Path | None:
     """The checkout ``$OPENRAL_REPO_ROOT`` names, when it holds ``robots/`` + ``rskills/``.
 
-    The one validity rule the CLI (``openral_cli.deploy_sim._repo_root_from``, which
+    The one validity rule the CLI (``openral_cli.deploy_sim.repo_root_from``, which
     refuses an invalid override), the deploy launch's skill tree and the in-tree
     resolution here share. Returns ``None`` when unset or invalid.
     """

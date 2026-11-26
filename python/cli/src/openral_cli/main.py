@@ -43,9 +43,9 @@ import socket
 import subprocess
 import sys
 from glob import glob
-from importlib.metadata import PackageNotFoundError, version
+from importlib.metadata import EntryPoint, PackageNotFoundError, entry_points, version
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, Final, NamedTuple, cast
 from urllib.parse import urlparse
 
 import click
@@ -65,6 +65,7 @@ from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
+from typer.models import CommandInfo, TyperInfo
 
 from openral_cli.check import check_command
 from openral_cli.collision import collision_app
@@ -77,6 +78,8 @@ from openral_cli.prompt import prompt_command
 from openral_cli.security import security_app
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from openral_core import (
         BenchmarkScene,
         RobotDescription,
@@ -96,6 +99,7 @@ app = typer.Typer(
     invoke_without_command=True,
 )
 console = Console()
+_err = Console(stderr=True)
 
 # ── REPL ──────────────────────────────────────────────────────────────────────
 
@@ -4627,6 +4631,81 @@ profile_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(profile_app, name="profile")
+
+
+# ── openral.cli entry-point seam ──────────────────────────────────
+
+
+def _item_name(item: CommandInfo | TyperInfo) -> str:
+    """Name of a Typer ``CommandInfo`` or ``TyperInfo`` (explicit, else derived)."""
+    if item.name:
+        return str(item.name)
+    if isinstance(item, CommandInfo):
+        return item.callback.__name__.replace("_", "-") if item.callback else ""
+    return (item.typer_instance.info.name or "") if item.typer_instance else ""
+
+
+def _command_names(group: typer.Typer) -> set[str]:
+    """Names of the commands and sub-groups registered on ``group``."""
+    items: list[CommandInfo | TyperInfo] = [*group.registered_commands, *group.registered_groups]
+    return {_item_name(i) for i in items}
+
+
+def _register_plugin_commands(eps: Iterable[EntryPoint] | None = None) -> None:
+    """Let installed packages add commands via the ``openral.cli`` entry-point group.
+
+    Each entry point loads ``register(groups)``, where ``groups`` maps ``"deploy"``,
+    ``"robot"``, ``"sim"`` and ``""`` (the root app) to their Typer apps. A plugin that
+    fails is skipped with one stderr warning; one that re-registers an existing command
+    has the duplicate removed, so a plugin can add but never replace. A plugin that raises
+    mid-``register`` is rolled back. Never raises.
+
+    Plugins load while ``openral_cli.main`` is still importing, so a plugin must not import
+    ``openral_cli.main`` at module level. The seam only catches appended duplicates; it does
+    not detect in-place mutation of the apps, and otherwise trusts installed code.
+    """
+    try:
+        if eps is None:
+            eps = entry_points(group="openral.cli")
+        eps = list(eps)
+    except Exception as exc:  # reason: a broken metadata lookup must not break the CLI
+        _err.print(f"[yellow]warning:[/yellow] openral.cli plugin lookup failed: {exc}")
+        return
+    groups = {"": app, "deploy": deploy_app, "robot": robot_app, "sim": sim_app}
+    for ep in eps:
+        before = {k: _command_names(g) for k, g in groups.items()}
+        counts = {
+            k: (len(g.registered_commands), len(g.registered_groups)) for k, g in groups.items()
+        }
+        try:
+            ep.load()(dict(groups))
+        except Exception as exc:  # reason: plugins are third-party code
+            for key, group in groups.items():
+                del group.registered_commands[counts[key][0] :]
+                del group.registered_groups[counts[key][1] :]
+            _err.print(f"[yellow]warning:[/yellow] openral.cli plugin {ep.name!r} skipped: {exc}")
+            continue
+        for key, group in groups.items():
+            n_cmds, n_groups = counts[key]
+            seen = before[key]
+            lists: tuple[tuple[list[Any], int], ...] = (
+                (group.registered_commands, n_cmds),
+                (group.registered_groups, n_groups),
+            )
+            for items, start in lists:
+                for item in items[start:]:
+                    if _item_name(item) in seen:
+                        items.remove(item)
+                        where = f"{key} " if key else ""
+                        _err.print(
+                            f"[yellow]warning:[/yellow] openral.cli plugin {ep.name!r} "
+                            f"may not replace {where}{_item_name(item)!r}; ignored"
+                        )
+                    else:
+                        seen.add(_item_name(item))
+
+
+_register_plugin_commands()
 
 
 @profile_app.command(

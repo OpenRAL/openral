@@ -1,18 +1,22 @@
 # Several real robots in one workcell (`openral deploy run`)
 
-Status: design only, no code (OpenRAL/openral-pro#99 item 3). `openral deploy run` keeps
-refusing a `DeployScene` that lists `robots` (`deploy_sim.py`, "`deploy run` drives one robot
-per graph on its own host: not yet").
+Status: design only, no code (OpenRAL/openral-pro#99 item 3). Updated 2026-11-25
+(OpenRAL/openral#765, OpenRAL/openral-pro#106): several robots start with
+`openral deploy fleet`, part of OpenRAL Pro. `deploy sim` and `deploy run` start one robot. A
+scene that lists `robots` refuses there and names `deploy fleet`.
 
 ## 1. What sim already does, and what carries over
 
-`openral deploy sim` of a scene with several robots (OpenRAL/openral#708) runs:
+`openral deploy fleet` (OpenRAL Pro) runs a scene with several robots in sim. History: until
+OpenRAL/openral#765 this was open `openral deploy sim` (`openral_cli.deploy_robots`,
+`geometry.scene_for_robot`, OpenRAL/openral#708). It runs:
 
-- one ROS graph per robot, each on its own `ROS_DOMAIN_ID`, dashboard port and Foxglove port
-  (`deploy_robots.robot_slots`: domains 30, 34, 38, 46; dashboards 4330 + i);
-- each graph reads its own one-robot view of the scene (`$OPENRAL_SCENE_ROBOT`,
-  `geometry.scene_for_robot`): its `base_pose` in the shared `world` frame, its nav goals and
-  place zones re-expressed in its own `map`, which starts at that `base_pose`;
+- one ROS graph per robot, each on its own exported `ROS_DOMAIN_ID`, dashboard port and
+  Foxglove port (domains 30, 34, 38, 46; dashboards 4330 + i);
+- each graph runs the unchanged one-robot `deploy sim` on its own slice of the scene, a file
+  `deploy fleet` writes (`$OPENRAL_SCENE_ROBOT` names the robot): its `base_pose` in the
+  shared `world` frame, its nav goals and place zones re-expressed in its own `map`, which
+  starts at that `base_pose`;
 - a static `world -> map` TF per graph and `world_pose` / `latch_detail` in each
   robot's `GET /api/mission` (this PR), so the platform's fleet console and super reasoner
   place every robot in one frame and see why one stopped;
@@ -24,22 +28,21 @@ kernel, its reasoner, on its own host or its own domain on a shared host.
 
 ## 2. Per-robot graphs and domains
 
-- **One graph per robot, one domain per graph**, as in `deploy_robots`. A robot on its own
-  host (the usual case: each robot carries its compute) needs only a distinct domain if the
-  hosts share a network segment; robots on one host use `robot_slots` unchanged.
-- **The launcher.** `deploy run` on a scene with `robots` would not start every robot's
-  graph from one process the way `deploy sim` does: a real robot's graph runs on that
-  robot's own computer. Proposed: `openral deploy run --config <scene> --robot <name>` on each
-  robot's host, which sets `$OPENRAL_SCENE_ROBOT=<name>` and the slot's domain/ports, then
-  runs today's one-robot `deploy run`. No new process supervisor; the operator (or a fleet
-  agent) starts each robot. `--robot` is required whenever the scene lists `robots`.
-- **No cross-domain DDS in the safety path.** A robot's kernel never subscribes to another
-  domain. Anything a peer contributes (section 4) arrives through an explicit, typed bridge
-  whose staleness the kernel checks like any other input.
+- **One graph per robot, one domain per graph**, as `deploy fleet` starts them. A robot on
+  its own host (the usual case: each robot carries its compute) still needs a distinct domain,
+  since its peers are read from their own domains. Robots on one host get distinct domains too.
+- **The launcher.** `deploy fleet` writes each robot's slice and starts the unchanged
+  one-robot graph on it, with `$OPENRAL_SCENE_ROBOT`, `$OPENRAL_SCENE_PEERS` and the robot's
+  exported `ROS_DOMAIN_ID`. On real hardware it runs `deploy run --config <slice>` on each
+  robot's host (OpenRAL/openral-pro#106 step 3). There is no `--robot` flag: the slice is
+  already one robot's scene.
+- **The kernel reads no other domain.** `peer_voxels`, in this robot's graph, reads each
+  peer's domain (section 4.1) and hands the kernel one grid. The kernel checks its staleness
+  like any other input.
 
 ## 3. Each robot's `world` pose from a calibrated workcell frame
 
-In sim, `SceneRobot.base_pose` is exact: the sidecar spawns the robot there. On real hardware
+In sim, a robot's `base_pose` in the fleet scene is exact: the sidecar spawns the robot there. On real hardware
 it is a claim that must be measured.
 
 - **The workcell frame.** One fixed, surveyed frame per cell (`world`): fiducials on the
@@ -52,7 +55,7 @@ it is a claim that must be measured.
   the launch publishes it as in sim, and `world_pose` serves it.
 - **Where it lives.** A per-unit, per-cell calibration file beside the unit overlay
   (`robots/<id>/units/<unit>.yaml` pattern): `cell`, `world_from_dock` and the measurement's
-  date and residual. `deploy run --robot` refuses a scene robot whose unit has no calibration
+  date and residual. `deploy run` refuses a robot whose unit has no calibration
   for this cell, the way it refuses an uncalibrated depth mount today
   (`depth_extrinsic_problems`).
 - **Drift.** `world -> map` is static only while the robot's map is the one it started.
@@ -70,24 +73,26 @@ are no reservations, exclusion zones or pairwise target checks: robots work in p
 or sim, and a several-robot scene otherwise runs exactly like a one-robot scene (grasp and
 place exemptions included).
 
-Today (OpenRAL/openral#708) a robot sees a peer only through its own sensors, as an obstacle
-in its octomap. The design below adds the peers' own geometry. It is refusal-only: it adds
+The peer grid is built (OpenRAL/openral#725): besides seeing a peer as an obstacle in its
+octomap, each robot's kernel checks the peers' own geometry. It is refusal-only: it adds
 occupied cells, never removes one, so it stays open (CLAUDE.md §1.9).
 
 ### 4.1 Peer state across ROS domains
 
-Each robot's graph is on its own `ROS_DOMAIN_ID` (`deploy_robots.robot_slots`). Per robot, a
-`domain_bridge` (or one Zenoh router for the cell) brings into this robot's domain, under a
-per-peer namespace `/openral/peers/<name>/`:
+Each robot's graph is on its own `ROS_DOMAIN_ID`. `$OPENRAL_SCENE_PEERS` names each peer,
+its `robot_id` and its domain (`ScenePeer`). There is no bridge: `peer_voxels`, in this
+robot's graph, joins each peer's domain directly and reads:
 
 - the peer's `/joint_states` (measured, the peer's own stamps kept);
-- the peer's `map -> odom -> base` (its localisation: `/tf` filtered to those two edges);
-- its `world_pose` (the static `world -> map`), already published per graph (this PR).
+- the peer's `world -> map -> odom -> base` from its `/tf` and `/tf_static`; each graph
+  publishes its own static `world -> map`.
 
-The peer's URDF comes from its manifest (`SceneRobot.robot_id` -> `robots/<id>/robot.yaml`),
-which every graph of the scene can resolve; no URDF crosses the wire. In sim the bridge carries
-the sim-clock stamps; on real hardware each host's clock must be synchronised (chrony/PTP)
-and the bridge's measured latency sets the freshness bound.
+The peer's URDF comes from its manifest (`ScenePeer.robot_id` -> `robots/<id>/robot.yaml`),
+which every graph of the scene can resolve; no URDF crosses the wire. In sim the stamps are
+sim-clock stamps. On real hardware each host's clock must be synchronised: `deploy run` with
+peers, and `deploy_e2e.launch.py` under `hal_mode:=real` (so a direct `ros2 launch` too),
+refuses a leap status that is not `Normal` or a worst-case clock error (chrony's offset plus
+root dispersion plus half the root delay) over 10 ms, provisional until the Safety-WG sign-off.
 
 ### 4.2 Posing a peer into this robot's frame
 
@@ -106,7 +111,7 @@ A **second world grid**, `/openral/peer_voxels` (`OccupancyVoxels`, the type it 
 reads), next to the octomap's `/openral/world_voxels`. The removed design remapped the
 kernel's one grid input to the peers and refused the octomap leg; both are needed now, so the
 kernel gains a second grid subscription (same checks, its own receipt deadline and data-age
-budget, about 0.2 s, set from the bridge's measured latency). A stale or missing peer grid
+budget, 300 ms: hazard-log Entry 103). A stale or missing peer grid
 while the scene lists peers is a refusal (`voxel_unavailable`), never free space.
 
 ### 4.4 Exemptions never cover a peer
@@ -129,7 +134,7 @@ hazard-log entry states it with the measured window.
 
 - the kernel's second grid input and its freshness bound (a kernel change: TDD, hazard log);
 - the peer producer's FK and sweep (is the swept volume conservative for the peer's speed?);
-- clock synchronisation and bridge latency on real hardware, and what happens on a partition
+- clock synchronisation and peer latency on real hardware, and what happens on a partition
   (every robot's peer grid goes stale: all stop);
 - that no exemption path reads the peer grid (a test per rule);
 - ADR-0137 and hazard-log Entry 102 rewritten for this design (OpenRAL/management#131).
@@ -141,10 +146,13 @@ check stays open.
 
 | Piece | Where | Why |
 | --- | --- | --- |
-| `DeployScene.robots`, `scene_for_robot`, per-robot domains/ports, `--robot` on `deploy run` | open | Describes one robot's graph |
+| One-robot `DeployScene`; `$OPENRAL_SCENE_ROBOT` and `$OPENRAL_SCENE_PEERS` (`ScenePeer`) | open | Describes one robot's graph |
+| Refusals: peers without a `world` pose, a shared or unexported domain, an unsynchronised clock, a scene that lists `robots` | open | Refusal-only checks |
 | `world -> map` TF, `world_pose`, `latch_detail` in `/api/mission` | open | Each robot reporting about itself |
 | Per-unit workcell calibration (`world_from_dock`) and its refusal | open | Per-robot calibration, like depth mounts |
-| Peer state bridge, peer producer, the kernel's peer grid | open | Refusal-only check; relaxes nothing |
+| `peer_voxels`, the kernel's peer grid | open | Refusal-only check; relaxes nothing |
+| The `openral.cli` entry-point seam | open | Lets an installed package add a command |
+| `openral deploy fleet`: the fleet scene, its slices, per-robot domains/ports, starting every robot | Pro | Starts several robots (ADR-0083) |
 | Fleet coordinator: goal allocation, the super reasoner, the fleet console | Pro (platform) | Fleet coordination (ADR-0083) |
 | Contact exemptions (provider) | Pro, as today | Never reads the peer grid |
 
@@ -153,4 +161,4 @@ check stays open.
 - Whether real robots of one cell may share one host (domains on one machine) or must each
   run on their own; this design allows both.
 - The relocalisation path that keeps `world -> map` true after a map reset.
-- The bridge (domain_bridge vs Zenoh) and its measured latency budget on the cell network.
+- The measured peer latency on a real cell network, against the 300 ms budget.

@@ -27,6 +27,7 @@ from openral_core.ros_security import require_secure_ros_graph, ros_security_ena
 
 __all__ = [
     "ALLOW_NETWORK_ROS_ENV",
+    "RESERVED_DOMAINS",
     "discovery_range_is_ros_default",
     "networked_ros_scope",
     "require_host_confined_real_bringup",
@@ -36,6 +37,22 @@ __all__ = [
 #: Opt-in for a real robot's ROS graph to reach beyond this host. Only the exact
 #: value ``"1"`` counts.
 ALLOW_NETWORK_ROS_ENV: Final[str] = "OPENRAL_ALLOW_NETWORK_ROS"
+
+#: Domains something else on a robot host already uses, so a real robot is never
+#: hashed onto them (a twin, a test or a lab harness on the robot's own domain
+#: is on the robot's graph):
+#:
+#: * ``0`` — the unset default; ``42`` — ``tools/_demo_env.sh``'s default, and
+#:   never a robot's by explicit request; ``77`` — the sim's
+#:   (``openral_cli._dds_scope.SIM_DOMAIN_ID``);
+#: * ``50-99`` — per-PID test domains (``50 + pid % 50`` in the safety-kernel
+#:   launch tests and ``tests/sim/safety``, ``60 + pid % 40`` in the OTel test),
+#:   which also cover the lab harnesses' fixed domains (76, 80-89, 85, 87, 88 in
+#:   ``docs/reference/dds-large-messages.md``, 90, 91, 92);
+#: * ``100-101`` — the bottom of the package test conftests' ``100 + pid % 100``.
+#:
+#: Exporting ``ROS_DOMAIN_ID`` still wins over all of this.
+RESERVED_DOMAINS: Final[frozenset[int]] = frozenset({0, 42, 77}) | frozenset(range(50, 102))
 
 #: rcl's default range. ``source /opt/ros/jazzy/setup.bash`` also *exports* it
 #: whenever it is unset (``ros_environment``'s ``1.ros_discovery.dsv``:
