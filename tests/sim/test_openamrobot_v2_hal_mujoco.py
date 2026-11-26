@@ -58,40 +58,96 @@ def _twist(vx: float, wz: float, vy: float = 0.0) -> Action:
     )
 
 
-def test_body_twist_drives_the_base_on_an_arc(hal: OpenAMRobotV2MujocoHAL) -> None:
-    """2 s of (0.2 m/s, 0.5 rad/s) — one control period per command — lands on the exact arc.
+def _truth(hal: OpenAMRobotV2MujocoHAL) -> tuple[float, float, float]:
+    """The base's simulated ground-truth ``(x, y, yaw)``: its unactuated planar joints."""
+    names = [j.name for j in hal.description.joints]
+    state = hal.read_state().position
+    x, y, yaw = (state[names.index(n)] for n in ("base_x", "base_y", "base_yaw"))
+    return (x, y, yaw)
 
-    One command advances one period of physics and integrates the same period, so the
-    base moves at the commanded speed on the sim clock (#683).
+
+def _stop(hal: OpenAMRobotV2MujocoHAL, seconds: float = 1.0) -> None:
+    period = hal.sim_dt_per_tick_s
+    assert period is not None
+    for _ in range(round(seconds / period)):
+        hal.send_action(_twist(0.0, 0.0))
+
+
+def test_body_twist_drives_the_base_on_its_wheels(hal: OpenAMRobotV2MujocoHAL) -> None:
+    """4 s of (0.2 m/s, 0.5 rad/s): the wheels reach the twist under upstream's ramp.
+
+    The commanded yaw rate ramps in at 1 rad/s^2 (upstream's DiffDrive limit), so the
+    base turns 0.5 * (4 - 0.25) rad if it rolls without slipping; the twin's wheel
+    scrub costs some of that, and wheel odometry stays within a few cm of the truth.
     """
     period = hal.sim_dt_per_tick_s
     assert period is not None
     t0 = hal.sim_time_ns()
     assert t0 is not None
-    for _ in range(round(2.0 / period)):
+    ticks = round(4.0 / period)
+    for _ in range(ticks):
         hal.send_action(_twist(0.2, 0.5))
-    x, y, yaw = hal.base_pose
-    t = round(2.0 / period) * period
     elapsed = hal.sim_time_ns()
-    assert elapsed is not None and (elapsed - t0) / 1e9 == pytest.approx(t, abs=1e-6)
-    assert yaw == pytest.approx(0.5 * t, abs=1e-6)
-    assert x == pytest.approx(0.2 / 0.5 * math.sin(0.5 * t), abs=1e-4)
-    assert y == pytest.approx(0.2 / 0.5 * (1 - math.cos(0.5 * t)), abs=1e-4)
-    assert hal.base_twist == (0.2, 0.0, 0.0, 0.0, 0.0, 0.5)
+    assert elapsed is not None and (elapsed - t0) / 1e9 == pytest.approx(ticks * period, abs=1e-6)
+    vx, vy, _vz, _wx, _wy, wz = hal.base_twist
+    assert vx == pytest.approx(0.2, rel=0.03) and vy == 0.0 and wz == pytest.approx(0.5, rel=0.03)
+    x, y, yaw = _truth(hal)
+    assert yaw == pytest.approx(0.5 * (4.0 - 0.25), rel=0.15)
+    assert math.hypot(x, y) > 0.5
+    ox, oy, oyaw = hal.base_pose
+    assert math.hypot(ox - x, oy - y) < 0.05 and abs(oyaw - yaw) < 0.1
+
+
+def test_the_wheels_stop_after_the_command_timeout(hal: OpenAMRobotV2MujocoHAL) -> None:
+    """A twist is held 0.5 s of sim time without a new one, then ramped to a stop."""
+    period = hal.sim_dt_per_tick_s
+    assert period is not None
+    for _ in range(round(1.0 / period)):
+        hal.send_action(_twist(0.2, 0.0))
+    assert hal.base_twist[0] == pytest.approx(0.2, rel=0.03)
+    twin = hal._twin
+    for _ in range(round(1.5 / period)):  # no command: idle slices, as between /cmd_vel
+        twin.idle_step(period)
+    still = _truth(hal)
+    for _ in range(round(1.0 / period)):
+        twin.idle_step(period)
+    assert _truth(hal) == pytest.approx(still, abs=1e-3)
+    assert hal.base_twist[0] == pytest.approx(0.0, abs=1e-3)
 
 
 def test_lateral_twist_is_refused_on_a_differential_base(hal: OpenAMRobotV2MujocoHAL) -> None:
     with pytest.raises(ROSConfigError, match="differential"):
         hal.send_action(_twist(0.0, 0.0, vy=0.1))
-    assert hal.base_pose == (0.0, 0.0, 0.0)
+    assert hal.base_pose == pytest.approx((0.0, 0.0, 0.0), abs=1e-6)
+
+
+def _raise_lift(hal: OpenAMRobotV2MujocoHAL, height: float) -> None:
+    """Ramp the lift to ``height`` at its rated 0.018 m/s, as the real lift's controller does.
+
+    A step command throws the carriage at the actuator's 3 kN limit and its reaction
+    lifts the 90 kg base off its wheels.
+    """
+    names = [j.name for j in hal.description.joints]
+    period = hal.sim_dt_per_tick_s
+    assert period is not None
+    row = list(hal.read_state().position)
+    start = row[names.index("lift_joint")]
+    for k in range(1, math.ceil(abs(height - start) / (0.018 * period)) + 30):
+        row[names.index("lift_joint")] = start + math.copysign(
+            min(abs(height - start), 0.018 * period * k), height - start
+        )
+        hal.send_action(
+            Action(control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[row])
+        )
 
 
 def test_joint_targets_converge_and_the_lift_holds(hal: OpenAMRobotV2MujocoHAL) -> None:
-    """Lift to 0.30 m, bend both arms, open both grippers; the base stays put."""
+    """Lift to 0.15 m, bend both arms, open both grippers; the base stays put."""
     names = [j.name for j in hal.description.joints]
+    _raise_lift(hal, 0.15)
     target = list(hal.read_state().position)
     for name, value in {
-        "lift_joint": 0.30,
+        "lift_joint": 0.15,
         "left_joint2": -0.5,
         "left_joint4": 1.0,
         "right_joint2": 0.5,
@@ -178,13 +234,10 @@ def _openarm_slot_tick(
 def test_openarm_slot_tick_holds_base_and_lift(hal: OpenAMRobotV2MujocoHAL) -> None:
     """An OpenArm 4-slot tick drives arms + grippers; the base and lift hold their targets."""
     names = [j.name for j in hal.description.joints]
-    raised = list(hal.read_state().position)
-    raised[names.index("lift_joint")] = 0.30
-    lift = Action(control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[raised])
-    for _ in range(150):
-        hal.send_action(lift)
+    _raise_lift(hal, 0.30)
     for _ in range(20):
         hal.send_action(_twist(0.2, 0.0))
+    _stop(hal)
     pose_before = hal.base_pose
     # Left j2 -0.5, j4 1.0, gripper 0.6; right j2 0.5, j4 1.0, gripper -0.6.
     policy = np.zeros(16, dtype=np.float32)
@@ -242,10 +295,11 @@ def test_scan_from_the_lidar_mount_matches_the_walled_room(description: RobotDes
     hal = OpenAMRobotV2MujocoHAL(description=description, mjcf_path=str(scene))
     hal.connect()
     try:
-        for _ in range(60):  # 1.5 m forward
+        for _ in range(90):  # ~1 m forward under the 0.5 m/s^2 ramp
             hal.send_action(_twist(0.5, 0.0))
-        for _ in range(40):  # then a quarter turn left
+        for _ in range(60):  # then a left turn
             hal.send_action(_twist(0.0, math.pi / 4))
+        _stop(hal)
         lidar = description.lidar_sensor
         assert lidar is not None and lidar.range_max_m is not None
         model, data = hal.mujoco_handles()  # type: ignore[misc]  # reason: connected twin
@@ -257,7 +311,7 @@ def test_scan_from_the_lidar_mount_matches_the_walled_room(description: RobotDes
             origin_body_name=lidar.parent_frame,
             mount_xyz_rpy=lidar.static_transform_xyz_rpy,
         )
-        x, y, yaw = hal.base_pose
+        x, y, yaw = _truth(hal)  # the scan is cast from where the body is, not odometry
         lx, ly, lyaw = x + 0.33 * math.cos(yaw), y + 0.33 * math.sin(yaw), yaw + math.pi
         for beam in (0, 90, 180, 270):  # cardinal beams miss the pillars from here
             angle = math.radians(beam - 180)
@@ -274,13 +328,10 @@ def test_a_ramp_row_naming_the_arms_holds_the_base_and_lift(hal: OpenAMRobotV2Mu
     driving them to the padding.
     """
     names = [j.name for j in hal.description.joints]
-    raised = list(hal.read_state().position)
-    raised[names.index("lift_joint")] = 0.30
-    lift = Action(control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[raised])
-    for _ in range(150):
-        hal.send_action(lift)
+    _raise_lift(hal, 0.30)
     for _ in range(20):
         hal.send_action(_twist(0.2, 0.3))
+    _stop(hal)
     pose_before = hal.base_pose
     arm = [n for n in names if n not in ("base_x", "base_y", "base_yaw", "lift_joint")]
     row = [0.0] * len(names)
@@ -338,7 +389,7 @@ def test_a_mobile_manipulation_tick_moves_base_and_arms_together(
         assert hal.base_pose == pose  # staged, not applied
         hal.send_action(group[-1])
         assert hal.last_committed_tick == tick
-    assert hal.base_pose[0] > 0.5  # 100 ticks at 0.2 m/s x 0.05 s
+    assert hal.base_pose[0] > 0.5  # 100 ticks of 1/30 s at 0.2 m/s, less the 0.4 s ramp
     assert hal.read_state().position[names.index("left_joint2")] == pytest.approx(-0.5, abs=5e-3)
     with pytest.raises(ROSRuntimeError):  # the twist slot's tick is watermarked too
         hal.send_action(group[0])

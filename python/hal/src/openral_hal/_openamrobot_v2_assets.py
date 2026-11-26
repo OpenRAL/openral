@@ -11,19 +11,25 @@ once per URDF revision and caches the result under
   (the pinned ``openarm_description`` / ``openamrobot_description`` clones). The
   OpenArm visual ``.dae`` meshes become their collision ``.stl`` twins, because
   MuJoCo reads no COLLADA.
-* import the URDF with MuJoCo's native compiler, then add a planar base:
-  ``base_x``/``base_y`` slides and a ``base_yaw`` hinge on ``base_footprint``.
-* add one ``<position>`` actuator per manifest joint, in manifest order. Arm and
+* import the URDF with MuJoCo's native compiler, then free the base in the floor
+  plane: ``base_x``/``base_y`` slides, a ``base_yaw`` hinge and a ``base_z`` slide on
+  ``base_footprint``. None is actuated: the base moves on upstream's two drive wheels
+  (``left/right_wheel_joint``, continuous), each with a ``<velocity>`` actuator, against
+  a colliding floor, on four frictionless caster spheres (a swivel caster resists no
+  direction). ``base_z`` lets gravity load the wheels; roll and pitch stay rigid.
+* add one ``<position>`` actuator per manifest joint but the base, in manifest order. Arm and
   finger gains come from ``enactic/openarm_mujoco`` v2 (``openarm_bimanual.xml``
   @ 1daab06: DM8009 kp 230 kv 2.7, DM4340 kp 190 kv 2.2, DM4310 kp 30 kv 1.5,
   finger kp 30 kv 0.2). Joint damping and frictionloss come from the URDF's
   ``<dynamics>`` (upstream's ``sim_dynamics:=on`` expansion) and armature from the
   vendored ``sim_dynamics_openarm_v2.yaml``. The lift takes that file's ``position_lifter`` kv and
-  forcerange with a stiffer kp (see ``_LIFT_KP``). The base gains are stiff
-  tracking gains for a kinematic base, not motor data.
+  forcerange with a stiffer kp (see ``_LIFT_KP``). The wheel gain (``_WHEEL_KV``) is a
+  velocity servo, not motor data. Gravity is on: everything that rides the lift
+  carriage is gravity-compensated (``gravcomp``), as a real arm's controller does, so
+  the OpenArm v2 gains hold the arms while the base and column load the wheels.
 * add the mimic-finger equality, the wrist cameras on the URDF optical frames
   (OpenArm's wrist mount),
-  and a visual-only floor. The head ZED is spliced by the generic camera rig
+  and the floor. The head ZED is spliced by the generic camera rig
   from the manifest's ``sim_placement``, on ``openarm_left_base_link`` at the OpenArm
   shelf cell's head-camera pose. The URDF's ``head_camera_link`` (upstream's ZED body
   box) sits 2.5 mm behind that lens; the rig's camera is not a URDF frame.
@@ -36,11 +42,11 @@ kernel's job, not the twin's.
 from __future__ import annotations
 
 import hashlib
-import math
 import os
 import re
 import shutil
 import uuid
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import yaml
@@ -48,12 +54,22 @@ from openral_core.exceptions import ROSConfigError
 
 from openral_hal import _openamrobot_platform_assets, _openarm_description_assets
 
-__all__ = ["OPENAMROBOT_V2_URDF", "compose_openamrobot_v2_walls_mjcf", "ensure_openamrobot_v2_mjcf"]
+__all__ = [
+    "BASE_Z_JOINT",
+    "OPENAMROBOT_V2_URDF",
+    "UPSTREAM_URDF",
+    "WHEEL_JOINTS",
+    "compose_openamrobot_v2_walls_mjcf",
+    "diff_drive_accel_limits",
+    "ensure_openamrobot_v2_mjcf",
+]
 
 #: The vendored, xacro-expanded URDF (repo checkout layout, as ``panda_mobile``).
 OPENAMROBOT_V2_URDF: Path = (
     Path(__file__).resolve().parents[4] / "robots/openamrobot_v2/openamrobot_v2.urdf"
 )
+#: Upstream's own expansion, vendored unmodified (``tools/openamrobot_v2_urdf.py``).
+UPSTREAM_URDF: Path = OPENAMROBOT_V2_URDF.with_name("upstream") / "combined_robot.urdf"
 
 # Upstream's simulator joint dynamics (openamr-upperbody-sw
 # config/sim_dynamics/openarm_v2.yaml, vendored unchanged). The URDF is expanded with
@@ -67,14 +83,57 @@ _DM4340 = (190.0, 2.2)
 _DM4310 = (30.0, 1.5)
 _FINGER = (30.0, 0.2)
 _ARM_GAINS = (_DM8009, _DM8009, _DM4340, _DM4340, _DM4310, _DM4310, _DM4310)
-# Kinematic base: a critically damped tracker at a fixed natural frequency, so its
-# lag does not change when upstream's masses do (87 kg since openamr-platform-sw
-# #126). sqrt(500) rad/s is the old kp 20000 on a 40 kg body. Not motor data.
-_BASE_OMEGA_RAD_S = math.sqrt(500.0)
+#: The passive slide on ``base_footprint`` (after the manifest's planar ``base_joints``)
+#: that lets gravity load the wheels.
+BASE_Z_JOINT: str = "base_z"
+#: Upstream's drive wheels (continuous joints on ``base_link``), left then right.
+WHEEL_JOINTS: tuple[str, str] = ("left_wheel_joint", "right_wheel_joint")
+# Wheel servo (MuJoCo intvelocity: a speed command integrated into a position target),
+# N*m per rad and N*m per rad/s. Tuning values, not ZLAC8015D motor data.
+_WHEEL_KP, _WHEEL_KV = 500.0, 50.0
+# Bound on the integrated wheel angle MuJoCo requires; 1e6 rad is ~27 h at full speed.
+_WHEEL_ACT_LIMIT_RAD = 1.0e6
+# Caster spheres (the URDF's fixed `*_caster_link` / `*_wheel_link` pairs): MuJoCo has
+# no swivel caster, so their contact is frictionless and they only carry load.
+_CASTER_LINKS: tuple[str, ...] = (
+    "fl_wheel_link",
+    "fr_wheel_link",
+    "bl_wheel_link",
+    "br_wheel_link",
+)
+#: Every body on (or below) this link rides the lift and is gravity-compensated.
+_GRAVCOMP_ROOT = "lift_carriage_link"
 # openarm_mujoco's position_lifter kp (8000) sags 24 mm under the arms with
 # gravity on; 1e5 holds within 2.3 mm (upstream's 8 Nov carriage masses). Its kv
 # and forcerange are kept.
 _LIFT_KP, _LIFT_KV, _LIFT_FORCE = 1.0e5, 4000.0, 3000.0
+
+
+def diff_drive_accel_limits(urdf_path: Path = UPSTREAM_URDF) -> tuple[float, float]:
+    """``(linear m/s^2, angular rad/s^2)`` of upstream's DiffDrive plugin (its ``max_*``).
+
+    Upstream configures its Gazebo diff drive in the vendored, unmodified
+    ``upstream/combined_robot.urdf``; the twin ramps a wheel command by these limits,
+    as that controller does, so a step command does not spin the wheels.
+
+    Raises:
+        ROSConfigError: The file has no DiffDrive plugin or it lacks a limit.
+
+    Example:
+        >>> diff_drive_accel_limits()
+        (0.5, 1.0)
+    """
+    root = ET.parse(urdf_path).getroot()
+    for plugin in root.iter("plugin"):
+        if plugin.get("name", "").endswith("DiffDrive"):
+            try:
+                return (
+                    float(plugin.findtext("max_linear_acceleration", "")),
+                    float(plugin.findtext("max_angular_acceleration", "")),
+                )
+            except ValueError as exc:
+                raise ROSConfigError(f"{urdf_path}: DiffDrive acceleration limits: {exc}") from exc
+    raise ROSConfigError(f"{urdf_path}: no DiffDrive plugin")
 
 
 def _actuated_joints() -> list[tuple[str, tuple[float, float]]]:
@@ -144,11 +203,23 @@ def _build(urdf_xml: str, alias_dir: Path) -> str:
     base = spec.body("base_footprint")
     slide, hinge = mujoco.mjtJoint.mjJNT_SLIDE, mujoco.mjtJoint.mjJNT_HINGE
     base_joints = [("base_x", slide, (1, 0, 0)), ("base_y", slide, (0, 1, 0))]
-    base_joints.append(("base_yaw", hinge, (0, 0, 1)))
-    # base_footprint is the URDF root and the first body, so its joints lead
-    # qpos (0..2) in this order, ahead of lift_joint and the arms.
+    base_joints += [("base_yaw", hinge, (0, 0, 1)), (BASE_Z_JOINT, slide, (0, 0, 1))]
+    # base_footprint is the URDF root and the first body, so its joints lead qpos
+    # (0..3) in this order, ahead of the wheels, lift_joint and the arms. Unactuated:
+    # the wheels move the base, and these joints measure where it is.
     for name, jtype, axis in base_joints:
         base.add_joint(name=name, type=jtype, axis=axis)
+    for link in _CASTER_LINKS:
+        for geom in spec.body(link).geoms:
+            if geom.contype or geom.conaffinity:
+                geom.friction = [0.0, 0.0, 0.0]
+
+    def _gravcomp(body: object) -> None:
+        body.gravcomp = 1.0  # type: ignore[attr-defined]  # reason: mujoco MjsBody
+        for child in body.bodies:  # type: ignore[attr-defined]  # reason: mujoco MjsBody
+            _gravcomp(child)
+
+    _gravcomp(spec.body(_GRAVCOMP_ROOT))
 
     def _position(joint: str, kp: float, kv: float, force: float | None = None) -> None:
         act = spec.add_actuator(name=f"{joint}_ctrl", target=joint)
@@ -159,15 +230,6 @@ def _build(urdf_xml: str, alias_dir: Path) -> str:
             act.forcelimited = mujoco.mjtLimited.mjLIMITED_TRUE
             act.forcerange = [-force, force]
 
-    # Gains from the mass the slides actually carry (the whole robot), so the base
-    # stays critically damped whatever upstream's masses are.
-    compiled = spec.compile()
-    base_id = mujoco.mj_name2id(compiled, mujoco.mjtObj.mjOBJ_BODY, "base_footprint")
-    base_mass = float(compiled.body_subtreemass[base_id])
-    base_kp = base_mass * _BASE_OMEGA_RAD_S**2
-    base_kv = 2.0 * base_mass * _BASE_OMEGA_RAD_S
-    for name, _jtype, _axis in base_joints:
-        _position(name, base_kp, base_kv)
     _position("lift_joint", _LIFT_KP, _LIFT_KV, _LIFT_FORCE)
     for joint_name, (kp, kv) in _actuated_joints():
         _position(joint_name, kp, kv)
@@ -176,11 +238,21 @@ def _build(urdf_xml: str, alias_dir: Path) -> str:
     profile = yaml.safe_load(_SIM_DYNAMICS.read_text())["joints"]
     for joint_name, entry in profile.items():
         spec.joint(joint_name).armature = float(entry["armature"]["value"])
-    # Every non-base actuator clamps to its joint range (the base is unbounded).
+    # Every position actuator clamps to its joint range.
     for act in spec.actuators:
-        if act.target not in {"base_x", "base_y", "base_yaw"}:
-            act.ctrllimited = mujoco.mjtLimited.mjLIMITED_TRUE
-            act.inheritrange = 1.0
+        act.ctrllimited = mujoco.mjtLimited.mjLIMITED_TRUE
+        act.inheritrange = 1.0
+    # The wheels last (actuators 17, 18), after the manifest's position actuators.
+    for wheel in WHEEL_JOINTS:
+        act = spec.add_actuator(name=f"{wheel}_vel", target=wheel)
+        act.trntype = mujoco.mjtTrn.mjTRN_JOINT
+        # Integrated velocity: ctrl is a wheel speed, the actuator's activation integrates
+        # it into a position target, and a PD servo tracks that. A zero speed then holds
+        # the wheel where it is (a driver's brake), instead of letting the base creep.
+        act.set_to_intvelocity(kp=_WHEEL_KP, kv=_WHEEL_KV)
+        act.ctrllimited = mujoco.mjtLimited.mjLIMITED_FALSE
+        act.actlimited = mujoco.mjtLimited.mjLIMITED_TRUE
+        act.actrange = [-_WHEEL_ACT_LIMIT_RAD, _WHEEL_ACT_LIMIT_RAD]
 
     for side in ("left", "right"):
         spec.add_equality(
@@ -218,8 +290,10 @@ def _build(urdf_xml: str, alias_dir: Path) -> str:
         type=mujoco.mjtGeom.mjGEOM_PLANE,
         size=[0, 0, 0.05],
         material="floor_grid",
+        # Touches the robot's geoms (contype 2) only: world geoms (walls, the walls
+        # scene's sinking boxes) pass through it, as before.
         contype=0,
-        conaffinity=0,
+        conaffinity=2,
     )
     spec.worldbody.add_light(
         pos=[0, 0, 4], dir=[0, 0, -1], type=mujoco.mjtLightType.mjLIGHT_DIRECTIONAL
@@ -296,7 +370,7 @@ _WALL_HEIGHT_M = 1.5
 # rest 3 m below the floor through heavy damping (time constant damping / stiffness
 # = 90 s), so it stands in the lidar plane while the graph comes up and leaves it
 # ~80 s of sim time after connect: a costmap obstacle that disappears. A spring, not
-# gravity: the deploy twin runs with gravity off (robot.yaml hal.sim params).
+# gravity: the box is gravity-compensated, so its fall stays the spring's.
 _TRANSIENT_HALF = (0.1, 0.1, 1.0)
 _TRANSIENT_REST_M, _TRANSIENT_STIFFNESS, _TRANSIENT_DAMPING = -3.0, 10.0, 900.0
 
@@ -330,7 +404,9 @@ def compose_openamrobot_v2_walls_mjcf(
             rgba=[0.75, 0.62, 0.45, 1.0],
         )
     for i, (x, y) in enumerate(sinking_boxes or ()):
-        body = spec.worldbody.add_body(name=f"sinking_box_{i}", pos=[x, y, _TRANSIENT_HALF[2]])
+        body = spec.worldbody.add_body(
+            name=f"sinking_box_{i}", pos=[x, y, _TRANSIENT_HALF[2]], gravcomp=1.0
+        )
         body.add_joint(
             name=f"sinking_box_{i}_z",
             type=mujoco.mjtJoint.mjJNT_SLIDE,

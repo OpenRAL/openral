@@ -48,8 +48,8 @@ which changes only the cameras and drops the Gazebo / ros2_control blocks:
   configuration that OpenRAL never reads; their `<joint>` entries would otherwise look
   like URDF joints to a parser walking the whole tree.
 
-Everything else is upstream's, including the two `continuous` drive-wheel joints (free,
-unactuated hinges in the twin: the base is driven as a planar body, `base_joints`) and the
+Everything else is upstream's, including the two `continuous` drive-wheel joints (the MuJoCo
+twin drives the base through them, see "Simulation") and the
 massless root `base_footprint` (the Isaac scene gives a massless branching root a 1 g
 inertial at import, `strip_urdf_mimics` in `tools/isaac_manifest_scene.py`).
 `tests/unit/test_openamrobot_v2_urdf_overlay.py` checks that the committed file is the
@@ -89,14 +89,33 @@ new carriage masses.
   `OpenAMRobotV2MujocoHAL` drives it. The 20-D action is: 3 planar base joints, the
   lift, then for each arm 7 joints and a gripper. `BODY_TWIST` takes `vx` and
   `wz` only. Run `openral deploy sim --config scenes/deploy/openamrobot_v2_empty.yaml`.
+  The base rolls on upstream's two drive wheels, as upstream's Gazebo `DiffDrive` and
+  the real base do: a twist becomes the wheel speeds `(vx ∓ wz·h)/r`, with the radius
+  `r` (0.098 m) and half-track `h` (0.200 m, upstream's placeholder) read from the URDF
+  the twin is built from, ramped by upstream's own DiffDrive acceleration limits
+  (0.5 m/s², 1.0 rad/s², read from `upstream/combined_robot.urdf`), held until the next
+  twist and ramped to a stop after 0.5 s without one (`diff_drive_controller`'s
+  timeout). An e-stop stops the wheels at once; at zero speed they brake (MuJoCo
+  `intvelocity` servo, `_WHEEL_KP`/`_WHEEL_KV`, tuning values rather than motor data).
+  The planar base joints (and a `base_z` slide that lets gravity load the wheels) are
+  unactuated and measure the body: `/joint_states` carries the ground truth, `/odom` the
+  wheel odometry, so wheel slip shows up as odometry drift, as on the real base. The
+  four casters are frictionless spheres (MuJoCo has no swivel caster); roll and pitch
+  stay rigid, so the drive wheels carry the base's whole weight. Gravity is on, and
+  everything on the lift carriage is gravity-compensated so the OpenArm v2 gains hold
+  the arms. Command the lift at its rated 0.018 m/s: a step throws the carriage at the
+  actuator's 3 kN limit and its reaction lifts the base off its wheels.
   Cameras and viewers draw the visual meshes: the collision geoms sit in group 3,
   which MuJoCo does not render by default (contacts and the lidar ray-cast still hit
   them). Colours are upstream's URDF materials; the upper body is still upstream's
   placeholder boxes.
 - **MuJoCo, walled room:** `scenes/deploy/openamrobot_v2_walls.yaml` puts the twin in a
-  20 m room with three pillars at known poses and runs SLAM and Nav2. The base is
-  kinematic, so odometry is exact and any map→odom drift is SLAM's error. A 4 m
-  Nav2 goal: map and odom agree within 0.02 m and Nav2 stops at the goal. Before
+  20 m room with three pillars at known poses and runs SLAM and Nav2. The base rolls
+  on its wheels and `/joint_states` carries the ground truth, so wheel-odometry drift
+  and SLAM error can each be checked against it. A 4 m Nav2 goal (2026-11-26): Nav2
+  succeeded, stopping 3.83 m out, with odometry, map and ground truth within 0.015 m
+  of each other (driving straight the wheels do not slip; turning on the spot they
+  scrub, about 0.05 rad of odometry yaw drift over a 0.5 rad/s arc). Before
   `/scan` published missed beams as `+inf`, the map under-counted travel by ~14 %
   (3.72 m mapped, 4.31 m driven) and Nav2 overshot, as it did in the Isaac aisle.
 - **Isaac Sim:** run `scenes/deploy/isaac_openamrobot_v2_warehouse.yaml`, which
@@ -329,4 +348,8 @@ Open before the first real run (agreed with the OpenAMRobot project in openral#4
   manifest has no field for them and OpenRAL's Nav2 profile keeps its own.
 - **Isaac base is kinematic.** The Isaac base integrates any planar twist, so the
   HAL refuses `vy` before it reaches the sidecar (`SimAttachedHAL`, on the manifest's
-  `base_kinematics: differential`), as the MuJoCo twin and `PlatformBaseHAL` do.
+  `base_kinematics: differential`), as the MuJoCo twin and `PlatformBaseHAL` do. The
+  MuJoCo twin rolls on the wheels; the Isaac scene does not yet. It also position-holds
+  every articulation DOF, so upstream's free wheel joints spin past 2π and PhysX
+  refuses their drive targets (3,727 errors in one warehouse run, and an arm swung to
+  its joint limit). Driving the Isaac base through its wheels is the next change.

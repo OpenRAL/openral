@@ -55,13 +55,14 @@ assets:
 
 # Order is [forward_axis, side_axis, yaw_axis] per the schema. base_y exists for
 # the planar-base contract (and the twin's slide joint); a differential base never
-# commands it: the HAL refuses a BODY_TWIST with non-zero vy.
+# commands it: the HAL refuses a BODY_TWIST with non-zero vy. In the MuJoCo twin these
+# are unactuated joints that measure the body; upstream's drive wheels move it.
 base_joints:
   - "base_x"
   - "base_y"
   - "base_yaw"
 
-# Joint order IS the twin's actuator order and the 20-D action vector:
+# Joint order IS the 20-D action vector (the twin's actuators: sim.actuator_index):
 # 3 base, lift, 7 left arm, left gripper, 7 right arm, right gripper. Arm and
 # gripper joints keep the OpenArm manifest's logical names (robots/openarm), so
 # name-addressed (ADR-0102 slot) commands carry over; `sim_joint_name` is the
@@ -448,8 +449,9 @@ hal:
   real: "openral_hal.composed:ComposedHAL"
   parameters:
     defaults:
-      # Same as the OpenArm twin: its v2 gains do not hold the arms under gravity.
-      gravity_enabled: false
+      # On: the wheels need the base's weight to drive it. Everything on the lift carriage
+      # is gravity-compensated in the twin, so the OpenArm v2 gains still hold the arms.
+      gravity_enabled: true
       parts:
         - entry: "openral_hal.openarm_real:OpenArmRealHAL"
           robot: "openarm"
@@ -633,39 +635,59 @@ sensors:
 # side's passive follower finger (qpos 12 / 21) tracks through an MJCF joint
 # equality and is skipped.
 sim:
-  # qpos 3/4 are upstream's drive-wheel hinges (continuous, unactuated: the base is
-  # driven as a planar body), between the planar base and the lift.
+  # qpos 0-2 are the planar base joints and 3 the passive base_z (all unactuated: the
+  # base rolls on its wheels and these measure it), 4/5 upstream's drive-wheel hinges,
+  # then the lift and the arms.
   joint_qpos_addr:
     base_x: 0
     base_y: 1
     base_yaw: 2
-    lift_joint: 5
-    left_joint1: 6
-    left_joint2: 7
-    left_joint3: 8
-    left_joint4: 9
-    left_joint5: 10
-    left_joint6: 11
-    left_joint7: 12
-    left_gripper: 13
-    right_joint1: 15
-    right_joint2: 16
-    right_joint3: 17
-    right_joint4: 18
-    right_joint5: 19
-    right_joint6: 20
-    right_joint7: 21
-    right_gripper: 22
+    lift_joint: 6
+    left_joint1: 7
+    left_joint2: 8
+    left_joint3: 9
+    left_joint4: 10
+    left_joint5: 11
+    left_joint6: 12
+    left_joint7: 13
+    left_gripper: 14
+    right_joint1: 16
+    right_joint2: 17
+    right_joint3: 18
+    right_joint4: 19
+    right_joint5: 20
+    right_joint6: 21
+    right_joint7: 22
+    right_gripper: 23
+  # The base has no actuator (its wheels drive it, actuators 17/18 after these).
+  actuator_index:
+    lift_joint: 0
+    left_joint1: 1
+    left_joint2: 2
+    left_joint3: 3
+    left_joint4: 4
+    left_joint5: 5
+    left_joint6: 6
+    left_joint7: 7
+    left_gripper: 8
+    right_joint1: 9
+    right_joint2: 10
+    right_joint3: 11
+    right_joint4: 12
+    right_joint5: 13
+    right_joint6: 14
+    right_joint7: 15
+    right_gripper: 16
   grippers:
     - joint: "left_gripper"
       ctrl_range: [0.0, 0.7854]
-      qpos_addrs: [13]
+      qpos_addrs: [14]
       qpos_scale: 0.7854
       read_mode: "passthrough"
       write_mode: "passthrough"
     - joint: "right_gripper"
       ctrl_range: [-0.7854, 0.0]
-      qpos_addrs: [22]
+      qpos_addrs: [23]
       qpos_scale: 0.7854
       read_mode: "passthrough"
       write_mode: "passthrough"

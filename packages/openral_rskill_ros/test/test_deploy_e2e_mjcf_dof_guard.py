@@ -54,9 +54,10 @@ def test_a_planar_base_on_one_body_is_refused() -> None:
     model, lowered, names = _lowered("openamrobot_v2")
     mismatches = mod._mjcf_dof_mismatches(model, lowered, names)
     assert any("base_x" in m and "one body" in m for m in mismatches)
-    # The arms are judged through the manifest's sim_joint_name (left_joint1 is
-    # openarm_left_joint1 in the MJCF): the link that read base_yaw is named.
-    assert any(m.startswith("openarm_left_link1: joint openarm_left_joint1") for m in mismatches)
+    # The arms are judged through the manifest's sim_joint_name (right_joint1 is
+    # openarm_right_joint1 in the MJCF): a link whose column the base joints shifted
+    # is named by link and joint.
+    assert any(m.startswith("openarm_right_link1: joint openarm_right_joint1") for m in mismatches)
 
 
 def test_a_consistent_lowering_is_kept() -> None:
