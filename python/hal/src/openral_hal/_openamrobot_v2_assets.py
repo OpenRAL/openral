@@ -13,9 +13,11 @@ once per URDF revision and caches the result under
 * import the URDF with MuJoCo's native compiler, then add a planar base:
   ``base_x``/``base_y`` slides and a ``base_yaw`` hinge on ``base_footprint``.
 * add one ``<position>`` actuator per manifest joint, in manifest order. Arm and
-  finger gains come from ``enactic/openarm_mujoco`` v2 (``openarm_v20_bimanual.xml``
-  @ 45d4c29: DM8009 kp 230 kv 2.7, DM4340 kp 190 kv 2.2, DM4310 kp 30 kv 1.5,
-  finger kp 30 kv 0.2). The lift takes that file's ``position_lifter`` kv and
+  finger gains come from ``enactic/openarm_mujoco`` v2 (``openarm_bimanual.xml``
+  @ 1daab06: DM8009 kp 230 kv 2.7, DM4340 kp 190 kv 2.2, DM4310 kp 30 kv 1.5,
+  finger kp 30 kv 0.2). Joint damping and frictionloss come from the URDF's
+  ``<dynamics>`` (upstream's ``sim_dynamics:=on`` expansion) and armature from the
+  vendored ``sim_dynamics_openarm_v2.yaml``. The lift takes that file's ``position_lifter`` kv and
   forcerange with a stiffer kp (see ``_LIFT_KP``). The base gains are stiff
   tracking gains for a kinematic base, not motor data.
 * add the mimic-finger equality, the wrist cameras on the URDF optical frames
@@ -40,6 +42,7 @@ import shutil
 import uuid
 from pathlib import Path
 
+import yaml
 from openral_core.exceptions import ROSConfigError
 
 from openral_hal import _openamrobot_platform_assets, _openarm_description_assets
@@ -51,11 +54,17 @@ OPENAMROBOT_V2_URDF: Path = (
     Path(__file__).resolve().parents[4] / "robots/openamrobot_v2/openamrobot_v2.urdf"
 )
 
-# (joint, kp, kv, damping, armature, frictionloss): OpenArm v2 motor classes.
-_DM8009 = (230.0, 2.7, 1.0, 0.0081, 0.2)
-_DM4340 = (190.0, 2.2, 0.9, 0.16, 0.1)
-_DM4310 = (30.0, 1.5, 0.9, 0.01, 0.04)
-_FINGER = (30.0, 0.2, 2.0, 0.0, 0.0)
+# Upstream's simulator joint dynamics (openamr-upperbody-sw
+# config/sim_dynamics/openarm_v2.yaml, vendored unchanged). The URDF is expanded with
+# sim_dynamics:=on, so each OpenArm joint's damping and friction arrive in its
+# <dynamics> element; armature has no URDF element and is read from this file.
+_SIM_DYNAMICS: Path = OPENAMROBOT_V2_URDF.with_name("sim_dynamics_openarm_v2.yaml")
+# (kp, kv) position-actuator gains: openarm_mujoco v2 (openarm_bimanual.xml @ 1daab06,
+# unchanged since 45d4c29). Upstream's profile carries no actuator gains.
+_DM8009 = (230.0, 2.7)
+_DM4340 = (190.0, 2.2)
+_DM4310 = (30.0, 1.5)
+_FINGER = (30.0, 0.2)
 _ARM_GAINS = (_DM8009, _DM8009, _DM4340, _DM4340, _DM4310, _DM4310, _DM4310)
 # Kinematic base: a critically damped tracker at a fixed natural frequency, so its
 # lag does not change when upstream's masses do (87 kg since openamr-platform-sw
@@ -109,9 +118,9 @@ def _apply_finish(geom: object) -> None:
                 geom.rgba = rgba  # type: ignore[attr-defined]  # reason: mujoco MjsGeom
 
 
-def _actuated_joints() -> list[tuple[str, tuple[float, float, float, float, float]]]:
+def _actuated_joints() -> list[tuple[str, tuple[float, float]]]:
     """The MJCF joint each actuator drives, in ``robots/openamrobot_v2/robot.yaml`` order."""
-    out: list[tuple[str, tuple[float, float, float, float, float]]] = []
+    out: list[tuple[str, tuple[float, float]]] = []
     for side in ("left", "right"):
         out += [(f"openarm_{side}_joint{i + 1}", g) for i, g in enumerate(_ARM_GAINS)]
         out.append((f"openarm_{side}_finger_joint1", _FINGER))
@@ -203,11 +212,13 @@ def _build(urdf_xml: str, alias_dir: Path) -> str:
     for name, _jtype, _axis in base_joints:
         _position(name, base_kp, base_kv)
     _position("lift_joint", _LIFT_KP, _LIFT_KV, _LIFT_FORCE)
-    for joint_name, (kp, kv, damping, armature, friction) in _actuated_joints():
-        joint = spec.joint(joint_name)
-        joint.damping = [damping, 0.0, 0.0]  # mujoco >=3.8: polynomial damping
-        joint.armature, joint.frictionloss = armature, friction
+    for joint_name, (kp, kv) in _actuated_joints():
         _position(joint_name, kp, kv)
+    # Damping and frictionloss came in with the URDF's <dynamics>; armature has no URDF
+    # element, so it is set here from upstream's profile (fingers included).
+    profile = yaml.safe_load(_SIM_DYNAMICS.read_text())["joints"]
+    for joint_name, entry in profile.items():
+        spec.joint(joint_name).armature = float(entry["armature"]["value"])
     # Every non-base actuator clamps to its joint range (the base is unbounded).
     for act in spec.actuators:
         if act.target not in {"base_x", "base_y", "base_yaw"}:
@@ -215,7 +226,6 @@ def _build(urdf_xml: str, alias_dir: Path) -> str:
             act.inheritrange = 1.0
 
     for side in ("left", "right"):
-        spec.joint(f"openarm_{side}_finger_joint2").damping = [2.0, 0.0, 0.0]
         spec.add_equality(
             name=f"openarm_{side}_finger_mimic",
             type=mujoco.mjtEq.mjEQ_JOINT,
@@ -282,7 +292,8 @@ def ensure_openamrobot_v2_mjcf(urdf_path: Path = OPENAMROBOT_V2_URDF) -> str:
     if not urdf_path.is_file():
         raise ROSConfigError(f"openamrobot_v2 URDF not found: {urdf_path}")
     urdf_xml = urdf_path.read_text()
-    builder = Path(__file__).read_bytes()  # an edited builder never serves a stale twin
+    # An edited builder or dynamics profile never serves a stale twin.
+    builder = Path(__file__).read_bytes() + _SIM_DYNAMICS.read_bytes()
     # The mesh aliases point into the pinned clones: a bumped pin is a new entry.
     pins = f"{_openarm_description_assets._PINNED_SHA}:{_openamrobot_platform_assets._PINNED_SHA}"
     key = hashlib.sha256(builder + urdf_xml.encode() + pins.encode()).hexdigest()[:16]

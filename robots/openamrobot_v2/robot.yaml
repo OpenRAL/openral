@@ -1,20 +1,21 @@
 # RobotDescription — OpenAMRobot 2.0 (open-source mobile base + 350 mm DOLD
 # lift + two Enactic OpenArm v2.0 arms with pinch grippers). Sim-only for now.
 #
-# Source: openAMRobot/openamr-upperbody-sw @ e6ab3d1 (PR #48, 2026-11-11, MIT;
+# Source: openAMRobot/openamr-upperbody-sw @ 6687f65 (v2.0.0-rc.1 candidate 2, 2026-11-26, MIT;
 # CAD-derived geometry CERN-OHL-P-2.0). `openamrobot_v2.urdf` is its
 # `combined_robot.xacro` expanded with the defaults (column=dold_v4_350, roadmap_masses=true,
 # base_plate=bp000, head_pitch=hp30, base_tilt=bt10, arm_package=openarm,
-# hardware_profile=mock), then normalised: the <gazebo>/<ros2_control> blocks and
+# hardware_profile=mock) plus sim_dynamics:=on (upstream's OpenArm simulator damping and
+# friction in <dynamics>; armature from the vendored sim_dynamics_openarm_v2.yaml), then normalised: the <gazebo>/<ros2_control> blocks and
 # comments dropped, the two drive wheels made fixed (the base is driven as a
 # planar body, not wheel by wheel), and the root base_footprint given a 0.1 kg
 # inertial (Isaac's converter drops a massless root and splits the robot into two
 # articulations). The xacro pins openarm_description@14ff67b and
-# openamr-platform-sw@713574f (#126 masses); the meshes resolve through the pinned clones in
+# openamr-platform-sw@2ac4070 (#126 masses); the meshes resolve through the pinned clones in
 # openral_hal.ros_package_overlay (OpenArm meshes are byte-identical at our
 # c103041 pin). Regenerate: robots/openamrobot_v2/README.md.
 #
-# UPSTREAM IS PRE-RELEASE (rc.1 2026-11-20, v2.0.0 2026-12-18; nothing is
+# UPSTREAM IS PRE-RELEASE (rc.1 untagged as of 2026-11-26, v2.0.0 2026-12-18; nothing is
 # physically accepted yet). Upstream marks these as placeholders: the wrist
 # camera poses (the URDF uses OpenArm's wrist mount instead), the 0.400 m wheel track, the lift's velocity/effort (DOLD
 # catalogue, "provisional") and every acceleration limit. Re-sync at v2.0.0.
@@ -30,7 +31,7 @@ embodiment_kind: "mobile_manipulator"
 # TF migration to the composed model, see README "TF").
 base_frame: "base_footprint"
 # Nav2 mobile-base properties: upstream's own Nav2 footprint (openamr-platform-sw
-# @ 713574f, openamrobot_nav2/config/nav2_params.yaml, both costmaps; rear edge per
+# @ 2ac4070, openamrobot_nav2/config/nav2_params.yaml, both costmaps; rear edge per
 # the 2026-10-12 chassis decision), an octagon 0.805 x 0.58 m with chamfered
 # corners. It is given in base_link, which sits straight above base_footprint
 # (z offset only), so it carries over unchanged. The radius encloses its corners
@@ -404,7 +405,7 @@ safety:
   contact_force_threshold_n: 30.0
   self_collision_margin_m: 0.0
   # BODY_TWIST kernel bounds; nav2.launch.py also clamps Nav2's vx_max/wz_max to them.
-  # Both are upstream's own Nav2 limits (openamr-platform-sw @ 713574f,
+  # Both are upstream's own Nav2 limits (openamr-platform-sw @ 2ac4070,
   # openamrobot_nav2/config/nav2_params.yaml: max_vel_x 0.20, max_vel_theta 0.5;
   # linear also confirmed by the OpenAMRobot project lead, openral#497, 2026-11-07).
   max_base_linear_speed_m_s: 0.2
