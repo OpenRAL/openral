@@ -2357,7 +2357,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           // Grasped payloads (ADR-0092): check the attach-link-composed payload
           // geometry against occupancy voxels and the robot's own links
           // (except the attach link + explicit touch links). The
-          // collision_kind stays "self"/"world" to satisfy CollisionEvidence;
+          // collision_kind stays "self"/"world"/"peer" to satisfy CollisionEvidence;
           // the attach:<object_id> label marks it as a payload hit.
           const double amargin = attached_collision_margin_m_ + extra_margin;
           // Legacy contact phase: without an attestation the kernel still can
@@ -2434,6 +2434,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         // Peer phase (ADR-0137): the robot and anything it carries against the other
         // robots' own geometry. `peer_grid_` carries no region and no provider, so no
         // contact exemption applies: a peer cell trips wherever it is.
+        // Reported as kind "peer" (#767): a stop against another robot reads apart from a
+        // world stop on /openral/safety_status and in the evidence; the check is unchanged.
         if (peer_voxel_enabled_) {
           const auto hit = check_voxel_collision(
               collision_model_, collision_scratch_, peer_grid_,
@@ -2441,7 +2443,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
               peer_unchecked_links_.empty() ? nullptr : peer_unchecked_links_.data());
           note_slack(hit, world_voxel_margin_m_ + extra_margin);
           if (hit.hit) {
-            report("world", WsName{'l', hit.link_a}, WsName{'r', hit.link_b}, step, hit);
+            report("peer", WsName{'l', hit.link_a}, WsName{'r', hit.link_b}, step, hit);
             return true;
           }
           if (attached_collision_enabled_ && attached_model_.n_objects > 0) {
@@ -2451,7 +2453,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                                                              amargin, collision_scale_proximity_m_);
             note_slack(phit, amargin);
             if (phit.hit) {
-              report("world", WsName{'a', phit.link_a}, WsName{'r', phit.link_b}, step, phit);
+              report("peer", WsName{'a', phit.link_a}, WsName{'r', phit.link_b}, step, phit);
               return true;
             }
           }

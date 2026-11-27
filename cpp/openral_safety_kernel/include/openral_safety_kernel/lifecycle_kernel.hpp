@@ -200,7 +200,8 @@ private:
   void trip_force_limit(std::size_t dof, double residual_nm, double limit_nm);
 
   // Publish a FailureTrigger(KIND_COLLISION) carrying CollisionEvidence.
-  // `collision_kind` is "self" or "world"; `link_a`/`link_b` name the colliding
+  // `collision_kind` is "self", "world" or "peer" (another robot's grid, ADR-0137);
+  // `link_a`/`link_b` name the colliding
   // entities (robot links, or an occupied voxel cell for the voxel check).
   // `hit` is the exact pair and sweep result adjudicated by the kernel. Its
   // fields are copied as diagnostic evidence only; they do not alter the

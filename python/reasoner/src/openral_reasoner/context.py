@@ -406,6 +406,14 @@ def _reflect_on_collision(evidence: CollisionEvidence) -> str:
             "then change the approach or start pose, the commanded arm configuration hits "
             "the robot itself and repeating it will stop again."
         )
+    if evidence.collision_kind == "peer":
+        return (
+            "the safety kernel stopped a collision with another robot of this workcell (see "
+            "evidence: which link, against which peer cell) — the stop stays latched until an "
+            "operator resets it, so no goal runs before that; then wait for the other robot "
+            "to move away or ask the operator, repeating the same motion beside it will stop "
+            "again."
+        )
     where = (
         ""
         if evidence.world_cell_center_m is None
