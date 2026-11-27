@@ -18,6 +18,8 @@ environment USD and objects), and serves msgpack/ndarray framing on a ZMQ ROUTER
     link_poses{links}->{"sim_time_ns","dofs","links"}: every DOF's position + drive target,
         the named links' base-frame poses as PhysX holds them (scene.link_poses)
     footprint_overlaps->{"overlaps": [[a, b]], "events": [{"robots", "sim_time_ns"}]}
+    hold_present_pose->{"ok"}: hold the arms where they are and stop a wheel-driven base
+        at once (an e-stop latch or clear, scene.hold_present_pose)
     observation = {"images": {"camera1": <H,W,3 uint8>}, "state": 1-D float32, "task": str}
 
 Several robots in one stage (``--robots``, openral-pro#99): every request about one robot
@@ -733,6 +735,9 @@ def _serve(
                 reply = scene.robot(name).link_poses([str(n) for n in data.get("links", [])])
             elif endpoint == "set_task":
                 reply = scene.robot(name).set_task(str(data.get("instruction", "")))
+            elif endpoint == "hold_present_pose":
+                scene.robot(name).hold_present_pose()
+                reply = {"ok": True}
             elif endpoint == "footprint_overlaps":
                 reply = {"overlaps": overlaps, "events": overlap_events}
             elif endpoint == "set_object_position":
