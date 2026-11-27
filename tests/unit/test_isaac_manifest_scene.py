@@ -1681,3 +1681,20 @@ def test_a_wrapped_wheel_angle_reads_as_the_short_turn(_manifest_scene_mod: obje
     mod: Any = _manifest_scene_mod
     assert mod._wrapped_delta(-math.pi + 0.01, math.pi - 0.01) == pytest.approx(0.02)
     assert mod._wrapped_delta(0.3, 0.1) == pytest.approx(0.2)
+
+
+def test_a_wheel_driven_base_poses_its_cameras_before_each_render(
+    _manifest_scene_mod: object,
+) -> None:
+    """The base moves under PhysX between commands: the cameras follow it at render time."""
+    mod: Any = _manifest_scene_mod
+    posed: list[int] = []
+    scene = object.__new__(mod.IsaacManifestScene)
+    scene._follow_links = lambda: None
+    scene._update_camera_poses = lambda: posed.append(1)
+    scene._diff_drive = None
+    mod.IsaacManifestScene._before_render(scene)
+    assert posed == []  # a kinematic base is posed where it is teleported
+    scene._diff_drive = {"left": "l", "right": "r"}
+    mod.IsaacManifestScene._before_render(scene)
+    assert posed == [1]

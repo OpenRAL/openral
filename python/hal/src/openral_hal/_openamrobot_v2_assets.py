@@ -117,13 +117,19 @@ def diff_drive_accel_limits(urdf_path: Path = UPSTREAM_URDF) -> tuple[float, flo
     as that controller does, so a step command does not spin the wheels.
 
     Raises:
-        ROSConfigError: The file has no DiffDrive plugin or it lacks a limit.
+        ROSConfigError: The file cannot be read or parsed, has no DiffDrive plugin, or the
+            plugin lacks a limit.
 
     Example:
         >>> diff_drive_accel_limits()
         (0.5, 1.0)
     """
-    root = ET.parse(urdf_path).getroot()
+    try:
+        root = ET.parse(urdf_path).getroot()
+    except (OSError, ET.ParseError) as exc:
+        raise ROSConfigError(
+            f"{urdf_path}: cannot read upstream's DiffDrive limits: {exc}"
+        ) from exc
     for plugin in root.iter("plugin"):
         if plugin.get("name", "").endswith("DiffDrive"):
             try:

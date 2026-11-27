@@ -28,7 +28,7 @@ from openral_hal._openamrobot_v2_assets import WHEEL_JOINTS, diff_drive_accel_li
 from openral_hal.mujoco_twin import MujocoTwinRollout, TwinKwargs
 
 if TYPE_CHECKING:
-    from openral_core import RobotDescription
+    from openral_core import Action, RobotDescription
 
 __all__ = ["OpenAMRobotV2MujocoHAL"]
 
@@ -38,6 +38,10 @@ _PLANAR_BASE_DOF = 3  # x, y, yaw
 _CMD_VEL_TIMEOUT_S = 0.5
 # A wheel axis must lie along the body's y (cosine): a left and a right drive wheel.
 _AXIS_ALONG_Y = 0.99
+# How far (m, rad) a joint row's base entry may sit from the measured base: a row read
+# back from the state a tick or two earlier while the base rolls. Anything further is a
+# base move the row cannot make (the base has no actuator; only BODY_TWIST moves it).
+_BASE_ROW_TOLERANCE = 0.05
 
 
 def _toward(value: float, target: float, step: float) -> float:
@@ -75,24 +79,38 @@ class _OpenAMRobotV2Twin(MujocoTwinRollout):
         self._wheel_qpos: tuple[int, int] = (0, 0)
         self._wheel_dof: tuple[int, int] = (0, 0)
         self._wheel_act: tuple[int, int] = (0, 0)
-        self._wheel_r = 0.0
+        self._wheel_r: tuple[float, float] = (0.0, 0.0)
         self._half_track = 0.0
         self._wheel_sign: tuple[float, float] = (1.0, 1.0)
         self._odom = [0.0, 0.0, 0.0]
         self._last_wheel_angle: tuple[float, float] = (0.0, 0.0)
         self._last_cmd_time: float | None = None
-        self._accel = diff_drive_accel_limits()  # (m/s^2, rad/s^2): upstream's DiffDrive
+        self._accel = (0.0, 0.0)  # (m/s^2, rad/s^2): upstream's DiffDrive, read at load
         self._target_twist = (0.0, 0.0)  # (vx, wz) commanded
         self._twist = (0.0, 0.0)  # (vx, wz) on the wheels, ramped towards the target
 
     def _on_load(self) -> None:
-        """Read the wheel geometry off the compiled model and zero odometry."""
+        """Read the wheel geometry off the compiled model and zero odometry.
+
+        Raises:
+            ROSConfigError: Gravity is off (the wheels need the base's weight to grip, so
+                the base would never move while its wheels report motion), the wheels are
+                not a left and a right one on axes along y, or upstream's DiffDrive limits
+                cannot be read (``diff_drive_accel_limits``).
+        """
         import mujoco as mj  # noqa: PLC0415  # reason: optional sim-only dep
 
         model, data = self._require_loaded("wheel geometry")
+        if not np.any(model.opt.gravity):
+            raise ROSConfigError(
+                "openamrobot_v2 twin: gravity_enabled=False, but the base rolls on its wheels "
+                "and they grip the floor only under the base's weight. Leave gravity on "
+                "(everything on the lift carriage is gravity-compensated)."
+            )
+        self._accel = diff_drive_accel_limits()
         base = model.body("base_footprint").id
         base_rot = data.xmat[base].reshape(3, 3)
-        qpos, dof, act, sign, offset = [], [], [], [], []
+        qpos, dof, act, sign, offset, radius = [], [], [], [], [], []
         for joint in WHEEL_JOINTS:
             jid = model.joint(joint).id
             qpos.append(int(model.jnt_qposadr[jid]))
@@ -112,16 +130,17 @@ class _OpenAMRobotV2Twin(MujocoTwinRollout):
             ]
             if len(cylinders) != 1:
                 raise ROSConfigError(f"{joint}: expected one collision cylinder, got {cylinders}")
-            self._wheel_r = float(model.geom_size[cylinders[0]][0])
+            radius.append(float(model.geom_size[cylinders[0]][0]))
         self._wheel_qpos = (qpos[0], qpos[1])
         self._wheel_dof = (dof[0], dof[1])
         self._wheel_act = (act[0], act[1])
         self._wheel_sign = (sign[0], sign[1])
+        self._wheel_r = (radius[0], radius[1])
         self._half_track = (offset[0] - offset[1]) / 2.0
         aligned = all(abs(s) > _AXIS_ALONG_Y for s in sign)
-        if not (self._wheel_r > 0.0 and self._half_track > 0.0 and aligned):
+        if not (min(radius) > 0.0 and self._half_track > 0.0 and aligned):
             raise ROSConfigError(
-                f"openamrobot_v2 wheels: radius {self._wheel_r}, half-track {self._half_track}, "
+                f"openamrobot_v2 wheels: radii {radius}, half-track {self._half_track}, "
                 f"axis signs {sign}; expected a left and a right wheel on axes along y."
             )
         self._odom = [0.0, 0.0, 0.0]
@@ -152,8 +171,8 @@ class _OpenAMRobotV2Twin(MujocoTwinRollout):
         left, right = self._wheel_angles()
         last_l, last_r = self._last_wheel_angle
         self._last_wheel_angle = (left, right)
-        ds_l = (left - last_l) * self._wheel_r * self._wheel_sign[0]
-        ds_r = (right - last_r) * self._wheel_r * self._wheel_sign[1]
+        ds_l = (left - last_l) * self._wheel_r[0] * self._wheel_sign[0]
+        ds_r = (right - last_r) * self._wheel_r[1] * self._wheel_sign[1]
         ds, dyaw = (ds_l + ds_r) / 2.0, (ds_r - ds_l) / (2.0 * self._half_track)
         x, y, yaw = self._odom
         mid = yaw + dyaw / 2.0
@@ -176,10 +195,10 @@ class _OpenAMRobotV2Twin(MujocoTwinRollout):
         )
         vx, wz = self._twist
         self.data.ctrl[self._wheel_act[0]] = (vx - wz * self._half_track) / (
-            self._wheel_r * self._wheel_sign[0]
+            self._wheel_r[0] * self._wheel_sign[0]
         )
         self.data.ctrl[self._wheel_act[1]] = (vx + wz * self._half_track) / (
-            self._wheel_r * self._wheel_sign[1]
+            self._wheel_r[1] * self._wheel_sign[1]
         )
 
     def read_base_pose(self) -> tuple[float, float, float]:
@@ -195,8 +214,8 @@ class _OpenAMRobotV2Twin(MujocoTwinRollout):
     def read_base_twist(self) -> tuple[float, float, float, float, float, float]:
         """The body twist the wheels measure: ``(vx, 0, 0, 0, 0, wz)``."""
         _model, data = self._require_loaded("base_twist")
-        v_l = float(data.qvel[self._wheel_dof[0]]) * self._wheel_r * self._wheel_sign[0]
-        v_r = float(data.qvel[self._wheel_dof[1]]) * self._wheel_r * self._wheel_sign[1]
+        v_l = float(data.qvel[self._wheel_dof[0]]) * self._wheel_r[0] * self._wheel_sign[0]
+        v_r = float(data.qvel[self._wheel_dof[1]]) * self._wheel_r[1] * self._wheel_sign[1]
         return ((v_l + v_r) / 2.0, 0.0, 0.0, 0.0, 0.0, (v_r - v_l) / (2.0 * self._half_track))
 
     def _held_ctrl_targets(self) -> dict[str, float]:
@@ -206,6 +225,48 @@ class _OpenAMRobotV2Twin(MujocoTwinRollout):
         for name in self._base_names:
             held.setdefault(name, float(self.data.qpos[self.joint_qpos_addr[name]]))
         return held
+
+    def _compose(
+        self, actions: list[Action]
+    ) -> tuple[list[float] | None, tuple[float, float, float] | None, Action]:
+        """``MujocoTwinRollout._compose``, refusing a joint row that would move the base.
+
+        The base joints have no actuator, so a row's base entries cannot be applied; one
+        within ``_BASE_ROW_TOLERANCE`` of the measured base (a row read back from the state)
+        is the base staying put, anything further is refused rather than dropped.
+
+        Raises:
+            ROSConfigError: A base entry beyond the tolerance, or see the base class.
+        """
+        targets, twist, applied = super()._compose(actions)
+        if targets is not None:
+            assert self.data is not None
+            for name in self._base_names:
+                now = float(self.data.qpos[self.joint_qpos_addr[name]])
+                off = targets[self.joint_names.index(name)] - now
+                if name == self._base_names[-1]:  # yaw: the short way round
+                    off = (off + math.pi) % (2.0 * math.pi) - math.pi
+                if abs(off) > _BASE_ROW_TOLERANCE:
+                    raise ROSConfigError(
+                        f"openamrobot_v2: a joint row puts {name} at "
+                        f"{targets[self.joint_names.index(name)]:.3f}, {off:+.3f} from the "
+                        "base's measured pose; the base moves only on its wheels (BODY_TWIST)."
+                    )
+        return targets, twist, applied
+
+    def reset_to_pose(self, pose: list[float]) -> None:
+        """Snap the joints to ``pose``; the wheels stop and odometry restarts at the new base.
+
+        Raises:
+            ROSConfigError: See ``MujocoTwinRollout.reset_to_pose``.
+        """
+        super().reset_to_pose(pose)
+        assert self.data is not None
+        self._stop_wheels()
+        self._last_cmd_time = None
+        x, y, yaw = (float(self.data.qpos[self.joint_qpos_addr[n]]) for n in self._base_names)
+        self._odom = [x, y, yaw]
+        self._last_wheel_angle = self._wheel_angles()
 
     def hold_present_pose(self) -> None:
         """Hold every joint where it is and stop the wheels (an e-stop latch or clear)."""
