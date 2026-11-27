@@ -10,9 +10,11 @@
 * the head camera: upstream's assembly moves rigidly onto the head ZED lens at the OpenArm
   shelf cell's pose (``robots/openamrobot_v2/README.md`` "Head camera").
 
-It also drops upstream's ``<gazebo>``, ``<ros2_control>`` and ``<transmission>`` blocks:
-Gazebo and controller_manager configuration that OpenRAL never reads, whose ``<joint>``
-entries would otherwise look like URDF joints to a parser walking the whole tree.
+It also drops upstream's ``<ros2_control>`` and ``<transmission>`` blocks:
+controller_manager configuration OpenRAL never reads, whose ``<joint>`` entries would
+otherwise look like URDF joints to a parser walking the whole tree. The ``<gazebo>``
+blocks stay: their ``DiffDrive`` plugin is upstream's own declaration of the drive
+wheels, track, radius and acceleration limits, which the simulators read.
 Everything else, comments aside, is upstream's.
 
 Usage::
@@ -57,14 +59,14 @@ CAMERA_MOUNTS: dict[str, tuple[str | None, str, str]] = {
     "head_camera_mount_joint": (None, "0.258568 0.027277 0.267553", "-0.028403 0.621812 -0.00224"),
     "head_camera_optical_joint": (None, "0.0025 0 0", "-1.5707963267948966 0 -1.5707963267948966"),
 }
-#: Top-level elements that configure Gazebo / ros2_control, not the robot's kinematics.
-NON_DESCRIPTION_TAGS: tuple[str, ...] = ("gazebo", "ros2_control", "transmission")
+#: Top-level elements that configure ros2_control, not the robot's kinematics.
+NON_DESCRIPTION_TAGS: tuple[str, ...] = ("ros2_control", "transmission")
 #: Links whose upstream placeholder visual/collision boxes are dropped.
 MARKERLESS_LINKS: tuple[str, ...] = ("left_wrist_camera_link", "right_wrist_camera_link")
 
 
 def overlay(upstream_xml: str) -> str:
-    """Return ``upstream_xml`` with the camera overlay applied (comments and sim blocks dropped).
+    """Return ``upstream_xml`` with the camera overlay applied (comments, ros2_control dropped).
 
     Example:
         >>> out = overlay(UPSTREAM_URDF.read_text())
