@@ -2721,6 +2721,22 @@ class SimAttachedHAL:
         return addrs
 
     @property
+    def urdf_extra_joint_positions(self) -> dict[str, float]:
+        """URDF joints outside the manifest that still move: name -> position (rad / m).
+
+        A wheel-driven base's drive wheels (``openamrobot_v2``): not manifest joints, so
+        they are in no action or ``/joint_states``, but ``robot_state_publisher`` needs
+        their angles to place the wheel links on ``/tf``. A backend reports them by
+        ``read_urdf_extra_joint_positions()`` (the MuJoCo twin) or as
+        ``obs["urdf_extra_joint_positions"]`` (the Isaac scene); empty otherwise.
+        """
+        read = getattr(self._env, "read_urdf_extra_joint_positions", None)
+        if callable(read):
+            return {str(k): float(v) for k, v in read().items()}
+        extra = (self._last_obs or {}).get("urdf_extra_joint_positions") or {}
+        return {str(k): float(v) for k, v in dict(extra).items()}
+
+    @property
     def base_twist(self) -> tuple[float, float, float, float, float, float]:
         """Last commanded base body twist ``(vx, vy, vz, wx, wy, wz)``.
 

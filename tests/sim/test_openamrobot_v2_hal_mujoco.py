@@ -447,3 +447,14 @@ def test_gravity_off_is_refused(description: RobotDescription) -> None:
     if "gravity" not in str(info.value):  # an offline host refuses the MJCF first
         pytest.skip(f"twin unavailable: {info.value}")
     assert hal._twin.model is None  # a refused load leaves the rollout closed
+
+
+def test_the_wheel_angles_reach_the_urdf_joint_states(hal: OpenAMRobotV2MujocoHAL) -> None:
+    """The wheels are no manifest joints, but robot_state_publisher needs their angles."""
+    before = hal.urdf_extra_joint_positions
+    assert set(before) == {"left_wheel_joint", "right_wheel_joint"}
+    for _ in range(30):
+        hal.send_action(_twist(0.2, 0.0))
+    after = hal.urdf_extra_joint_positions
+    assert after["left_wheel_joint"] > before["left_wheel_joint"]
+    assert after["right_wheel_joint"] > before["right_wheel_joint"]

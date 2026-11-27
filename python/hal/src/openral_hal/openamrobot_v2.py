@@ -211,6 +211,15 @@ class _OpenAMRobotV2Twin(MujocoTwinRollout):
         x, y, yaw = self._odom
         return (x, y, yaw)
 
+    def read_urdf_extra_joint_positions(self) -> dict[str, float]:
+        """The drive wheels' angles by URDF joint name (``robot_state_publisher``'s TF).
+
+        Empty before load: the HAL then has no wheels to report.
+        """
+        if self.data is None:
+            return {}
+        return dict(zip(WHEEL_JOINTS, self._wheel_angles(), strict=True))
+
     def read_base_twist(self) -> tuple[float, float, float, float, float, float]:
         """The body twist the wheels measure: ``(vx, 0, 0, 0, 0, wz)``."""
         _model, data = self._require_loaded("base_twist")

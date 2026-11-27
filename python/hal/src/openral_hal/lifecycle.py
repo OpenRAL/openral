@@ -1717,16 +1717,33 @@ if _ROS2_AVAILABLE:
             if self._joint_state_pub is not None:
                 self._joint_state_pub.publish(msg)
             if self._urdf_joint_state_pub is not None:
-                self._urdf_joint_state_pub.publish(
-                    urdf_named_joint_state(
-                        msg,
-                        self._urdf_joint_names,
-                        self._urdf_joint_scales,
-                        self._urdf_joint_offsets,
-                        self._urdf_joint_curves,
-                    )
-                )
+                self._publish_urdf_joint_states(msg)
             self._publish_policy_state()
+
+        def _publish_urdf_joint_states(self, msg: Any) -> None:  # noqa: ANN401  # reason: sensor_msgs/JointState is untyped
+            """``msg`` under the URDF's joint names, then the URDF joints the manifest lacks.
+
+            The second message carries the HAL's ``urdf_extra_joint_positions`` (a
+            wheel-driven base's drive wheels): ``robot_state_publisher`` keeps each joint's
+            latest state, so the wheel links reach ``/tf`` without joining the manifest.
+            """
+            assert self._urdf_joint_state_pub is not None
+            self._urdf_joint_state_pub.publish(
+                urdf_named_joint_state(
+                    msg,
+                    self._urdf_joint_names,
+                    self._urdf_joint_scales,
+                    self._urdf_joint_offsets,
+                    self._urdf_joint_curves,
+                )
+            )
+            extra = getattr(self._hal, "urdf_extra_joint_positions", None) or {}
+            if extra:
+                wheels = type(msg)()
+                wheels.header = msg.header
+                wheels.name = list(extra)
+                wheels.position = [float(v) for v in extra.values()]
+                self._urdf_joint_state_pub.publish(wheels)
 
         def _publish_policy_state(self) -> None:
             """Publish the latest frame's policy state, once per new frame.

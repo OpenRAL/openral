@@ -4037,6 +4037,12 @@ class IsaacManifestScene(IsaacSceneBase):
         if self._has_base:
             self._update_wheel_odometry()  # a wheel-driven base: odometry up to this step
             obs["base_pose"] = np.asarray(self._base_pose, dtype=np.float32)  # [x, y, yaw]
+            if self._wheel_angles is not None and self._diff_drive is not None:
+                # Not manifest joints, but robot_state_publisher needs them on /tf.
+                obs["urdf_extra_joint_positions"] = {
+                    str(self._diff_drive["left"]): float(self._wheel_angles[0]),
+                    str(self._diff_drive["right"]): float(self._wheel_angles[1]),
+                }
         if with_frames:
             # The HAL derives each depth camera's cloud from these frames
             # (SimAttachedHAL.read_depth_clouds): no point cloud crosses the wire.

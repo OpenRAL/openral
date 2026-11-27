@@ -129,15 +129,20 @@ def expand(upperbody: Path, platform: Path, openarm_description: Path) -> str:
 def main(argv: list[str] | None = None) -> int:
     """CLI entry: rewrite (default), ``--check`` or ``--expand``."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
-        "--check", action="store_true", help="exit 1 if openamrobot_v2.urdf is stale"
-    )
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()  # --check never writes
+    mode.add_argument("--check", action="store_true", help="exit 1 if openamrobot_v2.urdf is stale")
+    mode.add_argument(
         "--expand", nargs=3, type=Path, metavar=("UPPERBODY", "PLATFORM", "OPENARM_DESC")
     )
     args = parser.parse_args(argv)
     if args.expand:
-        UPSTREAM_URDF.write_text(expand(*args.expand))
+        upstream = expand(*args.expand)
+        # Overlay in memory first: an expansion the overlay cannot take (a renamed camera
+        # joint) raises before either file is replaced.
+        want = overlay(upstream)
+        UPSTREAM_URDF.write_text(upstream)
+        OVERLAID_URDF.write_text(want)
+        return 0
     want = overlay(UPSTREAM_URDF.read_text())
     if args.check:
         if OVERLAID_URDF.read_text() != want:

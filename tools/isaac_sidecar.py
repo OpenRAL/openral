@@ -636,9 +636,12 @@ def _serve(
         # waiting robot past a silent one's timeout.
         late = lock.drop_late(now=time.monotonic())
         for r in late:
+            # The world steps on without it: its last drive targets (a wheel-driven base's
+            # wheel speeds above all) must not keep moving it into the robots that remain.
+            scene.robot(r).hold_present_pose()
             print(
                 f"[isaac_sidecar] robot {r!r} sent no step for "
-                f"{_BARRIER_TIMEOUT_S:g} s: dropped from the lockstep",
+                f"{_BARRIER_TIMEOUT_S:g} s: dropped from the lockstep and held",
                 flush=True,
             )
         # Every pass, readable or not: a dropped robot, or a holding round that ran out,

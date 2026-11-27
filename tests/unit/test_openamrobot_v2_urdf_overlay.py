@@ -22,11 +22,13 @@ def test_overlay_touches_only_the_camera_joints_and_markers() -> None:
     ours = ET.parse(tool.OVERLAID_URDF).getroot()
     touched = set(tool.CAMERA_MOUNTS) | set(tool.MARKERLESS_LINKS)
 
-    def by_name(root: ET.Element) -> dict[str, str]:
-        return {
-            f"{el.tag}:{el.get('name')}": "".join(ET.tostring(el, encoding="unicode").split())
+    def kept(root: ET.Element) -> list[str]:
+        # In document order: unnamed elements (every <gazebo> block) each count.
+        return [
+            "".join(ET.tostring(el, encoding="unicode").split())
             for el in root
             if el.get("name") not in touched and el.tag not in tool.NON_DESCRIPTION_TAGS
-        }
+        ]
 
-    assert by_name(up) == by_name(ours)
+    assert kept(up) == kept(ours)
+    assert sum(1 for el in ours if el.tag == "gazebo") > 1  # the DiffDrive block is compared
