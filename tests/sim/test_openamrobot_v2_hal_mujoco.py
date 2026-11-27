@@ -404,3 +404,46 @@ def test_an_ungrouped_ticked_twist_advances_the_watermark(hal: OpenAMRobotV2Mujo
     assert hal.last_committed_tick == 7
     with pytest.raises(ROSRuntimeError):
         hal.send_action(twist)
+
+
+def test_a_joint_row_that_would_move_the_base_is_refused(hal: OpenAMRobotV2MujocoHAL) -> None:
+    """The base has no actuator: a row moving it is refused, not silently dropped."""
+    names = [j.name for j in hal.description.joints]
+    row = list(hal.read_state().position)
+    row[names.index("base_x")] += 0.5
+    with pytest.raises(ROSConfigError, match="BODY_TWIST"):
+        hal.send_action(
+            Action(control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[row])
+        )
+    assert _truth(hal)[0] == pytest.approx(0.0, abs=1e-3)
+
+
+def test_reset_to_pose_stops_the_wheels_and_restarts_odometry(
+    hal: OpenAMRobotV2MujocoHAL,
+) -> None:
+    """A snapped base reports the snap as its odometry and does not drive on."""
+    period = hal.sim_dt_per_tick_s
+    assert period is not None
+    for _ in range(round(1.0 / period)):
+        hal.send_action(_twist(0.2, 0.0))
+    names = [j.name for j in hal.description.joints]
+    pose = list(hal.read_state().position)
+    for name, value in (("base_x", 1.0), ("base_y", -0.5), ("base_yaw", 0.3)):
+        pose[names.index(name)] = value
+    hal.reset_to_pose(pose)
+    assert hal.base_pose == pytest.approx((1.0, -0.5, 0.3), abs=1e-6)
+    twin = hal._twin
+    for _ in range(round(0.5 / period)):  # inside the command timeout: no held twist left
+        twin.idle_step(period)
+    assert _truth(hal) == pytest.approx((1.0, -0.5, 0.3), abs=5e-3)
+    assert hal.base_pose == pytest.approx(_truth(hal), abs=5e-3)
+
+
+def test_gravity_off_is_refused(description: RobotDescription) -> None:
+    """Without gravity the wheels cannot grip: connect refuses instead of a still base."""
+    hal = OpenAMRobotV2MujocoHAL(description=description, gravity_enabled=False)
+    with pytest.raises(ROSConfigError) as info:
+        hal.connect()
+    if "gravity" not in str(info.value):  # an offline host refuses the MJCF first
+        pytest.skip(f"twin unavailable: {info.value}")
+    assert hal._twin.model is None  # a refused load leaves the rollout closed

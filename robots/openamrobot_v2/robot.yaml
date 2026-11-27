@@ -632,9 +632,9 @@ sensors:
     vendor: "sim"
     model: "mujoco_ray"
 
-# MuJoCo wiring for the twin: the base joints and lift lead qpos (0..3); each
-# side's passive follower finger (qpos 12 / 21) tracks through an MJCF joint
-# equality and is skipped.
+# MuJoCo wiring for the twin: the base joints, base_z, the wheels and the lift lead
+# qpos (0..6); each side's passive follower finger (qpos 15 / 24) tracks through an
+# MJCF joint equality and is skipped.
 sim:
   # qpos 0-2 are the planar base joints and 3 the passive base_z (all unactuated: the
   # base rolls on its wheels and these measure it), 4/5 upstream's drive-wheel hinges,

@@ -1415,12 +1415,10 @@ def bind_frictionless(stage: Any, robot_prim: str, link_names: Iterable[str]) ->
     physics.CreateStaticFrictionAttr(0.0)
     physics.CreateDynamicFrictionAttr(0.0)
     physics.CreateRestitutionAttr(0.0)
-    try:
-        from pxr import PhysxSchema
-    except ImportError:
-        pass
-    else:
-        PhysxSchema.PhysxMaterialAPI.Apply(material.GetPrim()).CreateFrictionCombineModeAttr("min")
+    from pxr import PhysxSchema
+
+    # ``min``: the caster's zero wins over the floor's friction (PhysX averages by default).
+    PhysxSchema.PhysxMaterialAPI.Apply(material.GetPrim()).CreateFrictionCombineModeAttr("min")
     bound = []
     for link in links:
         _deinstance(link)
@@ -3725,6 +3723,10 @@ class IsaacManifestScene(IsaacSceneBase):
         # Reset warmup steps physics through this hook only.
         super()._before_render()
         self._follow_links()
+        if self._diff_drive is not None:
+            # A wheel-driven base moved under PhysX since _drive_wheels posed the cameras
+            # (and between commands it keeps moving): pose them where it is now.
+            self._update_camera_poses()
 
     def _compensate_gravity(self) -> None:
         """Add the motors' gravity feed-forward: ``k`` x the gravity torque at the pose.
@@ -3831,11 +3833,13 @@ class IsaacManifestScene(IsaacSceneBase):
         self._update_camera_poses()
 
     def hold_present_pose(self) -> None:
-        """Hold the arms where they are and stop a wheel-driven base at once (an e-stop).
+        """Hold every slot joint where it is and stop a wheel-driven base at once (an e-stop).
 
         ``SimAttachedHAL.stop_stale_motion`` calls it at the e-stop latch and its clear, so
-        a target still in flight is not reached after the clear. Gripper DOFs keep their
-        targets (a held object stays held).
+        a target still in flight is not reached after the clear. ``_arm_dof_idx`` is every
+        non-gripper slot joint (``IsaacActionLayout`` gives a lift or torso the ``arm``
+        role), so a lift mid-travel stops too. Gripper DOFs keep their targets (a held
+        object stays held).
         """
         if self._robot is None or self._target is None:
             return

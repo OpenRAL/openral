@@ -78,11 +78,9 @@ The masses are upstream's: the base from its reviewed mass export (BOM 7.15,
 `openamr-platform-sw` #126: `base_link` 49.948 kg, complete base 58.163 kg) and every
 upper-body link from the roadmap mass export (`roadmap_masses=true`). The whole robot
 is 87.11 kg. Before 2026-11-11 the vendored URDF
-carried 31.5 kg (a 4.2 kg `base_link`). The MuJoCo twin derives its base gains from
-the compiled mass (`openral_hal._openamrobot_v2_assets`, a critically damped tracker at
-a fixed natural frequency), so the base tracks a twist identically at either mass
-(0.2 m/s ramp: 17.5 mm lag, no overshoot); the lift holds within 2.3 mm under the
-new carriage masses.
+carried 31.5 kg (a 4.2 kg `base_link`). The MuJoCo twin's base rolls on its wheels
+under this weight (see "Simulation"); the lift holds within 2.3 mm under the new
+carriage masses.
 
 ## Simulation
 
