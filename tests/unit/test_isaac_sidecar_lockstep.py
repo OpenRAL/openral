@@ -45,9 +45,15 @@ class _Scene:
 
     def __init__(self) -> None:
         self.steps = 0
+        self.held: list[str] = []
+        self._named = ""
 
     def robot(self, name: str) -> _Scene:
+        self._named = name
         return self
+
+    def hold_present_pose(self) -> None:
+        self.held.append(self._named)
 
     def step_many(self, requests: dict[str, tuple[Any, str]]) -> dict[str, dict[str, Any]]:
         self.steps += 1
@@ -229,12 +235,15 @@ def test_a_busy_socket_does_not_hold_a_waiting_robot_past_the_timeout(
 
 
 def test_a_silent_robot_is_dropped_after_the_timeout(served: tuple[str, _Scene]) -> None:
-    url, _ = served
+    """...and held: its last drive targets (a wheel-driven base's speeds) do not run on."""
+    url, scene = served
     a, b = _req(url), _req(url)
     _call(a, "step", {"robot": "a", "action": [0.0, 0.0]})
     _call(b, "step", {"robot": "b", "action": [0.0, 0.0]})  # b commands, then goes silent
     reply = _call(a, "step", {"robot": "a", "action": [1.0, 0.0]})  # waits 0.5 s, then goes on
     assert reply["action"][0] == 1.0
+    # a was dropped while b's first step waited for it, then b while a's waited: each held.
+    assert scene.held == ["a", "b"]
     assert _call(a, "step", {"robot": "a", "action": [2.0, 0.0]})["step"] == 4  # no wait now
 
 

@@ -551,6 +551,10 @@ class IsaacSceneBase:
         """Extra keys merged into the step ``info`` dict. Default: none."""
         return {}
 
+    def hold_present_pose(self) -> None:
+        """Hold the robot where it is (the sidecar ``hold_present_pose`` endpoint, a dropped
+        lockstep robot). Default: nothing to hold; ``IsaacManifestScene`` overrides it."""
+
     def _before_render(self) -> None:
         """Hook for camera poses that must be updated before a rendered frame."""
 
