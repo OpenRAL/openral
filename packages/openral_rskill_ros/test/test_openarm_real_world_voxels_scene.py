@@ -685,7 +685,7 @@ def test_the_launch_refuses_vision_bounds_past_the_kernels_voxel_path(
 
 @pytest.mark.usefixtures("calibrated_openarm")
 def test_the_real_detector_reads_the_zed_driver_camera_info() -> None:
-    """``top`` is the manifest's sim stand-in (frame ``world``, fx 640); on Thor it is the ZED's
+    """``top`` is the manifest's sim stand-in (frame ``world``); on the real cell it is the ZED's
     rectified left image. The detector must get the DRIVER's CameraInfo beside the unit
     binding's topic — not ``/openral/cameras/top/camera_info``, which the sensor leg rebuilds
     from the stand-in — so the world-state lift projects through the real frame and K."""
