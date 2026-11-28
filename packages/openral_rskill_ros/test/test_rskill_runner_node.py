@@ -1606,6 +1606,21 @@ def test_out_of_memory_while_loading_carries_a_typed_reason(message: str) -> Non
     assert '"gpu_out_of_memory"' in result.evidence_json, result.evidence_json
 
 
+def test_typed_runtime_error_while_loading_keeps_its_kind() -> None:
+    """A resolver's own ``ROSGPUMemoryError`` keeps its typed kind, not FAILURE_UNKNOWN."""
+    from openral_core.exceptions import ROSGPUMemoryError
+    from openral_msgs.action import ExecuteRskill
+
+    def _typed(*_a: Any, **_k: Any) -> Any:
+        raise ROSGPUMemoryError("weights need 9 GiB, 4 GiB free")
+
+    result = _dispatch_and_get_result(_typed)
+    assert not result.success
+    assert result.failure_reason.startswith("ROSGPUMemoryError:"), result.failure_reason
+    assert result.failure_kind == ExecuteRskill.Result.FAILURE_RUNTIME_ERROR
+    assert '"gpu_out_of_memory"' in result.evidence_json, result.evidence_json
+
+
 def test_successful_goal_reports_failure_kind_none() -> None:
     """A skill that signals completion closes success=True with FAILURE_NONE."""
     from openral_core.exceptions import ROSRskillGoalSatisfied

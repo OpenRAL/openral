@@ -1837,8 +1837,14 @@ if _ROS2_AVAILABLE:
                     # callback: rclpy aborted with an EMPTY Result (``failure_kind=0
                     # reason=''``) and the reasoner kept re-dispatching the same load.
                     # Same labelling as the step path (``_classify_runtime_failure``).
+                    if isinstance(exc, ROSSafetyViolation):
+                        raise  # CLAUDE.md §1: reaches the safety supervisor, never a reason
                     span.record_exception(exc)
-                    _reason, _failure_kind = self._classify_runtime_failure(exc)
+                    if isinstance(exc, ROSError):  # typed, e.g. a resolver's ROSRuntimeError
+                        _reason = f"{type(exc).__name__}: {exc!s}"
+                        _failure_kind = _failure_kind_for_exception(exc)
+                    else:
+                        _reason, _failure_kind = self._classify_runtime_failure(exc)
                     self.get_logger().error(
                         f"rskill_runner.load_failed: kind={type(exc).__name__} reason={exc!s}"
                     )
