@@ -609,7 +609,8 @@ class MujocoTwinRollout:
         """Render the manifest's RGB cameras off the live MJCF (issue #191 Phase 3b).
 
         ``{sensor.name: HxWx3 uint8}``, each from the MJCF camera
-        ``sensor.sim_camera_name or sensor.name`` at its own ``intrinsics``
+        ``sensor.sim_camera_name`` (else ``sensor.name``, the name a composed scene may
+        have renamed it to) at its own ``intrinsics``
         resolution (one ``mujoco.Renderer`` per distinct ``(height, width)``). A
         camera absent from the MJCF, or a render error, is skipped with a one-shot
         warning, never raising. ``{}`` before ``load``, after ``close``, without RGB
@@ -639,7 +640,27 @@ class MujocoTwinRollout:
 
         frames: dict[str, Any] = {}
         for s in rgb:
-            cam = s.sim_camera_name or s.name
+            # A composed scene may have renamed the MJCF camera to the sensor's own name
+            # (the OpenArm tabletop composer: camera_wrist_left -> wrist_left).
+            cam = next(
+                (c for c in (s.sim_camera_name, s.name) if c and c in self._mjcf_cameras),
+                s.sim_camera_name or s.name,
+            )
+            # Say so once: a typo'd sim_camera_name must not silently stream another view.
+            if (
+                s.sim_camera_name
+                and cam != s.sim_camera_name
+                and cam in self._mjcf_cameras
+                and s.sim_camera_name not in self._render_missing_warned
+            ):
+                self._render_missing_warned.add(s.sim_camera_name)
+                log.warning(
+                    "hal.read_images.camera_fallback",
+                    robot=self.description.name,
+                    sensor=s.name,
+                    sim_camera_name=s.sim_camera_name,
+                    rendering=cam,
+                )
             if cam not in self._mjcf_cameras:
                 if cam not in self._render_missing_warned:
                     self._render_missing_warned.add(cam)
