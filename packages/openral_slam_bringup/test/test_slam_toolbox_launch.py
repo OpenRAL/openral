@@ -68,6 +68,12 @@ def test_default_params_file_exists_and_parses() -> None:
     assert params["map_frame"] == "map"
     assert params["base_frame"] == "base_link"
     assert params["scan_topic"] == "/scan"
+    # Travel gate: 0.0 re-matches a stationary base every scan and slides the
+    # map along featureless axes; the heading half only applies with the
+    # precise check on.
+    assert params["minimum_travel_distance"] > 0.0
+    assert params["minimum_travel_heading"] > 0.0
+    assert params["check_min_dist_and_heading_precisely"] is True
 
 
 def test_launch_module_pins_canonical_node_name() -> None:
