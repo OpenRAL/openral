@@ -496,6 +496,30 @@ def test_permanent_skill_failure_removes_only_that_skill() -> None:
         assert _palette_after_rskill_failure(palette, "broken", retryable) == palette
 
 
+def test_gpu_out_of_memory_retires_the_skill() -> None:
+    """A load/forward OOM is not retried: the skill leaves the palette like a config error.
+
+    Any other runtime fault (or no evidence, or malformed evidence) stays retryable.
+    """
+    import pytest
+
+    pytest.importorskip("rclpy")
+    msgs = pytest.importorskip("openral_msgs.action")
+    from openral_core import ControllerEvidence
+    from openral_reasoner_ros.reasoner_node import _palette_after_rskill_failure
+
+    runtime = msgs.ExecuteRskill.Result.FAILURE_RUNTIME_ERROR
+    palette = _two_skill_palette()
+
+    def evidence(state: str) -> str:
+        return ControllerEvidence(controller_name="rskill_runner", state=state).model_dump_json()
+
+    oom = _palette_after_rskill_failure(palette, "broken", runtime, evidence("gpu_out_of_memory"))
+    assert oom.execute_rskill_ids == frozenset({"healthy"})
+    for retryable in (evidence("quantization_mismatch"), "", "not json", "[1]"):
+        assert _palette_after_rskill_failure(palette, "broken", runtime, retryable) == palette
+
+
 def test_rskill_failure_kind_reads_the_typed_field() -> None:
     """A real ``ExecuteRskill.Result`` is classified by its uint8, not its prose."""
     import pytest

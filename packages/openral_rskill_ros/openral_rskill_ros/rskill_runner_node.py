@@ -1831,6 +1831,29 @@ if _ROS2_AVAILABLE:
                     self._finalize_goal(goal_handle, "abort")
                     self._reset_active_goal()
                     return result
+                except Exception as exc:  # reason: loading weights is torch work too
+                    # A CUDA OOM while building the policy (``to_empty`` / ``.to(device)``)
+                    # is a raw torch error, not a ROSError. Uncaught it escaped the
+                    # callback: rclpy aborted with an EMPTY Result (``failure_kind=0
+                    # reason=''``) and the reasoner kept re-dispatching the same load.
+                    # Same labelling as the step path (``_classify_runtime_failure``).
+                    if isinstance(exc, ROSSafetyViolation):
+                        raise  # CLAUDE.md §1: reaches the safety supervisor, never a reason
+                    span.record_exception(exc)
+                    if isinstance(exc, ROSError):  # typed, e.g. a resolver's ROSRuntimeError
+                        _reason = f"{type(exc).__name__}: {exc!s}"
+                        _failure_kind = _failure_kind_for_exception(exc)
+                    else:
+                        _reason, _failure_kind = self._classify_runtime_failure(exc)
+                    self.get_logger().error(
+                        f"rskill_runner.load_failed: kind={type(exc).__name__} reason={exc!s}"
+                    )
+                    result.success = False
+                    result.failure_reason = _reason
+                    result.failure_kind = _failure_kind
+                    self._finalize_goal(goal_handle, "abort")
+                    self._reset_active_goal()
+                    return result
 
                 self._active_skill = skill
 
@@ -2644,7 +2667,12 @@ if _ROS2_AVAILABLE:
 
             text = str(exc)
             low = text.lower()
-            if "out of memory" in low or "outofmemory" in type(exc).__name__.lower():
+            if (
+                "out of memory" in low
+                or "outofmemory" in type(exc).__name__.lower()
+                or "cublas_status_alloc_failed" in low
+                or "cudaerrormemoryallocation" in low
+            ):
                 return f"ROSGPUMemoryError: {text}", int(ExecuteRskill.Result.FAILURE_RUNTIME_ERROR)
             if "must have the same dtype" in low or "quantiz" in low:
                 return f"ROSQuantizationError: {text}", int(

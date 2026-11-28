@@ -648,6 +648,12 @@ _PERMANENT_FAILURE_KIND_NAMES: frozenset[str] = frozenset(
     {"FAILURE_CONFIG_ERROR", "FAILURE_CAPABILITY_MISMATCH"}
 )
 
+# ControllerEvidence states of a runtime fault that re-dispatching reproduces: the GPU
+# cannot hold the skill (the runner's ``gpu_out_of_memory``, a load or forward-pass OOM).
+# Observed live (two-robot restock aisle): retrying the same OOMing load looped for
+# minutes. Retired like a permanent kind; the operator frees VRAM and rebuilds.
+_PERMANENT_FAILURE_EVIDENCE_STATES: frozenset[str] = frozenset({"gpu_out_of_memory"})
+
 # Kinds that mean "the attempt ran out of time" rather than "the controller
 # faulted" — the Reflexion hint differs (shorten the horizon vs. reposition).
 _TIMED_OUT_FAILURE_KIND_NAMES: frozenset[str] = frozenset({"FAILURE_DEADLINE_MISSED"})
@@ -709,15 +715,24 @@ def _palette_after_rskill_failure(
     palette: ToolPalette,
     rskill_id: str,
     failure_kind: int,
+    evidence_json: str = "",
 ) -> ToolPalette:
     """Drop a skill after a typed, session-persistent availability failure.
 
     Classifies on the ``failure_kind`` uint8 (see ``_rskill_failure_kind``),
-    not on the ``failure_reason`` prose it used to prefix-match.
+    not on the ``failure_reason`` prose it used to prefix-match, or on a
+    ``ControllerEvidence`` state in ``_PERMANENT_FAILURE_EVIDENCE_STATES``.
     """
     if failure_kind == 0:  # FAILURE_NONE — unclassified, never "permanently broken"
         return palette
-    if failure_kind not in {_failure_kind_value(n) for n in _PERMANENT_FAILURE_KIND_NAMES}:
+    try:
+        state = json.loads(evidence_json).get("state") if evidence_json else None
+    except (ValueError, AttributeError):
+        state = None
+    if (
+        failure_kind not in {_failure_kind_value(n) for n in _PERMANENT_FAILURE_KIND_NAMES}
+        and state not in _PERMANENT_FAILURE_EVIDENCE_STATES
+    ):
         return palette
     return palette.model_copy(
         update={
@@ -6814,7 +6829,12 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 evidence_json=str(getattr(result, "evidence_json", "") or ""),
             )
         )
-        updated_palette = _palette_after_rskill_failure(self._palette, call.rskill_id, failure_kind)
+        updated_palette = _palette_after_rskill_failure(
+            self._palette,
+            call.rskill_id,
+            failure_kind,
+            str(getattr(result, "evidence_json", "") or ""),
+        )
         if updated_palette != self._palette:
             self._palette = updated_palette
             self.get_logger().warning(
