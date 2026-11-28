@@ -45,10 +45,17 @@
     # the cross-aisle axis, repeating uprights do not pin the along-aisle one)
     # each re-match slid the map: map-truth crept -1 -> -5 cm at a stationary
     # spawn in 60 s, and docks ended 8-10 cm off with odometry exact (q5090).
-    # The first scan after configure always passes the gate (slam_toolbox's
-    # first_measurement_), so a stationary base still gets map->odom.
+    # The first scan received once active always passes the gate
+    # (slam_toolbox's first_measurement_), so a stationary base still gets
+    # map->odom. Limit: until the base moves, /map is built from that one scan,
+    # and karto marks a cell known only after > min_pass_through (2) beams
+    # cross it, so a never-moved base's map is mostly unknown away from it.
+    # check_min_dist_and_heading_precisely: without it slam_toolbox gates on
+    # distance only (at 0.8 * d^2, i.e. ~0.089 m) and never matches a scan
+    # during an in-place turn; with it a scan passes at 0.1 m OR 0.1 rad.
     minimum_travel_distance: 0.1
     minimum_travel_heading: 0.1
+    check_min_dist_and_heading_precisely: true
     scan_buffer_size: 10
     scan_buffer_maximum_scan_distance: 10.0
     link_match_minimum_response_fine: 0.1
