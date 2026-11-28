@@ -1856,7 +1856,12 @@ if _ROS2_AVAILABLE:
                     getattr(skill, "manifest", None),
                     getattr(self, "manifest", None),
                 )
-                if deadline_s != requested_s:
+                if requested_s > 0.0 and deadline_s != requested_s:
+                    self.get_logger().info(
+                        f"deadline_s={requested_s:g} capped to manifest "
+                        f"max_execution_s={deadline_s:g}",
+                    )
+                elif deadline_s != requested_s:
                     self.get_logger().info(
                         f"deadline_s={requested_s:g} → resolved to {deadline_s:.0f}s "
                         f"({'manifest max_execution_s' if _from_manifest else 'global default'}); "
