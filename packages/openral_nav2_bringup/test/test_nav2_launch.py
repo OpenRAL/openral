@@ -502,7 +502,8 @@ def test_a_differential_base_docks_through_the_rotation_shim(config: Path) -> No
     assert follow_path["plugin"] == "nav2_rotation_shim_controller::RotationShimController"
     assert follow_path["primary_controller"] == "nav2_mppi_controller::MPPIController"
     assert follow_path["rotate_to_goal_heading"] is True
-    assert follow_path["GoalAngleCritic"]["enabled"] is False
+    assert follow_path["GoalAngleCritic"]["threshold_to_consider"] == mod.DIFF_DOCK_XY_TOLERANCE_M
+    assert follow_path["rotate_to_heading_angular_vel"] <= follow_path["wz_max"]
     assert follow_path["vx_max"] > 0  # MPPI's own params stay under FollowPath for the primary
     assert out["general_goal_checker"]["xy_goal_tolerance"] == mod.DIFF_DOCK_XY_TOLERANCE_M
     assert out["general_goal_checker"]["yaw_goal_tolerance"] == mod.DIFF_DOCK_YAW_TOLERANCE_RAD
@@ -525,3 +526,14 @@ def test_differential_docking_refuses_a_non_mppi_controller() -> None:
     }
     with pytest.raises(ROSConfigError, match="MPPI"):
         mod._dock_differential({"controller_server": {"ros__parameters": server}})
+
+
+def test_differential_docking_caps_the_shim_turn_and_accepts_a_wrapped_mppi() -> None:
+    """The shim never turns faster than ``wz_max``; an already-shimmed MPPI file is accepted."""
+    mod = _import_launch_module()
+    params = yaml.safe_load(_CONFIG_PATH.read_text())
+    mod._cap_speeds(params, None, 0.3)
+    mod._dock_differential(params)
+    mod._dock_differential(params)  # idempotent: the shim-wrapped file is accepted again
+    follow_path = params["controller_server"]["ros__parameters"]["FollowPath"]
+    assert follow_path["rotate_to_heading_angular_vel"] == pytest.approx(0.3)

@@ -304,7 +304,9 @@ def _dock_differential(params: dict[str, Any]) -> None:
 
     A differential base cannot strafe the last centimetres, and MPPI's ``GoalAngleCritic`` starts
     turning it to the goal heading 0.5 m out, so it stalls short and the loose goal checker accepts
-    that. Instead: MPPI drives to the goal position with the goal-angle critic off, and
+    that. Instead: MPPI drives to the goal position with the goal-angle critic confined to the
+    dock tolerance (a fallback for a blocked shim turn), and
+
     ``RotationShimController`` (wrapping MPPI, same ``FollowPath`` params) turns in place to the
     goal heading at the end (``rotate_to_goal_heading``) and onto the path at the start. The goal
     checker tightens to ``DIFF_DOCK_*``; the progress checker allows the slow final approach and
@@ -328,22 +330,28 @@ def _dock_differential(params: dict[str, Any]) -> None:
             "controller_server FollowPath (MPPI, with GoalAngleCritic), general_goal_checker and "
             f"progress_checker (missing: {exc})"
         ) from exc
-    if follow_path.get("plugin") != "nav2_mppi_controller::MPPIController":
+    # A file that already wraps MPPI in the shim names MPPI as its primary_controller.
+    controller = follow_path.get("primary_controller", follow_path.get("plugin"))
+    if controller != "nav2_mppi_controller::MPPIController":
         raise ROSConfigError(
             "nav2.launch: differential-base docking wraps MPPI in RotationShimController; "
-            f"FollowPath.plugin is {follow_path.get('plugin')!r}"
+            f"FollowPath controller is {controller!r}"
         )
     follow_path.update(
         plugin="nav2_rotation_shim_controller::RotationShimController",
         primary_controller="nav2_mppi_controller::MPPIController",
         angular_dist_threshold=0.785,
         forward_sampling_distance=0.5,
-        rotate_to_heading_angular_vel=0.4,
+        # Never turn faster than MPPI may (``wz_max``, already capped by ``_cap_speeds``).
+        rotate_to_heading_angular_vel=min(0.4, float(follow_path.get("wz_max", 0.4))),
         max_angular_accel=1.0,
         simulate_ahead_time=1.0,
         rotate_to_goal_heading=True,
     )
-    goal_angle["enabled"] = False
+    # Off for the approach; only inside the dock tolerance, where the shim normally owns the turn.
+    # If the shim's in-place turn is blocked (rotational collision), it falls back to MPPI, which
+    # then still steers the heading.
+    goal_angle["threshold_to_consider"] = DIFF_DOCK_XY_TOLERANCE_M
     goal["xy_goal_tolerance"] = DIFF_DOCK_XY_TOLERANCE_M
     goal["yaw_goal_tolerance"] = DIFF_DOCK_YAW_TOLERANCE_RAD
     # Pose-aware: the shim's terminal in-place turn moves no XY, so it must count as progress.
