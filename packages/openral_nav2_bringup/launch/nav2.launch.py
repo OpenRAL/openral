@@ -307,7 +307,9 @@ def _dock_differential(params: dict[str, Any]) -> None:
     that. Instead: MPPI drives to the goal position with the goal-angle critic off, and
     ``RotationShimController`` (wrapping MPPI, same ``FollowPath`` params) turns in place to the
     goal heading at the end (``rotate_to_goal_heading``) and onto the path at the start. The goal
-    checker tightens to ``DIFF_DOCK_*``; the progress checker allows the slow final approach.
+    checker tightens to ``DIFF_DOCK_*``; the progress checker allows the slow final approach and
+    counts the in-place turn as progress (``PoseProgressChecker``).
+
 
     Raises:
         ROSConfigError: ``params`` lacks the MPPI ``FollowPath`` / goal / progress checkers.
@@ -344,7 +346,10 @@ def _dock_differential(params: dict[str, Any]) -> None:
     goal_angle["enabled"] = False
     goal["xy_goal_tolerance"] = DIFF_DOCK_XY_TOLERANCE_M
     goal["yaw_goal_tolerance"] = DIFF_DOCK_YAW_TOLERANCE_RAD
+    # Pose-aware: the shim's terminal in-place turn moves no XY, so it must count as progress.
+    progress["plugin"] = "nav2_controller::PoseProgressChecker"
     progress["required_movement_radius"] = 0.05
+    progress["required_movement_angle"] = 0.2
     progress["movement_time_allowance"] = 20.0
 
 

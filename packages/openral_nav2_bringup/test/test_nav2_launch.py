@@ -506,6 +506,10 @@ def test_a_differential_base_docks_through_the_rotation_shim(config: Path) -> No
     assert follow_path["vx_max"] > 0  # MPPI's own params stay under FollowPath for the primary
     assert out["general_goal_checker"]["xy_goal_tolerance"] == mod.DIFF_DOCK_XY_TOLERANCE_M
     assert out["general_goal_checker"]["yaw_goal_tolerance"] == mod.DIFF_DOCK_YAW_TOLERANCE_RAD
+    # The shim's terminal in-place turn must count as progress.
+    assert out["progress_checker"]["plugin"] == "nav2_controller::PoseProgressChecker"
+    assert out["progress_checker"]["required_movement_angle"] > 0
+
     # Omni bases keep the base file untouched.
     assert mod._speed_capped_params_file(str(config), None, None) == str(config)
 
