@@ -139,7 +139,9 @@ def generate_launch_description() -> LaunchDescription:
                 "`RobotDescription.nav2_param_overrides()` (robot_radius + "
                 "inflation_radius from the footprint, motion_model from "
                 "base_kinematics) so one shared base file serves any mobile "
-                "base. Empty string uses params_file verbatim."
+                "base; a differential base also gets the rotation-shim "
+                "docking rewrite (controller plugin, goal/progress checkers). "
+                "Empty string uses params_file verbatim."
             ),
         ),
         DeclareLaunchArgument(
@@ -386,7 +388,7 @@ def _speed_capped_params_file(
     if differential:
         _dock_differential(params)
     with tempfile.NamedTemporaryFile(
-        "w", prefix="nav2_speed_capped_", suffix=".yaml", delete=False
+        "w", prefix="nav2_params_", suffix=".yaml", delete=False
     ) as out:
         yaml.safe_dump(params, out)
     return out.name
