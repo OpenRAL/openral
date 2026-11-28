@@ -569,6 +569,9 @@ private:
   /// moved only by base dofs), which the peer check skips (`check_voxel_collision`'s
   /// `unchecked_links`).
   std::vector<std::uint8_t> peer_unchecked_links_;
+  /// Per link: 1 = a scene carrier (`collision_carrier_links`), not checked against the
+  /// world grid or a held payload; empty = no carrier.
+  std::vector<std::uint8_t> carrier_links_;
   std::vector<std::uint8_t> peer_occupancy_;
   bool peer_voxel_enabled_{false};
   double peer_voxel_deadline_s_{kDefaultPeerVoxelDeadlineMs / 1000.0};

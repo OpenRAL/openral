@@ -3532,6 +3532,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     world_pose: Pose6D | None = None
     # The scene's other robots (ADR-0137): name, ROS domain, manifest.
     scene_peers: list[tuple[str, int, str]] = []
+    carrier_contents: dict[str, object] = {}
+    carrier_links: list[str] = []
     if deploy_config:
         from openral_core import DeployScene
 
@@ -3555,6 +3557,13 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 from openral_core import sim_scene_description
 
                 description = sim_scene_description(description, _scene.scene.backend_options)
+                # What the scene's carriers hold: dropped from the cloud while the base drives.
+                from openral_core import link_attachment_carrier_links, link_attachment_contents
+
+                carrier_contents = link_attachment_contents(_scene.scene.backend_options)
+                carrier_links = link_attachment_carrier_links(_scene.scene.backend_options)
+                if carrier_contents:  # "is the base driving" is read from TF under odom
+                    carrier_contents["carrier_contents_motion_frame"] = description.odom_frame
     # A rate the scene set, forwarded as the runner's `rate_hz` (0 = the manifest's).
     scene_rate_hz = (
         description.control_rate_hz if description.control_rate_hz != manifest_rate_hz else None
@@ -3769,6 +3778,10 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # validated.
     kernel_params["collision_joint_names"] = [j.name for j in description.joints]
     kernel_params["collision_seed_dt_s"] = 0.0
+    if carrier_links:  # a scene carrier holds its contents: checked, but not against the world
+        kernel_params["collision_carrier_links"] = [
+            kernel_link_name.get(n, n) for n in carrier_links
+        ]
     # deploy-sim publishes /joint_states only as fast as the sim steps, which
     # slows to ~3 Hz under heavy VLA inference (the sim advances on the same host
     # the policy runs on). A 200 ms seed deadline would fail-closed on every
@@ -5518,6 +5531,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                             # A tracked payload's points are dropped whenever the tracker runs.
                             "tracked_clear_enabled": _tracked_clear_enabled(object_tracking),
                             "use_sim_time": use_sim_time,
+                            **carrier_contents,
                         }
                     ],
                     remappings=[

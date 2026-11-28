@@ -805,6 +805,15 @@ def sim_scene_description(
       that joint's ``JointSpec.urdf_curve`` — how this twin's jaw reading maps onto
       the URDF finger, so the kernel, the self-filter, /tf and the sim pose one finger
       (issue #533).
+    * ``link_attachments`` entries with ``collision`` (boxes, capsules or spheres in
+      the carrying link's frame): the carried prim (a tote on a lift) becomes a rigid
+      link of the robot, ``fixed_attachments`` child of that link, named after the
+      prim. The kernel then checks it against the world and the arms, and the octomap
+      self-filter drops its returns as it drops the robot's own, so a carrier that
+      rides the robot leaves no trail in the world map. Pairs with every link rigidly
+      fixed to the carrying link (their distance never changes) and with the hand links
+      (``hand_links``: the hand reaches into it for its contents) are allowed. In a scene
+      of several robots, only this robot's (``$OPENRAL_SCENE_ROBOT``) entries apply.
 
     Pure (``openral_core`` has no logging dependency): each caller reports the result
     (``deploy sim`` prints it, ``SimAttachedHAL`` logs ``sim.time_base``, the runner's
@@ -859,6 +868,9 @@ def sim_scene_description(
         update["joints"] = _with_urdf_curves(
             description, raw_curves, "backend_options.gripper_joint_curve"
         )
+    carriers = _link_attachment_carriers(description, options.get("link_attachments"))
+    if carriers is not None:
+        update.update(carriers)
     if not update:
         return description
     # Re-run RobotDescription's validators on the merged robot (``model_copy`` skips
@@ -869,6 +881,196 @@ def sim_scene_description(
         raise ROSConfigError(
             f"robot {description.name!r} with this scene's backend_options is invalid: {exc}"
         ) from exc
+
+
+def _link_attachment_carriers(
+    description: RobotDescription, raw: object
+) -> dict[str, object] | None:
+    """The ``sim_scene_description`` update that makes collision-bearing carriers robot links.
+
+    ``None`` when no entry of ``raw`` (``backend_options.link_attachments``) for this robot
+    declares ``collision``.
+
+    Raises:
+        ROSConfigError: A carrier on a link the robot does not have, a carrier name a
+            link already uses, or ``collision`` entries that are not collision primitives.
+    """
+    if not isinstance(raw, list):
+        return None
+    me = os.environ.get("OPENRAL_SCENE_ROBOT")  # openral_core.scene_paths.SCENE_ROBOT_ENV
+    entries = [
+        a
+        for a in raw
+        if isinstance(a, Mapping)
+        and a.get("collision")
+        and (a.get("robot") is None or me is None or a.get("robot") == me)
+    ]
+    if not entries:
+        return None
+    links = {j.child_link for j in description.joints} | {
+        f.child_link for f in description.fixed_attachments
+    }
+    links |= {j.parent_link for j in description.joints} | {
+        f.parent_link for f in description.fixed_attachments
+    }
+    fixed = list(description.fixed_attachments)
+    geometry = list(description.collision_geometry)
+    pairs = list(description.allowed_collision_pairs)
+    for entry in entries:
+        name = str(entry["prim"]).replace("/", "_")
+        link = str(entry.get("link", ""))
+        if link not in links:
+            raise ROSConfigError(
+                f"link_attachments {entry['prim']!r} rides {link!r}, which is not a link of "
+                f"robot {description.name!r}."
+            )
+        if name in links:
+            raise ROSConfigError(
+                f"link_attachments {entry['prim']!r} would add link {name!r}, which robot "
+                f"{description.name!r} already has."
+            )
+        try:
+            prims = TypeAdapter(list[LinkCollisionGeometry]).validate_python(
+                [{**dict(c), "link_name": name} for c in entry["collision"]]
+            )
+        except (ValidationError, TypeError, ValueError) as exc:
+            raise ROSConfigError(
+                f"link_attachments {entry['prim']!r}: collision is invalid: {exc}"
+            ) from exc
+        # Every link rigidly fixed to the carrying one keeps a constant distance to the
+        # carrier: checking those pairs could only latch a stop that never clears.
+        rigid = {link}
+        grown = True
+        while grown:  # ponytail: a fixed chain is a handful of rows; re-scan until stable
+            grown = False
+            for f in fixed:
+                for a, b in ((f.parent_link, f.child_link), (f.child_link, f.parent_link)):
+                    if a in rigid and b not in rigid:
+                        rigid.add(b)
+                        grown = True
+        fixed.append(
+            FixedAttachment(
+                name=f"{name}_carrier_joint",
+                parent_link=link,
+                child_link=name,
+                origin_xyz=(0.0, 0.0, 0.0),
+                origin_rpy=(0.0, 0.0, 0.0),
+            )
+        )
+        geometry.extend(prims)
+        # The hand reaches into the carrier for what it carries: its links (the #349 hand,
+        # `hand_links`: fingers, gripper, wrist) may touch it. The rest of each arm and the
+        # base are checked against it.
+        hand = set(description.hand_links()) if description.grasp_contact_links() else set()
+        pairs.extend((name, other) for other in sorted(rigid | hand))
+        links.add(name)
+    return {
+        "fixed_attachments": fixed,
+        "collision_geometry": geometry,
+        "allowed_collision_pairs": pairs,
+    }
+
+
+def link_attachment_carrier_links(backend_options: Mapping[str, object] | None) -> list[str]:
+    """The links ``sim_scene_description`` adds for this robot's collision-bearing carriers.
+
+    The launch hands them to the kernel as ``collision_carrier_links``: what a carrier
+    holds rests in it by design, so its geometry is checked against the arms
+    (self-collision) and the scene's other robots, not against the world grid (its
+    contents) or a held payload (lifted out of it).
+
+    Example:
+        >>> link_attachment_carrier_links(
+        ...     {
+        ...         "link_attachments": [
+        ...             {"prim": "A/Tote", "link": "l", "collision": [{}]},
+        ...             {"prim": "B", "link": "l"},
+        ...         ]
+        ...     }
+        ... )
+        ['A_Tote']
+    """
+    raw = (backend_options or {}).get("link_attachments")
+    me = os.environ.get("OPENRAL_SCENE_ROBOT")  # openral_core.scene_paths.SCENE_ROBOT_ENV
+    return [
+        str(a["prim"]).replace("/", "_")
+        for a in (raw if isinstance(raw, list) else [])
+        if isinstance(a, Mapping)
+        and a.get("collision")
+        and (a.get("robot") is None or me is None or a.get("robot") == me)
+    ]
+
+
+def link_attachment_contents(backend_options: Mapping[str, object] | None) -> dict[str, object]:
+    """``robot_self_filter`` params for the contents of this robot's carriers, or ``{}``.
+
+    A ``link_attachments`` entry with ``collision`` and ``contents_above_m`` holds the
+    objects it ``carries`` inside its bounding box, raised by ``contents_above_m`` (what
+    sticks out over the rim). While the base drives, the self-filter drops the points in
+    that box: the carried objects ride the robot then, and would otherwise leave a trail
+    in the world map. Parked, the contents are mapped as any object is. The box is in the
+    carrier link's frame (``sim_scene_description`` adds the link). In a scene of several
+    robots, only this robot's (``$OPENRAL_SCENE_ROBOT``) entries apply.
+
+    Example:
+        >>> wall = {
+        ...     "shape": {"shape": "box", "half_extents_m": [0.1, 0.2, 0.05]},
+        ...     "origin_xyz_rpy": [0.3, 0.0, -0.4, 0.0, 0.0, 0.0],
+        ... }
+        >>> p = link_attachment_contents(
+        ...     {
+        ...         "link_attachments": [
+        ...             {"prim": "Tote", "link": "l", "collision": [wall], "contents_above_m": 0.1}
+        ...         ]
+        ...     }
+        ... )
+        >>> p["carrier_contents_links"], [round(v, 3) for v in p["carrier_contents_boxes"]]
+        (['Tote'], [0.3, 0.0, -0.35, 0.0, 0.0, 0.0, 0.1, 0.2, 0.1])
+    """
+    raw = (backend_options or {}).get("link_attachments")
+    me = os.environ.get("OPENRAL_SCENE_ROBOT")  # openral_core.scene_paths.SCENE_ROBOT_ENV
+    links: list[str] = []
+    boxes: list[float] = []
+    for entry in raw if isinstance(raw, list) else []:
+        if not isinstance(entry, Mapping) or entry.get("contents_above_m") is None:
+            continue
+        if entry.get("robot") is not None and me is not None and entry.get("robot") != me:
+            continue
+        corners: list[tuple[float, float, float]] = []
+        for c in entry.get("collision") or []:
+            geom = LinkCollisionGeometry.model_validate({**dict(c), "link_name": "carrier"})
+            if not isinstance(geom.shape, BoxShape):
+                raise ROSConfigError(
+                    f"link_attachments {entry['prim']!r}: contents_above_m needs box collision"
+                )
+            x, y, z, roll, pitch, yaw = geom.origin_xyz_rpy
+            cr, sr, cp, sp = math.cos(roll), math.sin(roll), math.cos(pitch), math.sin(pitch)
+            cy, sy = math.cos(yaw), math.sin(yaw)
+            rot = (
+                (cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr),
+                (sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr),
+                (-sp, cp * sr, cp * cr),
+            )
+            for corner in itertools.product(*((-h, h) for h in geom.shape.half_extents_m)):
+                corners.append(
+                    tuple(
+                        o + sum(r * v for r, v in zip(row, corner, strict=True))
+                        for o, row in zip((x, y, z), rot, strict=True)
+                    )  # type: ignore[arg-type]  # reason: a 3-tuple by construction
+                )
+        if not corners:
+            raise ROSConfigError(
+                f"link_attachments {entry['prim']!r}: contents_above_m needs collision boxes"
+            )
+        lo = [min(c[i] for c in corners) for i in range(3)]
+        hi = [max(c[i] for c in corners) for i in range(3)]
+        hi[2] += float(entry["contents_above_m"])  # type: ignore[arg-type]  # reason: YAML number
+        links.append(str(entry["prim"]).replace("/", "_"))
+        boxes.extend([(a + b) / 2 for a, b in zip(lo, hi, strict=True)] + [0.0, 0.0, 0.0])
+        boxes.extend((b - a) / 2 for a, b in zip(lo, hi, strict=True))
+    if not links:
+        return {}
+    return {"carrier_contents_links": links, "carrier_contents_boxes": boxes}
 
 
 def _with_urdf_curves(

@@ -1889,6 +1889,8 @@ void carry_attached_contacts(std::uint8_t* contact_mask, std::size_t cells,
 /// ADR-0121: a pair still about to trip whose attach link and other link are both in `gate`'s mask
 /// is offered to its provider (`payload_self_pair`) last; `nullptr` = no provider. A frozen payload
 /// is offered only in its release window, on the hand that let it go (`release_hand_link`).
+/// `carrier_links`: per link, non-zero = a scene carrier (`collision_carrier_links`), whose
+/// contents a held payload was lifted out of: never checked against the payload (null = none).
 /// The workspace under which `check_attached_self_collision` narrows a refined box payload to its
 /// measured inner box, when that differs from its rule workspace: with #349 handed to an exemption
 /// provider (ADR-0121) the rule workspace is `nullptr` (the provider decides the pairs), but the
@@ -1902,11 +1904,12 @@ payload_narrowing_workspace(bool in_tree_rule, bool provider_loaded, bool ingest
   return !in_tree_rule && provider_loaded && ingested_live ? &ingested : nullptr;
 }
 
-CollisionHit
-check_attached_self_collision(const CollisionModel& model, const AttachedModel& attached,
-                              const CollisionScratch& scratch, double margin,
-                              const WorkspaceContactRegion* workspace = nullptr,
-                              const ProviderGate* gate = nullptr,
-                              const WorkspaceContactRegion* narrow_under = nullptr) noexcept;
+CollisionHit check_attached_self_collision(const CollisionModel& model,
+                                           const AttachedModel& attached,
+                                           const CollisionScratch& scratch, double margin,
+                                           const WorkspaceContactRegion* workspace = nullptr,
+                                           const ProviderGate* gate = nullptr,
+                                           const WorkspaceContactRegion* narrow_under = nullptr,
+                                           const std::uint8_t* carrier_links = nullptr) noexcept;
 
 }  // namespace openral_safety_kernel

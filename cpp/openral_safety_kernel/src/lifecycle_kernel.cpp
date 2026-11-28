@@ -451,6 +451,12 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
                                                      std::vector<std::int64_t>{});
   this->declare_parameter<std::vector<std::string>>("collision_link_names",
                                                     std::vector<std::string>{});
+  // A scene's carrier links (e.g. a tote on the lift). What it carries rests in it by
+  // design, so neither the WORLD grid (its contents) nor a held payload (lifted out of it)
+  // is checked against them. The arms (self-collision) and the peer grid still are.
+  // An unknown name is refused at configure.
+  this->declare_parameter<std::vector<std::string>>("collision_carrier_links",
+                                                    std::vector<std::string>{});
 
   // Issue #373 — external joint-torque observer (collision tier). Off unless
   // the launch emits a model (openral_safety.envelope_loader
@@ -1136,6 +1142,29 @@ SafetyKernelLifecycleNode::configure_from_params(const rclcpp_lifecycle::State& 
       const int parent = collision_model_.parent[l];
       moves[l] = own || (parent >= 0 && moves[static_cast<std::size_t>(parent)] != 0) ? 1 : 0;
       peer_unchecked_links_[l] = moves[l] != 0 ? 0 : 1;
+    }
+  }
+  carrier_links_.clear();
+  {
+    const auto names = this->get_parameter("collision_link_names").as_string_array();
+    const auto unchecked = this->get_parameter("collision_carrier_links").as_string_array();
+    if (!unchecked.empty()) {
+      carrier_links_.assign(collision_model_.n_links, 0);
+      for (const auto& name : unchecked) {
+        const auto it = std::find(names.begin(), names.end(), name);
+        if (it == names.end() ||
+            static_cast<std::size_t>(it - names.begin()) >= collision_model_.n_links) {
+          RCLCPP_ERROR(this->get_logger(),
+                       "collision_carrier_links names %s, which is not a collision link",
+                       name.c_str());
+          envelope_loaded_ = false;
+          return CallbackReturn::FAILURE;
+        }
+        carrier_links_[static_cast<std::size_t>(it - names.begin())] = 1;
+        RCLCPP_WARN(this->get_logger(),
+                    "carrier link %s: not checked against the world grid or a held payload",
+                    name.c_str());
+      }
     }
   }
   station_anchor_.assign(collision_base_dofs_.size(), 0.0);
@@ -2342,9 +2371,10 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           // which made this whole mechanism dead code until a real scene run
           // showed the scale going 1.0 → E-stop with nothing in between.
           voxel_grid_.provider_gate.row = step;
-          const auto hit = check_voxel_collision(collision_model_, collision_scratch_, voxel_grid_,
-                                                 world_voxel_margin_m_ + extra_margin,
-                                                 collision_scale_proximity_m_);
+          const auto hit = check_voxel_collision(
+              collision_model_, collision_scratch_, voxel_grid_,
+              world_voxel_margin_m_ + extra_margin, collision_scale_proximity_m_,
+              carrier_links_.empty() ? nullptr : carrier_links_.data());
           note_slack(hit, world_voxel_margin_m_ + extra_margin);
           disclose_workspace(hit, step, "");
           disclose_provider(hit, step, "");
@@ -2389,7 +2419,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
               collision_model_, attached_model_, collision_scratch_, amargin,
               workspace_contact_enabled_ ? &voxel_grid_.workspace_region : nullptr, provider_gate,
               payload_narrowing_workspace(workspace_contact_enabled_, provider_ != nullptr,
-                                          workspace_live(), workspace_region_));
+                                          workspace_live(), workspace_region_),
+              carrier_links_.empty() ? nullptr : carrier_links_.data());
           note_slack(hit, amargin);
           disclose_workspace(hit, step, "payload-self@");
           disclose_provider(hit, step, "payload-self@");
@@ -2496,8 +2527,9 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             // allowance (ADR-0121).
             ExemptionProvider* const saved_provider = voxel_grid_.provider_gate.provider;
             voxel_grid_.provider_gate.provider = nullptr;
-            const auto touch = check_voxel_collision(collision_model_, collision_scratch_,
-                                                     voxel_grid_, world_voxel_margin_m_);
+            const auto touch = check_voxel_collision(
+                collision_model_, collision_scratch_, voxel_grid_, world_voxel_margin_m_, 0.0,
+                carrier_links_.empty() ? nullptr : carrier_links_.data());
             ws_hand_contact_ = touch.hit || touch.workspace_pairs > 0;
             if (!ws_hand_contact_ && attached_collision_enabled_ && attached_model_.n_objects > 0) {
               const auto ptouch = check_attached_voxel_collision(collision_model_, attached_model_,
