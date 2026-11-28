@@ -47,8 +47,8 @@ drivers:
       # With IPC on (the wrapper default) the camera frames go on /tf as DYNAMIC
       # transforms and octomap_server stalls waiting on them.
       enable_ipc: "false"
-      # Scene-relative. Pins VGA, advertises the raw image topics, turns
-      # positional tracking off and depth stabilization to 0.
+      # Scene-relative. Pins VGA, turns the raw image topics off (`top` reads
+      # rgb/color/rect/image), positional tracking off and depth stabilization to 0.
       ros_params_override_path: drivers/zedm_openarm_override.yaml
 
 runtime:

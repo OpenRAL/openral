@@ -579,7 +579,8 @@ sensors:
     # (672x376): the 1920x1080 grab's rect K (fx = fy = 1498.18, cx = 936.11, cy = 541.81,
     # 2026-10-02) scaled per axis, 65.3 deg horizontal. NOT the real camera at VGA: the
     # rectified VGA image `top` binds is fx = fy = 356.309 (86.6 deg horizontal, 2026-11-25)
-    # and the raw one 82.3 deg, so a sim-evaluated policy sees a narrower view than the cell.
+    # and the raw one about 101 deg (fx 388.5 plus barrel distortion, the 2026-10-02 lens
+    # model), so a sim-evaluated policy sees a narrower view than the cell.
     # Left as is because the sim evals (pick-and-place, restock) were measured on this view;
     # change it only together with re-running them.
     intrinsics:
@@ -607,8 +608,10 @@ sensors:
     # K, no distortion, so colour and depth are pixel-aligned and the driver's rect
     # camera_info back-projects `top` pixels exactly (pinhole, no edge error). The
     # pick-and-place policy was trained on the UNRECTIFIED stream (2026-10-07): its real-cell
-    # input is now the rectified view (no barrel distortion, fx 356.3 vs 384.9, about 4 deg
-    # wider), so re-check that rSkill on the cell before trusting it.
+    # input is now the rectified view: no barrel distortion, about 86.6 deg horizontal
+    # against the raw image's ~101 deg (the SDK's rectification crops ~7 deg off each side
+    # and draws the centre ~8 % smaller, fx 356.3 vs 388.5), so re-check that rSkill on the
+    # cell before trusting it.
     shares_mount_with: "head_zed"
     deploy_binding:
       backend: ros2_image
