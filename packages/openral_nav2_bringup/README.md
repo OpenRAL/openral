@@ -32,7 +32,7 @@ cuVSLAM + nvblox `/map` for visual.
 |---|---|---|
 | `slam_backend` | `lidar` | `lidar` or `none` selects `nav2_panda_mobile.yaml`; `visual` selects `nav2_visual.yaml` |
 | `params_file` | `""` | Explicit Nav2 params file; empty selects by `slam_backend` |
-| `robot_yaml` | `""` | Rewrites the params with `RobotDescription.nav2_param_overrides()` (footprint, radius, inflation, motion model), clamps Nav2's velocity limits to the manifest's `max_base_*` bounds, and enables the scan filter's self half |
+| `robot_yaml` | `""` | Rewrites the params with `RobotDescription.nav2_param_overrides()` (footprint, radius, inflation, motion model), clamps Nav2's velocity limits to the manifest's `max_base_*` bounds, docks a differential base through the rotation shim (below), and enables the scan filter's self half |
 | `payload_scan_filter` | `true` | Run `payload_scan_filter_node` (lidar backend only) |
 | `cmd_vel_relay` | `false` | Run `twist_to_action_relay_node.py` (see below) |
 | `use_sim_time` / `autostart` / `use_composition` | `true` / `true` / `False` | Passed to Nav2 |
@@ -97,6 +97,19 @@ kernel's `‖(vx, vy)‖` disk. Every `/cmd_vel` producer passes through the
 smoother, so on the relay path Nav2 slows to the bound instead of tripping the
 kernel's E-stop. `g1` runs at 0.5 m/s and 1.0 rad/s; `r1pro` at 0.5 m/s (the
 base file's `vx`) and 0.3 rad/s.
+
+**A differential base docks on the goal pose.** With `base_kinematics:
+differential` (`openamrobot_v2`) the launch wraps MPPI in
+`RotationShimController` (`_dock_differential`): MPPI drives to the goal
+position with `GoalAngleCritic` off, then the shim turns in place to the goal
+heading; the goal checker tightens to 0.03 m / 0.02 rad, and a
+`PoseProgressChecker` counts that turn as progress. `GoalAngleCritic` stays on
+only inside the 3 cm tolerance, so MPPI still steers the heading if the shim's
+in-place turn is blocked by a nearby obstacle. MPPI alone (it can't
+
+strafe, and the goal-angle critic turns it 0.5 m out) stopped 7-13 cm and
+2.5 deg off on the AMR restock aisle; with the shim, 2-10 cm and <= 1.3 deg,
+the rest being SLAM map error.
 
 **Opt-in supervised relay, for bases without `base_joints`.** A robot that
 advertises `body_twist` but declares no `base_joints` (today `g1`, `r1pro`) gets

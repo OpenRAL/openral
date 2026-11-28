@@ -25,6 +25,8 @@
        isn't required to BUILD this bringup wrapper. -->
   <exec_depend>nav2_bringup</exec_depend>
   <exec_depend>nav2_msgs</exec_depend>
+  <!-- RotationShimController: differential bases dock through it (nav2.launch._dock_differential). -->
+  <exec_depend>nav2_rotation_shim_controller</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>lifecycle_msgs</exec_depend>
 

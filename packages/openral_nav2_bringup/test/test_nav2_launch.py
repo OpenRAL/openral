@@ -489,3 +489,51 @@ def test_speed_cap_refuses_a_params_file_without_the_limits_it_must_cap() -> Non
     params: dict[str, Any] = {"controller_server": {"ros__parameters": {"FollowPath": {}}}}
     with pytest.raises(ROSConfigError, match="vx_max"):
         mod._cap_speeds(params, 0.5, 1.0)
+
+
+@pytest.mark.parametrize("config", [_CONFIG_PATH, _VISUAL_CONFIG_PATH], ids=["lidar", "visual"])
+def test_a_differential_base_docks_through_the_rotation_shim(config: Path) -> None:
+    """``base_kinematics: differential`` wraps MPPI in the shim and tightens the goal checker."""
+    mod = _import_launch_module()
+    out_path = mod._speed_capped_params_file(str(config), None, None, differential=True)
+    out = yaml.safe_load(Path(out_path).read_text())["controller_server"]["ros__parameters"]
+    Path(out_path).unlink()
+    follow_path = out["FollowPath"]
+    assert follow_path["plugin"] == "nav2_rotation_shim_controller::RotationShimController"
+    assert follow_path["primary_controller"] == "nav2_mppi_controller::MPPIController"
+    assert follow_path["rotate_to_goal_heading"] is True
+    assert follow_path["GoalAngleCritic"]["threshold_to_consider"] == mod.DIFF_DOCK_XY_TOLERANCE_M
+    assert follow_path["rotate_to_heading_angular_vel"] <= follow_path["wz_max"]
+    assert follow_path["vx_max"] > 0  # MPPI's own params stay under FollowPath for the primary
+    assert out["general_goal_checker"]["xy_goal_tolerance"] == mod.DIFF_DOCK_XY_TOLERANCE_M
+    assert out["general_goal_checker"]["yaw_goal_tolerance"] == mod.DIFF_DOCK_YAW_TOLERANCE_RAD
+    # The shim's terminal in-place turn must count as progress.
+    assert out["progress_checker"]["plugin"] == "nav2_controller::PoseProgressChecker"
+    assert out["progress_checker"]["required_movement_angle"] > 0
+
+    # Omni bases keep the base file untouched.
+    assert mod._speed_capped_params_file(str(config), None, None) == str(config)
+
+
+def test_differential_docking_refuses_a_non_mppi_controller() -> None:
+    mod = _import_launch_module()
+    from openral_core.exceptions import ROSConfigError
+
+    server = {
+        "FollowPath": {"plugin": "dwb_core::DWBLocalPlanner", "GoalAngleCritic": {}},
+        "general_goal_checker": {},
+        "progress_checker": {},
+    }
+    with pytest.raises(ROSConfigError, match="MPPI"):
+        mod._dock_differential({"controller_server": {"ros__parameters": server}})
+
+
+def test_differential_docking_caps_the_shim_turn_and_accepts_a_wrapped_mppi() -> None:
+    """The shim never turns faster than ``wz_max``; an already-shimmed MPPI file is accepted."""
+    mod = _import_launch_module()
+    params = yaml.safe_load(_CONFIG_PATH.read_text())
+    mod._cap_speeds(params, None, 0.3)
+    mod._dock_differential(params)
+    mod._dock_differential(params)  # idempotent: the shim-wrapped file is accepted again
+    follow_path = params["controller_server"]["ros__parameters"]["FollowPath"]
+    assert follow_path["rotate_to_heading_angular_vel"] == pytest.approx(0.3)
