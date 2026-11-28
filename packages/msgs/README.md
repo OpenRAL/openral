@@ -65,7 +65,7 @@ Instantaneous queries; none actuates.
 
 `ExecuteRskill`, served by `openral_rskill_ros`.
 
-- **Goal:** `rskill_id`, `revision` (empty = latest pinned), `prompt`, `prompt_metadata_json`, `goal_params_json`, `deadline_s` (0 = manifest default), plus optional, default-off pairs `place_declaration_valid` / `place_declaration`, `grasp_declaration_valid` / `grasp_declaration` and `success_condition_valid` / `success_condition` (wins over the deploy scene's condition for the prompt).
+- **Goal:** `rskill_id`, `revision` (empty = latest pinned), `prompt`, `prompt_metadata_json`, `goal_params_json`, `deadline_s` (0 = manifest default; capped at the manifest's `max_execution_s`), plus optional, default-off pairs `place_declaration_valid` / `place_declaration`, `grasp_declaration_valid` / `grasp_declaration` and `success_condition_valid` / `success_condition` (wins over the deploy scene's condition for the prompt).
 - **Result:** `success`, `failure_reason`, `trace_id`, typed `failure_kind`, `evidence_json` (one `FailureEvidence` variant, empty if none), `outcome_summary` (bounded completion line on success), `task_outcome` (`TASK_UNKNOWN`=0 / `TASK_SUCCEEDED`=1 / `TASK_FAILED`=2, whether the run did what it was asked, apart from `success`) and `task_outcome_json` (`openral_core.TaskOutcome`). An older producer decodes as `FAILURE_NONE` / `TASK_UNKNOWN`; consumers must read both as "unknown", never "succeeded".
 - **Feedback:** `progress` (0..1), `state` (`loading|warming|executing|replanning|recovering`), `chunk_index`, `chunks_total`.
 

@@ -8,7 +8,7 @@ string goal_params_json    # per-skill structured parameters
                             #   Wrapped-ROS skills deep-merge over
                             #   ros_integration.default_goal_json at
                             #   configure-time; VLAs ignore.
-float64 deadline_s         # 0 = use manifest default
+float64 deadline_s         # 0 = use manifest default; capped at its max_execution_s
 
 # Optional place-phase declaration (ADR-0097), additive and defaulted off.
 # False — every pre-ADR-0097 caller — means no place witness may ever arm for

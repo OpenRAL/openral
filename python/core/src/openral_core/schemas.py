@@ -17065,7 +17065,8 @@ class ExecuteRskillTool(_ReasonerToolBase):
             (their prompt is already the structured signal).
         deadline_s: Hard deadline in seconds for the action server to
             complete the goal. ``0`` means "use the skill manifest's
-            default latency budget".
+            default latency budget"; the runner caps a longer one at the
+            manifest's ``latency_budget.max_execution_s``.
         patience_s: Task-adaptive execution ceiling override (short for a
             quick grab, long for a precise insertion). ``None`` → use the
             reward model's ``default_patience_s``.
@@ -17108,7 +17109,9 @@ class ExecuteRskillTool(_ReasonerToolBase):
         ),
     )
     deadline_s: float = Field(
-        default=0.0, ge=0.0, description="Hard deadline in seconds; 0 = the skill's default."
+        default=0.0,
+        ge=0.0,
+        description="Hard deadline in seconds, capped at the skill's own budget; 0 = its default.",
     )
     patience_s: float | None = Field(
         default=None,

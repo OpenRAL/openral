@@ -114,7 +114,7 @@ completion or a cancel; such a goal ends `FAILURE_SAFETY_ESTOP`, never as a succ
 ## Execution budgets
 
 A goal's budget is `deadline_s`, else the manifest's `latency_budget.max_execution_s`, else
-45 s. `openral_rskill.execution_budget.ExecutionBudget` measures it on the clock the robot
+45 s. The manifest's `max_execution_s` is also a ceiling: a longer `deadline_s` is capped to it. `openral_rskill.execution_budget.ExecutionBudget` measures it on the clock the robot
 moves on: sim time when `use_sim_time=true` (`openral deploy sim`), `time.monotonic()` on a
 real robot. A NaN `deadline_s` is refused as `FAILURE_CONFIG_ERROR`.
 
